@@ -17,3 +17,7 @@ data/
 .DS_Store
 *.tsbuildinfo
 npm-debug.log*
+
+# Firebase Hosting
+.firebase/
+firebase-debug.log

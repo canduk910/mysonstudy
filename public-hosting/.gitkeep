@@ -1,0 +1,2 @@
+# Firebase Hosting은 public 디렉토리를 요구하지만, 모든 요청은 rewrites로 Cloud Run에 전달된다.
+# 이 디렉토리는 의도적으로 비어 있다.

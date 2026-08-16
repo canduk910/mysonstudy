@@ -1,0 +1,16 @@
+{
+  "hosting": {
+    "site": "eunwoo-bookcard",
+    "public": "public-hosting",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "rewrites": [
+      {
+        "source": "**",
+        "run": {
+          "serviceId": "eunwoo-bookcard",
+          "region": "asia-northeast3"
+        }
+      }
+    ]
+  }
+}
