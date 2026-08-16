@@ -32,6 +32,10 @@ npm run dev    # http://localhost:3100 (다른 로컬 프로젝트와의 포트 
 
 ## 3. Cloud Run 배포 (서울, 소스 배포)
 
+> **현재 배포 상태 (2026-08-16)**: 프로젝트 `eunwoo-bookcard` · 서비스 `eunwoo-bookcard` · 서울(asia-northeast3)
+> 서비스 URL은 비공개(가족 전용)라 저장소에 적지 않는다 — `gcloud run services describe eunwoo-bookcard --region asia-northeast3 --format='value(status.url)'`로 확인.
+> OpenAI 키는 Secret Manager `openai-api-key`, Firestore는 Native mode. 재배포는 main 푸시(GitHub Actions) 또는 아래 3) 명령.
+
 Dockerfile 없이 `gcloud run deploy --source .` 기준입니다(Buildpacks가 `npm run build` → `npm start`를 수행하고, `next start`는 Cloud Run의 `PORT`를 자동 인식).
 
 ```bash
