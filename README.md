@@ -100,7 +100,7 @@ gcloud projects add-iam-policy-binding <PROJECT_ID> \
 | 판단 | 내용 |
 |------|------|
 | temperature 자동 생략 | 추론 계열 모델(예: gpt-5.6-luna)은 temperature 파라미터를 400으로 거부한다. callWithSchema가 첫 거부 시 파라미터를 빼고 재시도하며 모델별로 기억한다 — HARNESS §1의 temperature 다이얼은 이런 모델에는 적용되지 않는다 |
-| 질문 유형 규칙의 우선순위 | HARNESS §3-1의 "논픽션 사실확인 2개"와 §4 zod의 "유형 중복 금지"는 서로 모순 — 구현은 zod(중복 금지)를 우선하므로 논픽션 카드의 사실확인은 1개다 |
+| 질문 유형: 사실확인 1개 확정 | HARNESS §3-1의 "논픽션 사실확인 2개"와 §4 zod의 "유형 중복 금지"가 모순이었음 — 사용자 결정(2026-08-16)으로 사실확인 1개·유형 중복 금지로 통일, HARNESS·SPEC·prompts.ts 동기 수정 |
 
 | 판단 | 내용과 근거 |
 |---|---|
