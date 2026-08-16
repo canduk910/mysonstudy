@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>영어책 학습 카드 샘플 — Wolves · Pooh Gets Stuck</title>
+<style>
+  :root{
+    --ink:#20242b; --sub:#5b6472; --line:#e6e2d8; --paper:#faf7f0; --card:#ffffff;
+    --wolf:#3b6ea5; --wolf-soft:#eef3f9; --wolf-deep:#2a4f77;
+    --pooh:#c8871f; --pooh-soft:#fdf4e3; --pooh-deep:#8f5e0e;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 16px 48px;background:var(--paper);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic","Segoe UI",sans-serif;
+    line-height:1.6;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .wrap{max-width:860px;margin:0 auto}
+  header.top{text-align:center;margin-bottom:28px}
+  .eyebrow{font-size:12px;letter-spacing:.12em;color:var(--sub);text-transform:uppercase}
+  header.top h1{font-size:26px;margin:8px 0 6px}
+  header.top .sub{color:var(--sub);font-size:14px;margin:0}
+  article.book{background:var(--card);border:1px solid var(--line);border-radius:16px;
+    margin:22px 0;overflow:hidden;box-shadow:0 1px 3px rgba(32,36,43,.06)}
+  .bookbar{height:8px}
+  .wolves .bookbar{background:var(--wolf)} .pooh .bookbar{background:var(--pooh)}
+  .bookhead{display:flex;gap:16px;align-items:center;padding:22px 26px 6px}
+  .cover{width:56px;height:56px;border-radius:14px;display:flex;align-items:center;justify-content:center;
+    font-size:30px;flex:none}
+  .wolves .cover{background:var(--wolf-soft)} .pooh .cover{background:var(--pooh-soft)}
+  .bookhead h2{margin:0;font-size:24px}
+  .byline{color:var(--sub);font-size:13px;margin-top:2px}
+  .chips{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px}
+  .chips span{font-size:12px;padding:3px 10px;border-radius:999px;border:1px solid var(--line);background:#fbfaf6;color:#414855}
+  .wolves .chips span.hl{background:var(--wolf-soft);border-color:#c8d8ea;color:var(--wolf-deep);font-weight:600}
+  .pooh .chips span.hl{background:var(--pooh-soft);border-color:#ecd7ae;color:var(--pooh-deep);font-weight:600}
+  .intro{padding:6px 26px 0;color:#39404c;font-size:14.5px}
+  section{padding:6px 26px 4px}
+  section:last-of-type{padding-bottom:22px}
+  h3{font-size:15px;margin:20px 0 10px;display:flex;align-items:center;gap:8px}
+  h3 .step{font-size:11px;font-weight:700;letter-spacing:.06em;padding:3px 9px;border-radius:6px;color:#fff}
+  .wolves h3 .step{background:var(--wolf)} .pooh h3 .step{background:var(--pooh)}
+  h3 .en{color:var(--sub);font-weight:500;font-size:12.5px}
+  ul.plain{margin:0;padding-left:20px;font-size:14.5px}
+  ul.plain li{margin:6px 0}
+  .kolight{color:var(--sub)}
+  table.vocab{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:4px}
+  table.vocab th{font-size:12px;color:var(--sub);font-weight:600;text-align:left;
+    border-bottom:2px solid var(--line);padding:6px 8px;white-space:nowrap}
+  table.vocab td{border-bottom:1px solid #f0ede4;padding:8px;vertical-align:top}
+  td.w{font-weight:700;white-space:nowrap}
+  td.w small{display:block;font-weight:500;color:var(--sub)}
+  .star{color:#c8871f;font-size:11px;letter-spacing:.05em}
+  td.mean{white-space:nowrap;font-weight:600}
+  td.easy{color:#39404c}
+  td.ex{color:#39404c;font-style:italic}
+  td.ex b{font-style:normal}
+  .tip{border-radius:12px;padding:12px 16px;font-size:13.5px;margin:12px 0 4px}
+  .wolves .tip{background:var(--wolf-soft)} .pooh .tip{background:var(--pooh-soft)}
+  .tip b{display:inline-block;margin-right:4px}
+  ol.talk{margin:0;padding-left:0;list-style:none;counter-reset:q}
+  ol.talk li{border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:10px 0;background:#fffefb}
+  .qtag{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px;margin-bottom:6px}
+  .wolves .qtag{background:var(--wolf-soft);color:var(--wolf-deep)}
+  .pooh .qtag{background:var(--pooh-soft);color:var(--pooh-deep)}
+  .q-en{margin:0;font-size:15px;font-weight:650}
+  .q-ko{margin:2px 0 0;font-size:13.5px;color:var(--sub)}
+  .q-hint{margin:6px 0 0;font-size:12.5px;color:#6e7686;border-top:1px dashed var(--line);padding-top:6px}
+  .facts .fact-en{font-weight:600}
+  .facts .fact-ko{color:var(--sub);font-size:13px;display:block}
+  .play ul.plain li{margin:8px 0}
+  footer.note{margin-top:26px;border-top:1px solid var(--line);padding-top:16px;color:var(--sub);font-size:12.5px}
+  footer.note p{margin:4px 0}
+  @media print{
+    body{background:#fff;padding:0}
+    article.book{box-shadow:none;border-color:#ccc;page-break-after:always}
+    header.top{margin-top:12px}
+  }
+  @media (max-width:560px){
+    .bookhead{padding:18px 16px 4px} section{padding:6px 16px 4px} .intro{padding:6px 16px 0}
+    td.easy{display:none} th.easy{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="eyebrow">은우학습 · 영어책 학습 도우미</div>
+  <h1>표지 사진 한 장 → 오늘의 학습 카드</h1>
+  <p class="sub">책 본문을 복제하지 않고, 표지에서 읽어낸 난이도·주제 정보로 새로 만든 샘플입니다.</p>
+</header>
+
+<!-- ================= BOOK 1 : WOLVES ================= -->
+<article class="book wolves">
+  <div class="bookbar"></div>
+  <div class="bookhead">
+    <div class="cover">🐺</div>
+    <div>
+      <h2>Wolves</h2>
+      <div class="byline">National Geographic Kids Readers · Laura Marsh 지음 · 논픽션(실제 정보를 알려주는 책)</div>
+      <div class="chips">
+        <span class="hl">AR 3.3</span><span class="hl">Lexile 570L</span>
+        <span>864 단어</span><span>Level 2 리더스</span><span>함께 읽기 약 15분</span>
+      </div>
+    </div>
+  </div>
+  <p class="intro">진짜 늑대 사진과 함께 늑대의 가족, 사냥, 울음소리를 배우는 자연 관찰 책이에요.
+  AR 3.3은 '미국 3학년 세 번째 달' 수준이라는 뜻 — 정보책이라 단어가 조금 어려운 대신, 아는 만큼 신나게 아는 척할 수 있는 책입니다.</p>
+
+  <section>
+    <h3><span class="step">STEP 1</span> 읽기 전 워밍업 <span class="en">Before Reading</span></h3>
+    <ul class="plain">
+      <li><b>표지 탐정 놀이:</b> "Is this a dog?" 하고 물어보세요. 아니라면 개랑 뭐가 다른지 한국어로 편하게 말해 보기.</li>
+      <li>늑대 하면 떠오르는 것 3가지 말하기 → 책을 다 읽고 나서 "3가지 중 몇 개가 책에 나왔나" 확인하면 집중력이 살아나요.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h3><span class="step">STEP 2</span> 필수 단어장 <span class="en">Key Words · 12</span></h3>
+    <table class="vocab">
+      <thead><tr><th>단어</th><th>뜻</th><th class="easy">쉬운 영어로</th><th>이렇게 써요</th></tr></thead>
+      <tbody>
+        <tr><td class="w">pack <small>[팩]</small></td><td class="mean">늑대 무리</td><td class="easy">a wolf family</td><td class="ex">Wolves live in a <b>pack</b>.</td></tr>
+        <tr><td class="w">pup <small>[펍]</small></td><td class="mean">새끼 늑대</td><td class="easy">a baby wolf</td><td class="ex">The <b>pup</b> plays all day.</td></tr>
+        <tr><td class="w">den <small>[덴]</small></td><td class="mean">굴, 보금자리</td><td class="easy">a wolf's home</td><td class="ex">Pups sleep in the <b>den</b>.</td></tr>
+        <tr><td class="w">howl <small>[하울]</small></td><td class="mean">길게 울다</td><td class="easy">a long wolf song</td><td class="ex">Wolves <b>howl</b> at night.</td></tr>
+        <tr><td class="w">hunt <small>[헌트]</small></td><td class="mean">사냥하다</td><td class="easy">to look for food</td><td class="ex">The pack <b>hunts</b> together.</td></tr>
+        <tr><td class="w">prey <small>[프레이]</small> <span class="star">★도전</span></td><td class="mean">먹잇감</td><td class="easy">an animal that gets eaten</td><td class="ex">Deer are <b>prey</b>.</td></tr>
+        <tr><td class="w">predator <small>[프레더터]</small> <span class="star">★도전</span></td><td class="mean">포식자</td><td class="easy">an animal that hunts</td><td class="ex">A wolf is a <b>predator</b>.</td></tr>
+        <tr><td class="w">fur <small>[퍼-]</small></td><td class="mean">(동물의) 털</td><td class="easy">animal hair</td><td class="ex">Thick <b>fur</b> keeps wolves warm.</td></tr>
+        <tr><td class="w">paw <small>[포-]</small></td><td class="mean">(동물의) 발</td><td class="easy">an animal's foot</td><td class="ex">Look at the big <b>paws</b>!</td></tr>
+        <tr><td class="w">sniff <small>[스니프]</small></td><td class="mean">킁킁 냄새 맡다</td><td class="easy">to smell quickly</td><td class="ex">Wolves <b>sniff</b> to say hello.</td></tr>
+        <tr><td class="w">growl <small>[그라울]</small></td><td class="mean">으르렁거리다</td><td class="easy">a low angry sound</td><td class="ex">The wolf <b>growls</b>. Grrr!</td></tr>
+        <tr><td class="w">wild <small>[와일드]</small></td><td class="mean">야생의</td><td class="easy">living free in nature</td><td class="ex">Wolves are <b>wild</b> animals.</td></tr>
+      </tbody>
+    </table>
+    <div class="tip"><b>아빠 티칭 포인트:</b> wolf 한 마리, wolves 여러 마리! f로 끝나는 단어는 복수형이 -ves로 변신해요 (leaf→leaves, knife→knives). 제목이 왜 Wolves인지 아이가 스스로 발견하게 해 주세요.</div>
+  </section>
+
+  <section>
+    <h3><span class="step">STEP 3</span> 읽으면서 미션 <span class="en">While Reading</span></h3>
+    <ul class="plain">
+      <li>사진에서 <b>den</b>(굴)이나 <b>pup</b>(새끼)이 보이면 손가락으로 짚고 영어로 외치기.</li>
+      <li><b>howl</b>이 나오면 함께 작게 "아우~" 하고 따라 하기. (동생이 자면 속삭임 버전으로)</li>
+      <li>모르는 단어가 나와도 멈추지 말고 포스트잇 한 장만 붙이고 통과 — 흐름이 먼저예요.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h3><span class="step">STEP 4</span> 읽고 나서 대화 나누기 <span class="en">After Reading · 8 Questions</span></h3>
+    <ol class="talk">
+      <li><span class="qtag">사실 확인</span>
+        <p class="q-en">What is a wolf family called?</p>
+        <p class="q-ko">늑대 가족을 영어로 뭐라고 부를까?</p>
+        <p class="q-hint">정답: a pack! 답을 맞히면 "Good job, 우리 pack의 에이스!"</p></li>
+      <li><span class="qtag">사실 확인</span>
+        <p class="q-en">What is a baby wolf called?</p>
+        <p class="q-ko">아기 늑대는 영어로 뭐라고 할까?</p>
+        <p class="q-hint">정답: a pup. 강아지(puppy)와 닮은 말이라는 걸 눈치채면 칭찬 타임.</p></li>
+      <li><span class="qtag">왜일까?</span>
+        <p class="q-en">Why do wolves howl?</p>
+        <p class="q-ko">늑대는 왜 길게 울까?</p>
+        <p class="q-hint">멀리 있는 가족에게 거는 늑대의 전화예요. "우리 집 전화 소리는 뭘까?"로 이어가 보세요.</p></li>
+      <li><span class="qtag">비교</span>
+        <p class="q-en">How are wolves like dogs? How are they different?</p>
+        <p class="q-ko">늑대랑 강아지, 닮은 점은? 다른 점은?</p></li>
+      <li><span class="qtag">상상</span>
+        <p class="q-en">If you were a wolf pup, what would you do all day?</p>
+        <p class="q-ko">네가 새끼 늑대라면 하루 종일 뭘 하고 싶어?</p></li>
+      <li><span class="qtag">내 생각</span>
+        <p class="q-en">Are wolves scary or cool? Why?</p>
+        <p class="q-ko">늑대는 무서운 동물일까, 멋진 동물일까? 왜 그렇게 생각해?</p>
+        <p class="q-hint">정답이 없는 질문이에요. 아이 답에 "Why?" 한 번만 더 물어봐 주세요.</p></li>
+      <li><span class="qtag">우리 가족</span>
+        <p class="q-en">Our family is a pack too! Who does what in our pack?</p>
+        <p class="q-ko">우리 가족도 하나의 pack이야. 우리 pack에서는 누가 어떤 역할이야?</p></li>
+      <li><span class="qtag">더 알아보기</span>
+        <p class="q-en">Where could we go to see a real wolf?</p>
+        <p class="q-ko">진짜 늑대를 보려면 어디로 가야 할까?</p>
+        <p class="q-hint">주말 동물원 나들이 예고편으로 쓰기 좋은 질문.</p></li>
+    </ol>
+  </section>
+
+  <section class="facts">
+    <h3><span class="step">보너스</span> 아빠 찬스 · 재미있는 늑대 사실 <span class="en">Fun Facts</span></h3>
+    <ul class="plain">
+      <li><span class="fact-en">A wolf's howl can travel many kilometers.</span><span class="fact-ko">늑대 울음소리는 몇 킬로미터 밖까지 퍼져요.</span></li>
+      <li><span class="fact-en">Wolf pups are born with blue eyes that change color.</span><span class="fact-ko">새끼 늑대는 파란 눈으로 태어나 자라면서 색이 변해요.</span></li>
+      <li><span class="fact-en">Long, long ago, dogs came from wolves.</span><span class="fact-ko">아주 먼 옛날, 개는 늑대에서 나왔어요.</span></li>
+      <li><span class="fact-en">A pack is mostly one family: mom, dad, and kids.</span><span class="fact-ko">팩은 대부분 엄마·아빠·새끼로 이루어진 한 가족이에요.</span></li>
+    </ul>
+  </section>
+
+  <section class="play">
+    <h3><span class="step">확장 놀이</span> 몸으로 한 번 더 <span class="en">Play &amp; Learn</span></h3>
+    <ul class="plain">
+      <li><b>하울링 전화 놀이:</b> 방 양 끝에서 하울링으로 신호 보내기. 긴 소리 = "배고파", 짧은 소리 두 번 = "놀자" 처럼 가족만의 늑대 언어를 만들어 보세요.</li>
+      <li><b>늑대 vs 강아지 그림:</b> 종이에 원 두 개를 겹쳐 그리고(벤다이어그램), 닮은 점은 가운데에, 다른 점은 양쪽에 그림으로 채우기.</li>
+    </ul>
+  </section>
+</article>
+
+<!-- ================= BOOK 2 : POOH GETS STUCK ================= -->
+<article class="book pooh">
+  <div class="bookbar"></div>
+  <div class="bookhead">
+    <div class="cover">🍯</div>
+    <div>
+      <h2>Pooh Gets Stuck</h2>
+      <div class="byline">A Winnie the Pooh First Reader · Isabel Gaines 지음 · 픽션(이야기 책)</div>
+      <div class="chips">
+        <span class="hl">AR 2.0</span><span class="hl">Lexile 430L</span>
+        <span>551 단어</span><span>First Reader</span><span>함께 읽기 약 10분</span>
+      </div>
+    </div>
+  </div>
+  <p class="intro">먹보 곰돌이 푸가 토끼네 집 구멍에 몸이 끼어 버리는 소동 이야기예요.
+  AR 2.0은 '미국 2학년 첫 달' 수준 — 문장이 짧고 그림이 이야기를 다 알려줘서, 소리 내어 함께 읽기에 딱 좋은 책입니다.</p>
+
+  <section>
+    <h3><span class="step">STEP 1</span> 읽기 전 워밍업 <span class="en">Before Reading</span></h3>
+    <ul class="plain">
+      <li><b>표지 탐정 놀이:</b> "What is happening?" — 누가 누구를 당기고 있는지, 왜 이러고 있는지 표지만 보고 추리하기.</li>
+      <li>제목의 <b>stuck</b>이 무슨 뜻일지 추측해 보기. 정답을 알려주지 말고 "읽으면서 확인해 보자!"로 넘어가면 궁금증이 연료가 돼요.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h3><span class="step">STEP 2</span> 필수 단어장 <span class="en">Key Words · 12</span></h3>
+    <table class="vocab">
+      <thead><tr><th>단어</th><th>뜻</th><th class="easy">쉬운 영어로</th><th>이렇게 써요</th></tr></thead>
+      <tbody>
+        <tr><td class="w">stuck <small>[스턱]</small> <span class="star">★핵심</span></td><td class="mean">끼인, 못 움직이는</td><td class="easy">can't move!</td><td class="ex">Oh no, I'm <b>stuck</b>!</td></tr>
+        <tr><td class="w">pull <small>[풀]</small></td><td class="mean">당기다</td><td class="easy">to move something to you</td><td class="ex"><b>Pull</b> harder!</td></tr>
+        <tr><td class="w">push <small>[푸쉬]</small></td><td class="mean">밀다</td><td class="easy">to move something away</td><td class="ex"><b>Push</b> the door.</td></tr>
+        <tr><td class="w">squeeze <small>[스퀴-즈]</small> <span class="star">★도전</span></td><td class="mean">비집고 들어가다</td><td class="easy">to fit into a small space</td><td class="ex">He <b>squeezes</b> into the hole.</td></tr>
+        <tr><td class="w">tight <small>[타이트]</small></td><td class="mean">꽉 끼는</td><td class="easy">not loose</td><td class="ex">The hole is too <b>tight</b>.</td></tr>
+        <tr><td class="w">hole <small>[호울]</small></td><td class="mean">구멍</td><td class="easy">an open space</td><td class="ex">Rabbit lives in a <b>hole</b>.</td></tr>
+        <tr><td class="w">honey <small>[허니]</small></td><td class="mean">꿀</td><td class="easy">sweet food bees make</td><td class="ex">Pooh loves <b>honey</b>.</td></tr>
+        <tr><td class="w">hungry <small>[헝그리]</small></td><td class="mean">배고픈</td><td class="easy">wanting food</td><td class="ex">I'm so <b>hungry</b>!</td></tr>
+        <tr><td class="w">full <small>[풀]</small></td><td class="mean">배부른</td><td class="easy">no more food, please!</td><td class="ex">My tummy is <b>full</b>.</td></tr>
+        <tr><td class="w">visit <small>[비지트]</small></td><td class="mean">놀러 가다</td><td class="easy">to go see a friend</td><td class="ex">Let's <b>visit</b> Rabbit.</td></tr>
+        <tr><td class="w">wait <small>[웨이트]</small></td><td class="mean">기다리다</td><td class="easy">to stay until later</td><td class="ex">We have to <b>wait</b>.</td></tr>
+        <tr><td class="w">tummy <small>[터미]</small></td><td class="mean">배 (아이 말)</td><td class="easy">your belly</td><td class="ex">What a big <b>tummy</b>!</td></tr>
+      </tbody>
+    </table>
+    <div class="tip"><b>아빠 티칭 포인트:</b> pull(당기다)과 full(배부른)은 소리가 비슷해요. 입술을 붙였다 떼는 <b>p</b>, 윗니를 아랫입술에 대는 <b>f</b> — 거울 보며 두 단어를 번갈아 말해 보면 재미있는 발음 연습이 됩니다. 이 책은 pull과 full이 모두 중요한 단어라 연습 타이밍으로 완벽해요.</div>
+  </section>
+
+  <section>
+    <h3><span class="step">STEP 3</span> 읽으면서 미션 <span class="en">While Reading</span></h3>
+    <ul class="plain">
+      <li><b>stuck</b>이라는 단어가 들릴 때마다 두 팔을 몸에 딱 붙이고 "Stuck!" 하고 얼음이 되기.</li>
+      <li>친구들이 푸를 당기는 장면에서는 다 같이 "Pull! Pull!" 응원 구호 외치기.</li>
+      <li>푸의 표정이 바뀔 때마다 똑같이 따라 해 보기 — 표정으로 감정 단어(happy, worried...)를 자연스럽게 익혀요.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h3><span class="step">STEP 4</span> 읽고 나서 대화 나누기 <span class="en">After Reading · 8 Questions</span></h3>
+    <ol class="talk">
+      <li><span class="qtag">누가?</span>
+        <p class="q-en">Who got stuck? Whose house was it?</p>
+        <p class="q-ko">누가 끼었지? 누구네 집이었어?</p></li>
+      <li><span class="qtag">무슨 일?</span>
+        <p class="q-en">What did Pooh do at Rabbit's house?</p>
+        <p class="q-ko">푸는 토끼네 집에서 무엇을 했을까?</p></li>
+      <li><span class="qtag">왜일까?</span>
+        <p class="q-en">Why did Pooh get stuck in the hole?</p>
+        <p class="q-ko">푸는 왜 구멍에 끼었을까?</p>
+        <p class="q-hint">"너무 많이 먹어서"가 나오면 성공. 원인→결과로 말하는 연습이에요 (because를 살짝 흘려 주세요).</p></li>
+      <li><span class="qtag">기분</span>
+        <p class="q-en">How did Pooh feel when he couldn't move? How did Rabbit feel?</p>
+        <p class="q-ko">움직일 수 없을 때 푸는 기분이 어땠을까? 토끼 기분은?</p>
+        <p class="q-hint">같은 사건도 인물마다 기분이 다르다는 걸 발견하면 대성공.</p></li>
+      <li><span class="qtag">결말</span>
+        <p class="q-en">How did Pooh get out at the end?</p>
+        <p class="q-ko">마지막에 푸는 어떻게 빠져나왔지?</p></li>
+      <li><span class="qtag">만약에</span>
+        <p class="q-en">What if pulling didn't work? What would you try?</p>
+        <p class="q-ko">당겨도 안 빠졌다면, 너라면 어떤 방법을 써 볼래?</p>
+        <p class="q-hint">버터 바르기, 간지럼 태우기... 엉뚱한 답일수록 좋은 질문이에요.</p></li>
+      <li><span class="qtag">나도!</span>
+        <p class="q-en">Have you ever eaten too much of something you love?</p>
+        <p class="q-ko">너도 좋아하는 걸 너무 많이 먹어 본 적 있어?</p></li>
+      <li><span class="qtag">다음엔?</span>
+        <p class="q-en">What could Pooh do differently next time?</p>
+        <p class="q-ko">다음에 푸는 어떻게 하면 좋을까?</p>
+        <p class="q-hint">교훈을 아이 입으로 말하게 하는 마무리 질문. "Just a little honey!"</p></li>
+    </ol>
+  </section>
+
+  <section class="play">
+    <h3><span class="step">확장 놀이</span> 몸으로 한 번 더 <span class="en">Play &amp; Learn</span></h3>
+    <ul class="plain">
+      <li><b>구출 놀이:</b> 쿠션 사이에 인형을 끼워 두고 영어로만 구출 작전 — "Pull!", "Push!", "One, two, three!" 성공하면 다 함께 "You're out!"</li>
+      <li><b>헝그리·풀 게이지:</b> 간식 시간에 배를 가리키며 "hungry ↔ full" 게이지 놀이. "How's your tummy?" "Half full!" 처럼 오늘 배운 단어를 식탁으로 가져와요.</li>
+    </ul>
+  </section>
+</article>
+
+<footer class="note">
+  <p><b>이 카드는 이렇게 만들어졌어요:</b> 표지 스티커에서 AR·렉사일·단어 수를 읽고(사진 인식), 책의 주제와 난이도에 맞춰 단어장과 질문을 새로 생성했습니다. 책 본문은 복제하지 않았습니다.</p>
+  <p>질문 8개는 아동 독해 연구 데이터셋 FairytaleQA의 질문 유형(인물·사건·인과·감정·예측·결말 등)을 따랐고, 단어 선정은 교육부 초등 권장 어휘·사이트워드 기준으로 '새로 배울 단어'만 추렸습니다.</p>
+  <p>인쇄하면 책마다 한 장씩 나오도록 만들어져 있어요. (브라우저에서 Ctrl/Cmd+P)</p>
+</footer>
+
+</div>
+</body>
+</html>
