@@ -123,6 +123,17 @@ function validateResponse<T>(
  * 4. 재요청도 실패하면 throw (라우트에서 재시도 버튼 노출)
  * 5. 성공/실패 무관 로깅: { call, model, inputTokens, outputTokens, ms }
  */
+// 추론 계열 모델은 temperature 파라미터 자체를 400으로 거부한다.
+// 한 번 거부한 모델은 기억해 두고 이후 호출에서는 처음부터 파라미터를 뺀다.
+const modelsRejectingTemperature = new Set<string>();
+
+function isTemperatureUnsupportedError(err: unknown): boolean {
+  if (!(err instanceof OpenAI.APIError)) return false;
+  if (err.status !== 400) return false;
+  const param = (err as { param?: string | null }).param;
+  return param === "temperature" || /'temperature'/.test(err.message);
+}
+
 export async function callWithSchema<T>(args: CallWithSchemaArgs<T>): Promise<T> {
   const { call, system, user, jsonSchema, zodSchema, temperature, maxOutputTokens } = args;
   const model = resolveModel();
@@ -133,7 +144,7 @@ export async function callWithSchema<T>(args: CallWithSchemaArgs<T>): Promise<T>
   const requestOnce = async (
     input: OpenAI.Responses.ResponseInput,
   ): Promise<OpenAI.Responses.Response> => {
-    const res = await getOpenAIClient().responses.create({
+    const params: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
       model,
       input,
       text: {
@@ -144,9 +155,21 @@ export async function callWithSchema<T>(args: CallWithSchemaArgs<T>): Promise<T>
           schema: jsonSchema.schema,
         },
       },
-      temperature,
       max_output_tokens: maxOutputTokens,
-    });
+    };
+    if (!modelsRejectingTemperature.has(model)) params.temperature = temperature;
+
+    let res: OpenAI.Responses.Response;
+    try {
+      res = await getOpenAIClient().responses.create(params);
+    } catch (err) {
+      // 스펙(HARNESS §1)의 temperature 다이얼은 이 계열 모델에는 적용 자체가 불가하므로,
+      // 파라미터를 빼는 것이 스펙 의도를 유지하는 최소 변형이다.
+      if (params.temperature === undefined || !isTemperatureUnsupportedError(err)) throw err;
+      modelsRejectingTemperature.add(model);
+      delete params.temperature;
+      res = await getOpenAIClient().responses.create(params);
+    }
     // 재요청이 발생하면 두 호출의 토큰을 합산해 기록한다
     inputTokens += res.usage?.input_tokens ?? 0;
     outputTokens += res.usage?.output_tokens ?? 0;

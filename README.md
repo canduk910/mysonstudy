@@ -97,6 +97,11 @@ gcloud projects add-iam-policy-binding <PROJECT_ID> \
 
 ### AI·모델
 
+| 판단 | 내용 |
+|------|------|
+| temperature 자동 생략 | 추론 계열 모델(예: gpt-5.6-luna)은 temperature 파라미터를 400으로 거부한다. callWithSchema가 첫 거부 시 파라미터를 빼고 재시도하며 모델별로 기억한다 — HARNESS §1의 temperature 다이얼은 이런 모델에는 적용되지 않는다 |
+| 질문 유형 규칙의 우선순위 | HARNESS §3-1의 "논픽션 사실확인 2개"와 §4 zod의 "유형 중복 금지"는 서로 모순 — 구현은 zod(중복 금지)를 우선하므로 논픽션 카드의 사실확인은 1개다 |
+
 | 판단 | 내용과 근거 |
 |---|---|
 | `OPENAI_MODEL` 기본값 `gpt-5.5` | OpenAI 공식 모델 문서(2026-08 확인) 기준 비전 입력·`structured_outputs`·Responses API를 모두 지원하는 현행 최신 세대. 날짜 미고정 별칭이라 스냅샷 갱신을 자동 수용 |
