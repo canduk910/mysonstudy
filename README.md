@@ -29,6 +29,7 @@ npm run dev    # http://localhost:3100 (다른 로컬 프로젝트와의 포트 
 | `GOOGLE_BOOKS_API_KEY` | 선택 | 책 식별(ISBN·소개글·썸네일)용. 없으면 무키 호출(쿼터 낮음) — 실패 시 Open Library로 자동 폴백 |
 | `GOOGLE_APPLICATION_CREDENTIALS` | 선택 | 로컬에서 Firestore를 쓸 때 서비스 계정 키 파일 경로. Cloud Run에서는 불필요(서비스 계정 ADC) |
 | `STORE_BACKEND` | 선택 | `firestore` \| `file`. 미설정 시 자동 감지 — GCP 신호(`GOOGLE_APPLICATION_CREDENTIALS`/`K_SERVICE`/`GOOGLE_CLOUD_PROJECT`)가 있으면 firestore, 없으면 file |
+| `APP_PIN` | **배포 시 필수** | 접속 잠금 PIN(숫자 **6~8자리 권장**, 최소 4자리 — 4자리는 경우의 수가 1만뿐이라 짧습니다). 서버 전용. 도메인이 공개돼도 가족 외 접속과 AI 비용 유출을 막습니다. **프로덕션에서 미설정이면 전 요청을 503으로 차단**(fail-closed), 로컬 개발에서 미설정이면 잠금 없이 통과 |
 
 ## 3. Cloud Run 배포 (서울, 소스 배포)
 
@@ -48,15 +49,16 @@ gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
 # 1) Firestore 데이터베이스 생성 — 반드시 Native mode (1회)
 gcloud firestore databases create --location=asia-northeast3
 
-# 2) OpenAI 키를 Secret Manager에 저장 (권장 — env 평문 대신)
+# 2) OpenAI 키와 접속 PIN을 Secret Manager에 저장 (권장 — env 평문 대신)
 printf '%s' 'sk-...' | gcloud secrets create openai-api-key --data-file=-
+printf '%s' '246813' | gcloud secrets create app-pin --data-file=-   # 숫자 6~8자리 권장
 
 # 3) 배포
 gcloud run deploy eunwoo-bookcard \
   --source . \
   --region asia-northeast3 \
   --allow-unauthenticated \
-  --set-secrets OPENAI_API_KEY=openai-api-key:latest \
+  --set-secrets OPENAI_API_KEY=openai-api-key:latest,APP_PIN=app-pin:latest \
   --set-env-vars OPENAI_MODEL=gpt-5.5
 # GOOGLE_BOOKS_API_KEY를 쓰려면 --set-env-vars에 추가(또는 Secret으로)
 
@@ -70,9 +72,34 @@ gcloud projects add-iam-policy-binding <PROJECT_ID> \
 - 배포에서 제외할 파일은 `.gcloudignore`가 관리합니다(문서·하네스·로컬 데이터 제외).
 - Node 버전을 고정하고 싶으면 `package.json`에 `"engines": { "node": "22.x" }`를 추가하세요.
 
-### 비공개 URL 운영
+### 비공개 URL + PIN 잠금 운영
 
-이 앱은 **로그인이 없습니다**(가족용, `docs/SPEC.md` §1). `--allow-unauthenticated`로 배포하되 **무작위 Cloud Run URL을 가족에게만 공유**하는 방식으로 운영합니다 — 검색엔진·외부에 URL을 노출하지 마세요. 더 강하게 잠그려면 `--no-allow-unauthenticated` + IAM 호출 권한(또는 Load Balancer + IAP)을 쓸 수 있지만, 브라우저 접근에 인증 프록시가 필요해 가족용으로는 과합니다.
+이 앱은 **로그인이 없습니다**(가족용, `docs/SPEC.md` §1). 대신 **PIN 잠금** 한 겹만 둡니다 — 커스텀 도메인(eunwoo.site)을 공개하면 URL을 아는 외부인이 들어와 AI 호출 비용을 쓸 수 있기 때문입니다.
+
+- 첫 방문 시 `/unlock` 화면에서 `APP_PIN`을 입력하면 서명 쿠키(`eb_unlock`, httpOnly, 180일)가 발급되고, 그 뒤로는 묻지 않습니다.
+- 페이지뿐 아니라 **API(`/api/card`·`/api/extract` 등)도 같은 게이트로 보호**합니다(잠기지 않은 API가 하나라도 있으면 비용 차단이 무의미).
+- 시도 제한은 2겹입니다 — ① **전역 백스톱**: 10분 안에 오답이 30회를 넘으면 그 창이 끝날 때까지 모든 PIN 시도를 429로 막습니다(헤더를 보지 않으므로 우회 불가). ② **키별(≈IP) 잠금**: 10회 틀리면 10분. 키는 `x-forwarded-for`의 **마지막** 항목(프런트엔드가 덧붙인 값)입니다 — 첫 값은 클라이언트가 위조할 수 있어 쓰지 않습니다.
+- 두 카운터 모두 인스턴스 메모리 기준입니다(Cloud Run 재시작 시 초기화, 가족용 규모에는 충분). 공격이 계속되면 전역 백스톱 때문에 가족도 잠깐(최대 10분) 못 들어올 수 있는데, 정상 사용은 기기당 180일에 1회 PIN 입력이라 실제 불편은 거의 없습니다.
+- `--allow-unauthenticated`로 배포하고 URL은 가족에게만 공유합니다. `--no-allow-unauthenticated` + IAM/IAP는 브라우저 접근에 인증 프록시가 필요해 가족용으로는 과합니다.
+
+> ⚠️ **이미 배포된 서비스라면 PIN을 먼저 붙이세요.** GitHub Actions 배포(`.github/workflows/deploy.yml`)는 env·secret을 다시 지정하지 않으므로, `APP_PIN` 없이 재배포되면 fail-closed 규칙에 따라 **사이트 전체가 503**이 됩니다.
+>
+> ```bash
+> printf '%s' '246813' | gcloud secrets create app-pin --data-file=-
+> gcloud run services update eunwoo-bookcard --region asia-northeast3 \
+>   --update-secrets APP_PIN=app-pin:latest
+> # 런타임 서비스 계정에 시크릿 읽기 권한 (openai-api-key와 같은 SA를 쓰면 이미 있을 수 있음)
+> gcloud secrets add-iam-policy-binding app-pin \
+>   --member serviceAccount:<PROJECT_NUMBER>-compute@developer.gserviceaccount.com \
+>   --role roles/secretmanager.secretAccessor
+> ```
+
+**PIN 변경 방법** — Secret Manager에 새 버전을 넣고 재배포하면 끝입니다(기존 쿠키는 서명 키가 바뀌어 자동 무효화 → 전 기기가 다시 묻습니다).
+
+```bash
+printf '%s' '135790' | gcloud secrets versions add app-pin --data-file=- && \
+gcloud run deploy eunwoo-bookcard --source . --region asia-northeast3
+```
 
 ## 4. 프롬프트 수정 워크플로 (필수 순서)
 
@@ -127,6 +154,10 @@ gcloud projects add-iam-policy-binding <PROJECT_ID> \
 | 서재 "권수"는 책 기준, 차트는 AR 있는 책만 | 책장 은유라 카드 수가 아닌 책 수. AR이 없는 책의 읽음 기록은 y값이 없어 차트에서 제외 |
 | 썸네일은 `<img>` (next/image 아님) | 외부 썸네일 1장에 원격 도메인 설정+최적화 파이프라인은 과설계. 인쇄에도 원본 URL이 단순 |
 | 인쇄 페이지 브레이크는 행 단위 회피 | 큰 섹션(단어장 12행·질문 8개)에 통째 break-inside: avoid를 걸면 큰 공백이 생겨, 행·질문 카드·팁 박스 단위로만 회피 — 책당 1~2쪽 목표 유지 |
+| PIN 미설정 시 프로덕션은 fail-closed | `APP_PIN`이 없으면 프로덕션에서는 전 요청을 503으로 막는다(로컬 개발은 통과) — 설정 실수로 **열린 채 방치**되어 외부인이 AI 비용을 쓰는 사고가, 잠긴 채 막혀 바로 알아채는 것보다 훨씬 나쁘다 |
+| 잠금은 쿠키 서명(HMAC) 1겹, 세션 저장소 없음 | 쿠키 값 `<exp>.<HMAC-SHA256(APP_PIN, "unlock:<exp>")>` — PIN이 곧 서명 키라 PIN을 바꾸면 기존 쿠키가 자동 무효화된다. 사용자·세션 테이블을 두지 않아 로그인 없는 가족용 규모에 맞다 |
+| 시도 제한은 전역 백스톱 + IP 잠금 2겹 | IP 키의 원천인 `x-forwarded-for`는 **첫 값이 클라이언트 위조 가능**이라(GCP 프런트엔드는 받은 값을 버리지 않고 뒤에 덧붙인다) 마지막 항목으로 키잉하고, 그래도 인덱스 판단이 틀릴 수 있어 헤더를 보지 않는 전역 카운터(10분 30회)를 함께 둔다. 로그인 없는 앱에서 PIN 무차별 대입을 막는 유일한 방어라 우회 불가능한 겹이 하나는 있어야 한다 |
+| 게이트 파일은 `proxy.ts` | Next.js 16에서 `middleware.ts`는 deprecated이고 `proxy.ts`(export `proxy`)로 이름이 바뀌었다 — 새 규약을 따랐다(`node_modules/next/dist/docs/.../proxy.md`) |
 
 ## 6. 개발 하네스
 
