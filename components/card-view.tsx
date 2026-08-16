@@ -274,7 +274,24 @@ export default function CardView({
           {c.bookIntroKo} {c.levelNoteKo}
         </p>
 
-        {/* 3. STEP 1 읽기 전 워밍업 */}
+        {/*
+         * 3. 줄거리/내용 미리보기 (storyOutlineKo, SPEC §4-2) — 픽션은 "줄거리",
+         * 논픽션은 "내용". storyIsGuess=true면 "예상" 배지(레벨 추정 배지와 같은 스타일).
+         * 구(舊) 저장 카드에는 이 필드가 없다 — 부재 시 섹션을 조용히 생략(하위 호환).
+         */}
+        {c.storyOutlineKo && (
+          <section className={s.section}>
+            <div className={s.story}>
+              <h3 className={s.storyTitle}>
+                📖 {book.isFiction ? "줄거리 미리보기" : "내용 미리보기"}
+                {c.storyIsGuess === true && <span className={s.chipEstimated}>예상</span>}
+              </h3>
+              <p className={s.storyText}>{c.storyOutlineKo}</p>
+            </div>
+          </section>
+        )}
+
+        {/* 4. STEP 1 읽기 전 워밍업 */}
         <section className={s.section}>
           <h3 className={s.h3}>
             <span className={s.step}>STEP 1</span> 읽기 전 워밍업 <span className={s.h3en}>Before Reading</span>
@@ -286,7 +303,7 @@ export default function CardView({
           </ul>
         </section>
 
-        {/* 4. STEP 2 필수 단어장 + 아빠 티칭 포인트 */}
+        {/* 5. STEP 2 필수 단어장 + 아빠 티칭 포인트 */}
         <section className={s.section}>
           <h3 className={s.h3}>
             <span className={s.step}>STEP 2</span> 필수 단어장{" "}
@@ -335,7 +352,7 @@ export default function CardView({
           </div>
         </section>
 
-        {/* 5. STEP 3 읽으면서 미션 */}
+        {/* 6. STEP 3 읽으면서 미션 */}
         <section className={s.section}>
           <h3 className={s.h3}>
             <span className={s.step}>STEP 3</span> 읽으면서 미션 <span className={s.h3en}>While Reading</span>
@@ -347,7 +364,7 @@ export default function CardView({
           </ul>
         </section>
 
-        {/* 6. STEP 4 읽고 나서 대화 */}
+        {/* 7. STEP 4 읽고 나서 대화 */}
         <section className={s.section}>
           <h3 className={s.h3}>
             <span className={s.step}>STEP 4</span> 읽고 나서 대화 나누기{" "}
@@ -365,7 +382,7 @@ export default function CardView({
           </ol>
         </section>
 
-        {/* 7. [논픽션만] 아빠 찬스: 재미있는 사실 */}
+        {/* 8. [논픽션만] 아빠 찬스: 재미있는 사실 */}
         {!book.isFiction && c.funFacts && c.funFacts.length > 0 && (
           <section className={s.section}>
             <h3 className={s.h3}>
@@ -383,7 +400,7 @@ export default function CardView({
           </section>
         )}
 
-        {/* 8. 확장 놀이 */}
+        {/* 9. 확장 놀이 */}
         <section className={s.section}>
           <h3 className={s.h3}>
             <span className={s.step}>확장 놀이</span> 몸으로 한 번 더 <span className={s.h3en}>Play &amp; Learn</span>

@@ -76,6 +76,8 @@ export const LEARNING_CARD_JSON_SCHEMA: StrictJsonSchema = {
     properties: {
       bookIntroKo: { type: "string" },
       levelNoteKo: { type: "string" },
+      storyOutlineKo: { type: "string" },
+      storyIsGuess: { type: "boolean" },
       beforeReading: {
         type: "array",
         items: {
@@ -142,8 +144,9 @@ export const LEARNING_CARD_JSON_SCHEMA: StrictJsonSchema = {
         },
       },
     },
-    required: ["bookIntroKo", "levelNoteKo", "beforeReading", "vocab",
-      "teachingTipKo", "whileReading", "questions", "funFacts", "activities"],
+    required: ["bookIntroKo", "levelNoteKo", "storyOutlineKo", "storyIsGuess",
+      "beforeReading", "vocab", "teachingTipKo", "whileReading",
+      "questions", "funFacts", "activities"],
   },
 };
 
@@ -198,6 +201,8 @@ export interface QuestionItem {
 export interface Card {
   bookIntroKo: string; // "이 책은?" 2문장. 아이 흥미 유발형
   levelNoteKo: string; // AR 수치를 부모에게 쉽게 풀어주는 1문장
+  storyOutlineKo?: string; // 줄거리 미리보기 3~4문장 (논픽션은 내용 소개, 결말 미공개). 신규 생성엔 필수 — 기존 저장 카드에는 없어 부재 시 UI가 섹션 생략
+  storyIsGuess?: boolean; // true = 제목·주제·표지·소개글 기반 예상 줄거리 ("예상" 배지)
   beforeReading: { ko: string }[]; // 2개. 표지 추리 놀이 1개 포함
   vocab: VocabItem[]; // 12개 (AR<2면 10개)
   teachingTipKo: string; // 발음·문법 등 티칭 포인트 1개
@@ -244,6 +249,8 @@ export function makeLearningCardSchema(meta: CardValidationMeta) {
     .object({
       bookIntroKo: z.string(),
       levelNoteKo: z.string(),
+      storyOutlineKo: z.string().min(1), // 비어있지 않은 문자열 (JSON Schema에는 minLength 금지 — zod가 담당)
+      storyIsGuess: z.boolean(),
       beforeReading: z.array(z.object({ ko: z.string() })),
       vocab: z.array(vocabItemSchema),
       teachingTipKo: z.string(),
