@@ -411,27 +411,99 @@
   margin: 4px 0;
 }
 
-/* 인쇄 — 기본 규칙만 (정밀화는 M4) */
+/*
+ * 인쇄 (M4, SPEC §8) — A4 세로, 책당 1~2쪽 목표.
+ * - 페이지 브레이크: 단어장 행·질문 카드·팁 박스·리스트 항목은 중간에서 자르지
+ *   않는다(break-inside: avoid). 섹션 제목은 다음 내용과 붙인다(break-after: avoid).
+ *   큰 섹션(단어장 12행·질문 8개)에 통째 avoid를 걸면 페이지에 큰 공백이 생겨
+ *   1~2쪽 목표가 깨지므로, 섹션 단위 유지는 행·항목 단위 회피로 달성한다.
+ *   표가 쪽을 넘으면 thead(기본 table-header-group)가 다음 쪽에 자동 반복된다.
+ * - 화면 전용 UI(내비·버튼·스피커·읽음 기록/별점)는 숨긴다.
+ * - 테마 배경(print-color-adjust: exact)은 globals.css의 body 규칙이 담당하고,
+ *   여기서도 명시해 이중으로 보장한다. @page(A4 세로·여백)는 globals.css에.
+ */
 @media print {
   :global(body) {
     background: #fff;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
   .wrap {
     padding: 0;
     max-width: none;
   }
+  /* 화면 전용 요소 숨김 — 액션 바·오류·읽음 기록(별점)·스피커·인쇄 안내 문구 */
   .actions,
   .actionsError,
-  .reading {
+  .reading,
+  .speak,
+  .printHide {
     display: none;
   }
   .book {
     box-shadow: none;
     border-color: #ccc;
   }
+
+  /* 밀도 — 1~2쪽 목표로 여백·글자 크기를 화면보다 조금 줄인다 */
+  .bookhead {
+    padding: 14px 18px 4px;
+    break-inside: avoid;
+  }
+  .intro {
+    padding: 4px 18px 0;
+    font-size: 12.5px;
+    break-inside: avoid;
+  }
+  .section {
+    padding: 4px 18px 2px;
+  }
+  .h3 {
+    margin: 12px 0 6px;
+    break-after: avoid; /* 제목만 페이지 끝에 홀로 남지 않게 */
+  }
+  .plain {
+    font-size: 12.5px;
+  }
+  .plain li {
+    margin: 4px 0;
+    break-inside: avoid;
+  }
+  .vocab {
+    font-size: 12px;
+  }
+  .vocab td {
+    padding: 5px 6px;
+  }
+  .vocab tr {
+    break-inside: avoid; /* 단어 행이 쪽 경계에서 잘리지 않게 */
+  }
+  .tip {
+    font-size: 12px;
+    padding: 9px 12px;
+    break-inside: avoid;
+  }
+  .talk li {
+    padding: 8px 11px;
+    margin: 6px 0;
+    break-inside: avoid; /* 질문 카드(태그+영/한+힌트)는 한 덩어리로 */
+  }
+  .qEn {
+    font-size: 13px;
+  }
+  .qKo {
+    font-size: 12px;
+  }
+  .qHint {
+    font-size: 11.5px;
+  }
+  .note {
+    margin-top: 14px;
+    font-size: 11px;
+  }
 }
 
-/* 모바일 — 원본 560px 규칙 */
+/* 모바일 — 원본 560px 규칙 + M4 다듬기 (375px 기준 점검) */
 @media (max-width: 560px) {
   .bookhead {
     padding: 18px 16px 4px;
@@ -444,5 +516,21 @@
   }
   .easy {
     display: none;
+  }
+  /* M4 — 뜻 열 줄바꿈 허용: 좁은 화면에서 표 가로 스크롤(.tableWrap)을 최소화 */
+  .mean {
+    white-space: normal;
+  }
+  /* M4 — 터치 타겟 확대: 스피커·별점·액션 버튼 (엄지 기준 여유) */
+  .speak {
+    font-size: 15px;
+    padding: 5px 6px;
+    margin-left: 0;
+  }
+  .starBtn {
+    padding: 6px 5px;
+  }
+  .actionBtn {
+    padding: 10px 14px;
   }
 }

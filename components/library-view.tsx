@@ -195,7 +195,7 @@ export default function LibraryView({
             onChange={(e) => setQuery(e.target.value)}
             placeholder="책 제목으로 검색"
             aria-label="책 제목으로 검색"
-            className="w-full min-w-0 rounded-xl border border-line bg-card px-3 py-2 text-[13.5px] text-ink placeholder:text-sub focus:border-nonfiction focus:outline-none"
+            className="w-full min-w-0 rounded-xl border border-line bg-card px-3 py-2.5 text-[13.5px] text-ink placeholder:text-sub focus:border-nonfiction focus:outline-none"
           />
         </div>
 

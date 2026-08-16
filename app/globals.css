@@ -22,3 +22,9 @@ body {
   -webkit-print-color-adjust: exact;
   print-color-adjust: exact;
 }
+
+/* 인쇄 용지 — A4 세로, 책당 1~2쪽 목표 (SPEC §8·M4). 세부 규칙은 card-view.module.css */
+@page {
+  size: A4 portrait;
+  margin: 12mm;
+}

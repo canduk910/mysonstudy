@@ -1,0 +1,21 @@
+# gcloud run deploy --source . 소스 업로드 제외 목록 (gitignore 문법)
+# 원칙: 빌드에 불필요한 것만 제외한다. app/ components/ lib/ scripts/
+# package.json tsconfig.json next.config.ts postcss.config.mjs 등은 업로드된다.
+
+# .gitignore의 제외 항목을 그대로 물려받는다
+# (node_modules/ .next/ data/ .env* *.tsbuildinfo 등 — 실제 키 업로드 방지 포함)
+#!include:.gitignore
+
+.gcloudignore
+.git/
+
+# 개발 문서·하네스·산출물 — 런타임 빌드에 불필요
+_workspace/
+docs/
+design/
+.claude/
+.idea/
+CLAUDE.md
+
+# 에디터·OS 잡동사니
+.DS_Store

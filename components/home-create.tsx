@@ -638,7 +638,7 @@ export default function HomeCreate() {
             <button
               type="button"
               onClick={() => retryAction.current?.()}
-              className="mt-2 rounded-lg border border-line bg-white px-3 py-1.5 text-[13px] font-semibold"
+              className="mt-2 rounded-lg border border-line bg-white px-4 py-2.5 text-[13.5px] font-semibold"
             >
               재시도
             </button>
@@ -679,7 +679,7 @@ export default function HomeCreate() {
               setPanel("manual");
               scrollToPanel();
             }}
-            className="mt-3 text-[13px] font-semibold text-sub underline underline-offset-2"
+            className="mt-2 inline-block py-2 text-[13px] font-semibold text-sub underline underline-offset-2"
           >
             AR 지수·주제까지 알고 있어요 — 직접 입력하기
           </button>
@@ -699,7 +699,7 @@ export default function HomeCreate() {
               <button
                 type="button"
                 onClick={onPickPhotos}
-                className="mt-2 rounded-lg border border-line bg-white px-3 py-1.5 text-[13px] font-semibold"
+                className="mt-2 rounded-lg border border-line bg-white px-4 py-2.5 text-[13.5px] font-semibold"
               >
                 다시 찍기
               </button>
