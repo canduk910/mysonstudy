@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+/* 디자인 토큰 — SPEC §8 (원본: design/영어책_학습카드_샘플.html) */
+@theme {
+  --color-paper: #faf7f0; /* 배경 */
+  --color-card: #ffffff; /* 카드 */
+  --color-ink: #20242b; /* 잉크 */
+  --color-sub: #5b6472; /* 보조 텍스트 */
+  --color-line: #e6e2d8; /* 라인 */
+  --color-nonfiction: #3b6ea5; /* 논픽션 포인트 — 파랑 */
+  --color-fiction: #c8871f; /* 픽션 포인트 — 꿀색 */
+}
+
+body {
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  /* 시스템 폰트 스택(한글 포함) — 외부 폰트·CDN 로딩 금지, SPEC §8 */
+  font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR",
+    "Malgun Gothic", "Segoe UI", sans-serif;
+  line-height: 1.6;
+  /* 인쇄 시 배경색 유지 (SPEC §8) */
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}

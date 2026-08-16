@@ -1,0 +1,347 @@
+/*
+ * 카드 화면 스타일 — design/영어책_학습카드_샘플.html 원본 이식 (SPEC §8).
+ * 테마: .fiction(꿀색 #c8871f) / .nonfiction(파랑 #3b6ea5) — 컬러바·STEP 배지·칩·질문
+ * 태그·팁 박스에 일관 적용. 공통 토큰(--color-*)은 app/globals.css의 @theme에서 온다.
+ * 인쇄 CSS 정밀화(책당 1~2쪽 조정)는 M4 — 여기는 기본 규칙만 둔다.
+ */
+
+.wrap {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+/* 테마 변수 — 원본의 --wolf/--pooh 세트 */
+.nonfiction {
+  --accent: #3b6ea5;
+  --accent-soft: #eef3f9;
+  --accent-deep: #2a4f77;
+  --accent-border: #c8d8ea;
+}
+.fiction {
+  --accent: #c8871f;
+  --accent-soft: #fdf4e3;
+  --accent-deep: #8f5e0e;
+  --accent-border: #ecd7ae;
+}
+
+/* 상단 액션 바 (인쇄 시 숨김) */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.actionBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--color-line);
+  background: var(--color-card);
+  color: var(--color-ink);
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  line-height: 1.4;
+}
+.actionBtn:hover {
+  border-color: #cfc9bb;
+}
+.actionBtn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.actionsError {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #a4442c;
+}
+
+/* 카드 본체 — 원본 article.book */
+.book {
+  background: var(--color-card);
+  border: 1px solid var(--color-line);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(32, 36, 43, 0.06);
+}
+.bookbar {
+  height: 8px;
+  background: var(--accent);
+}
+.bookhead {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 22px 26px 6px;
+}
+.cover {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+  flex: none;
+  background: var(--accent-soft);
+}
+.title {
+  margin: 0;
+  font-size: 24px;
+}
+.byline {
+  color: var(--color-sub);
+  font-size: 13px;
+  margin-top: 2px;
+}
+.chips {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--color-line);
+  background: #fbfaf6;
+  color: #414855;
+}
+.chipHl {
+  composes: chip;
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent-deep);
+  font-weight: 600;
+}
+/* "레벨 추정" 배지 (SPEC §3) */
+.chipEstimated {
+  composes: chip;
+  border-style: dashed;
+  color: var(--color-sub);
+}
+
+.intro {
+  padding: 6px 26px 0;
+  color: #39404c;
+  font-size: 14.5px;
+}
+
+.section {
+  padding: 6px 26px 4px;
+}
+.section:last-of-type {
+  padding-bottom: 22px;
+}
+.h3 {
+  font-size: 15px;
+  margin: 20px 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.step {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 3px 9px;
+  border-radius: 6px;
+  color: #fff;
+  background: var(--accent);
+}
+.h3en {
+  color: var(--color-sub);
+  font-weight: 500;
+  font-size: 12.5px;
+}
+
+.plain {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 14.5px;
+}
+.plain li {
+  margin: 6px 0;
+}
+
+/* 단어장 표 */
+.tableWrap {
+  overflow-x: auto;
+}
+.vocab {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+  margin-top: 4px;
+}
+.vocab th {
+  font-size: 12px;
+  color: var(--color-sub);
+  font-weight: 600;
+  text-align: left;
+  border-bottom: 2px solid var(--color-line);
+  padding: 6px 8px;
+  white-space: nowrap;
+}
+.vocab td {
+  border-bottom: 1px solid #f0ede4;
+  padding: 8px;
+  vertical-align: top;
+}
+.w {
+  font-weight: 700;
+  white-space: nowrap;
+}
+.pron {
+  display: block;
+  font-weight: 500;
+  color: var(--color-sub);
+}
+.star {
+  color: #c8871f;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  margin-left: 4px;
+}
+.mean {
+  white-space: nowrap;
+  font-weight: 600;
+}
+.easy {
+  color: #39404c;
+}
+.ex {
+  color: #39404c;
+  font-style: italic;
+}
+.ex b {
+  font-style: normal;
+}
+/* 단어별 발음 스피커 버튼 (Web Speech API) */
+.speak {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 2px;
+  margin-left: 3px;
+  line-height: 1;
+  vertical-align: baseline;
+}
+
+/* 아빠 티칭 포인트 박스 */
+.tip {
+  border-radius: 12px;
+  padding: 12px 16px;
+  font-size: 13.5px;
+  margin: 12px 0 4px;
+  background: var(--accent-soft);
+}
+.tip b {
+  display: inline-block;
+  margin-right: 4px;
+}
+
+/* 질문 카드 리스트 */
+.talk {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+.talk li {
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin: 10px 0;
+  background: #fffefb;
+}
+.qtag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 6px;
+  margin-bottom: 6px;
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+}
+.qEn {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+.qKo {
+  margin: 2px 0 0;
+  font-size: 13.5px;
+  color: var(--color-sub);
+}
+.qHint {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  color: #6e7686;
+  border-top: 1px dashed var(--color-line);
+  padding-top: 6px;
+}
+
+/* funFacts (논픽션 전용) */
+.factEn {
+  font-weight: 600;
+}
+.factKo {
+  color: var(--color-sub);
+  font-size: 13px;
+  display: block;
+}
+
+/* 하단 안내 */
+.note {
+  margin-top: 26px;
+  border-top: 1px solid var(--color-line);
+  padding-top: 16px;
+  color: var(--color-sub);
+  font-size: 12.5px;
+}
+.note p {
+  margin: 4px 0;
+}
+
+/* 인쇄 — 기본 규칙만 (정밀화는 M4) */
+@media print {
+  :global(body) {
+    background: #fff;
+  }
+  .wrap {
+    padding: 0;
+    max-width: none;
+  }
+  .actions,
+  .actionsError {
+    display: none;
+  }
+  .book {
+    box-shadow: none;
+    border-color: #ccc;
+  }
+}
+
+/* 모바일 — 원본 560px 규칙 */
+@media (max-width: 560px) {
+  .bookhead {
+    padding: 18px 16px 4px;
+  }
+  .section {
+    padding: 6px 16px 4px;
+  }
+  .intro {
+    padding: 6px 16px 0;
+  }
+  .easy {
+    display: none;
+  }
+}

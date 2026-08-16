@@ -1,0 +1,19 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+next-env.d.ts
+
+# env — 실제 키 커밋 금지 (SPEC §2)
+.env*
+!.env.example
+
+# local data
+data/
+
+# misc
+.DS_Store
+*.tsbuildinfo
+npm-debug.log*
