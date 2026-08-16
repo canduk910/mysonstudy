@@ -13,7 +13,7 @@
 ```bash
 npm install
 npm run seed   # 데모 데이터 주입 (파일 스토어 data/db.json)
-npm run dev    # http://localhost:3000
+npm run dev    # http://localhost:3100 (다른 로컬 프로젝트와의 포트 충돌을 피해 3100 고정)
 ```
 
 **API 키 없이도 데모가 됩니다.** GCP 자격증명이 없으면 자동으로 **파일 스토어**(`data/db.json`)로 동작하고, `npm run seed`가 픽스처 2권(Wolves, Pooh Gets Stuck)의 데모 카드와 읽음 기록을 넣어 줍니다 — 홈·카드(`/card/seed-card-wolves`, `/card/seed-card-pooh`)·서재(`/library`)를 바로 볼 수 있습니다. 실제 카드 생성(사진 판독·카드 생성)에만 `OPENAI_API_KEY`가 필요합니다(키가 없으면 API가 501로 친절히 안내).
