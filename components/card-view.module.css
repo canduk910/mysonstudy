@@ -89,6 +89,16 @@
   flex: none;
   background: var(--accent-soft);
 }
+/* 식별 단계에서 확보한 표지 썸네일 — 있으면 이모지 대신 우선 (SPEC §8) */
+.coverImg {
+  width: 56px;
+  height: 78px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex: none;
+  border: 1px solid var(--color-line);
+  background: var(--accent-soft);
+}
 .title {
   margin: 0;
   font-size: 24px;

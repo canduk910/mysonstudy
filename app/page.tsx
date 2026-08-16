@@ -38,14 +38,23 @@ export default async function HomePage() {
                   href={`/card/${card.id}`}
                   className="flex items-center gap-3 rounded-2xl border border-line bg-card p-4 transition hover:shadow-sm"
                 >
-                  <span
-                    className={`flex h-12 w-12 flex-none items-center justify-center rounded-xl text-2xl ${
-                      book.isFiction ? "bg-fiction/10" : "bg-nonfiction/10"
-                    }`}
-                    aria-hidden
-                  >
-                    {book.coverEmoji || "📖"}
-                  </span>
+                  {book.coverUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element -- 외부 썸네일, next/image 원격 설정은 과설계
+                    <img
+                      src={book.coverUrl}
+                      alt=""
+                      className="h-14 w-11 flex-none rounded-lg border border-line object-cover"
+                    />
+                  ) : (
+                    <span
+                      className={`flex h-12 w-12 flex-none items-center justify-center rounded-xl text-2xl ${
+                        book.isFiction ? "bg-fiction/10" : "bg-nonfiction/10"
+                      }`}
+                      aria-hidden
+                    >
+                      {book.coverEmoji || "📖"}
+                    </span>
+                  )}
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[15px] font-bold text-ink">{book.title}</span>
                     <span className="block truncate text-[12.5px] text-sub">

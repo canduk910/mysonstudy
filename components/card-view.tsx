@@ -105,9 +105,14 @@ export default function CardView({ book, card }: { book: BookRecord; card: CardR
       <article className={s.book}>
         <div className={s.bookbar} />
 
-        {/* 1. 북헤더 */}
+        {/* 1. 북헤더 — 썸네일이 있으면 썸네일 우선, 없으면 이모지 (SPEC §8) */}
         <div className={s.bookhead}>
-          <div className={s.cover} aria-hidden>{emoji}</div>
+          {book.coverUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element -- 외부 썸네일 1장, next/image 원격 설정은 과설계
+            <img className={s.coverImg} src={book.coverUrl} alt={`${book.title} 표지`} />
+          ) : (
+            <div className={s.cover} aria-hidden>{emoji}</div>
+          )}
           <div>
             <h2 className={s.title}>{book.title}</h2>
             <div className={s.byline}>{byline}</div>

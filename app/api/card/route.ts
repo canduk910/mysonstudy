@@ -1,9 +1,13 @@
 /**
- * POST /api/card — 학습 카드 생성 (M1: 수동 메타데이터 입력)
+ * POST /api/card — 학습 카드 생성 (M1 수동 입력 + M2 판독·식별 결과 수신)
  *
  * 흐름: zod 입력 검증 → (§3-2 템플릿 조립 + callWithSchema('card') = lib/ai의
  * generateCard) → 성공 시에만 book+card 저장 → { bookId, cardId } 반환.
  * 불완전 데이터 저장 금지(SPEC §9): AI 생성이 성공한 뒤에만 저장한다.
+ *
+ * M2 확장: 식별 단계(/api/identify) 결과인 isbn·coverUrl·googleBooksId·description과
+ * levelEstimated를 받아 book에 저장한다. description은 §3-2 템플릿의
+ * googleBooksDescription으로 카드 생성 입력에 전달된다.
  *
  * 응답 shape (qa-inspector 교차 검증용 — 빌드 리포트에도 명시):
  * - 200 { ok: true, bookId, cardId }
@@ -45,6 +49,12 @@ const newCardBodySchema = z.object({
   topic: z.string().trim().min(1).max(500),
   description: z.string().trim().max(4000).optional(),
   coverEmoji: z.string().trim().max(16).optional(),
+  // --- M2: 식별 단계(/api/identify) 결과 ---
+  isbn: z.string().trim().max(40).optional(),
+  coverUrl: z.string().trim().regex(/^https:\/\//, "https URL이어야 해요").max(1000).optional(),
+  googleBooksId: z.string().trim().max(120).optional(),
+  /** 명시하지 않으면 arLevel 부재로 판단한다 (SPEC §3 — AR 미확보 시 레벨 추정) */
+  levelEstimated: z.boolean().optional(),
   force: z.boolean().optional(), // 동일 책 재등록 시 "그래도 새로 만들기"
 });
 
@@ -206,19 +216,19 @@ export async function POST(req: Request) {
       title: input.title,
       author,
       series: input.series || null,
-      isbn: null,
+      isbn: input.isbn || null,
       arLevel: input.arLevel ?? null,
       lexile: input.lexile ?? null,
       wordCount: input.wordCount ?? null,
       arQuizNo: input.arQuizNo || null,
       isFiction: input.isFiction,
       topic: input.topic,
-      coverUrl: null,
-      googleBooksId: null,
+      coverUrl: input.coverUrl || null,
+      googleBooksId: input.googleBooksId || null,
       coverEmoji: input.coverEmoji || null,
       description: input.description || null,
-      // AR을 못 받았으면 레벨 추정 배지 대상 (SPEC §3)
-      levelEstimated: input.arLevel == null,
+      // 명시값 우선, 없으면 AR 부재로 판단 — 레벨 추정 배지 대상 (SPEC §3)
+      levelEstimated: input.levelEstimated ?? (input.arLevel == null),
     }));
 
   const card = await store.createCard({ bookId: book.id, content: gen.card, model });
