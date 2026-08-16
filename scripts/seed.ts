@@ -16,7 +16,7 @@
 
 import { makeLearningCardSchema, type Card } from "../lib/ai/schemas";
 import {
-  replaceDbForSeed,
+  mergeDbForSeed,
   type BookRecord,
   type CardRecord,
   type DbShape,
@@ -567,7 +567,7 @@ async function main() {
     readings: seedReadings,
   };
 
-  await replaceDbForSeed(db);
+  await mergeDbForSeed(db);
 
   console.log("\n✅ 시드 완료 — data/db.json을 통째로 교체했습니다.");
   console.log("   - Wolves(논픽션):        /card/seed-card-wolves");

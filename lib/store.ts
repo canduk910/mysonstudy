@@ -292,6 +292,18 @@ export function getStore(): BookCardStore {
  * 시드 전용 — db.json 전체를 주어진 데이터로 교체한다 (scripts/seed.ts에서만 사용).
  * JSON 파일 구현에 종속적인 유틸이므로 BookCardStore 인터페이스에는 넣지 않는다.
  */
-export async function replaceDbForSeed(db: DbShape): Promise<void> {
-  await writeDb(db);
+export async function mergeDbForSeed(seed: DbShape): Promise<void> {
+  // 시드는 기존 데이터를 절대 지우지 않는다 — 같은 id만 덮어쓰는 머지(upsert).
+  // (전체 덮어쓰기였을 때 검증 중 seed 실행이 실사용 카드를 지운 사고가 있었다)
+  const cur = await readDb();
+  const mergeById = <T extends { id: string }>(base: T[], add: T[]): T[] => {
+    const map = new Map(base.map((r) => [r.id, r] as const));
+    for (const r of add) map.set(r.id, r);
+    return [...map.values()];
+  };
+  await writeDb({
+    books: mergeById(cur.books, seed.books),
+    cards: mergeById(cur.cards, seed.cards),
+    readings: mergeById(cur.readings, seed.readings),
+  });
 }
