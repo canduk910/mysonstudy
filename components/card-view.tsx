@@ -9,8 +9,8 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
-import type { BookRecord, CardRecord } from "@/lib/store";
+import { useEffect, useState } from "react";
+import type { BookRecord, CardRecord, ReadingRecord } from "@/lib/store";
 import s from "./card-view.module.css";
 
 /** 예문 속 대상 단어를 굵게 (첫 일치 부분만) */
@@ -36,7 +36,147 @@ function speak(text: string) {
   window.speechSynthesis.speak(utterance);
 }
 
-export default function CardView({ book, card }: { book: BookRecord; card: CardRecord }) {
+/** 사용자 로컬 달력 기준 오늘 (YYYY-MM-DD) — 읽은 '날'의 기준은 브라우저 쪽이다 */
+function localDateString(d = new Date()): string {
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+/**
+ * "오늘 읽었어요" 읽음 기록 (M3, SPEC §4-3) — 별점(1~5, 선택)과 함께 POST /api/readings.
+ * '오늘' 판정은 hydration 이후 로컬 날짜로 한다 (SSR 시점의 서버 시간과 어긋나도
+ * 화면이 깨지지 않도록 마운트 전에는 중립 상태를 그린다).
+ */
+function ReadingLog({
+  bookId,
+  initialReadings,
+}: {
+  bookId: string;
+  initialReadings: ReadingRecord[];
+}) {
+  const [readings, setReadings] = useState(initialReadings);
+  const [today, setToday] = useState<string | null>(null);
+  const [rating, setRating] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setToday(localDateString());
+  }, []);
+
+  const todayReading = today
+    ? readings.find((r) => r.readAt.slice(0, 10) === today)
+    : undefined;
+
+  async function recordToday() {
+    setBusy(true);
+    setError(null);
+    // 클릭 시점의 로컬 날짜를 한 번만 계산해 POST와 today 갱신에 함께 쓴다.
+    // 자정을 넘긴 스테일 화면에서도 성공 시 '오늘' 기준이 현재 날짜로 맞춰진다 (QA F1).
+    const d = localDateString();
+    try {
+      const res = await fetch("/api/readings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bookId,
+          readAt: d,
+          ...(rating > 0 ? { rating } : {}),
+        }),
+      });
+      const data = (await res.json().catch(() => null)) as
+        | { ok?: boolean; duplicate?: boolean; reading?: ReadingRecord; messageKo?: string }
+        | null;
+      if (res.ok && data?.ok && data.reading) {
+        const reading = data.reading;
+        // duplicate 여부와 무관하게 중복 없이 병합 — 다른 탭/기기에서 이미 기록된
+        // 기존 reading(duplicate 응답)도 상태에 반영돼 완료 패널이 뜬다 (QA F1).
+        setReadings((prev) =>
+          prev.some((r) => r.id === reading.id) ? prev : [reading, ...prev]
+        );
+        setToday(d);
+        setFeedback(data.messageKo ?? "오늘의 읽기를 기록했어요!");
+      } else {
+        setError(data?.messageKo ?? "기록에 실패했어요. 잠시 후 다시 시도해 주세요.");
+      }
+    } catch {
+      setError("서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className={s.reading} aria-label="읽음 기록">
+      <h3 className={s.readingTitle}>📖 오늘 읽었어요</h3>
+      {readings.length > 0 && (
+        <p className={s.readingCount}>지금까지 이 책을 {readings.length}번 읽었어요.</p>
+      )}
+
+      {todayReading ? (
+        // 오늘 기록 완료 — 확인 피드백
+        <div className={s.readingDone}>
+          <p className={s.readingDoneMsg}>
+            ✅ 오늘 읽기 완료!
+            {todayReading.rating != null && (
+              <span className={s.readingStars} aria-label={`별점 ${todayReading.rating}점`}>
+                {" "}
+                {"★".repeat(todayReading.rating)}
+                {"☆".repeat(5 - todayReading.rating)}
+              </span>
+            )}
+          </p>
+          {feedback && <p className={s.readingFeedback}>{feedback}</p>}
+          <Link href="/library" className={s.readingLibraryLink}>
+            📚 서재에서 읽기 기록 모아보기 →
+          </Link>
+        </div>
+      ) : (
+        <div className={s.readingForm}>
+          <div className={s.readingRatingRow}>
+            <span className={s.readingRatingLabel}>오늘은 몇 점? (선택)</span>
+            <span role="group" aria-label="별점 선택">
+              {[1, 2, 3, 4, 5].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  className={s.starBtn}
+                  aria-pressed={rating >= n}
+                  aria-label={`별점 ${n}점`}
+                  // 같은 별을 다시 누르면 별점 취소 (별점은 선택 사항)
+                  onClick={() => setRating(rating === n ? 0 : n)}
+                >
+                  {rating >= n ? "★" : "☆"}
+                </button>
+              ))}
+            </span>
+          </div>
+          <button
+            type="button"
+            className={s.readingSubmit}
+            onClick={recordToday}
+            disabled={busy || today == null}
+          >
+            {busy ? "⏳ 기록하는 중…" : "✔ 오늘 읽었어요"}
+          </button>
+          {error && <p className={s.actionsError}>{error}</p>}
+        </div>
+      )}
+    </section>
+  );
+}
+
+export default function CardView({
+  book,
+  card,
+  readings,
+}: {
+  book: BookRecord;
+  card: CardRecord;
+  readings: ReadingRecord[];
+}) {
   const router = useRouter();
   const [regenBusy, setRegenBusy] = useState(false);
   const [regenError, setRegenError] = useState<string | null>(null);
@@ -90,6 +230,7 @@ export default function CardView({ book, card }: { book: BookRecord; card: CardR
       {/* 액션 바 — 인쇄 시 숨김 */}
       <div className={s.actions}>
         <Link href="/" className={s.actionBtn}>← 홈으로</Link>
+        <Link href="/library" className={s.actionBtn}>📚 서재</Link>
         <button type="button" className={s.actionBtn} onClick={() => window.print()}>
           🖨️ 인쇄
         </button>
@@ -256,6 +397,9 @@ export default function CardView({ book, card }: { book: BookRecord; card: CardR
           </ul>
         </section>
       </article>
+
+      {/* M3 — 읽음 기록 (인쇄 시 숨김, SPEC §4-3) */}
+      <ReadingLog bookId={book.id} initialReadings={readings} />
 
       <footer className={s.note}>
         <p>

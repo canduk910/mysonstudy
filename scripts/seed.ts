@@ -20,6 +20,7 @@ import {
   type BookRecord,
   type CardRecord,
   type DbShape,
+  type ReadingRecord,
 } from "../lib/store";
 
 // ---------------------------------------------------------------------------
@@ -480,6 +481,40 @@ const poohCard: Card = {
 };
 
 // ---------------------------------------------------------------------------
+// 읽음 기록 (M3) — 서재의 요약·AR 추이 차트를 로컬 데모하기 위한 샘플.
+// 날짜를 3주에 걸쳐 분산: Pooh(AR 2.0)를 먼저, Wolves(AR 3.3)를 나중에 읽은
+// 흐름이라 차트에 레벨 상승 추이가 나타난다. readAt은 날짜만(YYYY-MM-DD) —
+// /api/readings와 같은 규칙. '오늘' 기록은 일부러 비워 두어 카드 화면의
+// "오늘 읽었어요" 데모가 가능하다.
+// ---------------------------------------------------------------------------
+
+/** n일 전 날짜 (YYYY-MM-DD) */
+function daysAgoDate(n: number): string {
+  return new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+const seedReadings: ReadingRecord[] = [
+  { id: "seed-reading-1", bookId: poohBook.id, readAt: daysAgoDate(24), rating: 4, noteKo: null },
+  {
+    id: "seed-reading-2",
+    bookId: poohBook.id,
+    readAt: daysAgoDate(20),
+    rating: 5,
+    noteKo: "혼자서 끝까지 소리 내어 읽었어요",
+  },
+  { id: "seed-reading-3", bookId: poohBook.id, readAt: daysAgoDate(15), rating: null, noteKo: null },
+  { id: "seed-reading-4", bookId: wolvesBook.id, readAt: daysAgoDate(10), rating: 3, noteKo: null },
+  { id: "seed-reading-5", bookId: wolvesBook.id, readAt: daysAgoDate(6), rating: 4, noteKo: null },
+  {
+    id: "seed-reading-6",
+    bookId: wolvesBook.id,
+    readAt: daysAgoDate(2),
+    rating: 5,
+    noteKo: "하울링 흉내를 내며 신나게 읽음",
+  },
+];
+
+// ---------------------------------------------------------------------------
 // 검증 → 주입
 // ---------------------------------------------------------------------------
 
@@ -521,7 +556,7 @@ async function main() {
   const db: DbShape = {
     books: [wolvesBook, poohBook],
     cards,
-    readings: [],
+    readings: seedReadings,
   };
 
   await replaceDbForSeed(db);
@@ -529,7 +564,8 @@ async function main() {
   console.log("\n✅ 시드 완료 — data/db.json을 통째로 교체했습니다.");
   console.log("   - Wolves(논픽션):        /card/seed-card-wolves");
   console.log("   - Pooh Gets Stuck(픽션): /card/seed-card-pooh");
-  console.log("   `npm run dev` 후 위 경로에서 카드 화면을 확인하세요.");
+  console.log(`   - 읽음 기록 ${seedReadings.length}개 (3주 분산) → /library 서재·AR 추이 차트 데모`);
+  console.log("   `npm run dev` 후 위 경로에서 카드·서재 화면을 확인하세요.");
 }
 
 main().catch((err) => {

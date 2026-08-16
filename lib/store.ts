@@ -1,22 +1,28 @@
 /**
  * lib/store.ts — 저장 계층 (books / cards / readings)
  *
- * [M3 교체 예정 인터페이스]
- * `BookCardStore`는 M3에서 Firestore(Admin SDK, 서버 전용) 구현으로 교체된다.
+ * [M3] 두 가지 `BookCardStore` 구현을 인터페이스 뒤에서 선택한다:
+ * - Firestore(Native mode, Admin SDK + ADC) — `lib/store-firestore.ts` (운영)
+ * - JSON 파일(data/db.json, 이 파일) — 로컬 데모·키 없는 개발용
+ *
+ * 선택 규칙(`resolveStoreBackend`):
+ * 1) env `STORE_BACKEND=firestore|file`이 있으면 그대로 따른다 (모르는 값은 경고 후 자동 감지)
+ * 2) 없으면 자동 감지 — GCP 자격증명 신호(GOOGLE_APPLICATION_CREDENTIALS /
+ *    K_SERVICE(Cloud Run) / GOOGLE_CLOUD_PROJECT)가 있으면 firestore, 없으면 file.
+ *    Cloud Run에서는 설정 없이 Firestore, 로컬 무자격 환경에서는 설정 없이 파일이 된다.
+ *
  * 라우트·페이지는 반드시 `getStore()`가 돌려주는 인터페이스만 사용할 것 —
- * 그래야 Firestore 전환 시 이 파일의 구현만 바뀌고 라우트 코드는 그대로 남는다.
+ * 구현 선택이 이 파일 안에서 끝나야 라우트 코드가 백엔드를 모른 채 남는다.
  *
- * M1 구현: JSON 파일(data/db.json). 이유: 로컬 데모(키·GCP 없이)와 M1 검증을
- * 가능하게 하기 위함. data/는 .gitignore에 포함되어 커밋되지 않는다.
- *
- * 서버 전용 모듈이다(node:fs 사용) — 클라이언트 컴포넌트에서 값 import 금지.
- * (타입만 필요하면 `import type`으로 가져올 것: 빌드 시 제거되어 안전하다)
+ * 서버 전용 모듈이다(node:fs·firebase-admin 사용) — 클라이언트 컴포넌트에서 값
+ * import 금지. (타입만 필요하면 `import type`으로 가져올 것: 빌드 시 제거되어 안전하다)
  */
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Card } from "./ai/schemas";
+import { FirestoreStore } from "./store-firestore";
 
 // ---------------------------------------------------------------------------
 // 레코드 타입 (SPEC §5 데이터 모델)
@@ -138,8 +144,11 @@ async function writeDb(db: DbShape): Promise<void> {
   await fs.rename(tmpPath, DB_PATH); // 임시 파일 → 원자적 교체 (쓰다 만 파일 방지)
 }
 
-/** 제목+저자 정규화 키 — 공백 합치기 + 소문자 비교 */
-function normalizeKey(title: string, author: string): string {
+/**
+ * 제목+저자 정규화 키 — 공백 합치기 + 소문자 비교.
+ * 두 구현(파일·Firestore)이 같은 중복 판정을 하도록 여기서만 정의한다.
+ */
+export function normalizeTitleAuthorKey(title: string, author: string): string {
   const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
   return `${norm(title)}|${norm(author)}`;
 }
@@ -186,9 +195,9 @@ class JsonFileStore implements BookCardStore {
   }
 
   async findBookByTitleAuthor(title: string, author: string): Promise<BookRecord | null> {
-    const key = normalizeKey(title, author);
+    const key = normalizeTitleAuthorKey(title, author);
     const db = await readDb();
-    return db.books.find((b) => normalizeKey(b.title, b.author) === key) ?? null;
+    return db.books.find((b) => normalizeTitleAuthorKey(b.title, b.author) === key) ?? null;
   }
 
   async createCard(input: NewCard): Promise<CardRecord> {
@@ -241,8 +250,27 @@ class JsonFileStore implements BookCardStore {
 }
 
 // ---------------------------------------------------------------------------
-// 싱글턴 접근자 — M3에서는 이 함수가 Firestore 구현을 돌려주도록 바뀐다
+// 백엔드 선택 + 싱글턴 접근자 (M3)
 // ---------------------------------------------------------------------------
+
+export type StoreBackend = "firestore" | "file";
+
+/** 파일 상단 주석의 선택 규칙 — env 명시 > 자격증명 자동 감지 > file */
+function resolveStoreBackend(): StoreBackend {
+  const env = process.env.STORE_BACKEND;
+  if (env === "firestore" || env === "file") return env;
+  if (env) {
+    console.warn(
+      `[store] STORE_BACKEND="${env}"는 알 수 없는 값이에요 (firestore|file) — 자동 감지로 진행합니다.`,
+    );
+  }
+  const hasGcpCredentials = Boolean(
+    process.env.GOOGLE_APPLICATION_CREDENTIALS || // 로컬: 서비스 계정 키 파일 경로
+      process.env.K_SERVICE || // Cloud Run이 주입 — 서비스 계정 ADC 사용 가능
+      process.env.GOOGLE_CLOUD_PROJECT, // 그 외 GCP 환경 일반 신호
+  );
+  return hasGcpCredentials ? "firestore" : "file";
+}
 
 declare global {
   // dev(HMR)에서 모듈 재평가로 인스턴스가 늘어나는 것을 막기 위한 전역 캐시
@@ -251,7 +279,11 @@ declare global {
 
 export function getStore(): BookCardStore {
   if (!globalThis.__bookcardStore) {
-    globalThis.__bookcardStore = new JsonFileStore();
+    const backend = resolveStoreBackend();
+    globalThis.__bookcardStore = backend === "firestore" ? new FirestoreStore() : new JsonFileStore();
+    console.log(
+      `[store] backend=${backend} (${process.env.STORE_BACKEND ? "STORE_BACKEND 명시" : "자동 감지"})`,
+    );
   }
   return globalThis.__bookcardStore;
 }

@@ -25,7 +25,13 @@ export default async function HomePage() {
       <HomeCreate />
 
       <section className="mt-10">
-        <h2 className="mb-3 text-[15px] font-bold text-ink">최근 만든 카드</h2>
+        <div className="mb-3 flex items-baseline justify-between">
+          <h2 className="text-[15px] font-bold text-ink">최근 만든 카드</h2>
+          {/* M3 — 서재 내비게이션 (SPEC §4-3) */}
+          <Link href="/library" className="text-[13px] font-semibold text-nonfiction hover:underline">
+            📚 서재 전체 보기 →
+          </Link>
+        </div>
         {recent.length === 0 ? (
           <p className="rounded-2xl border border-dashed border-line bg-card px-5 py-6 text-center text-[13.5px] text-sub">
             아직 만든 카드가 없어요. 첫 번째 책으로 카드를 만들어 볼까요?

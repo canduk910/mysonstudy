@@ -34,9 +34,13 @@ export default async function CardPage({ params }: CardPageProps) {
   const book = await store.getBook(card.bookId);
   if (!book) notFound();
 
+  // M3 — 이 책의 읽음 기록. "오늘 읽었어요" 상태·횟수 표시는 CardView(클라이언트)가
+  // 자신의 로컬 날짜로 판정한다 (서버 UTC와 사용자 달력의 '오늘'이 다를 수 있음).
+  const readings = await store.listReadings(book.id);
+
   return (
     <main>
-      <CardView book={book} card={card} />
+      <CardView book={book} card={card} readings={readings} />
     </main>
   );
 }
