@@ -21,7 +21,7 @@
 | 과목 | 스펙 | 프롬프트·스키마 | eval | npm 스크립트 |
 |---|---|---|---|---|
 | **영어 (북카드)** | [`docs/harness/english.md`](./harness/english.md) | `lib/ai/english/` | `scripts/eval-english.ts` | `npm run eval:english` |
-| **수학 (수학코치)** | `docs/harness/math.md` *(예정 — 아직 없음)* | `lib/ai/math/` *(예정)* | `scripts/eval-math.ts` *(예정)* | `eval:math` *(예정)* |
+| **수학 (수학코치)** | `docs/harness/math.md` | `lib/ai/math/` *(구현 중)* | `scripts/eval-math.ts` *(구현 중)* | `eval:math` *(구현 중)* |
 
 앱 전체 명세는 [`docs/SPEC.md`](./SPEC.md), 디자인 원본은 `design/`에 있습니다.
 
@@ -77,7 +77,7 @@ lib/ai/math/              # 수학 전용 프롬프트·스키마 (예정)
 scripts/eval-english.ts   # 영어 평가 하네스
 scripts/eval-math.ts      # 수학 평가 하네스 (예정)
 docs/harness/english.md   # 영어 스펙 (단일 진실 원천)
-docs/harness/math.md      # 수학 스펙 (예정)
+docs/harness/math.md      # 수학 스펙
 ```
 
 ## 4. 운영 규칙
