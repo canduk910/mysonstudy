@@ -253,6 +253,16 @@ export class FirestoreStore implements BookCardStore {
     return snap.exists ? toCard(snap.id, snap.data()!) : null;
   }
 
+  async deleteCard(cardId: string): Promise<boolean> {
+    // 연쇄 삭제가 없으므로 batch도 필요 없다 — 문서 1개만 지운다.
+    // (deleteBook은 카드·읽음 기록을 함께 지우느라 batch를 쓴다)
+    const ref = this.cards().doc(cardId);
+    const snap = await ref.get();
+    if (!snap.exists) return false;
+    await ref.delete();
+    return true;
+  }
+
   async listCardsForBook(bookId: string): Promise<CardRecord[]> {
     // where + orderBy(다른 필드)는 복합 인덱스가 필요 — 필터만 쿼리, 정렬은 메모리
     const snap = await this.cards().where("bookId", "==", bookId).get();

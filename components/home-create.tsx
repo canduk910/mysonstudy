@@ -3,14 +3,16 @@
 /**
  * 홈의 카드 만들기 영역 (SPEC §4-1, M2) — 클라이언트 컴포넌트.
  *
- * 네 가지 입력 흐름 — 진행 UI가 실제 호출 단계와 1:1로 일치한다 (SPEC §3):
- * - 표지 사진(기본): 판독(/api/extract) → 식별(/api/identify) → 생성(/api/card)
- *   = "표지 읽는 중 → 책 확인 중 → 카드 만드는 중". 버튼 한 번, 중간에 멈추지 않는다.
+ * 세 가지 입력 흐름 — 진행 UI가 실제 호출 단계와 1:1로 일치한다 (SPEC §3):
+ *
+ * - **사진(통합 경로)**: 판독(/api/extract) → 식별(/api/identify) →
+ *   [본문 판독(/api/pages)] → 생성(/api/card)
+ *   = "표지 읽는 중 → 책 확인 중 → [본문 읽는 중] → 카드 만드는 중".
+ *   표지는 필수, 본문·목차는 **선택**이다. 본문 사진을 고르지 않으면 대괄호 단계가
+ *   통째로 빠져 AI 호출 수·프롬프트 내용이 표지만 쓰던 예전 흐름과 완전히 같다.
+ *   한때 "표지만"과 "표지+본문"을 별도 진입점으로 나눴는데, 겹치는 사진 흐름이 둘이라
+ *   혼란스럽다는 사용자 피드백으로 `runRichFlow` 하나로 합쳤다(story-3).
  *   판독 실패(retake)는 §9 폴백: 안내 + 수동 폼(판독된 값이 있으면 프리필).
- * - 표지 + 본문/목차(선택·고급): 위 흐름 사이에 본문 판독(/api/pages)이 끼어
- *   "본문 읽는 중"이 추가되고, 장면 메모를 확인·재촬영한 뒤 카드를 만든다.
- *   **기본 경로를 무겁게 하지 않으려고 별도 진입점으로 뺐다** — 본문 촬영은 선택이고,
- *   안 찍으면 기존 표지 흐름이 그대로 돈다.
  * - 책 이름: 제목(+저자 선택)만으로 시작 — 판독 생략, 식별 → 생성.
  *   AR 미확보이므로 levelEstimated=true (카드에 "레벨 추정" 배지, HARNESS §3-2).
  * - 직접 입력(고급·§9 폴백): M1의 전체 메타데이터 폼 유지. 제출 시에도 식별을
@@ -21,7 +23,7 @@
  */
 
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { BookExtraction, SceneDigestItem, SceneSourceKind } from "@/lib/ai/schemas";
 import type { IdentifyResult } from "@/lib/identify";
 import { COVER_MAX_IMAGES, JPEG_QUALITY, MAX_IMAGE_EDGE } from "@/lib/upload-limits";
@@ -167,7 +169,7 @@ export default function HomeCreate({
   const router = useRouter();
 
   /** 열려 있는 입력 패널 — title(제목만) / manual(전체 폼, 고급·폴백) / pages(본문 촬영) */
-  const [panel, setPanel] = useState<"none" | "title" | "manual" | "pages">("none");
+  const [panel, setPanel] = useState<"none" | "title" | "manual" | "photo">("none");
   /** 현재 흐름의 단계 목록(진행 UI에 그대로 표시)과 진행 중 단계 */
   const [steps, setSteps] = useState<StepId[]>([]);
   const [phase, setPhase] = useState<StepId | null>(null);
@@ -196,7 +198,6 @@ export default function HomeCreate({
   const lastCardPayload = useRef<Record<string, unknown> | null>(null);
   /** 오류 패널의 "재시도"가 다시 실행할 동작 (실패한 단계부터) */
   const retryAction = useRef<(() => void) | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
   const pageInputRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -353,32 +354,26 @@ export default function HomeCreate({
   }
 
   // -------------------------------------------------------------------------
-  // 흐름 1 — 표지 사진: 판독 → 식별 → 생성
+  // 흐름 1 — 사진: 판독 → 식별 → [본문 판독] → 생성
+  //
+  // 사진 경로는 **하나뿐이다**. 표지만 쓰는 사람과 본문까지 찍는 사람이 같은 패널에서
+  // 시작하고, 본문 사진을 고르지 않으면 pages 단계가 통째로 빠져 예전 표지 흐름과
+  // 완전히 같아진다(호출 수·프롬프트 내용까지 동일 — 리포트 §5 실측).
   // -------------------------------------------------------------------------
 
-  function onPickPhotos() {
+  /**
+   * 사진 경로의 유일한 진입점 — 패널을 열면서 **곧바로 표지 선택창을 띄운다.**
+   *
+   * 패널을 먼저 보여주고 그 안의 버튼을 누르게 하면 표지만 찍는 사람의 탭이 한 번 더
+   * 는다. 파일 입력을 항상 마운트해 두고 여기서 동기적으로 `.click()`을 호출하므로
+   * 사용자 제스처(user activation)가 유지된다 — `setTimeout`으로 미루면 Safari가
+   * 파일 대화상자를 막는다.
+   */
+  function openPhotoPicker() {
     clearStatus();
-    fileInputRef.current?.click();
-  }
-
-  async function onFilesSelected(e: ChangeEvent<HTMLInputElement>) {
-    // 최대 3장 — 표지 / 정보 스티커 / 뒤표지 (SPEC §4-1). 상한은 lib/upload-limits가
-    // 단일 정의처이고 /api/extract의 zod가 같은 값을 쓴다 (한쪽만 고치면 QA F10 재발)
-    const files = Array.from(e.target.files ?? []).slice(0, COVER_MAX_IMAGES);
-    e.target.value = ""; // 같은 사진을 다시 골라도 change가 발생하게
-    if (files.length === 0) return;
-    clearStatus();
-    setPanel("none");
-    setSteps(["extract", "identify", "card"]);
-    setPhase("extract"); // 리사이즈도 사용자에겐 "표지 읽는 중"의 일부
-    let dataUrls: string[];
-    try {
-      dataUrls = await Promise.all(files.map(resizeToJpegDataUrl));
-    } catch {
-      fail("사진을 불러오지 못했어요. 다른 사진으로 다시 시도해 주세요.", false);
-      return;
-    }
-    await runPhotoFlow(dataUrls);
+    setReview(null);
+    setPanel("photo");
+    coverInputRef.current?.click();
   }
 
   /**
@@ -451,50 +446,6 @@ export default function HomeCreate({
       blurbText: extraction.blurbText ?? null,
     };
   }
-
-  async function runPhotoFlow(dataUrls: string[]) {
-    setSteps(["extract", "identify", "card"]);
-    setPhase("extract");
-    clearStatus();
-    retryAction.current = () => void runPhotoFlow(dataUrls);
-
-    // (1) 판독
-    const read = await callExtract(dataUrls);
-    if (read.kind === "retake") {
-      // 판독 실패는 정상 흐름 (SPEC §9): 안내 + 수동 폼 폴백 (부분 판독값 프리필)
-      setPhase(null);
-      openManualForRetake(read.extraction, read.messageKo);
-      return;
-    }
-    if (read.kind === "error") {
-      fail(read.messageKo, true);
-      return;
-    }
-    const extraction = read.extraction;
-
-    // (2) 식별 — 실패해도 진행 (커버는 이모지)
-    setPhase("identify");
-    const found = await identifyClient(extraction.title ?? "", extraction.author);
-
-    // (3) 생성
-    await runCard(buildCardPayload(extraction, found), {
-      // 사진 흐름에는 열린 폼이 없다 — 남은 400(빈 제목·너무 긴 값 등)은
-      // §9 수동 폼 폴백으로 연결해 판독값을 프리필한다 (QA F1 보조안).
-      // 서버 messageKo("입력 내용을 확인해 주세요.")보다 사진 맥락 안내가 낫다.
-      onInvalidInput: () =>
-        openManualForRetake(
-          extraction,
-          "사진에서 읽은 정보로는 카드를 만들지 못했어요. 아래 내용을 확인·수정해서 만들어 주시거나, 표지를 다시 찍어 주세요.",
-        ),
-    });
-  }
-
-  // -------------------------------------------------------------------------
-  // 흐름 1′ — 표지 + 본문/목차: 판독 → 식별 → 본문 판독 → (확인) → 생성
-  //
-  // 본문 촬영은 **선택**이다. 이 패널에서도 본문 사진을 고르지 않으면 pages 단계가
-  // 통째로 빠지고 위의 표지 흐름과 똑같이 동작한다.
-  // -------------------------------------------------------------------------
 
   /** (2′) 본문·목차 판독 — /api/pages. 성공하면 검토 패널로 넘긴다 */
   async function runPagesStep(files: File[], kind: SceneSourceKind): Promise<boolean> {
@@ -815,33 +766,77 @@ export default function HomeCreate({
 
   return (
     <section>
-      {/* 숨긴 파일 입력 (SPEC §4-1 — image/*, 최대 3장)
-          capture는 쓰지 않는다 — 모바일에서 카메라를 바로 열고 한 장만 받으며
-          multiple을 무시한다. 표지+스티커+뒤표지를 한 번에 고르려면 보관함이 필요하다. */}
+      {/*
+       * 파일 입력 2개 — 화면에 보이지 않고 **항상 마운트**해 둔다.
+       *
+       * 항상 마운트하는 이유: 진입 버튼이 패널을 열면서 같은 핸들러 안에서 곧바로
+       * `coverInputRef.current?.click()`을 호출해야 표지만 찍는 사람의 탭이 늘지 않는다.
+       * 패널 안에만 두면 클릭 시점에 ref가 비어 있어 `setTimeout`으로 미뤄야 하는데,
+       * 그러면 사용자 제스처가 끊겨 Safari가 파일 대화상자를 막는다.
+       *
+       * `capture`는 **절대 쓰지 않는다** — 모바일 브라우저가 카메라를 바로 열고 한 장만
+       * 받으며 `multiple`을 무시한다(iOS Safari·Android Chrome 공통). 표지 3장도 본문
+       * 12~16장도 보관함이 열려야 고를 수 있다. 카메라는 그 선택 시트에서 여전히 갈 수 있다.
+       */}
       <input
-        ref={fileInputRef}
+        ref={coverInputRef}
         type="file"
         accept="image/*"
         multiple
-        onChange={onFilesSelected}
         className="hidden"
         tabIndex={-1}
         aria-hidden
+        onChange={(e) => {
+          // 최대 3장 — 표지 / 정보 스티커 / 뒤표지 (SPEC §4-1). 상한은 lib/upload-limits가
+          // 단일 정의처이고 /api/extract의 zod가 같은 값을 쓴다 (한쪽만 고치면 QA F10 재발)
+          const picked = Array.from(e.target.files ?? []).slice(0, COVER_MAX_IMAGES);
+          e.target.value = ""; // 같은 사진을 다시 골라도 change가 발생하게
+          if (picked.length === 0) return;
+          setCoverFiles(picked);
+          clearStatus();
+          // 표지가 바뀌면 판독 결과가 무효다 — 다음 실행은 처음부터 다시 탄다
+          pagesFlowReady.current = false;
+          setReview(null);
+          scrollToPanel();
+        }}
+      />
+      <input
+        ref={pageInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        tabIndex={-1}
+        aria-hidden
+        onChange={(e) => {
+          // 이어 담기 — 보관함에서 한 번에 다 고르지 못했거나 나눠 찍은 경우를 위해
+          // 기존 선택에 덧붙인다. 처음부터 다시 고르려면 "전체 지우기".
+          const added = Array.from(e.target.files ?? []);
+          e.target.value = "";
+          if (added.length === 0) return;
+          const merged = [...pageFiles, ...added].slice(0, pagesMaxImages);
+          setPageFiles(merged);
+          clearStatus();
+          // 이미 표지 판독이 끝난 상태(검토 패널의 "본문 다시 찍기", 또는 장면이
+          // 거절된 뒤 다시 찍기)라면 표지 판독을 다시 하지 않고 본문만 재판독한다
+          if (pagesFlowReady.current) void retakePages(merged, sceneKind);
+        }}
       />
 
-      {/* 큰 버튼 2개 — 이 화면의 주인공. 주요(사진)만 accent 배경 (DESIGN §5) */}
+      {/* 큰 버튼 2개 — 이 화면의 주인공. 주요(사진)만 accent 배경 (DESIGN §5).
+          사진 경로는 하나다 — 표지만 찍든 본문까지 찍든 여기서 시작한다. */}
       <div className="grid gap-3 sm:grid-cols-2">
         <button
           type="button"
-          onClick={onPickPhotos}
+          onClick={openPhotoPicker}
           disabled={busy}
           className="u-entry u-entry-primary"
         >
           <span className="u-entry-icon" aria-hidden>📷</span>
-          <span className="u-entry-title">표지 사진으로 만들기</span>
+          <span className="u-entry-title">사진으로 만들기</span>
           <span className="u-entry-desc">
-            표지 · 정보 스티커(AR 지수) · 뒤표지 소개글까지 최대 {COVER_MAX_IMAGES}장! 있는 것만
-            찍어도 돼요.
+            표지만 찍어도 돼요. 본문·목차까지 찍으면 장면마다 질문이 붙은 읽기 가이드가
+            더해져요.
           </span>
         </button>
 
@@ -862,24 +857,6 @@ export default function HomeCreate({
           </span>
         </button>
       </div>
-
-      {/*
-       * 본문 촬영 진입점 — 기본 경로(위 버튼 2개)를 무겁게 하지 않으려고 작은 링크로 뺐다.
-       * 본문 촬영은 선택이고, 안 찍어도 표지만으로 카드가 그대로 나온다.
-       */}
-      <button
-        type="button"
-        onClick={() => {
-          clearStatus();
-          setReview(null);
-          setPanel("pages");
-          scrollToPanel();
-        }}
-        disabled={busy}
-        className="t-meta-chip mt-3 inline-block py-2 text-ink-2 underline underline-offset-2"
-      >
-        📖 본문·목차까지 찍어서 줄거리를 자세히 만들기 (선택)
-      </button>
 
       {/* 진행 상태 — 실제 호출 단계와 1:1 (SPEC §3).
           지난 단계·현재 단계는 파란 점, 남은 단계는 옅은 회색 점으로 단정하게. */}
@@ -1098,39 +1075,30 @@ export default function HomeCreate({
       )}
 
       {/*
-       * 패널: 본문·목차까지 찍어서 만들기 (선택 경로).
-       * 표지는 필수, 본문/목차는 선택 — 본문을 안 고르면 기본 표지 흐름과 같아진다.
+       * 패널: 사진으로 카드 만들기 — **사진 경로는 이것 하나뿐이다.**
+       * 표지는 필수, 본문/목차는 선택. 본문을 안 고르면 pages 단계가 통째로 빠져
+       * 예전의 "표지 사진으로 만들기"와 완전히 같은 흐름이 된다.
        */}
-      {panel === "pages" && (
+      {panel === "photo" && (
         <div ref={panelRef} className={`${panelCls} ${busy || duplicate || review ? "hidden" : ""}`}>
-          <h2 className="t-section-title">본문까지 찍어서 만들기</h2>
+          <h2 className="t-section-title">사진으로 카드 만들기</h2>
           <p className="t-caption mt-1">
-            책을 <b>순서대로</b> 찍어 주시면 장면마다 &lsquo;지금 던질 질문&rsquo;이 붙은 읽기
-            가이드를 만들어요. 사진은 저장하지 않고 우리말 요약만 남아요.
+            표지만 있어도 카드가 나와요. 사진은 저장하지 않고 우리말 요약만 남아요.
           </p>
 
           {/* 1단계 — 표지 (필수) */}
           <div className="mt-5">
             <p className={labelCls}>1. 표지 사진 * (최대 {COVER_MAX_IMAGES}장)</p>
-            <p className="t-caption mb-2">표지 · 정보 스티커(AR 지수) · 뒤표지 소개글</p>
-            <input
-              ref={coverInputRef}
-              type="file"
-              accept="image/*"
-              // capture를 두면 안 된다 — 모바일 브라우저가 카메라를 바로 열고 **한 장만**
-              // 받으며 multiple을 무시한다(iOS Safari·Android Chrome 공통). 표지·스티커·
-              // 뒤표지를 한 번에 고르려면 사진 보관함이 열려야 한다. 카메라는 보관함
-              // 선택 시트에서 여전히 한 번에 갈 수 있다.
-              multiple
-              className={inputCls}
-              onChange={(e) => {
-                setCoverFiles(Array.from(e.target.files ?? []).slice(0, COVER_MAX_IMAGES));
-                clearStatus();
-                // 표지가 바뀌면 판독 결과가 무효다 — 다음 실행은 처음부터 다시 탄다
-                pagesFlowReady.current = false;
-                setReview(null);
-              }}
-            />
+            <p className="t-caption mb-2">
+              표지 · 정보 스티커(AR 지수) · 뒤표지 소개글 — 있는 것만 찍어도 돼요
+            </p>
+            <button
+              type="button"
+              onClick={() => coverInputRef.current?.click()}
+              className="u-btn u-btn-secondary w-full"
+            >
+              📷 {coverFiles.length > 0 ? "표지 사진 다시 고르기" : "표지 사진 고르기"}
+            </button>
             {coverFiles.length > 0 && (
               <p className="t-caption mt-1">✓ 표지 {coverFiles.length}장 골랐어요</p>
             )}
@@ -1139,6 +1107,11 @@ export default function HomeCreate({
           {/* 2단계 — 본문 또는 목차 (선택) */}
           <div className="mt-5">
             <p className={labelCls}>2. 본문 또는 목차 사진 (선택)</p>
+            {/* 선택이라는 사실을 문장으로 한 번 더 못박는다 — 필수처럼 보이면 실패다 */}
+            <p className="t-caption mb-2">
+              건너뛰어도 괜찮아요. 찍으면 줄거리가 길어지고, 장면마다 그 자리에서 던질 질문이
+              붙어요.
+            </p>
             <div className="mt-2 flex gap-2">
               <button
                 type="button"
@@ -1176,28 +1149,14 @@ export default function HomeCreate({
                 ? `그림책이면 펼침면을 처음부터 순서대로 찍어 주세요 (보통 12~16장, 최대 ${pagesMaxImages}장). 사진 1장이 장면 1개가 돼요.`
                 : "챕터북이면 목차 페이지만 찍으면 돼요 (1~2장). 챕터 하나가 장면 하나가 돼요."}
             </p>
-            <input
-              ref={pageInputRef}
-              type="file"
-              accept="image/*"
-              // capture 금지 — 있으면 카메라가 바로 열리고 **한 장만** 받는다(multiple 무시).
-              // 본문은 12~16장을 골라야 하므로 사진 보관함이 열려야 한다.
-              multiple
-              className={`${inputCls} mt-2`}
-              onChange={(e) => {
-                // 이어 담기 — 보관함에서 한 번에 다 고르지 못했거나 나눠 찍은 경우를 위해
-                // 기존 선택에 덧붙인다. 처음부터 다시 고르려면 아래 "전체 지우기".
-                const added = Array.from(e.target.files ?? []);
-                e.target.value = "";
-                if (added.length === 0) return;
-                const merged = [...pageFiles, ...added].slice(0, pagesMaxImages);
-                setPageFiles(merged);
-                clearStatus();
-                // 이미 표지 판독이 끝난 상태(검토 패널의 "본문 다시 찍기", 또는 장면이
-                // 거절된 뒤 다시 찍기)라면 표지 판독을 다시 하지 않고 본문만 재판독한다
-                if (pagesFlowReady.current) void retakePages(merged, sceneKind);
-              }}
-            />
+            <button
+              type="button"
+              onClick={() => pageInputRef.current?.click()}
+              className="u-btn u-btn-secondary mt-2 w-full"
+            >
+              {sceneKind === "toc" ? "📑 목차 사진 고르기" : "📖 본문 사진 고르기"}
+              {pageFiles.length > 0 ? " (더 담기)" : ""}
+            </button>
             {pageFiles.length > 0 && (
               <p className="t-caption mt-1">
                 ✓ {sceneKind === "toc" ? "목차" : "본문"} {pageFiles.length}장 골랐어요 (
@@ -1230,9 +1189,13 @@ export default function HomeCreate({
           >
             🪄 학습 카드 만들기
           </button>
-          {coverFiles.length === 0 && (
-            <p className="t-caption mt-2 text-center">표지 사진을 먼저 골라 주세요.</p>
-          )}
+          <p className="t-caption mt-2 text-center">
+            {coverFiles.length === 0
+              ? "표지 사진을 먼저 골라 주세요."
+              : pageFiles.length === 0
+                ? "표지 " + coverFiles.length + "장으로 만들어요 (본문 없이도 괜찮아요)"
+                : `표지 ${coverFiles.length}장 + ${sceneKind === "toc" ? "목차" : "본문"} ${pageFiles.length}장으로 만들어요`}
+          </p>
         </div>
       )}
 
@@ -1277,7 +1240,8 @@ export default function HomeCreate({
           {retakeKo && (
             <div className="u-box-accent mb-4">
               <p className="t-question-ko text-ink">📷 {retakeKo}</p>
-              <button type="button" onClick={onPickPhotos} className="u-btn u-btn-secondary mt-3">
+              {/* 판독 실패 → 다시 찍기. 사진 경로가 하나뿐이라 진입점도 하나다 */}
+              <button type="button" onClick={openPhotoPicker} className="u-btn u-btn-secondary mt-3">
                 다시 찍기
               </button>
             </div>

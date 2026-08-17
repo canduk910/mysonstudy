@@ -140,6 +140,17 @@ export interface BookCardStore {
 
   createCard(input: NewCard): Promise<CardRecord>;
   getCard(id: string): Promise<CardRecord | null>;
+  /**
+   * 카드 1장만 지운다 — **연쇄 삭제가 없다.** 읽음 기록은 bookId에 매달려 있어
+   * 카드와 무관하고(SPEC §5), 책은 그대로 남는다.
+   *
+   * 지웠으면 true, 없는 id였으면 false. 존재 확인·404는 호출측 라우트의 몫이다
+   * (deleteBook과 같은 규약 — 스토어는 "그 카드가 없는 상태"만 보장한다).
+   *
+   * 주의: 그 책의 마지막 카드인지는 스토어가 따지지 않는다. 카드 없는 유령 책을
+   * 막는 것은 라우트의 정책이다(app/api/cards/[id]/route.ts).
+   */
+  deleteCard(cardId: string): Promise<boolean>;
   /** 해당 책의 카드 목록 — 최신순 */
   listCardsForBook(bookId: string): Promise<CardRecord[]>;
   /** 홈 미리보기용 — 최신 카드 + 책 조인, 최신순 */
@@ -291,6 +302,14 @@ class JsonFileStore implements BookCardStore {
   async getCard(id: string): Promise<CardRecord | null> {
     const db = await readDb();
     return db.cards.find((c) => c.id === id) ?? null;
+  }
+
+  async deleteCard(cardId: string): Promise<boolean> {
+    return this.mutate((db) => {
+      const before = db.cards.length;
+      db.cards = db.cards.filter((c) => c.id !== cardId);
+      return db.cards.length < before;
+    });
   }
 
   async listCardsForBook(bookId: string): Promise<CardRecord[]> {

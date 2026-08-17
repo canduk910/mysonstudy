@@ -16,9 +16,24 @@ import {
   resolveStorySource,
   STORY_SOURCE_LABELS_KO,
   type SceneDigestItem,
+  type StorySource,
 } from "@/lib/ai/schemas";
 import type { BookRecord, CardRecord, ReadingRecord } from "@/lib/store";
 import s from "./card-view.module.css";
+
+/**
+ * 카드 히스토리 한 줄 — 서버가 CardRecord에서 화면에 필요한 것만 추려 넘긴다
+ * (카드 본문을 버전 수만큼 클라이언트로 보내지 않기 위해).
+ */
+export interface CardHistoryItem {
+  id: string;
+  createdAt: string; // ISO 8601
+  model: string;
+  /** 근거 배지 — 서버에서 resolveStorySource()를 거친 값(구·신 카드 모두 해석됨) */
+  storySource: StorySource | null;
+  /** 장면 메모 개수 — 버전 간 차이를 한눈에 보여주는 지표 */
+  sceneCount: number;
+}
 
 /** 예문 속 대상 단어를 굵게 (첫 일치 부분만) */
 function ExampleEn({ example, word }: { example: string; word: string }) {
@@ -235,14 +250,187 @@ function ReadingLog({
   );
 }
 
+/**
+ * 카드 히스토리 (story-4) — 이 책의 카드 버전 목록.
+ *
+ * 왜 여기 있나: 서재 목록은 **책 단위**라 재생성으로 쌓인 버전이 보이지 않는다.
+ * 보이는 단위와 지우는 단위를 맞추기 위해, 버전 목록과 **낱개 삭제**를 이 페이지에 둔다
+ * (서재에서는 책을, 여기서는 카드를 지운다). 예전에는 서재의 한 줄을 지우면 형제
+ * 카드가 통째로 사라졌다.
+ *
+ * 장면별 읽기 가이드와 같은 규약: **기본 접힘 + 인쇄 제외.** 카드가 A4 1~2쪽
+ * 인쇄물이라는 제약(SPEC §4-2)은 그대로다 — 히스토리는 종이에 나올 것이 아니다.
+ */
+function CardHistory({
+  history,
+  currentCardId,
+  bookTitle,
+}: {
+  history: CardHistoryItem[];
+  currentCardId: string;
+  bookTitle: string;
+}) {
+  const router = useRouter();
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [errorKo, setErrorKo] = useState<string | null>(null);
+  const [lastCardBookId, setLastCardBookId] = useState<string | null>(null);
+
+  // 버전이 1장뿐이면 보여줄 "히스토리"가 없다 — 섹션 자체를 생략한다
+  if (history.length <= 1) return null;
+
+  async function runDelete(item: CardHistoryItem) {
+    setBusyId(item.id);
+    setErrorKo(null);
+    setLastCardBookId(null);
+    try {
+      const res = await fetch(`/api/cards/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+      const data = (await res.json().catch(() => null)) as
+        | { ok?: boolean; error?: string; messageKo?: string; bookId?: string; latestCardId?: string }
+        | null;
+
+      if (res.ok && data?.ok) {
+        setConfirmId(null);
+        // 지금 보던 버전을 지웠으면 남은 최신 버전으로 옮겨 간다 (404 화면 방지)
+        if (item.id === currentCardId && data.latestCardId) {
+          router.push(`/card/${data.latestCardId}`);
+          return;
+        }
+        router.refresh();
+        return;
+      }
+      if (res.status === 409) {
+        // 마지막 한 장 — 카드만 지우면 열 수 없는 책이 남는다. 책 삭제로 안내한다.
+        setLastCardBookId(data?.bookId ?? null);
+        setErrorKo(data?.messageKo ?? "이 책의 마지막 카드예요.");
+        setConfirmId(null);
+        return;
+      }
+      if (res.status === 404) {
+        // 이미 지워진 카드(다른 기기·중복 클릭) — 새로고침하면 목록에서 사라진다
+        setConfirmId(null);
+        router.refresh();
+        return;
+      }
+      setErrorKo(data?.messageKo ?? "지우지 못했어요. 잠시 후 다시 시도해 주세요.");
+    } catch {
+      setErrorKo("네트워크 문제로 지우지 못했어요. 연결을 확인하고 다시 시도해 주세요.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <details className={s.history}>
+      <summary className={s.guideSummary}>
+        <span className={s.guideTitle}>🗂 카드 히스토리</span>
+        <span className={s.guideMeta}>{history.length}장</span>
+        <span className={s.guideToggle} aria-hidden>
+          펼치기
+        </span>
+      </summary>
+
+      <p className={s.guideNote}>
+        『{bookTitle}』로 만든 카드예요. &ldquo;다시 생성&rdquo;은 예전 카드를 덮어쓰지 않고
+        새로 쌓기 때문에 <b>이전 버전과 비교</b>할 수 있어요. 지우면 그 버전 하나만 사라져요.
+      </p>
+
+      {errorKo && (
+        <p role="alert" className={s.historyError}>
+          {errorKo}
+          {lastCardBookId && (
+            <>
+              {" "}
+              <Link href="/library" className={s.historyLink}>
+                서재에서 책 지우기 →
+              </Link>
+            </>
+          )}
+        </p>
+      )}
+
+      <ol className={s.versions}>
+        {history.map((item, i) => {
+          const isCurrent = item.id === currentCardId;
+          return (
+            <li key={item.id} className={s.version}>
+              <div className={s.versionHead}>
+                <span className={s.versionNo}>
+                  v{history.length - i}
+                  {i === 0 && <span className={s.versionLatest}> · 최신</span>}
+                </span>
+                {isCurrent && <span className={s.versionCurrent}>지금 보는 카드</span>}
+              </div>
+              <p className={s.versionMeta}>
+                {item.createdAt.slice(0, 10).replace(/-/g, ".")}
+                {item.storySource && ` · ${STORY_SOURCE_LABELS_KO[item.storySource]}`}
+                {item.sceneCount > 0 && ` · 장면 ${item.sceneCount}개`}
+              </p>
+              <p className={s.versionModel}>{item.model}</p>
+
+              {confirmId === item.id ? (
+                <div role="group" aria-label="삭제 확인" className={s.versionConfirm}>
+                  <p className={s.versionConfirmMsg}>
+                    이 카드 <b>한 장만</b> 지울까요? 책과 다른 버전, 읽기 기록은 그대로예요.
+                  </p>
+                  <div className={s.versionBtns}>
+                    <button
+                      type="button"
+                      onClick={() => void runDelete(item)}
+                      disabled={busyId === item.id}
+                      className={`${s.versionBtn} ${s.versionBtnDanger}`}
+                    >
+                      {busyId === item.id ? "지우는 중…" : "지우기"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmId(null)}
+                      disabled={busyId === item.id}
+                      className={s.versionBtn}
+                    >
+                      취소
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className={s.versionBtns}>
+                  {!isCurrent && (
+                    <Link href={`/card/${item.id}`} className={s.versionBtn}>
+                      이 버전 보기
+                    </Link>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirmId(item.id);
+                      setErrorKo(null);
+                      setLastCardBookId(null);
+                    }}
+                    className={s.versionBtn}
+                  >
+                    🗑 지우기
+                  </button>
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </details>
+  );
+}
+
 export default function CardView({
   book,
   card,
   readings,
+  history,
 }: {
   book: BookRecord;
   card: CardRecord;
   readings: ReadingRecord[];
+  /** 이 책의 카드 버전 목록(최신순). 1장뿐이면 섹션이 생략된다 */
+  history: CardHistoryItem[];
 }) {
   const router = useRouter();
   const [regenBusy, setRegenBusy] = useState(false);
@@ -522,6 +710,9 @@ export default function CardView({
 
       {/* M3 — 읽음 기록 (인쇄 시 숨김, SPEC §4-3) */}
       <ReadingLog bookId={book.id} initialReadings={readings} />
+
+      {/* story-4 — 카드 히스토리 (버전 전환·낱개 삭제). 1장뿐이면 렌더되지 않는다 */}
+      <CardHistory history={history} currentCardId={card.id} bookTitle={book.title} />
 
       <footer className={s.note}>
         {/* 무엇을 근거로 만들었는지는 storySource가 안다 — 사실과 다른 안내를 하지 않는다 */}

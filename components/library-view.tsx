@@ -5,7 +5,9 @@
  * - 상단 요약: 총 권수 / 최근 30일 권수(숫자를 크게, 라벨은 작게) +
  *   AR 레벨 추이 미니 차트(인라인 SVG, 차트 라이브러리 금지 — SPEC §4-3·§13).
  *   데이터 계산은 서버(app/library/page.tsx).
- * - 카드 목록: 썸네일(또는 이모지) + 제목(17/500) + 메타 칩(12) + 제목 검색(클라이언트 필터).
+ * - 책 목록: 썸네일(또는 이모지) + 제목(17/500) + 메타 칩(12) + 제목 검색(클라이언트 필터).
+ *   **한 줄 = 한 책**이다(story-4). 재생성으로 카드가 여러 장이면 "카드 N장"으로 알리고,
+ *   줄을 누르면 최신 카드가 열린다 — 버전 목록·낱개 삭제는 그 카드 페이지 하단에 있다.
  * - 서재 관리(책 삭제): "관리" 토글을 켜야 항목마다 삭제 버튼이 나타난다(아이의
  *   오조작 방지). 삭제는 그 자리에서 인라인 확인 단계를 거친다 —
  *   window.confirm은 쓰지 않는다(모바일 UX·자동화 테스트).
@@ -19,10 +21,21 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 export interface LibraryItem {
-  cardId: string;
-  /** 삭제 단위는 카드가 아니라 책 — 이 책의 카드·읽음 기록이 함께 지워진다 */
+  /**
+   * 목록의 단위이자 **삭제의 단위**(story-4). 한 줄 = 한 책이라
+   * "지운 것보다 많이 사라지는" 일이 구조적으로 없다.
+   */
   bookId: string;
-  /** 이 책에 딸린 카드 수(재생성분 포함) — 삭제 확인 문구용 */
+  /**
+   * 대표(최신) 카드 — 줄을 누르면 이 카드가 열린다. 히스토리는 그 페이지 하단에 있다.
+   *
+   * **null이면 카드가 한 장도 없는 책**이다. 정상 흐름에서는 생기지 않지만(마지막 카드
+   * 낱개 삭제를 라우트가 409로 막는다), 두 탭에서 2장짜리 책의 서로 다른 카드를 동시에
+   * 지우면 둘 다 검사를 통과해 만들어질 수 있다(QA F15). 이런 책을 목록에서 숨기면
+   * **지울 수단이 없어 영구히 낀다** — 그래서 숨기지 않고 "카드 없음"으로 보여준다.
+   */
+  cardId: string | null;
+  /** 이 책에 딸린 카드 수(재생성분 포함) — 줄의 "카드 N장" 표시와 삭제 확인 문구용 */
   cardCount: number;
   /** 이 책의 읽음 기록 수 — 삭제 확인 문구용 */
   readingCount: number;
@@ -46,6 +59,24 @@ export interface ChartPoint {
 /** 만든 날짜 표시 — 타임존 계산 없이 ISO 날짜부만 사용 (SSR/클라이언트 동일 출력) */
 function formatDate(iso: string): string {
   return iso.slice(0, 10).replace(/-/g, ".");
+}
+
+/**
+ * 서재 한 줄의 겉껍질 — 대표 카드가 있으면 그 카드로 가는 링크, 없으면 링크가 아닌 상자.
+ *
+ * 카드 0장인 책은 열 곳이 없다. 그렇다고 목록에서 빼면 **지울 수단까지 사라져** 영구히
+ * 낀다(QA F15 — 두 탭에서 2장짜리 책의 서로 다른 카드를 동시에 지우면 만들어진다).
+ * 그래서 누를 수 없게만 하고 줄은 남긴다 — 관리 모드의 삭제 버튼은 bookId로 도니 그대로 는다.
+ */
+function Wrap({ cardId, children }: { cardId: string | null; children: React.ReactNode }) {
+  if (cardId) {
+    return (
+      <Link href={`/card/${cardId}`} className="u-item min-w-0 flex-1">
+        {children}
+      </Link>
+    );
+  }
+  return <div className="u-item min-w-0 flex-1 opacity-60">{children}</div>;
 }
 
 /** "2026-08-16" → "8/16" — 문자열 분해라 타임존 영향 없음 */
@@ -304,10 +335,11 @@ export default function LibraryView({
       </section>
 
       {/* 제목 검색 (클라이언트 필터) + 관리 토글 */}
-      <section aria-label="카드 목록">
+      <section aria-label="책 목록">
         <div className="mb-3 flex items-baseline justify-between gap-3">
-          <h2 className="t-section-title">만든 카드</h2>
-          <p className="t-caption flex-none">{filtered.length}장</p>
+          {/* 단위가 '장'에서 '권'으로 바뀌었다 — 위 "총 권수" 타일과 이제 같은 수를 센다 */}
+          <h2 className="t-section-title">읽은 책</h2>
+          <p className="t-caption flex-none">{filtered.length}권</p>
         </div>
 
         <div className="mb-4 flex gap-2">
@@ -364,7 +396,7 @@ export default function LibraryView({
           </p>
         ) : filtered.length === 0 ? (
           <p className="t-caption rounded-[var(--radius-box)] border border-dashed border-line px-5 py-6 text-center">
-            &ldquo;{query.trim()}&rdquo; 제목의 카드를 찾지 못했어요.
+            &ldquo;{query.trim()}&rdquo; 제목의 책을 찾지 못했어요.
           </p>
         ) : (
           /* grid가 아니라 세로 flex — grid 트랙은 긴 제목에 맞춰 늘어나 375px에서 넘친다 */
@@ -372,7 +404,7 @@ export default function LibraryView({
             {filtered.map((item) =>
               confirmBookId === item.bookId ? (
                 /* 인라인 확인 단계 — 그 항목 자리에서 묻는다 (window.confirm 금지) */
-                <li key={item.cardId}>
+                <li key={item.bookId}>
                   <div
                     role="group"
                     aria-label="삭제 확인"
@@ -404,8 +436,13 @@ export default function LibraryView({
                   </div>
                 </li>
               ) : (
-                <li key={item.cardId} className="flex min-w-0 items-stretch gap-2">
-                  <Link href={`/card/${item.cardId}`} className="u-item min-w-0 flex-1">
+                <li key={item.bookId} className="flex min-w-0 items-stretch gap-2">
+                  {/* 줄을 누르면 그 책의 **최신 카드**로 바로 간다 — 아이와 카드를 펼치는
+                      것이 이 앱에서 가장 잦은 동작이라, 책 상세를 한 번 더 거치지 않는다.
+                      버전 목록·낱개 삭제는 그 카드 페이지 하단의 히스토리 섹션에 있다. */}
+                  {/* 카드가 없는 책(F15)은 열 곳이 없어 링크로 감싸지 않는다 — 대신
+                      줄은 그대로 보여서 관리 모드에서 지울 수 있게 한다 */}
+                  <Wrap cardId={item.cardId}>
                     {item.coverUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element -- 외부 썸네일, next/image 원격 설정은 과설계
                       <img src={item.coverUrl} alt="" className="u-item-cover" />
@@ -426,10 +463,16 @@ export default function LibraryView({
                           {item.arLevel != null ? `AR ${item.arLevel}` : "레벨 추정"}
                         </span>
                         <span className="u-chip">{item.isFiction ? "픽션" : "논픽션"}</span>
+                        {/* 재생성으로 여러 장이면 알린다 — 한 줄인데 그 뒤에 히스토리가
+                            있다는 사실이 보여야 사용자가 찾아갈 수 있다 */}
+                        {item.cardCount > 1 && (
+                          <span className="u-chip">카드 {item.cardCount}장</span>
+                        )}
+                        {item.cardCount === 0 && <span className="u-chip">카드 없음</span>}
                         <span className="t-caption">{formatDate(item.createdAt)}</span>
                       </span>
                     </span>
-                  </Link>
+                  </Wrap>
 
                   {/* 관리 모드에서만 나타나는 삭제 버튼 — 평소엔 렌더 자체를 하지 않는다 */}
                   {manageMode && (
