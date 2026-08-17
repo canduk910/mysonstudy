@@ -789,10 +789,14 @@ export default function HomeCreate({
         onChange={(e) => {
           // 최대 3장 — 표지 / 정보 스티커 / 뒤표지 (SPEC §4-1). 상한은 lib/upload-limits가
           // 단일 정의처이고 /api/extract의 zod가 같은 값을 쓴다 (한쪽만 고치면 QA F10 재발)
-          const picked = Array.from(e.target.files ?? []).slice(0, COVER_MAX_IMAGES);
+          //
+          // **덧붙이기**로 담는다. 카메라로 "바로 찍기"를 고르면 OS가 한 번에 한 장만
+          // 돌려주므로(multiple을 줘도 그렇다 — 카메라 세션이 1장으로 끝난다), 교체로
+          // 두면 표지 3장을 영영 못 채운다. 찍기를 세 번 눌러 쌓을 수 있어야 한다.
+          const added = Array.from(e.target.files ?? []);
           e.target.value = ""; // 같은 사진을 다시 골라도 change가 발생하게
-          if (picked.length === 0) return;
-          setCoverFiles(picked);
+          if (added.length === 0) return;
+          setCoverFiles((prev) => [...prev, ...added].slice(0, COVER_MAX_IMAGES));
           clearStatus();
           // 표지가 바뀌면 판독 결과가 무효다 — 다음 실행은 처음부터 다시 탄다
           pagesFlowReady.current = false;
@@ -1097,10 +1101,28 @@ export default function HomeCreate({
               onClick={() => coverInputRef.current?.click()}
               className="u-btn u-btn-secondary w-full"
             >
-              📷 {coverFiles.length > 0 ? "표지 사진 다시 고르기" : "표지 사진 고르기"}
+              📷 {coverFiles.length > 0 ? "표지 사진 더 담기" : "표지 사진 고르기"}
             </button>
             {coverFiles.length > 0 && (
-              <p className="t-caption mt-1">✓ 표지 {coverFiles.length}장 골랐어요</p>
+              <p className="t-caption mt-1">
+                ✓ 표지 {coverFiles.length}장 담았어요
+                {coverFiles.length >= COVER_MAX_IMAGES
+                  ? ` — 최대 ${COVER_MAX_IMAGES}장까지예요`
+                  : " · 바로 찍기로 한 장씩 더 담을 수 있어요"}
+                {" · "}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCoverFiles([]);
+                    clearStatus();
+                    pagesFlowReady.current = false;
+                    setReview(null);
+                  }}
+                  className="underline"
+                >
+                  전체 지우기
+                </button>
+              </p>
             )}
           </div>
 
