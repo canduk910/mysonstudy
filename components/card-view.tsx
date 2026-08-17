@@ -182,7 +182,11 @@ export default function CardView({
   const [regenError, setRegenError] = useState<string | null>(null);
 
   const c = card.content;
-  const theme = book.isFiction ? s.fiction : s.nonfiction;
+  // 픽션/논픽션 = 색조가 아니라 같은 파랑의 명도 차이 (DESIGN §2).
+  // globals.css의 테마 스코프 클래스가 --accent를 갈아끼우므로, 카드 안의
+  // 컬러바·STEP 배지·칩·질문 태그가 한 번에 따라온다. 칩 라벨을 함께 표시해
+  // 색만으로 구분하지 않는다(접근성).
+  const theme = book.isFiction ? "theme-fiction" : "theme-nonfiction";
   const emoji = book.coverEmoji || "📖";
 
   const youtubeQuery = [book.title, book.author !== "미상" ? book.author : "", "read aloud"]
@@ -258,12 +262,13 @@ export default function CardView({
             <h2 className={s.title}>{book.title}</h2>
             <div className={s.byline}>{byline}</div>
             <div className={s.chips}>
-              {book.arLevel != null && <span className={s.chipHl}>AR {book.arLevel}</span>}
-              {book.lexile != null && <span className={s.chipHl}>Lexile {book.lexile}L</span>}
+              {/* 상단 컬러바와 짝을 이루는 유형 라벨만 파란 칩 — 나머지 메타는 중립 칩 */}
+              <span className={s.chipHl}>{book.isFiction ? "픽션" : "논픽션"}</span>
+              {book.arLevel != null && <span className={s.chip}>AR {book.arLevel}</span>}
+              {book.lexile != null && <span className={s.chip}>Lexile {book.lexile}L</span>}
               {book.wordCount != null && (
                 <span className={s.chip}>{book.wordCount.toLocaleString()} 단어</span>
               )}
-              <span className={s.chip}>{book.isFiction ? "픽션" : "논픽션"}</span>
               {book.levelEstimated && <span className={s.chipEstimated}>레벨 추정</span>}
             </div>
           </div>
@@ -322,20 +327,29 @@ export default function CardView({
               <tbody>
                 {c.vocab.map((v) => (
                   <tr key={v.word}>
+                    {/* 영단어가 카드에서 가장 큰 글자 (26/700) — 아이가 먼저 본다 */}
                     <td className={s.w}>
-                      {v.word}
-                      <button
-                        type="button"
-                        className={s.speak}
-                        aria-label={`${v.word} 발음 듣기`}
-                        title="발음 듣기"
-                        onClick={() => speak(v.word)}
-                      >
-                        🔊
-                      </button>
-                      <small className={s.pron}>[{v.pronKo}]</small>
-                      {v.isCore ? <span className={s.star}>★핵심</span> : null}
-                      {v.difficulty === "challenge" ? <span className={s.star}>★도전</span> : null}
+                      <span className={s.wordRow}>
+                        <span className={s.word}>{v.word}</span>
+                        <button
+                          type="button"
+                          className={s.speak}
+                          aria-label={`${v.word} 발음 듣기`}
+                          title="발음 듣기"
+                          onClick={() => speak(v.word)}
+                        >
+                          🔊
+                        </button>
+                      </span>
+                      <span className={s.pron}>[{v.pronKo}]</span>
+                      {(v.isCore || v.difficulty === "challenge") && (
+                        <span className={s.marks}>
+                          {v.isCore ? <span className={s.mark}>★ 핵심</span> : null}
+                          {v.difficulty === "challenge" ? (
+                            <span className={s.mark}>★ 도전</span>
+                          ) : null}
+                        </span>
+                      )}
                     </td>
                     <td className={s.mean}>{v.meaningKo}</td>
                     <td className={s.easy}>{v.easyEn}</td>

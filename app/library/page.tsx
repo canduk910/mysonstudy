@@ -44,8 +44,22 @@ export default async function LibraryPage() {
     })
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
+  // 삭제 확인 문구("카드 N장·기록 M건이 함께 사라져요")에 쓸 책별 개수 —
+  // 이미 읽어 온 목록으로 계산한다. 확인 화면을 위해 API를 추가로 왕복하지 않는다.
+  const cardCountByBook = new Map<string, number>();
+  for (const { card } of cardsWithBooks) {
+    cardCountByBook.set(card.bookId, (cardCountByBook.get(card.bookId) ?? 0) + 1);
+  }
+  const readingCountByBook = new Map<string, number>();
+  for (const r of readings) {
+    readingCountByBook.set(r.bookId, (readingCountByBook.get(r.bookId) ?? 0) + 1);
+  }
+
   const items: LibraryItem[] = cardsWithBooks.map(({ card, book }) => ({
     cardId: card.id,
+    bookId: book.id,
+    cardCount: cardCountByBook.get(book.id) ?? 1,
+    readingCount: readingCountByBook.get(book.id) ?? 0,
     title: book.title,
     author: book.author,
     series: book.series,
@@ -58,13 +72,16 @@ export default async function LibraryPage() {
   }));
 
   return (
-    <main className="mx-auto max-w-2xl px-4 pb-16 pt-10">
-      <header className="mb-6">
-        <Link href="/" className="text-[13px] font-semibold text-sub hover:text-ink">
-          ← 홈으로
-        </Link>
-        <h1 className="mt-2 text-[26px] font-bold text-ink">📚 은우의 서재</h1>
-        <p className="mt-1 text-sm text-sub">지금까지 만든 카드와 읽기 기록이 쌓이는 곳이에요.</p>
+    <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
+      <header className="mb-8">
+        {/* 홈 ↔ 서재 내비게이션 — 홈·카드 화면과 같은 알약 버튼(.u-navbtn) */}
+        <div className="flex items-center justify-between gap-3">
+          <Link href="/" className="u-navbtn">
+            ← 홈으로
+          </Link>
+        </div>
+        <h1 className="t-book-title mt-4">📚 은우의 서재</h1>
+        <p className="t-lead mt-1">지금까지 만든 카드와 읽기 기록이 쌓이는 곳이에요.</p>
       </header>
 
       <LibraryView

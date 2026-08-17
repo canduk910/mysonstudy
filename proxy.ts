@@ -52,13 +52,19 @@ function lockedJson(messageKo: string, status: number): NextResponse {
 
 function lockedPage(messageKo: string): NextResponse {
   // 프로덕션 설정 누락 전용 화면 — /unlock으로 보내면 영원히 못 여는 루프가 된다
+  // 이 화면은 app/globals.css를 불러올 수 없는 독립 HTML이라, 예외적으로
+  // docs/DESIGN.md §2 토큰 값을 그대로 옮겨 적는다(--bg/--ink/--ink-2, G마켓 산스).
   const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>은우 북카드</title></head>
-<body style="margin:0;background:#faf7f0;color:#20242b;font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Noto Sans KR','Malgun Gothic','Segoe UI',sans-serif">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>은우 북카드</title>
+<style>
+@font-face{font-family:"GmarketSans";src:url("/fonts/GmarketSansLight.woff2") format("woff2");font-weight:300;font-style:normal;font-display:swap}
+@font-face{font-family:"GmarketSans";src:url("/fonts/GmarketSansBold.woff2") format("woff2");font-weight:700;font-style:normal;font-display:swap}
+</style></head>
+<body style="margin:0;background:#ffffff;color:#0f172a;font-family:'GmarketSans',-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif;font-weight:300;line-height:1.75">
 <main style="max-width:26rem;margin:0 auto;padding:4rem 1.5rem;text-align:center">
 <p style="font-size:2.5rem;margin:0">🔒</p>
-<h1 style="font-size:1.15rem;margin:.75rem 0 .25rem">잠깐 잠겨 있어요</h1>
-<p style="font-size:.9rem;color:#5b6472;margin:0">${messageKo}</p>
+<h1 style="font-size:18px;font-weight:700;margin:.75rem 0 .25rem">잠깐 잠겨 있어요</h1>
+<p style="font-size:16px;color:#475569;margin:0">${messageKo}</p>
 </main></body></html>`;
   return noStore(
     new NextResponse(html, { status: 503, headers: { "content-type": "text/html; charset=utf-8" } }),

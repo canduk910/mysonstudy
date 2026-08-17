@@ -65,15 +65,17 @@ export default function UnlockForm({ next }: UnlockFormProps) {
   }
 
   return (
-    <form onSubmit={onSubmit} className="mt-6">
-      <label htmlFor="pin" className="mb-1 block text-[13px] font-semibold text-sub">
+    <form onSubmit={onSubmit} className="mt-8">
+      <label htmlFor="pin" className="u-label text-center">
         PIN 번호
       </label>
+      {/* 아이도 쓸 수 있게 크게(--fs-pin 26px) + 숫자 키패드 */}
       <input
         id="pin"
         name="pin"
         type="password"
         inputMode="numeric"
+        pattern="[0-9]*"
         autoComplete="one-time-code"
         autoFocus
         maxLength={8}
@@ -81,20 +83,16 @@ export default function UnlockForm({ next }: UnlockFormProps) {
         onChange={(e) => setPin(e.target.value)}
         disabled={busy}
         aria-invalid={errorKo ? true : undefined}
-        className="w-full rounded-xl border border-line bg-white px-4 py-3.5 text-center text-[22px] tracking-[0.4em] text-ink outline-none focus:border-fiction disabled:opacity-60"
+        className="u-input h-16 text-center text-pin tracking-[0.35em]"
       />
 
       {errorKo && (
-        <p role="alert" className="mt-3 rounded-xl border border-fiction/40 bg-fiction/10 px-4 py-3 text-[13.5px] text-ink">
+        <p role="alert" className="u-box-accent t-question-ko mt-4 text-ink">
           {errorKo}
         </p>
       )}
 
-      <button
-        type="submit"
-        disabled={busy}
-        className="mt-4 w-full rounded-xl bg-fiction px-4 py-3.5 text-base font-bold text-white shadow-sm transition hover:brightness-105 disabled:opacity-60"
-      >
+      <button type="submit" disabled={busy} className="u-btn u-btn-primary mt-4 w-full">
         {busy ? "확인 중…" : "잠금 풀기"}
       </button>
     </form>

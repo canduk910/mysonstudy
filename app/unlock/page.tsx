@@ -37,23 +37,15 @@ export default async function UnlockPage({ searchParams }: UnlockPageProps) {
     if (await verifyUnlockToken(token, pin)) redirect(next);
   }
 
+  // 흰 화면 가운데에 최소한의 요소만 — 앱 이름 · 안내 한 줄 · PIN 입력 · 큰 파란 버튼
   return (
-    <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center px-5 py-12">
-      <div className="rounded-2xl border border-line bg-card p-6 shadow-sm sm:p-7">
-        <div className="text-center">
-          <p className="text-4xl" aria-hidden>
-            🔒
-          </p>
-          <h1 className="mt-3 text-[22px] font-bold text-ink">은우 북카드</h1>
-          <p className="mt-1.5 text-[13.5px] leading-relaxed text-sub">
-            우리 가족만 쓰는 앱이에요. PIN을 입력해 주세요.
-          </p>
-        </div>
-        <UnlockForm next={next} />
-      </div>
-      <p className="mt-4 text-center text-[12px] text-sub">
-        PIN이 기억나지 않으면 아빠에게 물어보세요.
-      </p>
+    <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center px-6 py-12">
+      <h1 className="t-book-title text-center">은우 북카드</h1>
+      <p className="t-lead mt-2 text-center">우리 가족만 쓰는 앱이에요. PIN을 입력해 주세요.</p>
+
+      <UnlockForm next={next} />
+
+      <p className="t-caption mt-6 text-center">PIN이 기억나지 않으면 아빠에게 물어보세요.</p>
     </main>
   );
 }

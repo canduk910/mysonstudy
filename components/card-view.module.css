@@ -1,8 +1,15 @@
 /*
- * 카드 화면 스타일 — design/영어책_학습카드_샘플.html 원본 이식 (SPEC §8).
- * 테마: .fiction(꿀색 #c8871f) / .nonfiction(파랑 #3b6ea5) — 컬러바·STEP 배지·칩·질문
- * 태그·팁 박스에 일관 적용. 공통 토큰(--color-*)은 app/globals.css의 @theme에서 온다.
- * 인쇄 CSS 정밀화(책당 1~2쪽 조정)는 M4 — 여기는 기본 규칙만 둔다.
+ * 학습 카드 화면 스타일 — docs/DESIGN.md 적용 (2026-08-17 리디자인).
+ *
+ * 원칙
+ * - 색·크기 값을 여기에 쓰지 않는다. 전부 app/globals.css의 토큰(var(--*))만 참조한다.
+ * - 위계는 색이 아니라 **글자 크기**로 만든다 (DESIGN §4 표 그대로):
+ *     영단어 26/700  >  질문 영어 20/500  >  뜻 17/500  >  질문 한국어·본문 16/300
+ *     >  예문·발음 15  >  영영풀이 14  >  부모 힌트 13  >  칩·캡션 12
+ * - 픽션/논픽션은 색조를 늘리지 않고 같은 파랑의 명도 차이. 테마 스코프 클래스
+ *   (globals.css의 .theme-fiction / .theme-nonfiction)가 --accent를 갈아끼우므로
+ *   이 파일은 var(--accent)만 쓰면 두 유형이 자동으로 갈린다.
+ * - 그림자를 쓰지 않는다. 경계는 --line. 여백은 8의 배수.
  */
 
 .wrap {
@@ -11,81 +18,76 @@
   padding: 24px 16px 48px;
 }
 
-/* 테마 변수 — 원본의 --wolf/--pooh 세트 */
-.nonfiction {
-  --accent: #3b6ea5;
-  --accent-soft: #eef3f9;
-  --accent-deep: #2a4f77;
-  --accent-border: #c8d8ea;
-}
-.fiction {
-  --accent: #c8871f;
-  --accent-soft: #fdf4e3;
-  --accent-deep: #8f5e0e;
-  --accent-border: #ecd7ae;
-}
-
-/* 상단 액션 바 (인쇄 시 숨김) */
+/* -----------------------------------------------------------------------------
+ * 상단 액션 바 (화면 전용 — 인쇄 시 숨김)
+ * -------------------------------------------------------------------------- */
 .actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 .actionBtn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid var(--color-line);
-  background: var(--color-card);
-  color: var(--color-ink);
-  border-radius: 10px;
-  padding: 8px 14px;
-  font-size: 13.5px;
-  font-weight: 600;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: var(--fs-parent-hint);
+  font-weight: var(--fw-medium);
+  line-height: 1.3;
   cursor: pointer;
   text-decoration: none;
-  line-height: 1.4;
 }
-.actionBtn:hover {
-  border-color: #cfc9bb;
+.actionBtn:hover:not(:disabled) {
+  border-color: var(--line-strong);
 }
 .actionBtn:disabled {
-  opacity: 0.6;
+  opacity: 0.55;
   cursor: wait;
 }
 .actionsError {
   margin: 0 0 12px;
-  font-size: 13px;
-  color: #a4442c;
+  font-size: var(--fs-parent-hint);
+  color: var(--danger);
 }
 
-/* 카드 본체 — 원본 article.book */
+/* -----------------------------------------------------------------------------
+ * 카드 본체 — 상단 6px 컬러바 + line 경계 (그림자 없음, DESIGN §5)
+ * -------------------------------------------------------------------------- */
 .book {
-  background: var(--color-card);
-  border: 1px solid var(--color-line);
-  border-radius: 16px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
   overflow: hidden;
-  box-shadow: 0 1px 3px rgba(32, 36, 43, 0.06);
 }
 .bookbar {
-  height: 8px;
+  height: var(--bar-h);
   background: var(--accent);
 }
+
+/* 1. 북헤더 */
 .bookhead {
   display: flex;
   gap: 16px;
-  align-items: center;
-  padding: 22px 26px 6px;
+  align-items: flex-start;
+  padding: 24px 28px 0;
 }
 .cover {
   width: 56px;
   height: 56px;
-  border-radius: 14px;
+  border-radius: var(--radius-box);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 30px;
+  /* 이모지 커버 크기는 책 제목 스케일을 따라간다 */
+  font-size: var(--fs-book-title);
+  line-height: 1;
   flex: none;
   background: var(--accent-soft);
 }
@@ -93,267 +95,381 @@
 .coverImg {
   width: 56px;
   height: 78px;
-  border-radius: 10px;
+  border-radius: var(--radius-box);
   object-fit: cover;
   flex: none;
-  border: 1px solid var(--color-line);
+  border: 1px solid var(--line);
   background: var(--accent-soft);
 }
 .title {
   margin: 0;
-  font-size: 24px;
+  /* 책 제목 — 28/700 (모바일 24), line-height 1.3 */
+  font-size: var(--fs-book-title);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  color: var(--ink);
 }
 .byline {
-  color: var(--color-sub);
-  font-size: 13px;
-  margin-top: 2px;
+  margin-top: 6px;
+  /* 부가 정보는 작게 — 12/300 */
+  font-size: var(--fs-meta-chip);
+  font-weight: var(--fw-light);
+  line-height: 1.5;
+  color: var(--ink-2);
 }
 .chips {
-  margin-top: 8px;
+  margin-top: 10px;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 .chip {
-  font-size: 12px;
+  /* 메타 칩 — 12/500 */
+  font-size: var(--fs-meta-chip);
+  font-weight: var(--fw-medium);
+  line-height: 1.6;
   padding: 3px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--color-line);
-  background: #fbfaf6;
-  color: #414855;
+  border-radius: var(--radius-chip);
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink-2);
+  white-space: nowrap;
 }
+/* 픽션/논픽션 라벨 — 상단 컬러바와 짝을 이루는 유일한 파란 칩(색만으로 구분하지 않기) */
 .chipHl {
   composes: chip;
   background: var(--accent-soft);
-  border-color: var(--accent-border);
-  color: var(--accent-deep);
-  font-weight: 600;
+  border-color: var(--accent-soft);
+  color: var(--accent-ink);
 }
-/* "레벨 추정" 배지 (SPEC §3) */
+/* "레벨 추정" / "예상" 배지 (SPEC §3) */
 .chipEstimated {
   composes: chip;
   border-style: dashed;
-  color: var(--color-sub);
+  border-color: var(--line-strong);
+  color: var(--ink-3);
 }
 
+/* 2. 이 책은? — 소개 본문 16/300, line-height 1.75 */
 .intro {
-  padding: 6px 26px 0;
-  color: #39404c;
-  font-size: 14.5px;
+  margin: 20px 0 0;
+  padding: 0 28px;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-light);
+  line-height: var(--lh-body);
+  color: var(--ink);
 }
 
-/*
- * 줄거리/내용 미리보기 (storyOutlineKo) — 인트로와 STEP 1 사이의 소프트 박스.
- * 티칭 포인트 박스(.tip)와 같은 계열(accent-soft)로 테마 색을 일관 적용한다.
- * "예상" 배지는 레벨 추정 배지(.chipEstimated)를 그대로 재사용.
- */
-.story {
-  border-radius: 12px;
-  padding: 12px 16px;
-  margin: 12px 0 2px;
-  background: var(--accent-soft);
-}
-.storyTitle {
-  margin: 0;
-  font-size: 14px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.storyText {
-  margin: 6px 0 0;
-  font-size: 14px;
-  color: #39404c;
-}
-
+/* -----------------------------------------------------------------------------
+ * 섹션 공통 (3~9) — 섹션 사이 28, 내부 12~16 (DESIGN §5)
+ * -------------------------------------------------------------------------- */
 .section {
-  padding: 6px 26px 4px;
+  margin-top: 28px;
+  padding: 0 28px;
 }
 .section:last-of-type {
-  padding-bottom: 22px;
+  margin-bottom: 28px;
 }
 .h3 {
-  font-size: 15px;
-  margin: 20px 0 10px;
+  /* 섹션 제목(STEP) — 18/700 */
+  margin: 0 0 12px;
+  font-size: var(--fs-section-title);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  color: var(--ink);
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
 .step {
-  font-size: 11px;
-  font-weight: 700;
+  font-size: var(--fs-meta-chip);
+  font-weight: var(--fw-bold);
   letter-spacing: 0.06em;
-  padding: 3px 9px;
+  line-height: 1.5;
+  padding: 2px 9px;
   border-radius: 6px;
-  color: #fff;
+  color: var(--bg);
   background: var(--accent);
 }
 .h3en {
-  color: var(--color-sub);
-  font-weight: 500;
-  font-size: 12.5px;
+  /* 영어 부제는 캡션 — 12/300 */
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-light);
+  color: var(--ink-3);
 }
 
+/* 3. 줄거리/내용 미리보기 — 중립 surface 박스 (파랑은 티칭 포인트에만) */
+.story {
+  background: var(--surface);
+  border-radius: var(--radius-box);
+  padding: 16px 18px;
+}
+.storyTitle {
+  margin: 0;
+  font-size: var(--fs-section-title);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.storyText {
+  margin: 8px 0 0;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-light);
+  line-height: var(--lh-body);
+  color: var(--ink);
+}
+
+/* STEP 1·3·확장 놀이 — 활동 항목 16/300 */
 .plain {
   margin: 0;
   padding-left: 20px;
-  font-size: 14.5px;
+  font-size: var(--fs-activity);
+  font-weight: var(--fw-light);
+  line-height: var(--lh-body);
+  color: var(--ink);
 }
 .plain li {
-  margin: 6px 0;
+  margin: 8px 0;
+}
+.plain li::marker {
+  color: var(--ink-3);
+}
+.plain b {
+  font-weight: var(--fw-medium);
 }
 
-/* 단어장 표 */
+/* -----------------------------------------------------------------------------
+ * 5. 단어장 표 — 세로 줄 없이 가로 구분선만, 헤더 surface-2 + 12px ink-3
+ *    영단어 26/700이 카드에서 가장 큰 글자다.
+ * -------------------------------------------------------------------------- */
 .tableWrap {
   overflow-x: auto;
 }
 .vocab {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13.5px;
-  margin-top: 4px;
 }
 .vocab th {
-  font-size: 12px;
-  color: var(--color-sub);
-  font-weight: 600;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: var(--fs-meta-chip);
+  font-weight: var(--fw-medium);
   text-align: left;
-  border-bottom: 2px solid var(--color-line);
-  padding: 6px 8px;
+  padding: 8px 10px;
   white-space: nowrap;
 }
 .vocab td {
-  border-bottom: 1px solid #f0ede4;
-  padding: 8px;
+  border-bottom: 1px solid var(--line);
+  padding: 14px 10px;
   vertical-align: top;
 }
+.vocab tbody tr:last-child td {
+  border-bottom: none;
+}
+/* 열 너비 — 26px 단어가 들어가는 첫 열을 넓게 잡는다 (모바일 카드형에선 무효) */
 .w {
-  font-weight: 700;
-  white-space: nowrap;
+  width: 30%;
 }
-.pron {
-  display: block;
-  font-weight: 500;
-  color: var(--color-sub);
+.wordRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
 }
-.star {
-  color: #c8871f;
-  font-size: 11px;
-  letter-spacing: 0.05em;
-  margin-left: 4px;
+.word {
+  /* 영단어 — 26/700, 카드에서 가장 큰 글자 (아이가 먼저 본다) */
+  font-size: var(--fs-vocab-word);
+  font-weight: var(--fw-bold);
+  line-height: 1.2;
+  color: var(--ink);
+  overflow-wrap: anywhere;
 }
-.mean {
-  white-space: nowrap;
-  font-weight: 600;
-}
-.easy {
-  color: #39404c;
-}
-.ex {
-  color: #39404c;
-  font-style: italic;
-}
-.ex b {
-  font-style: normal;
-}
-/* 단어별 발음 스피커 버튼 (Web Speech API) */
+/* 단어별 발음 스피커 버튼 (Web Speech API) — 인쇄 시 숨김 */
 .speak {
   border: none;
   background: none;
   cursor: pointer;
-  font-size: 13px;
-  padding: 0 2px;
-  margin-left: 3px;
+  font-size: var(--fs-vocab-pron);
   line-height: 1;
-  vertical-align: baseline;
+  padding: 4px;
+  border-radius: var(--radius-chip);
+}
+.speak:hover {
+  background: var(--surface-2);
+}
+.pron {
+  display: block;
+  margin-top: 2px;
+  /* 한글 발음 — 15/500 ink-2 */
+  font-size: var(--fs-vocab-pron);
+  font-weight: var(--fw-medium);
+  color: var(--ink-2);
+}
+.marks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+.mark {
+  font-size: var(--fs-meta-chip);
+  font-weight: var(--fw-medium);
+  line-height: 1.5;
+  padding: 2px 8px;
+  border-radius: var(--radius-chip);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  white-space: nowrap;
+}
+.mean {
+  width: 18%;
+  /* 뜻 — 17/500 ink */
+  font-size: var(--fs-vocab-meaning);
+  font-weight: var(--fw-medium);
+  line-height: 1.5;
+  color: var(--ink);
+}
+.easy {
+  width: 22%;
+  /* 영영 풀이 — 14/300 ink-2 */
+  font-size: var(--fs-vocab-easy);
+  font-weight: var(--fw-light);
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+.ex {
+  /* 예문 — 15/300 ink-2, 대상 단어만 500 (밑줄·이탤릭 금지) */
+  font-size: var(--fs-vocab-example);
+  font-weight: var(--fw-light);
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+.ex b {
+  font-weight: var(--fw-medium);
+  font-style: normal;
+  color: var(--ink);
 }
 
-/* 아빠 티칭 포인트 박스 */
+/* 아빠 티칭 포인트 — 부모용 참고라 13/300, 연한 파랑 박스 */
 .tip {
-  border-radius: 12px;
-  padding: 12px 16px;
-  font-size: 13.5px;
-  margin: 12px 0 4px;
+  margin-top: 16px;
   background: var(--accent-soft);
+  border-radius: var(--radius-box);
+  padding: 14px 16px;
+  font-size: var(--fs-parent-hint);
+  font-weight: var(--fw-light);
+  line-height: 1.7;
+  color: var(--accent-ink);
 }
 .tip b {
-  display: inline-block;
+  font-weight: var(--fw-medium);
   margin-right: 4px;
 }
 
-/* 질문 카드 리스트 */
+/* -----------------------------------------------------------------------------
+ * 7. 질문 카드 — 유형 태그(작은 파란 칩) → 영어 20/500 → 한국어 16/300 → 힌트 13/300
+ * -------------------------------------------------------------------------- */
 .talk {
   margin: 0;
-  padding-left: 0;
+  padding: 0;
   list-style: none;
 }
 .talk li {
-  border: 1px solid var(--color-line);
-  border-radius: 12px;
-  padding: 12px 14px;
-  margin: 10px 0;
-  background: #fffefb;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+  padding: 16px 18px;
+  margin-top: 14px;
+}
+.talk li:first-child {
+  margin-top: 0;
 }
 .qtag {
-  display: inline-block;
-  font-size: 11px;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 6px;
-  margin-bottom: 6px;
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--fs-meta-chip);
+  font-weight: var(--fw-medium);
+  line-height: 1.6;
+  padding: 2px 10px;
+  border-radius: var(--radius-chip);
   background: var(--accent-soft);
-  color: var(--accent-deep);
+  color: var(--accent-ink);
+  margin-bottom: 10px;
 }
 .qEn {
+  /* 질문 영어 — 20/500, 아이에게 읽어줄 문장 */
   margin: 0;
-  font-size: 15px;
-  font-weight: 650;
+  font-size: var(--fs-question-en);
+  font-weight: var(--fw-medium);
+  line-height: 1.45;
+  color: var(--ink);
 }
 .qKo {
-  margin: 2px 0 0;
-  font-size: 13.5px;
-  color: var(--color-sub);
+  margin: 6px 0 0;
+  font-size: var(--fs-question-ko);
+  font-weight: var(--fw-light);
+  line-height: 1.6;
+  color: var(--ink-2);
 }
 .qHint {
-  margin: 6px 0 0;
-  font-size: 12.5px;
-  color: #6e7686;
-  border-top: 1px dashed var(--color-line);
-  padding-top: 6px;
+  /* 부모 힌트 — 13/300 ink-3, 연한 박스 */
+  margin: 12px 0 0;
+  background: var(--surface);
+  border-radius: var(--radius-box);
+  padding: 10px 12px;
+  font-size: var(--fs-parent-hint);
+  font-weight: var(--fw-light);
+  line-height: 1.7;
+  color: var(--ink-3);
 }
 
-/* funFacts (논픽션 전용) */
+/* 8. funFacts (논픽션 전용) */
 .factEn {
-  font-weight: 600;
+  display: block;
+  font-size: var(--fs-activity);
+  font-weight: var(--fw-medium);
+  line-height: 1.5;
+  color: var(--ink);
 }
 .factKo {
-  color: var(--color-sub);
-  font-size: 13px;
   display: block;
+  margin-top: 2px;
+  font-size: var(--fs-vocab-example);
+  font-weight: var(--fw-light);
+  line-height: 1.6;
+  color: var(--ink-2);
 }
 
-/* M3 — "오늘 읽었어요" 읽음 기록 패널 (인쇄 시 숨김) */
+/* -----------------------------------------------------------------------------
+ * M3 — "오늘 읽었어요" 읽음 기록 패널 (화면 전용)
+ * -------------------------------------------------------------------------- */
 .reading {
-  margin-top: 18px;
-  background: var(--color-card);
-  border: 1px solid var(--color-line);
-  border-radius: 16px;
-  padding: 18px 22px 20px;
-  box-shadow: 0 1px 3px rgba(32, 36, 43, 0.06);
+  margin-top: 24px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  padding: 20px 24px;
 }
 .readingTitle {
   margin: 0;
-  font-size: 16px;
+  font-size: var(--fs-section-title);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  color: var(--ink);
 }
 .readingCount {
-  margin: 4px 0 0;
-  font-size: 13px;
-  color: var(--color-sub);
+  margin: 6px 0 0;
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-light);
+  color: var(--ink-3);
 }
 .readingForm {
-  margin-top: 12px;
+  margin-top: 16px;
 }
 .readingRatingRow {
   display: flex;
@@ -362,14 +478,16 @@
   flex-wrap: wrap;
 }
 .readingRatingLabel {
-  font-size: 13.5px;
-  color: var(--color-sub);
+  font-size: var(--fs-parent-hint);
+  font-weight: var(--fw-light);
+  color: var(--ink-2);
 }
 .starBtn {
   border: none;
   background: none;
   cursor: pointer;
-  font-size: 26px;
+  /* 별 글리프는 손가락으로 누르는 크기 — 영단어와 같은 스케일 토큰을 재사용 */
+  font-size: var(--fs-vocab-word);
   line-height: 1;
   padding: 2px 3px;
   color: var(--accent);
@@ -378,75 +496,87 @@
   margin-top: 12px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  border: none;
-  border-radius: 12px;
-  background: var(--accent);
-  color: #fff;
-  font-size: 15px;
-  font-weight: 700;
+  min-height: var(--tap-min);
   padding: 12px 22px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-box);
+  background: var(--accent);
+  color: var(--bg);
+  font-family: inherit;
+  font-size: var(--fs-question-ko);
+  font-weight: var(--fw-medium);
+  line-height: 1.3;
   cursor: pointer;
 }
+.readingSubmit:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
 .readingSubmit:disabled {
-  opacity: 0.6;
+  opacity: 0.55;
   cursor: wait;
 }
 .readingDone {
-  margin-top: 12px;
-  border-radius: 12px;
+  margin-top: 16px;
+  border-radius: var(--radius-box);
   background: var(--accent-soft);
-  padding: 12px 16px;
+  padding: 14px 16px;
 }
 .readingDoneMsg {
   margin: 0;
-  font-size: 14.5px;
-  font-weight: 700;
+  font-size: var(--fs-question-ko);
+  font-weight: var(--fw-medium);
+  color: var(--accent-ink);
 }
 .readingStars {
   color: var(--accent);
   letter-spacing: 0.08em;
 }
 .readingFeedback {
-  margin: 4px 0 0;
-  font-size: 13px;
-  color: var(--accent-deep);
+  margin: 6px 0 0;
+  font-size: var(--fs-parent-hint);
+  font-weight: var(--fw-light);
+  color: var(--accent-ink);
 }
 .readingLibraryLink {
   display: inline-block;
-  margin-top: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--accent-deep);
+  margin-top: 10px;
+  font-size: var(--fs-parent-hint);
+  font-weight: var(--fw-medium);
+  color: var(--accent-ink);
   text-decoration: none;
 }
 .readingLibraryLink:hover {
   text-decoration: underline;
 }
 
-/* 하단 안내 */
+/* 하단 안내 — 캡션 12/300 */
 .note {
-  margin-top: 26px;
-  border-top: 1px solid var(--color-line);
+  margin-top: 24px;
+  border-top: 1px solid var(--line);
   padding-top: 16px;
-  color: var(--color-sub);
-  font-size: 12.5px;
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-light);
+  line-height: 1.7;
+  color: var(--ink-3);
 }
 .note p {
   margin: 4px 0;
 }
+.note b {
+  font-weight: var(--fw-medium);
+}
 
 /*
- * 인쇄 (M4, SPEC §8) — A4 세로, 책당 1~2쪽 목표.
- * - 페이지 브레이크: 단어장 행·질문 카드·팁 박스·리스트 항목은 중간에서 자르지
- *   않는다(break-inside: avoid). 섹션 제목은 다음 내용과 붙인다(break-after: avoid).
- *   큰 섹션(단어장 12행·질문 8개)에 통째 avoid를 걸면 페이지에 큰 공백이 생겨
- *   1~2쪽 목표가 깨지므로, 섹션 단위 유지는 행·항목 단위 회피로 달성한다.
- *   표가 쪽을 넘으면 thead(기본 table-header-group)가 다음 쪽에 자동 반복된다.
- * - 화면 전용 UI(내비·버튼·스피커·읽음 기록/별점)는 숨긴다.
- * - 테마 배경(print-color-adjust: exact)은 globals.css의 body 규칙이 담당하고,
- *   여기서도 명시해 이중으로 보장한다. @page(A4 세로·여백)는 globals.css에.
- */
+ * -----------------------------------------------------------------------------
+ * 인쇄 (DESIGN §6) — A4 세로, 책당 1~2쪽 목표
+ *   - 글자 크기는 globals.css의 @media print가 토큰을 약 90%로 갈아끼운다.
+ *     여기서는 **여백만** 줄인다(크기 재지정 금지 — 두 곳에서 크기를 정하면 어긋난다).
+ *     영단어 26px·질문 영어 20px는 토큰 단계에서 유지된다(읽어주는 글자).
+ *   - 질문 8개는 인쇄에서만 2단 조판 — 글자를 줄이지 않고 세로 길이를 절반으로.
+ *   - 행·질문 카드·박스 단위로만 break-inside: avoid (섹션 통째로 걸면 큰 공백이 생김).
+ * -------------------------------------------------------------------------- */
 @media print {
   :global(body) {
     background: #fff;
@@ -465,110 +595,200 @@
   .printHide {
     display: none;
   }
+  /* overflow:hidden 은 인쇄에서 카드를 '분할 불가(monolithic)' 상자로 만들어
+   * 쪽 나눔이 어긋난다 — 종이에서는 둥근 모서리를 포기하고 자연스럽게 흐르게 둔다 */
   .book {
-    box-shadow: none;
-    border-color: #ccc;
+    border-color: var(--line-strong);
+    overflow: visible;
+    border-radius: 0;
+  }
+  .tableWrap {
+    overflow: visible;
   }
 
-  /* 밀도 — 1~2쪽 목표로 여백·글자 크기를 화면보다 조금 줄인다 */
   .bookhead {
-    padding: 14px 18px 4px;
+    padding: 8px 14px 0;
     break-inside: avoid;
   }
   .intro {
-    padding: 4px 18px 0;
-    font-size: 12.5px;
+    margin-top: 6px;
+    padding: 0 14px;
+    line-height: 1.4;
     break-inside: avoid;
   }
   .section {
-    padding: 4px 18px 2px;
+    margin-top: 5px;
+    padding: 0 14px;
+  }
+  .section:last-of-type {
+    margin-bottom: 6px;
   }
   .h3 {
-    margin: 12px 0 6px;
+    margin-bottom: 3px;
     break-after: avoid; /* 제목만 페이지 끝에 홀로 남지 않게 */
   }
-  .plain {
-    font-size: 12.5px;
-  }
-  .plain li {
-    margin: 4px 0;
+  .story {
+    padding: 6px 12px;
     break-inside: avoid;
   }
-  .vocab {
-    font-size: 12px;
+  .storyText {
+    margin-top: 3px;
+    line-height: 1.4;
+  }
+  /* 리스트(워밍업·미션·재미있는 사실·확장 놀이)는 종이에서 2단 조판 —
+   * 글자 크기를 줄이지 않고 세로 길이를 줄이는 방법 */
+  .plain {
+    columns: 2;
+    column-gap: 16px;
+    line-height: 1.4;
+  }
+  .plain li {
+    margin: 0 0 3px;
+    break-inside: avoid;
+  }
+  .vocab th {
+    padding: 2px 8px;
   }
   .vocab td {
-    padding: 5px 6px;
+    padding: 1px 8px;
+  }
+  .word {
+    line-height: 1.05;
+  }
+  /* 종이에서는 단어 열을 좁히고 설명 열을 넓혀 줄바꿈(=행 높이)을 줄인다.
+   * 단어 크기는 그대로 26px — 아이에게 읽어주는 글자라 줄이지 않는다(DESIGN §6). */
+  .w {
+    width: 27%;
+  }
+  .easy {
+    width: 25%;
+  }
+  .easy,
+  .ex,
+  .mean {
+    line-height: 1.3;
   }
   .vocab tr {
     break-inside: avoid; /* 단어 행이 쪽 경계에서 잘리지 않게 */
   }
+  /* 종이에서는 발음·표시 칩을 단어 옆 한 줄로 붙인다 — 단어 크기(26px)를 줄이지
+   * 않으면서 12행짜리 표의 세로 길이를 줄이는 유일한 방법 */
+  .wordRow {
+    display: inline-flex;
+    vertical-align: middle;
+  }
+  .pron {
+    display: inline;
+    margin: 0 0 0 6px;
+  }
+  .marks {
+    display: inline-flex;
+    margin: 0 0 0 6px;
+    vertical-align: middle;
+  }
   .tip {
-    font-size: 12px;
-    padding: 9px 12px;
+    margin-top: 6px;
+    padding: 6px 12px;
     break-inside: avoid;
   }
-  /* 줄거리/내용 미리보기 — 팁 박스와 같은 밀도, 한 덩어리 유지 */
-  .story {
-    padding: 9px 12px;
-    margin: 8px 0 0;
-    break-inside: avoid;
-  }
-  .storyTitle {
-    font-size: 12.5px;
-  }
-  .storyText {
-    font-size: 12px;
-    margin-top: 4px;
+  /* 질문 8개도 2단 조판 — 질문 영어 20px는 그대로 둔다(읽어주는 글자) */
+  .talk {
+    columns: 2;
+    column-gap: 12px;
   }
   .talk li {
-    padding: 8px 11px;
-    margin: 6px 0;
-    break-inside: avoid; /* 질문 카드(태그+영/한+힌트)는 한 덩어리로 */
+    padding: 4px 9px;
+    margin: 0 0 4px;
+    break-inside: avoid;
   }
   .qEn {
-    font-size: 13px;
+    line-height: 1.35;
+  }
+  .qtag {
+    margin-bottom: 2px;
   }
   .qKo {
-    font-size: 12px;
+    margin-top: 1px;
   }
   .qHint {
-    font-size: 11.5px;
+    margin-top: 2px;
+    padding: 2px 8px;
   }
   .note {
-    margin-top: 14px;
-    font-size: 11px;
+    margin-top: 6px;
+    padding-top: 5px;
   }
 }
 
-/* 모바일 — 원본 560px 규칙 + M4 다듬기 (375px 기준 점검) */
+/*
+ * -----------------------------------------------------------------------------
+ * 모바일 (≤560px) — 표는 가로 스크롤 대신 **카드형**으로 전환한다.
+ *   26px 영단어가 4열 표에 들어가면 좁은 화면에서 표가 깨지므로,
+ *   행 하나를 단어 카드 한 장으로 바꾸고 열 순서(단어→뜻→쉬운 영어→예문)를
+ *   위에서 아래로 읽게 한다. 열이 사라져도 크기 위계로 역할이 구분된다.
+ * -------------------------------------------------------------------------- */
 @media (max-width: 560px) {
+  .wrap {
+    padding: 16px 12px 40px;
+  }
   .bookhead {
-    padding: 18px 16px 4px;
+    padding: 20px 18px 0;
   }
+  .intro,
   .section {
-    padding: 6px 16px 4px;
+    padding-left: 18px;
+    padding-right: 18px;
   }
-  .intro {
-    padding: 6px 16px 0;
+  .actionBtn {
+    min-height: var(--tap-min); /* 모바일 터치 최소 높이 */
   }
-  .easy {
-    display: none;
-  }
-  /* M4 — 뜻 열 줄바꿈 허용: 좁은 화면에서 표 가로 스크롤(.tableWrap)을 최소화 */
-  .mean {
-    white-space: normal;
-  }
-  /* M4 — 터치 타겟 확대: 스피커·별점·액션 버튼 (엄지 기준 여유) */
   .speak {
-    font-size: 15px;
-    padding: 5px 6px;
-    margin-left: 0;
+    padding: 6px;
   }
   .starBtn {
     padding: 6px 5px;
   }
-  .actionBtn {
-    padding: 10px 14px;
+
+  /* 단어장: 표 → 카드형 */
+  .tableWrap {
+    overflow-x: visible;
+  }
+  .vocab,
+  .vocab tbody,
+  .vocab tr,
+  .vocab td {
+    display: block;
+    width: 100%;
+  }
+  .vocab thead {
+    display: none;
+  }
+  .vocab tr {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-box);
+    padding: 14px 16px;
+    margin-bottom: 10px;
+  }
+  .vocab tbody tr:last-child {
+    margin-bottom: 0;
+  }
+  .vocab td,
+  .vocab tbody tr:last-child td {
+    border-bottom: none;
+    padding: 0;
+  }
+  .mean {
+    margin-top: 8px;
+  }
+  .easy,
+  .ex {
+    margin-top: 6px;
+  }
+
+  .talk li {
+    padding: 14px 16px;
+  }
+  .reading {
+    padding: 18px 16px;
   }
 }

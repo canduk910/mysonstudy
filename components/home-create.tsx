@@ -56,9 +56,12 @@ interface ManualPrefill {
 const MAX_IMAGE_EDGE = 1500;
 const JPEG_QUALITY = 0.85;
 
-const inputCls =
-  "w-full rounded-xl border border-line bg-white px-3 py-2.5 text-[15px] text-ink outline-none focus:border-fiction";
-const labelCls = "block text-[13px] font-semibold text-sub mb-1";
+/* 색·크기는 app/globals.css의 토큰 클래스만 쓴다 (docs/DESIGN.md §7) */
+const inputCls = "u-input";
+const labelCls = "u-label";
+/** 입력 패널 상자 — 흰 배경 + line 경계 + 카드 모서리 (DESIGN §5) */
+const panelCls =
+  "mt-6 rounded-[var(--radius-card)] border border-line bg-bg p-5 sm:p-6";
 
 // ---------------------------------------------------------------------------
 // 사진 리사이즈 (canvas — 긴 변 ~1500px, JPEG)
@@ -537,17 +540,17 @@ export default function HomeCreate() {
         aria-hidden
       />
 
-      {/* 큰 버튼 2개 */}
+      {/* 큰 버튼 2개 — 이 화면의 주인공. 주요(사진)만 accent 배경 (DESIGN §5) */}
       <div className="grid gap-3 sm:grid-cols-2">
         <button
           type="button"
           onClick={onPickPhotos}
           disabled={busy}
-          className="rounded-2xl border-2 border-nonfiction/50 bg-card p-5 text-left shadow-sm transition hover:border-nonfiction hover:shadow disabled:opacity-60"
+          className="u-entry u-entry-primary"
         >
-          <span className="text-3xl" aria-hidden>📷</span>
-          <span className="mt-2 block text-lg font-bold text-ink">표지 사진으로 만들기</span>
-          <span className="mt-1 block text-[13px] leading-snug text-sub">
+          <span className="u-entry-icon" aria-hidden>📷</span>
+          <span className="u-entry-title">표지 사진으로 만들기</span>
+          <span className="u-entry-desc">
             책 표지를 찍어 주세요. 정보 스티커(AR 지수)가 있으면 그 사진까지 최대 2장!
           </span>
         </button>
@@ -560,57 +563,72 @@ export default function HomeCreate() {
             scrollToPanel();
           }}
           disabled={busy}
-          className="rounded-2xl border-2 border-fiction/50 bg-card p-5 text-left shadow-sm transition hover:border-fiction hover:shadow disabled:opacity-60"
+          className="u-entry u-entry-secondary"
         >
-          <span className="text-3xl" aria-hidden>✏️</span>
-          <span className="mt-2 block text-lg font-bold text-ink">책 이름으로 만들기</span>
-          <span className="mt-1 block text-[13px] leading-snug text-sub">
+          <span className="u-entry-icon" aria-hidden>✏️</span>
+          <span className="u-entry-title">책 이름으로 만들기</span>
+          <span className="u-entry-desc">
             제목만 있어도 시작할 수 있어요. 책 소개와 표지는 저희가 찾아 드려요.
           </span>
         </button>
       </div>
 
-      {/* 진행 상태 — 실제 호출 단계와 1:1 (SPEC §3) */}
+      {/* 진행 상태 — 실제 호출 단계와 1:1 (SPEC §3).
+          지난 단계·현재 단계는 파란 점, 남은 단계는 옅은 회색 점으로 단정하게. */}
       {busy && (
-        <div className="mt-6 rounded-2xl border border-line bg-card p-6 text-center">
-          <ol className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
+        <div
+          role="status"
+          aria-live="polite"
+          className="mt-6 rounded-[var(--radius-card)] border border-line bg-bg p-5"
+        >
+          <div className="flex items-baseline justify-between gap-3">
+            <p className="t-question-ko font-medium text-ink">
+              {phase ? STEP_LABEL[phase] : STEP_LABEL[steps[0]]}…
+            </p>
+            <p className="t-meta-chip flex-none">
+              {Math.max(0, activeIdx) + 1} / {steps.length}
+            </p>
+          </div>
+
+          {/* 진행 표시 — 트랙은 line, 지나온 구간만 accent (파랑 하나로) */}
+          <div className="mt-3 flex gap-1.5" aria-hidden>
             {steps.map((step, i) => (
-              <li key={step} className="flex items-center gap-2 text-[14px]">
-                <span
-                  className={
-                    i < activeIdx
-                      ? "font-semibold text-sub"
-                      : i === activeIdx
-                        ? "font-bold text-ink"
-                        : "text-sub/60"
-                  }
-                >
-                  <span aria-hidden>{i < activeIdx ? "✅" : i === activeIdx ? "⏳" : "○"}</span>{" "}
-                  {STEP_LABEL[step]}
-                </span>
-                {i < steps.length - 1 && (
-                  <span className="text-sub/50" aria-hidden>→</span>
-                )}
+              <span
+                key={step}
+                className={`h-1.5 flex-1 rounded-full ${i <= activeIdx ? "bg-accent" : "bg-line"}`}
+              />
+            ))}
+          </div>
+
+          <ol className="mt-3 flex flex-wrap gap-x-3 gap-y-1">
+            {steps.map((step, i) => (
+              <li
+                key={step}
+                className={`t-meta-chip ${
+                  i < activeIdx ? "text-ink-2" : i === activeIdx ? "text-accent-ink" : "text-ink-3"
+                }`}
+              >
+                {i < activeIdx ? "✓ " : ""}
+                {STEP_LABEL[step]}
               </li>
             ))}
           </ol>
-          <p className="mt-3 text-[13px] text-sub">
-            보통 20~40초 정도 걸려요. 조금만 기다려 주세요!
-          </p>
+
+          <p className="t-caption mt-3">보통 20~40초 정도 걸려요. 조금만 기다려 주세요!</p>
         </div>
       )}
 
       {/* 동일 책 재등록 (SPEC §9) — 기존 카드로 이동 + "그래도 새로 만들기" */}
       {!busy && duplicate && (
-        <div className="mt-6 rounded-2xl border border-line bg-card p-6 text-center">
-          <p className="text-base font-bold text-ink">이미 이 책으로 만든 카드가 있어요 📚</p>
-          <p className="mt-1 text-[13px] text-sub">기존 카드를 볼까요, 새로 하나 더 만들까요?</p>
+        <div className="mt-6 rounded-[var(--radius-card)] border border-line bg-bg p-5 text-center">
+          <p className="t-section-title">이미 이 책으로 만든 카드가 있어요 📚</p>
+          <p className="t-caption mt-1">기존 카드를 볼까요, 새로 하나 더 만들까요?</p>
           <div className="mt-4 flex flex-wrap justify-center gap-2">
             {duplicate.cardId && (
               <button
                 type="button"
                 onClick={() => router.push(`/card/${duplicate.cardId}`)}
-                className="rounded-xl bg-fiction px-4 py-2.5 text-[14px] font-bold text-white"
+                className="u-btn u-btn-primary"
               >
                 기존 카드 보기
               </button>
@@ -622,7 +640,7 @@ export default function HomeCreate() {
                 setSteps(["card"]);
                 void runCard({ ...lastCardPayload.current, force: true });
               }}
-              className="rounded-xl border border-line bg-white px-4 py-2.5 text-[14px] font-semibold text-ink"
+              className="u-btn u-btn-secondary"
             >
               그래도 새로 만들기
             </button>
@@ -632,13 +650,16 @@ export default function HomeCreate() {
 
       {/* 오류 패널 — 재시도는 실패한 단계부터 다시 (SPEC §9) */}
       {!busy && errorKo && (
-        <div className="mt-4 rounded-xl border border-fiction/40 bg-fiction/10 px-4 py-3 text-[13.5px] text-ink">
-          <p>{errorKo}</p>
+        <div
+          role="alert"
+          className="u-box-accent mt-4"
+        >
+          <p className="t-question-ko text-ink">{errorKo}</p>
           {canRetry && (
             <button
               type="button"
               onClick={() => retryAction.current?.()}
-              className="mt-2 rounded-lg border border-line bg-white px-4 py-2.5 text-[13.5px] font-semibold"
+              className="u-btn u-btn-secondary mt-3"
             >
               재시도
             </button>
@@ -648,12 +669,9 @@ export default function HomeCreate() {
 
       {/* 패널: 책 이름으로 만들기 (제목 + 저자 선택) */}
       {panel === "title" && (
-        <div
-          ref={panelRef}
-          className={`mt-6 rounded-2xl border border-line bg-card p-5 sm:p-6 ${busy || duplicate ? "hidden" : ""}`}
-        >
-          <h2 className="text-lg font-bold text-ink">책 이름으로 만들기</h2>
-          <p className="mt-1 text-[13px] text-sub">
+        <div ref={panelRef} className={`${panelCls} ${busy || duplicate ? "hidden" : ""}`}>
+          <h2 className="t-section-title">책 이름으로 만들기</h2>
+          <p className="t-caption mt-1">
             제목만 적어도 돼요. 저자까지 적으면 책을 더 정확히 찾아요. AR 정보가 없으면
             레벨을 추정하고 카드에 &lsquo;레벨 추정&rsquo; 배지가 붙어요.
           </p>
@@ -666,10 +684,7 @@ export default function HomeCreate() {
               <label htmlFor="t-author" className={labelCls}>저자 (선택)</label>
               <input id="t-author" name="author" className={inputCls} placeholder="예: Laura Marsh" />
             </div>
-            <button
-              type="submit"
-              className="rounded-xl bg-fiction px-4 py-3 text-base font-bold text-white shadow-sm transition hover:brightness-105"
-            >
+            <button type="submit" className="u-btn u-btn-primary w-full">
               🪄 학습 카드 만들기
             </button>
           </form>
@@ -679,7 +694,7 @@ export default function HomeCreate() {
               setPanel("manual");
               scrollToPanel();
             }}
-            className="mt-2 inline-block py-2 text-[13px] font-semibold text-sub underline underline-offset-2"
+            className="t-meta-chip mt-3 inline-block py-2 text-ink-2 underline underline-offset-2"
           >
             AR 지수·주제까지 알고 있어요 — 직접 입력하기
           </button>
@@ -688,26 +703,19 @@ export default function HomeCreate() {
 
       {/* 패널: 직접 입력 (전체 폼 — 고급 입력이자 §9 판독 실패 폴백) */}
       {panel === "manual" && (
-        <div
-          ref={panelRef}
-          className={`mt-6 rounded-2xl border border-line bg-card p-5 sm:p-6 ${busy || duplicate ? "hidden" : ""}`}
-        >
+        <div ref={panelRef} className={`${panelCls} ${busy || duplicate ? "hidden" : ""}`}>
           {/* 판독 실패 안내 (SPEC §9 "다시 찍어주세요") */}
           {retakeKo && (
-            <div className="mb-4 rounded-xl border border-nonfiction/40 bg-nonfiction/10 px-4 py-3 text-[13.5px] text-ink">
-              <p>📷 {retakeKo}</p>
-              <button
-                type="button"
-                onClick={onPickPhotos}
-                className="mt-2 rounded-lg border border-line bg-white px-4 py-2.5 text-[13.5px] font-semibold"
-              >
+            <div className="u-box-accent mb-4">
+              <p className="t-question-ko text-ink">📷 {retakeKo}</p>
+              <button type="button" onClick={onPickPhotos} className="u-btn u-btn-secondary mt-3">
                 다시 찍기
               </button>
             </div>
           )}
 
-          <h2 className="text-lg font-bold text-ink">책 정보 직접 입력</h2>
-          <p className="mt-1 text-[13px] text-sub">
+          <h2 className="t-section-title">책 정보 직접 입력</h2>
+          <p className="t-caption mt-1">
             제목·주제·픽션 여부만 필수예요. AR 같은 정보는 책 뒤 정보 스티커에 있으면 함께
             적어 주세요 — 카드가 더 정확해져요.
           </p>
@@ -753,27 +761,28 @@ export default function HomeCreate() {
             <fieldset>
               <legend className={labelCls}>어떤 책인가요? *</legend>
               <div className="flex gap-2">
-                <label className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border border-line bg-white px-3 py-2.5 text-[14px] font-semibold text-ink has-checked:border-fiction has-checked:bg-fiction/10">
+                <label className="t-question-ko flex min-h-[var(--tap-min)] flex-1 cursor-pointer items-center justify-center gap-2 rounded-[var(--radius-box)] border border-line bg-bg px-3 text-ink has-checked:border-accent has-checked:bg-accent-soft">
                   <input
                     type="radio"
                     name="isFiction"
                     value="fiction"
-                    className="accent-fiction"
+                    className="accent-accent"
                     defaultChecked={prefill?.isFiction === true}
                   />
-                  📖 픽션 (이야기 책)
+                  📖 픽션
                 </label>
-                <label className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border border-line bg-white px-3 py-2.5 text-[14px] font-semibold text-ink has-checked:border-nonfiction has-checked:bg-nonfiction/10">
+                <label className="t-question-ko flex min-h-[var(--tap-min)] flex-1 cursor-pointer items-center justify-center gap-2 rounded-[var(--radius-box)] border border-line bg-bg px-3 text-ink has-checked:border-accent has-checked:bg-accent-soft">
                   <input
                     type="radio"
                     name="isFiction"
                     value="nonfiction"
-                    className="accent-nonfiction"
+                    className="accent-accent"
                     defaultChecked={prefill?.isFiction === false}
                   />
-                  🔬 논픽션 (정보 책)
+                  🔬 논픽션
                 </label>
               </div>
+              <p className="t-caption mt-2">이야기 책이면 픽션, 정보를 알려주는 책이면 논픽션이에요.</p>
             </fieldset>
 
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -831,7 +840,7 @@ export default function HomeCreate() {
                 />
               </div>
             </div>
-            <p className="-mt-2 text-[12px] text-sub">
+            <p className="t-caption -mt-2">
               AR을 비워 두면 주제·소개글로 레벨을 추정하고 카드에 &lsquo;레벨 추정&rsquo; 배지가 붙어요.
             </p>
 
@@ -869,10 +878,7 @@ export default function HomeCreate() {
               />
             </div>
 
-            <button
-              type="submit"
-              className="rounded-xl bg-fiction px-4 py-3 text-base font-bold text-white shadow-sm transition hover:brightness-105"
-            >
+            <button type="submit" className="u-btn u-btn-primary w-full">
               🪄 학습 카드 만들기
             </button>
           </form>

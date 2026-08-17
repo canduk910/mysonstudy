@@ -16,7 +16,8 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="ko">
-      {/* 폰트: 시스템 폰트 스택 — 외부 폰트·CDN 로딩 금지 (SPEC §8) */}
+      {/* 폰트: G마켓 산스 self-host(public/fonts/*.woff2) — 외부 CDN 없음.
+          @font-face·색·타이포 토큰은 app/globals.css (docs/DESIGN.md §2~§6) */}
       <body className="min-h-screen antialiased">{children}</body>
     </html>
   );
