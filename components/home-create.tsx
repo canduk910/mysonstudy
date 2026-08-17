@@ -815,12 +815,13 @@ export default function HomeCreate({
 
   return (
     <section>
-      {/* 숨긴 파일 입력 (SPEC §4-1 — image/*, 후면 카메라, 최대 3장) */}
+      {/* 숨긴 파일 입력 (SPEC §4-1 — image/*, 최대 3장)
+          capture는 쓰지 않는다 — 모바일에서 카메라를 바로 열고 한 장만 받으며
+          multiple을 무시한다. 표지+스티커+뒤표지를 한 번에 고르려면 보관함이 필요하다. */}
       <input
         ref={fileInputRef}
         type="file"
         accept="image/*"
-        capture="environment"
         multiple
         onChange={onFilesSelected}
         className="hidden"
@@ -1116,7 +1117,10 @@ export default function HomeCreate({
               ref={coverInputRef}
               type="file"
               accept="image/*"
-              capture="environment"
+              // capture를 두면 안 된다 — 모바일 브라우저가 카메라를 바로 열고 **한 장만**
+              // 받으며 multiple을 무시한다(iOS Safari·Android Chrome 공통). 표지·스티커·
+              // 뒤표지를 한 번에 고르려면 사진 보관함이 열려야 한다. 카메라는 보관함
+              // 선택 시트에서 여전히 한 번에 갈 수 있다.
               multiple
               className={inputCls}
               onChange={(e) => {
@@ -1176,23 +1180,40 @@ export default function HomeCreate({
               ref={pageInputRef}
               type="file"
               accept="image/*"
-              capture="environment"
+              // capture 금지 — 있으면 카메라가 바로 열리고 **한 장만** 받는다(multiple 무시).
+              // 본문은 12~16장을 골라야 하므로 사진 보관함이 열려야 한다.
               multiple
               className={`${inputCls} mt-2`}
               onChange={(e) => {
-                const picked = Array.from(e.target.files ?? []).slice(0, pagesMaxImages);
+                // 이어 담기 — 보관함에서 한 번에 다 고르지 못했거나 나눠 찍은 경우를 위해
+                // 기존 선택에 덧붙인다. 처음부터 다시 고르려면 아래 "전체 지우기".
+                const added = Array.from(e.target.files ?? []);
                 e.target.value = "";
-                setPageFiles(picked);
+                if (added.length === 0) return;
+                const merged = [...pageFiles, ...added].slice(0, pagesMaxImages);
+                setPageFiles(merged);
                 clearStatus();
                 // 이미 표지 판독이 끝난 상태(검토 패널의 "본문 다시 찍기", 또는 장면이
                 // 거절된 뒤 다시 찍기)라면 표지 판독을 다시 하지 않고 본문만 재판독한다
-                if (pagesFlowReady.current && picked.length > 0) void retakePages(picked, sceneKind);
+                if (pagesFlowReady.current) void retakePages(merged, sceneKind);
               }}
             />
             {pageFiles.length > 0 && (
               <p className="t-caption mt-1">
                 ✓ {sceneKind === "toc" ? "목차" : "본문"} {pageFiles.length}장 골랐어요 (
                 {pagesBatchSize}장씩 {Math.ceil(pageFiles.length / pagesBatchSize)}묶음으로 읽어요)
+                {pageFiles.length >= pagesMaxImages && ` — 최대 ${pagesMaxImages}장까지예요`}
+                {" · "}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPageFiles([]);
+                    clearStatus();
+                  }}
+                  className="underline"
+                >
+                  전체 지우기
+                </button>
               </p>
             )}
             <p className="t-caption mt-2">
