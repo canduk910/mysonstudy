@@ -77,6 +77,12 @@ export type NewBook = Omit<BookRecord, "id" | "createdAt">;
 export type NewCard = Omit<CardRecord, "id" | "createdAt">;
 export type NewReading = Omit<ReadingRecord, "id">;
 
+/** 책 삭제로 함께 지워진 개수 — 삭제 완료 안내에 그대로 쓴다 */
+export interface DeleteBookResult {
+  cards: number;
+  readings: number;
+}
+
 export interface CardWithBook {
   card: CardRecord;
   book: BookRecord;
@@ -92,6 +98,13 @@ export interface BookCardStore {
   listBooks(): Promise<BookRecord[]>;
   /** 동일 책 재등록 감지용(SPEC §9) — 제목+저자 정규화(공백·대소문자 무시) 일치 */
   findBookByTitleAuthor(title: string, author: string): Promise<BookRecord | null>;
+  /**
+   * 책 삭제 — 그 책의 카드와 읽음 기록까지 **연쇄 삭제**하고 지운 개수를 돌려준다.
+   * 되돌릴 수 없다(휴지통 없음 — 가족용 소규모 앱, 단순함 우선).
+   * 없는 bookId면 아무것도 지우지 않고 {cards:0, readings:0}을 돌려준다
+   * (존재 확인·404는 호출측 라우트의 몫 — 스토어는 "그 책과 딸린 것이 없는 상태"만 보장).
+   */
+  deleteBook(bookId: string): Promise<DeleteBookResult>;
 
   createCard(input: NewCard): Promise<CardRecord>;
   getCard(id: string): Promise<CardRecord | null>;
@@ -198,6 +211,22 @@ class JsonFileStore implements BookCardStore {
     const key = normalizeTitleAuthorKey(title, author);
     const db = await readDb();
     return db.books.find((b) => normalizeTitleAuthorKey(b.title, b.author) === key) ?? null;
+  }
+
+  async deleteBook(bookId: string): Promise<DeleteBookResult> {
+    // 한 번의 mutate(= 읽기→변경→원자적 쓰기) 안에서 셋을 함께 지운다 —
+    // 카드만 지워지고 책이 남는 중간 상태가 파일에 남지 않는다.
+    return this.mutate((db) => {
+      const cardsBefore = db.cards.length;
+      const readingsBefore = db.readings.length;
+      db.books = db.books.filter((b) => b.id !== bookId);
+      db.cards = db.cards.filter((c) => c.bookId !== bookId);
+      db.readings = db.readings.filter((r) => r.bookId !== bookId);
+      return {
+        cards: cardsBefore - db.cards.length,
+        readings: readingsBefore - db.readings.length,
+      };
+    });
   }
 
   async createCard(input: NewCard): Promise<CardRecord> {

@@ -30,6 +30,7 @@ import {
   type BookRecord,
   type CardRecord,
   type CardWithBook,
+  type DeleteBookResult,
   type NewBook,
   type NewCard,
   type NewReading,
@@ -111,6 +112,13 @@ function byCreatedAtDesc(a: { createdAt: string }, b: { createdAt: string }): nu
   return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0;
 }
 
+/**
+ * 한 배치에 담는 최대 작업 수. Firestore WriteBatch의 상한은 500 —
+ * 가족용 규모(책당 카드 몇 장·기록 수십 건)에서는 넘칠 일이 없지만,
+ * 넘치면 커밋 전체가 실패하므로 여유를 두고 나눠 커밋한다.
+ */
+const BATCH_LIMIT = 450;
+
 // ---------------------------------------------------------------------------
 // 구현
 // ---------------------------------------------------------------------------
@@ -151,6 +159,31 @@ export class FirestoreStore implements BookCardStore {
     const key = normalizeTitleAuthorKey(title, author);
     const books = await this.listBooks();
     return books.find((b) => normalizeTitleAuthorKey(b.title, b.author) === key) ?? null;
+  }
+
+  async deleteBook(bookId: string): Promise<DeleteBookResult> {
+    // where 필터만 쿼리(복합 인덱스 불필요) → 문서 참조를 모아 batch로 지운다.
+    const [cardSnap, readingSnap] = await Promise.all([
+      this.cards().where("bookId", "==", bookId).get(),
+      this.readings().where("bookId", "==", bookId).get(),
+    ]);
+
+    // 책 문서를 **마지막에** 지운다 — 중간에 실패해도 "카드 없는 책"(다시 지우면 되는 상태)이
+    // 남을 뿐, "책 없는 유령 카드"는 남지 않는다.
+    const refs = [
+      ...cardSnap.docs.map((d) => d.ref),
+      ...readingSnap.docs.map((d) => d.ref),
+      this.books().doc(bookId),
+    ];
+
+    const db = getDb();
+    for (let i = 0; i < refs.length; i += BATCH_LIMIT) {
+      const batch = db.batch();
+      for (const ref of refs.slice(i, i + BATCH_LIMIT)) batch.delete(ref);
+      await batch.commit();
+    }
+
+    return { cards: cardSnap.size, readings: readingSnap.size };
   }
 
   async createCard(input: NewCard): Promise<CardRecord> {
