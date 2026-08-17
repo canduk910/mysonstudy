@@ -2,8 +2,8 @@
 #
 # 인증: Workload Identity Federation (키 파일·GitHub Secret 없음).
 #   canduk910/mysonstudy 저장소의 워크플로만 github-deployer SA로 인증된다.
-# eval(npm run eval:cards)은 CI에 넣지 않는다 — 실제 OpenAI 호출 2회가 발생하는
-#   수동 전용 회귀 테스트다 (docs/HARNESS.md §5). 프롬프트 수정 시 로컬에서 돌리고 커밋할 것.
+# eval(npm run eval:english)은 CI에 넣지 않는다 — 실제 OpenAI 호출이 발생하는
+#   수동 전용 회귀 테스트다 (docs/harness/english.md §5). 프롬프트 수정 시 로컬에서 돌리고 커밋할 것.
 # 서비스의 env·secret(OPENAI_MODEL, OPENAI_API_KEY 등)은 최초 배포 때 설정된 값이
 #   재배포에도 유지되므로 여기서 다시 지정하지 않는다.
 

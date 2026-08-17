@@ -20,7 +20,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { digestPages, isPagesError, PAGES_BATCH_SIZE, PAGES_MAX_IMAGES } from "@/lib/ai/client";
-import { normalizeSceneDigest, SCENE_SOURCE_KINDS } from "@/lib/ai/schemas";
+import { normalizeSceneDigest, SCENE_SOURCE_KINDS } from "@/lib/ai/english/schemas";
 import { getStore } from "@/lib/store";
 
 export const runtime = "nodejs";

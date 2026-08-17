@@ -21,7 +21,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Card, SceneDigestItem, SceneSourceKind } from "./ai/schemas";
+import type { Card, SceneDigestItem, SceneSourceKind } from "./ai/english/schemas";
 import { FirestoreStore } from "./store-firestore";
 
 // ---------------------------------------------------------------------------

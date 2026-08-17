@@ -1,5 +1,9 @@
 /**
- * lib/ai/client.ts — OpenAI 클라이언트 + callWithSchema() 공통 래퍼 (docs/HARNESS.md §4)
+ * lib/ai/client.ts — OpenAI 클라이언트 + callWithSchema() 공통 래퍼
+ *
+ * **과목 공유 모듈이다.** 래퍼 계약(Structured Outputs → zod → 1회 재요청 → 로깅)은
+ * docs/HARNESS.md(과목 공통 규약), 영어 호출의 상세는 docs/harness/english.md §4를 따른다.
+ * 과목별 분기는 이 파일이 아니라 호출부에 둔다.
  *
  * 서버 전용 모듈이다. 클라이언트 컴포넌트/클라이언트 번들에서 import 금지 (API 키 노출 방지).
  * 호출 흐름: Responses API(Structured Outputs) → JSON.parse → zod → 실패 시 1회 재요청 → 재실패 throw.
@@ -22,7 +26,7 @@ import {
   type SceneDigestItem,
   type SceneSourceKind,
   type StrictJsonSchema,
-} from "./schemas";
+} from "./english/schemas";
 import {
   CARD_SYSTEM_PROMPT,
   EXTRACT_SYSTEM_PROMPT,
@@ -31,7 +35,7 @@ import {
   buildCardUserMessage,
   buildPagesUserMessage,
   type CardUserMessageInput,
-} from "./prompts";
+} from "./english/prompts";
 
 /**
  * OPENAI_MODEL 미설정 시 기본 모델.
@@ -234,7 +238,7 @@ export async function callWithSchema<T>(args: CallWithSchemaArgs<T>): Promise<T>
 
 // ---------------------------------------------------------------------------
 // 호출 A/B 편의 함수 — 프롬프트·스키마·파라미터를 한 곳에서 배선한다.
-// (route handler와 scripts/eval-cards.ts가 공유)
+// (route handler와 scripts/eval-english.ts가 공유)
 // ---------------------------------------------------------------------------
 
 /** 호출 A — 표지 판독. 이미지 1~2장(base64 data URL)을 받는다. */

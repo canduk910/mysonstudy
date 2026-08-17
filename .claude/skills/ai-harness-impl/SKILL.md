@@ -5,7 +5,7 @@ description: "ai-engineer·app-builder 에이전트가 구현 작업을 수행�
 
 # AI Harness Impl — 스펙 기반 구현 가이드
 
-AI 호출은 `docs/HARNESS.md`, 앱 전체는 `docs/SPEC.md`가 진실 원천이다. 구현 전 반드시 둘 다 읽는다. 이 스킬은 스펙을 재서술하지 않는다 — 스펙이 그대로 코드가 되게 하는 실무 규칙과, 스펙이 말하지 않는 SDK 세부만 담는다.
+AI 호출은 해당 과목 스펙(`docs/harness/english.md` · `docs/harness/math.md`)과 **과목 공통 규약 `docs/HARNESS.md`**, 앱 전체는 `docs/SPEC.md`가 진실 원천이다. 공유 래퍼(`lib/ai/client.ts`)를 만질 때는 공통 규약을 먼저 읽는다. 구현 전 반드시 둘 다 읽는다. 이 스킬은 스펙을 재서술하지 않는다 — 스펙이 그대로 코드가 되게 하는 실무 규칙과, 스펙이 말하지 않는 SDK 세부만 담는다.
 
 ## 과목 라우팅 — 먼저 읽을 것
 
@@ -61,7 +61,7 @@ const raw = res.output_text; // SDK 편의 getter
 - JSON Schema와 별개로 zod를 손으로 작성하되, 필드·타입이 1:1 대응하는지 스스로 대조한다 (자동 변환 라이브러리로 JSON Schema를 생성하지 않는다 — 스펙의 스키마 원문이 기준).
 - 스펙 §4의 추가 검증(개수·중복·금지어·isCore 1개·픽션/논픽션 분기)은 `.superRefine()`으로 구현한다.
 - 카드 검증은 AR 값과 픽션 여부에 의존하므로, 카드 zod 스키마는 `makeLearningCardSchema(meta: { arLevel: number | null; isFiction: boolean })` 같은 팩토리로 만든다.
-- **사이트워드 차단 목록(§5)은 schemas.ts에서 상수로 export하고, zod 검증과 eval-cards.ts가 같은 상수를 import한다.** 목록이 두 곳에 살면 반드시 어긋난다 — QA가 별도 정의를 실패로 판정한다.
+- **사이트워드 차단 목록(§5)은 english/schemas.ts에서 상수로 export하고, zod 검증과 eval-english.ts가 같은 상수를 import한다.** 목록이 두 곳에 살면 반드시 어긋난다 — QA가 별도 정의를 실패로 판정한다.
 
 ## 라우트 연결 (app-builder용)
 
@@ -70,7 +70,7 @@ const raw = res.output_text; // SDK 편의 getter
 - `/api/card`: 메타데이터 수신 → §3-2 템플릿 그대로 user 메시지 조립(널 폴백 문구 포함) → `callWithSchema('card')`.
 - 응답 shape은 빌드 리포트에 명시한다 — qa-inspector가 프론트 기대 타입과 교차 검증한다.
 
-## eval-cards.ts 픽스처
+## eval-english.ts 픽스처
 
 픽스처 2권(Wolves, Pooh Gets Stuck)의 값은 `docs/SPEC.md` §12를 그대로 사용한다 (`.claude/skills/prompt-eval/SKILL.md`의 픽스처 표와 동일). 임의 값으로 만들면 bookcard-qa가 "픽스처가 §12 정의와 불일치"로 실패 판정한다.
 
@@ -78,5 +78,5 @@ const raw = res.output_text; // SDK 편의 getter
 
 - [ ] `tsc` 통과 (strict)
 - [ ] study-qa 스킬의 정합성 매트릭스 + 스펙 준수 체크리스트 통과
-- [ ] `package.json`에 `"eval:cards": "tsx scripts/eval-cards.ts"` 등록
+- [ ] `package.json`에 `"eval:english": "tsx scripts/eval-english.ts"` 등록
 - [ ] 임의 판단(스펙 공백)이 전부 빌드 리포트에 목록화됨

@@ -106,14 +106,14 @@ gcloud run deploy eunwoo-bookcard --source . --region asia-northeast3
 
 ## 4. 프롬프트 수정 워크플로 (필수 순서)
 
-프롬프트도 코드처럼 회귀 테스트를 거칩니다(`docs/HARNESS.md` §5·§6).
+프롬프트도 코드처럼 회귀 테스트를 거칩니다(`docs/harness/english.md` §5·§6).
 
-1. `lib/ai/prompts.ts`(또는 `lib/ai/schemas.ts`)를 수정한다
-2. `npm run eval:cards` 실행 — 픽스처로 실제 카드를 생성해 자동 점검 (`OPENAI_API_KEY` 필요, **실호출 3회** 발생. 본문 근거 경로를 빼고 2회만 돌리려면 `EVAL_SKIP_PAGES=1`)
+1. `lib/ai/english/prompts.ts`(또는 `lib/ai/english/schemas.ts`)를 수정한다
+2. `npm run eval:english` 실행 — 픽스처로 실제 카드를 생성해 자동 점검 (`OPENAI_API_KEY` 필요, **실호출 3회** 발생. 본문 근거 경로를 빼고 2회만 돌리려면 `EVAL_SKIP_PAGES=1`)
 3. **항목별 pass/fail 표가 전부 통과(exit 0)하는지 확인**한다
 4. 통과했을 때만 커밋한다
 
-단어 개수·challenge 비율·질문 열림/닫힘 비율·힌트 밀도 같은 품질 다이얼은 전부 `lib/ai/prompts.ts`의 시스템 프롬프트 숫자만 바꾸면 됩니다.
+단어 개수·challenge 비율·질문 열림/닫힘 비율·힌트 밀도 같은 품질 다이얼은 전부 `lib/ai/english/prompts.ts`의 시스템 프롬프트 숫자만 바꾸면 됩니다.
 
 ## 5. 명세에 없던 판단 기록
 
@@ -172,4 +172,4 @@ gcloud run deploy eunwoo-bookcard --source . --region asia-northeast3
 
 ## 6. 개발 하네스
 
-이 저장소는 클로드 코드 하네스로 개발됩니다 — AI 호출 명세(프롬프트·스키마·검증·eval)는 `docs/HARNESS.md`, 앱 전체 명세는 `docs/SPEC.md`, 에이전트·스킬 구성은 `.claude/`를 참조하세요.
+이 저장소는 클로드 코드 하네스로 개발됩니다 — AI 호출 명세(프롬프트·스키마·검증·eval)는 과목별로 `docs/harness/english.md`(영어 북카드)·`docs/harness/math.md`(수학 코치, 예정)에 있고 과목 공통 규약은 `docs/HARNESS.md`, 앱 전체 명세는 `docs/SPEC.md`, 에이전트·스킬 구성은 `.claude/`를 참조하세요.

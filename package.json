@@ -8,7 +8,7 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "seed": "tsx scripts/seed.ts",
-    "eval:cards": "tsx scripts/eval-cards.ts"
+    "eval:english": "tsx scripts/eval-english.ts"
   },
   "dependencies": {
     "firebase-admin": "^14.2.0",

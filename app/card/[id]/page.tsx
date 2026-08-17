@@ -10,7 +10,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import CardView, { type CardHistoryItem } from "@/components/card-view";
-import { resolveStorySource } from "@/lib/ai/schemas";
+import { resolveStorySource } from "@/lib/ai/english/schemas";
 import { getStore } from "@/lib/store";
 
 // db.json은 요청 시점에 읽는다

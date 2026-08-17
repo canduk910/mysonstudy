@@ -1,9 +1,9 @@
 /**
- * lib/ai/prompts.ts — AI 호출 프롬프트 원문 (docs/HARNESS.md §2·§3)
+ * lib/ai/english/prompts.ts — AI 호출 프롬프트 원문 (docs/harness/english.md §2·§3)
  *
  * 주의: §2-1·§3-1 시스템 프롬프트는 스펙 원문 그대로다. 문구를 다듬거나 요약하지 않는다.
- * 개수·비율 다이얼이 문장 안에 박혀 있고, eval 하네스(scripts/eval-cards.ts)가 그 숫자에 걸려 있다.
- * 프롬프트 수정 → `npm run eval:cards` 통과 확인 → 커밋 순서를 지킬 것.
+ * 개수·비율 다이얼이 문장 안에 박혀 있고, eval 하네스(scripts/eval-english.ts)가 그 숫자에 걸려 있다.
+ * 프롬프트 수정 → `npm run eval:english` 통과 확인 → 커밋 순서를 지킬 것.
  */
 
 import {

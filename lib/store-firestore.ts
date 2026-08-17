@@ -42,7 +42,7 @@ import {
   type Card,
   type SceneDigestItem,
   type SceneSourceKind,
-} from "./ai/schemas";
+} from "./ai/english/schemas";
 // store.ts는 이 파일을 값으로 import하므로(FirestoreStore), 가드는 별도 모듈에 둔다 — 순환 방지
 import { assertDestructiveAllowed } from "./prod-guard";
 

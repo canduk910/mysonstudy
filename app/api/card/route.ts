@@ -27,7 +27,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { DEFAULT_OPENAI_MODEL, generateCard } from "@/lib/ai/client";
-import type { CardUserMessageInput } from "@/lib/ai/prompts";
+import type { CardUserMessageInput } from "@/lib/ai/english/prompts";
 import {
   attachSceneDigest,
   MAX_SCENE_DIGEST_ITEMS,
@@ -40,7 +40,7 @@ import {
   type Card,
   type LearningCard,
   type SceneDigestItem,
-} from "@/lib/ai/schemas";
+} from "@/lib/ai/english/schemas";
 import { getStore, type BookRecord } from "@/lib/store";
 
 export const runtime = "nodejs";
@@ -54,7 +54,7 @@ export const runtime = "nodejs";
  *
  * 상한 값을 **여기에 숫자로 적지 않는다.** 생산자(A′ zod)와 소비자(이 라우트)가 서로
  * 다른 상한을 쓰면 `/api/pages`가 200으로 내려준 장면을 `/api/card`가 400으로 거부하는
- * 구멍이 생긴다(QA F12 — labelKo 131자로 실증됨). `lib/ai/schemas.ts`가 단일 정의처다.
+ * 구멍이 생긴다(QA F12 — labelKo 131자로 실증됨). `lib/ai/english/schemas.ts`가 단일 정의처다.
  */
 const sceneDigestItemSchema = z.object({
   seq: z.number().int().min(0).max(10_000),

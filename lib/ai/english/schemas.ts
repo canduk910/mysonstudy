@@ -1,10 +1,10 @@
 /**
- * lib/ai/schemas.ts — 출력 JSON Schema 원문 + zod 이중 검증 (docs/HARNESS.md §2-3·§3-3·§4·§5)
+ * lib/ai/english/schemas.ts — 출력 JSON Schema 원문 + zod 이중 검증 (docs/harness/english.md §2-3·§3-3·§4·§5)
  *
  * - JSON Schema는 스펙 원문 그대로 (Structured Outputs strict 모드용).
  *   배열 개수 제약(minItems/maxItems)은 스키마에 넣지 않는다 — 프롬프트 + zod가 담당 (§1 공통 규칙).
  * - zod는 §4의 추가 검증(개수·중복·금지어·isCore·픽션 분기)을 superRefine으로 구현한다.
- * - 사이트워드 차단 목록(§5)은 여기서만 정의한다 — zod 검증과 scripts/eval-cards.ts가 같은 상수를 쓴다.
+ * - 사이트워드 차단 목록(§5)은 여기서만 정의한다 — zod 검증과 scripts/eval-english.ts가 같은 상수를 쓴다.
  */
 
 import { z } from "zod";

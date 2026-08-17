@@ -24,7 +24,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import type { BookExtraction, SceneDigestItem, SceneSourceKind } from "@/lib/ai/schemas";
+import type { BookExtraction, SceneDigestItem, SceneSourceKind } from "@/lib/ai/english/schemas";
 import type { IdentifyResult } from "@/lib/identify";
 import { COVER_MAX_IMAGES, JPEG_QUALITY, MAX_IMAGE_EDGE } from "@/lib/upload-limits";
 

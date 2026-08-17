@@ -1,6 +1,6 @@
 # mysonstudy — 은우 북카드
 
-아이(은우)와 영어 원서를 함께 읽는 부모를 위한 학습 카드 생성 앱. 표지 사진 → AI 판독 → Google Books 보강 → 학습 카드 → 서재. 앱 전체 명세는 `docs/SPEC.md`, AI 호출 상세는 `docs/HARNESS.md`, 디자인 원본은 `design/영어책_학습카드_샘플.html`.
+아이(은우)와 영어 원서를 함께 읽는 부모를 위한 학습 카드 생성 앱. 표지 사진 → AI 판독 → Google Books 보강 → 학습 카드 → 서재. 앱 전체 명세는 `docs/SPEC.md`, AI 호출 상세는 `docs/harness/english.md`(과목 공통 규약은 `docs/HARNESS.md`), 디자인 원본은 `design/영어책_학습카드_샘플.html`.
 
 ## ⚠️ 로컬 실행이 프로덕션 DB를 향할 수 있다 (2026-08-17 사고)
 

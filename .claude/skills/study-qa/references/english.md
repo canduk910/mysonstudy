@@ -8,7 +8,7 @@
 
 ## 왜 4중 정의가 위험한가
 
-같은 제약이 최대 4곳에 중복 정의된다: 프롬프트 문구(prompts.ts) · JSON Schema(schemas.ts) · zod 검증(schemas.ts) · eval 체크(eval-cards.ts). 한 곳만 수정되면 "eval은 통과하는데 런타임 검증이 실패"하거나 그 반대가 된다. 아래 매트릭스의 각 행에 대해 정의된 모든 위치의 **값**을 대조한다.
+같은 제약이 최대 4곳에 중복 정의된다: 프롬프트 문구(english/prompts.ts) · JSON Schema(english/schemas.ts) · zod 검증(english/schemas.ts) · eval 체크(eval-english.ts). 한 곳만 수정되면 "eval은 통과하는데 런타임 검증이 실패"하거나 그 반대가 된다. 아래 매트릭스의 각 행에 대해 정의된 모든 위치의 **값**을 대조한다.
 
 ## 정합성 매트릭스
 
@@ -29,18 +29,18 @@
 | exampleEn 4~8단어 | ✔ §3-1 | — | — | ✔ (8단어 이하) |
 | hintKo 보유율 30~70% | ✔ "절반 정도" | — | — | ✔ |
 
-**사이트워드 특칙:** zod와 eval이 각자 목록 리터럴을 갖고 있으면 값이 지금 같더라도 **실패로 판정**한다. 반드시 schemas.ts 한 곳에서 export하고 양쪽이 import해야 한다. 이유: 두 목록은 반드시 언젠가 어긋난다.
+**사이트워드 특칙:** zod와 eval이 각자 목록 리터럴을 갖고 있으면 값이 지금 같더라도 **실패로 판정**한다. 반드시 english/schemas.ts 한 곳에서 export하고 양쪽이 import해야 한다. 이유: 두 목록은 반드시 언젠가 어긋난다.
 
 ## 스펙 준수 체크리스트
 
-- [ ] 프롬프트 원문이 docs/HARNESS.md §2-1·§3-1과 문자 단위로 일치 — 눈으로 보지 말고 스펙에서 추출해 diff로 확인
+- [ ] 프롬프트 원문이 docs/harness/english.md §2-1·§3-1과 문자 단위로 일치 — 눈으로 보지 말고 스펙에서 추출해 diff로 확인
 - [ ] JSON Schema가 §2-3·§3-3과 일치: 전 필드 required, 모든 객체 additionalProperties:false, minItems/maxItems 부재
-- [ ] temperature·출력 한도가 §1 표와 일치 (A: 0/~1,000 · B: 0.7/~6,000)
+- [ ] temperature·출력 한도가 §1 표와 일치 (A: 0/~2,000 · A′: 0.3/~4,000 · B: 0.7/~6,000)
 - [ ] 모델 ID가 env `OPENAI_MODEL`에서만 옴 — `grep -r "gpt-" lib/ scripts/ app/`로 하드코딩 검출
 - [ ] 재시도 정확히 1회, 재실패 시 throw (§4)
 - [ ] 로깅 shape `{ call, model, inputTokens, outputTokens, ms }`, 성공/실패 무관 기록
-- [ ] eval-cards.ts: 픽스처가 prompt-eval 스킬 정의와 일치, 항목별 pass/fail 표 출력, 실패 시 exit code 1
-- [ ] package.json에 `"eval:cards": "tsx scripts/eval-cards.ts"`
+- [ ] eval-english.ts: 픽스처가 prompt-eval 스킬 정의와 일치, 항목별 pass/fail 표 출력, 실패 시 exit code 1
+- [ ] package.json에 `"eval:english": "tsx scripts/eval-english.ts"`
 
 ## 경계면 체크리스트 (앱 연결 후)
 
@@ -52,7 +52,7 @@
 
 ## 리포트 형식
 
-`_workspace/qa_report_{n}.md` (n은 회차):
+`_workspace/qa_report_{subject}_{n}.md` (subject=english|math, n은 회차):
 
 ```
 # QA 리포트 {n} — {검증 범위}

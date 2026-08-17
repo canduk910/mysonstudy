@@ -1,8 +1,8 @@
 /**
- * scripts/eval-cards.ts — 카드 품질 평가 하네스 (docs/HARNESS.md §5)
+ * scripts/eval-english.ts — 카드 품질 평가 하네스 (docs/harness/english.md §5)
  *
  * 프롬프트를 고칠 때마다 돌리는 자동 점검 (프롬프트도 코드처럼 회귀 테스트).
- * 실행: npm run eval:cards  — OPENAI_API_KEY 필요, 실호출 3회 발생. CI가 아니라 수동 실행용.
+ * 실행: npm run eval:english  — OPENAI_API_KEY 필요, 실호출 3회 발생. CI가 아니라 수동 실행용.
  *   (Wolves / Pooh / Pooh+장면 메모. EVAL_SKIP_PAGES=1이면 마지막 변형을 건너뛰어 2회)
  * 픽스처 2권(Wolves, Pooh Gets Stuck)의 값은 docs/SPEC.md §12 그대로다. 임의 변경 금지.
  * 호출 A′(page_digest)는 사진이 있어야 재현되므로 실호출 대신 zod 규칙을 고정 입력으로 검사한다.
@@ -28,8 +28,8 @@ import {
   storyOutlineSentenceRange,
   type LearningCard,
   type SceneDigestItem,
-} from "../lib/ai/schemas";
-import { buildCardUserMessage, type CardUserMessageInput } from "../lib/ai/prompts";
+} from "../lib/ai/english/schemas";
+import { buildCardUserMessage, type CardUserMessageInput } from "../lib/ai/english/prompts";
 
 // .env.local / .env 로드 (없으면 무시). 이미 설정된 환경 변수가 우선한다.
 for (const envFile of [".env.local", ".env"]) {
@@ -783,6 +783,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error("eval-cards 실행 실패:", error);
+  console.error("eval-english 실행 실패:", error);
   process.exit(1);
 });

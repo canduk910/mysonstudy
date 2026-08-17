@@ -17,7 +17,7 @@ import {
   STORY_SOURCE_LABELS_KO,
   type SceneDigestItem,
   type StorySource,
-} from "@/lib/ai/schemas";
+} from "@/lib/ai/english/schemas";
 import type { BookRecord, CardRecord, ReadingRecord } from "@/lib/store";
 import s from "./card-view.module.css";
 

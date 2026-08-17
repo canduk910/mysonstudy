@@ -14,7 +14,7 @@
  *   실패 시 오류를 출력하고 exit 1.
  */
 
-import { makeLearningCardSchema, type Card } from "../lib/ai/schemas";
+import { makeLearningCardSchema, type Card } from "../lib/ai/english/schemas";
 import {
   mergeDbForSeed,
   type BookRecord,
