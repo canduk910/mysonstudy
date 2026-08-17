@@ -73,3 +73,26 @@ description: "prompt-tuner 에이전트가 프롬프트 품질을 튜닝할 때 
 ## 리포트
 
 `_workspace/tune_report_{subject}_{n}.md` — 피드백 → 다이얼 해석 / 변경 파일·값(before→after) / 4중 정의 동기화 표 / eval 결과 표 / 커밋 권고 여부.
+
+## 실호출을 금지받았다면 — 지시가 아니라 명령으로 막아라
+
+`.env`에 실제 `OPENAI_API_KEY`가 있다. **"실호출 금지"라고 들어도 로컬 서버를 그냥 띄우면 실호출이 난다.**
+2026-08-17 하루에 두 번 이 사고가 났다(에이전트가 dev/prod 서버를 띄우다 각각 3회·4회).
+
+**모든 로컬 실행 명령 앞에 키를 비워라:**
+
+```bash
+OPENAI_API_KEY= STORE_BACKEND=file npm run dev
+OPENAI_API_KEY= STORE_BACKEND=file npx tsx scripts/....ts
+OPENAI_API_KEY= STORE_BACKEND=file npm start
+```
+
+키가 비면 라우트가 501로 명시적으로 거절하므로 **실호출이 구조적으로 불가능**해진다.
+AI 응답 자체가 필요하면 루프백 스텁을 쓴다:
+
+```bash
+OPENAI_BASE_URL=http://127.0.0.1:<포트> STORE_BACKEND=file npx tsx <스크립트>
+```
+
+**"키 없는 드라이런"을 눈으로 확인했다고 믿지 마라** — `.env`가 자동 로드돼 조용히 실호출이 난 전례가 있다.
+게이트(`EVAL_OFFLINE_ONLY=1` 등)를 쓸 때는 **그 게이트가 네트워크 호출부보다 앞서 return하는지 코드로 먼저 확인**하라.
