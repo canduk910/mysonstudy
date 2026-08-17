@@ -23,6 +23,7 @@
 
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/store";
+import { isProdGuardError } from "@/lib/prod-guard";
 
 export const runtime = "nodejs";
 
@@ -55,7 +56,24 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     );
   }
 
-  await store.deleteCard(id);
+  try {
+    await store.deleteCard(id);
+  } catch (e) {
+    // 개발 환경에서 프로덕션 실데이터를 지우려 한 경우 (lib/prod-guard.ts)
+    if (isProdGuardError(e)) {
+      console.error(e.message);
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "prod_guard",
+          messageKo:
+            "개발 환경이라 실제 데이터를 지우지 않았어요. 로컬 테스트는 STORE_BACKEND=file 로 돌려 주세요.",
+        },
+        { status: 403 },
+      );
+    }
+    throw e;
+  }
 
   // 지운 뒤 남은 목록 — 지금 보던 카드를 지운 경우 UI가 어디로 갈지 알아야 한다
   const remaining = siblings.filter((c) => c.id !== id);

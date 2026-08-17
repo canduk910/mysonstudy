@@ -43,6 +43,8 @@ import {
   type SceneDigestItem,
   type SceneSourceKind,
 } from "./ai/schemas";
+// store.ts는 이 파일을 값으로 import하므로(FirestoreStore), 가드는 별도 모듈에 둔다 — 순환 방지
+import { assertDestructiveAllowed } from "./prod-guard";
 
 // ---------------------------------------------------------------------------
 // Admin SDK 초기화 — 지연 + 중복 방지 (dev HMR에서 앱이 이미 있으면 재사용)
@@ -193,6 +195,8 @@ export class FirestoreStore implements BookCardStore {
   }
 
   async deleteBook(bookId: string): Promise<DeleteBookResult> {
+    // 개발 환경에서 실데이터를 지우는 것을 막는다 (2026-08-17 사고 — lib/prod-guard.ts)
+    assertDestructiveAllowed("deleteBook");
     // where 필터만 쿼리(복합 인덱스 불필요) → 문서 참조를 모아 batch로 지운다.
     const [cardSnap, readingSnap] = await Promise.all([
       this.cards().where("bookId", "==", bookId).get(),
@@ -254,6 +258,8 @@ export class FirestoreStore implements BookCardStore {
   }
 
   async deleteCard(cardId: string): Promise<boolean> {
+    // 개발 환경에서 실데이터를 지우는 것을 막는다 (2026-08-17 사고 — lib/prod-guard.ts)
+    assertDestructiveAllowed("deleteCard");
     // 연쇄 삭제가 없으므로 batch도 필요 없다 — 문서 1개만 지운다.
     // (deleteBook은 카드·읽음 기록을 함께 지우느라 batch를 쓴다)
     const ref = this.cards().doc(cardId);

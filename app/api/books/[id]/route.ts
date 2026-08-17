@@ -15,6 +15,7 @@
 
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/store";
+import { isProdGuardError } from "@/lib/prod-guard";
 
 export const runtime = "nodejs";
 
@@ -31,6 +32,24 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     );
   }
 
-  const deleted = await store.deleteBook(id);
+  let deleted;
+  try {
+    deleted = await store.deleteBook(id);
+  } catch (e) {
+    // 개발 환경에서 프로덕션 실데이터를 지우려 한 경우 (lib/prod-guard.ts)
+    if (isProdGuardError(e)) {
+      console.error(e.message);
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "prod_guard",
+          messageKo:
+            "개발 환경이라 실제 데이터를 지우지 않았어요. 로컬 테스트는 STORE_BACKEND=file 로 돌려 주세요.",
+        },
+        { status: 403 },
+      );
+    }
+    throw e;
+  }
   return NextResponse.json({ ok: true, deleted });
 }

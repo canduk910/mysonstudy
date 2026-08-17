@@ -379,6 +379,17 @@ export function getStore(): BookCardStore {
     console.log(
       `[store] backend=${backend} (${process.env.STORE_BACKEND ? "STORE_BACKEND 명시" : "자동 감지"})`,
     );
+    // 개발 환경인데 Firestore를 잡았다 = 로컬 실행이 **프로덕션 실데이터**를 향한다.
+    // 2026-08-17에 이 상태로 삭제 기능을 테스트하다 가족 데이터가 전부 지워졌다.
+    // 삭제는 lib/prod-guard.ts가 막지만, 읽기·쓰기는 그대로 통하므로 눈에 띄게 알린다.
+    if (backend === "firestore" && process.env.NODE_ENV !== "production") {
+      console.warn(
+        "[store] ⚠️  개발 환경인데 **프로덕션 Firestore**에 연결했어요.\n" +
+          "         여기서 만든 카드·읽음 기록은 실제 가족 데이터에 그대로 남습니다.\n" +
+          "         삭제는 prod-guard가 막습니다(ALLOW_PROD_DESTRUCTIVE=1로만 해제).\n" +
+          "         로컬 테스트라면 STORE_BACKEND=file 로 돌리세요.",
+      );
+    }
   }
   return globalThis.__bookcardStore;
 }
