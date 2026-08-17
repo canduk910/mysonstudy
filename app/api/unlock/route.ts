@@ -9,7 +9,7 @@
  * 달라진다. 인덱스 판단이 틀려도 (1)이 남는다 — QA pin-1 F1.
  *
  * 응답 shape (qa-inspector 교차 검증용):
- * - 200: { ok: true, messageKo }                      + Set-Cookie(eb_unlock)
+ * - 200: { ok: true, messageKo }                      + Set-Cookie(__session)
  * - 400: { ok: false, error: "invalid_input", messageKo }
  * - 401: { ok: false, error: "wrong_pin", messageKo, remainingAttempts: number }
  * - 429: { ok: false, error: "too_many_attempts", messageKo, retryAfterSec: number }

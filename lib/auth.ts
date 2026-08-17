@@ -5,7 +5,7 @@
  * 외부인이 들어와 AI 호출 비용을 쓰는 것만 막는 최소 장치다.
  *
  * 동작:
- * - 서버 전용 env `APP_PIN`(4~8자리 숫자)과 일치하면 서명 쿠키(`eb_unlock`)를 발급한다.
+ * - 서버 전용 env `APP_PIN`(4~8자리 숫자)과 일치하면 서명 쿠키(`__session`)를 발급한다.
  * - 쿠키 값은 `<exp>.<sig>`, sig = HMAC-SHA256(key=APP_PIN, msg=`unlock:<exp>`)의 hex.
  *   PIN이 곧 서명 키이므로 **PIN을 바꾸면 기존 쿠키는 서명 불일치로 자동 무효화**된다
  *   (별도의 폐기 절차·저장소가 필요 없다 — 가족용 규모에 맞는 단순함).
@@ -20,8 +20,16 @@
  * 호출해 결과만 클라이언트로 내려보낼 것.
  */
 
-/** 쿠키 이름 — 값에는 PIN이 들어가지 않는다(서명만) */
-export const UNLOCK_COOKIE = "eb_unlock";
+/**
+ * 쿠키 이름 — 값에는 PIN이 들어가지 않는다(서명만).
+ *
+ * **이름이 `__session`인 이유(바꾸지 말 것)**: 커스텀 도메인(eunwoo.site)은
+ * Firebase Hosting → Cloud Run 리라이트를 거치는데, Hosting은 백엔드로 요청을
+ * 넘기기 전에 **`__session`을 제외한 모든 쿠키를 제거한다**. 다른 이름을 쓰면
+ * Cloud Run URL에서는 열리지만 커스텀 도메인에서는 PIN을 맞게 넣어도 다음
+ * 요청에서 쿠키가 사라져 `/unlock` 무한 루프에 갇힌다(실측 확인).
+ */
+export const UNLOCK_COOKIE = "__session";
 
 /** 쿠키 수명 180일 — 가족 기기에서 매번 PIN을 묻지 않도록 넉넉하게 */
 export const UNLOCK_MAX_AGE_SEC = 180 * 24 * 60 * 60;
