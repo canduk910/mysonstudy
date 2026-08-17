@@ -500,7 +500,9 @@ export default function CardView({
     <div className={`${s.wrap} ${theme}`}>
       {/* 액션 바 — 인쇄 시 숨김 */}
       <div className={s.actions}>
-        <Link href="/" className={s.actionBtn}>← 홈으로</Link>
+        {/* 영어 홈은 `/english`다 (`/`는 과목 선택 갈림길) — 카드에서 돌아올 때
+            과목을 한 번 더 고르게 하지 않는다 */}
+        <Link href="/english" className={s.actionBtn}>← 홈으로</Link>
         <Link href="/library" className={s.actionBtn}>📚 서재</Link>
         <button type="button" className={s.actionBtn} onClick={() => window.print()}>
           🖨️ 인쇄

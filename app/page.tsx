@@ -1,86 +1,60 @@
 /**
- * 홈 `/` (SPEC §4-1) — 서버 컴포넌트.
+ * 과목 선택 `/` — 서버 컴포넌트(정적).
  *
- * 화면의 주인공은 큰 진입 버튼 2개(사진/제목)다 — HomeCreate(클라이언트)가 그린다.
- * 여기서는 상단 내비(서재)와 "최근 만든 카드" 3개(작은 카드)를 store로 읽어 렌더한다.
+ * 저장소가 과목 둘을 기른다(영어 = 북카드, 수학 = 수학코치). 접속하면 여기서 갈린다.
+ * 예전 홈(사진으로 만들기·책 이름으로 만들기·최근 카드)은 통째로 `/english`로 옮겼다 —
+ * 이 화면은 갈림길만 담당하고 기능은 하나도 갖지 않는다.
  *
- * 디자인: docs/DESIGN.md — 색·크기는 app/globals.css의 토큰(.t-* / .u-* / 토큰 유틸)만 쓴다.
+ * **탭 수**: 영어 사용자는 여기서 한 번 더 누르게 된다. 대신
+ *   1) 영어를 주요(accent)·첫 번째 버튼으로 두고,
+ *   2) 영어 화면들(`/library`·`/card/[id]`)의 "홈"은 `/`가 아니라 `/english`를 가리켜
+ *      카드를 보다 돌아올 때는 이 화면을 지나지 않게 했다.
+ *   3) `/english`는 그 자체로 북마크·홈 화면 추가가 되는 주소다(반복 사용 시 0탭).
+ *
+ * 디자인: 새 스타일을 만들지 않는다 — 예전 홈의 큰 진입 버튼과 **같은 `.u-entry`**를
+ * 그대로 쓴다(app/globals.css, docs/DESIGN.md §5). 버튼이 아니라 링크인 것만 다르다.
  */
 
+import type { Metadata } from "next";
 import Link from "next/link";
-import HomeCreate from "@/components/home-create";
-// 본문 사진 상한·배치 크기는 lib/ai/client.ts가 단일 정의처다. 그 모듈은 openai와
-// API 키를 건드려 클라이언트 번들에 들어갈 수 없으므로, 서버 컴포넌트인 여기서 읽어
-// props로 내려보낸다 (HomeCreate가 숫자를 다시 적지 않게 하는 유일한 방법).
-import { PAGES_BATCH_SIZE, PAGES_MAX_IMAGES } from "@/lib/ai/client";
-import { getStore } from "@/lib/store";
 
-// db.json은 요청 시점에 읽어야 한다 (빌드 시점 정적화 방지)
-export const dynamic = "force-dynamic";
+export const metadata: Metadata = {
+  title: "은우학습",
+  description: "영어책 학습 카드와 수학 문제 풀이 설명을 한곳에서.",
+};
 
-export default async function HomePage() {
-  const recent = await getStore().listRecentCards(3);
-
+export default function SubjectPickerPage() {
   return (
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
       <header className="mb-8">
-        {/* 홈 ↔ 서재 내비게이션 — 카드 화면과 같은 알약 버튼(.u-navbtn) */}
-        <div className="flex items-center justify-between gap-3">
-          <p className="t-caption">은우학습 · 영어책 학습 도우미</p>
-          <Link href="/library" className="u-navbtn">
-            <span aria-hidden>📚</span> 서재
-          </Link>
-        </div>
-        <h1 className="t-book-title mt-4">은우 북카드</h1>
-        <p className="t-lead mt-1">오늘 읽을 영어책으로 우리만의 학습 카드를 만들어요.</p>
+        <p className="t-caption">은우학습</p>
+        <h1 className="t-book-title mt-4">오늘은 무엇을 해볼까요?</h1>
+        <p className="t-lead mt-1">과목을 골라 주세요. 언제든 여기로 돌아올 수 있어요.</p>
       </header>
 
-      <HomeCreate pagesMaxImages={PAGES_MAX_IMAGES} pagesBatchSize={PAGES_BATCH_SIZE} />
+      {/* 큰 진입 버튼 2개 — 이 화면의 전부. 주요(영어)만 accent 배경 (DESIGN §5) */}
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Link href="/english" className="u-entry u-entry-primary">
+          <span className="u-entry-icon" aria-hidden>
+            📚
+          </span>
+          <span className="u-entry-title">영어 · 북카드</span>
+          <span className="u-entry-desc">
+            영어책 표지를 찍으면 단어·질문·활동이 담긴 학습 카드를 만들어요. 서재에 읽은
+            책이 쌓여요.
+          </span>
+        </Link>
 
-      <section className="mt-10">
-        <div className="mb-3 flex items-baseline justify-between gap-3">
-          <h2 className="t-section-title">최근 만든 카드</h2>
-          <Link href="/library" className="t-meta-chip text-accent">
-            전체 보기 →
-          </Link>
-        </div>
-
-        {recent.length === 0 ? (
-          <p className="t-caption rounded-[var(--radius-box)] border border-dashed border-line px-5 py-6 text-center">
-            아직 만든 카드가 없어요. 첫 번째 책으로 카드를 만들어 볼까요?
-          </p>
-        ) : (
-          /* grid가 아니라 세로 flex — grid 트랙은 긴 제목에 맞춰 늘어나 375px에서 넘친다 */
-          <ul className="flex flex-col gap-2">
-            {recent.map(({ card, book }) => (
-              <li key={card.id}>
-                <Link href={`/card/${card.id}`} className="u-item">
-                  {book.coverUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element -- 외부 썸네일, next/image 원격 설정은 과설계
-                    <img src={book.coverUrl} alt="" className="u-item-cover" />
-                  ) : (
-                    <span className="u-item-thumb" aria-hidden>
-                      {book.coverEmoji || "📖"}
-                    </span>
-                  )}
-                  <span className="min-w-0 flex-1">
-                    <span className="t-question-ko block truncate font-medium text-ink">
-                      {book.title}
-                    </span>
-                    <span className="t-caption block truncate">
-                      {book.author}
-                      {book.series ? ` · ${book.series}` : ""}
-                    </span>
-                  </span>
-                  <span className="u-chip flex-none">
-                    {book.arLevel != null ? `AR ${book.arLevel}` : "레벨 추정"}
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+        <Link href="/math" className="u-entry u-entry-secondary">
+          <span className="u-entry-icon" aria-hidden>
+            🔢
+          </span>
+          <span className="u-entry-title">수학 · 수학코치</span>
+          <span className="u-entry-desc">
+            문제집 사진으로 &lsquo;왜 그렇게 푸는지&rsquo;를 설명해요. 지금은 준비 중이에요.
+          </span>
+        </Link>
+      </div>
     </main>
   );
 }

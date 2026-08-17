@@ -48,6 +48,16 @@ function resolveModel(): string {
   return process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL;
 }
 
+/**
+ * 검산 전용 모델 (수학 §1: "C는 `OPENAI_MODEL_VERIFY`(없으면 `OPENAI_MODEL`)").
+ * **심판만 더 강한 모델로 올릴 여지**를 남기려고 env를 따로 둔 것이다 —
+ * 답을 독립적으로 다시 푸는 호출은 여기서 품질을 더 사도 값어치가 있다.
+ * 미설정 시 일반 모델로 폴백하므로 env 하나로 켜고 끌 수 있다.
+ */
+export function resolveVerifyModel(): string {
+  return process.env.OPENAI_MODEL_VERIFY ?? resolveModel();
+}
+
 let cachedClient: OpenAI | null = null;
 
 /** OpenAI 클라이언트 (지연 생성 — 빌드 시점에 키를 요구하지 않기 위해) */
@@ -91,13 +101,30 @@ export function imagePart(dataUrl: string): UserContentPart {
 }
 
 export interface CallWithSchemaArgs<T> {
-  call: "extract" | "pages" | "card";
+  /**
+   * 로깅 라벨 (`{call, model, inputTokens, outputTokens, ms}`)일 뿐이다. **분기 근거가 아니다.**
+   *
+   * 원래 `"extract" | "pages" | "card"` 닫힌 유니온이었는데 `string`으로 넓혔다.
+   * 이유: 과목이 늘 때마다(수학 `math-explain`·`math-verify`·`math-practice`·`math-player`)
+   * **공유 파일의 유니온을 고쳐야 하는 구조 자체가 결합**이다. 라벨 하나 때문에 과목 모듈이
+   * client.ts를 건드리게 되면, 그 파일이 곧 과목을 알게 된다.
+   *
+   * 이 값으로 `if (call === "math-…")` 같은 분기를 만들지 마라 — 그 순간 공유 래퍼가 과목을
+   * 아는 물건이 되어 영어/수학 분리가 무너진다. 과목별 차이는 **호출부**에서 파라미터
+   * (`system`·`jsonSchema`·`temperature`·`model`…)로 넘긴다.
+   */
+  call: string;
   system: string;
   user: UserContentPart[];
   jsonSchema: StrictJsonSchema;
   zodSchema: z.ZodType<T>;
   temperature: number;
   maxOutputTokens: number;
+  /**
+   * 이 호출에만 쓸 모델. 생략하면 `OPENAI_MODEL`.
+   * 수학 호출 C(검산)가 `resolveVerifyModel()`을 넘겨 심판만 다른 모델로 돌리는 데 쓴다(수학 §1).
+   */
+  model?: string;
 }
 
 type ValidationOutcome<T> =
@@ -158,7 +185,9 @@ function isTemperatureUnsupportedError(err: unknown): boolean {
 
 export async function callWithSchema<T>(args: CallWithSchemaArgs<T>): Promise<T> {
   const { call, system, user, jsonSchema, zodSchema, temperature, maxOutputTokens } = args;
-  const model = resolveModel();
+  // 호출별 모델 override(없으면 OPENAI_MODEL). 로그의 model 필드도 실제 쓴 모델을 그대로 남긴다 —
+  // 검산만 다른 모델로 돌릴 때 비용·품질을 호출 단위로 갈라 봐야 하기 때문이다.
+  const model = args.model ?? resolveModel();
   const startedAt = Date.now();
   let inputTokens = 0;
   let outputTokens = 0;

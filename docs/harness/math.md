@@ -380,6 +380,10 @@ verifyScene(scene, answer): string[]   // 빈 배열이면 통과
 5. 'start' 단계 values ↔ answer: 라벨 매칭 후 값 동일
 6. 'ok' 단계 values === 첫 'end' 단계 values (end에 null이 있으면 'find' 단계 값과 비교)
 7. conservation이 있으면 null이 없는 모든 단계에서 sum(values) === total
+   **단 'split' 단계는 제외한다.** split은 정의상 차를 떼어 낸 뒤의 상태라 합이
+   total − difference.amount다. 이 예외가 없으면 정상 합·차 대본이 100% 오탐된다.
+   구멍이 생기지 않는 이유: split의 합은 §4-9가 더 엄격하게(prevSum 또는 conservation
+   유도값으로) 고정하므로, 검산이 느슨해지는 것이 아니라 담당이 옮겨갈 뿐이다.
 8. 모든 값 ≤ maxValue, ≥ 0 (numberline은 음수 허용)
 9. [개정 1] kind==='bar' 추가 규칙
    - layout이 null이 아니어야 한다
