@@ -3,40 +3,64 @@
 /**
  * 홈의 카드 만들기 영역 (SPEC §4-1, M2) — 클라이언트 컴포넌트.
  *
- * 세 가지 입력 흐름 — 진행 UI가 실제 호출 단계와 1:1로 일치한다 (SPEC §3):
- * - 표지 사진: 판독(/api/extract) → 식별(/api/identify) → 생성(/api/card)
- *   = "표지 읽는 중 → 책 확인 중 → 카드 만드는 중".
+ * 네 가지 입력 흐름 — 진행 UI가 실제 호출 단계와 1:1로 일치한다 (SPEC §3):
+ * - 표지 사진(기본): 판독(/api/extract) → 식별(/api/identify) → 생성(/api/card)
+ *   = "표지 읽는 중 → 책 확인 중 → 카드 만드는 중". 버튼 한 번, 중간에 멈추지 않는다.
  *   판독 실패(retake)는 §9 폴백: 안내 + 수동 폼(판독된 값이 있으면 프리필).
+ * - 표지 + 본문/목차(선택·고급): 위 흐름 사이에 본문 판독(/api/pages)이 끼어
+ *   "본문 읽는 중"이 추가되고, 장면 메모를 확인·재촬영한 뒤 카드를 만든다.
+ *   **기본 경로를 무겁게 하지 않으려고 별도 진입점으로 뺐다** — 본문 촬영은 선택이고,
+ *   안 찍으면 기존 표지 흐름이 그대로 돈다.
  * - 책 이름: 제목(+저자 선택)만으로 시작 — 판독 생략, 식별 → 생성.
  *   AR 미확보이므로 levelEstimated=true (카드에 "레벨 추정" 배지, HARNESS §3-2).
  * - 직접 입력(고급·§9 폴백): M1의 전체 메타데이터 폼 유지. 제출 시에도 식별을
  *   거쳐 썸네일·소개글을 보강한다(사용자가 쓴 소개글이 우선).
  *
  * 사진은 클라이언트에서 canvas로 긴 변 ~1500px JPEG로 리사이즈해 보낸다
- * (토큰 절약 — ai-harness-impl 스킬 권장). 서버는 판독 후 사진을 저장하지 않는다(SPEC §5).
+ * (토큰 절약 — ai-harness-impl 스킬 권장). 서버는 판독 후 사진을 저장하지 않는다(SPEC §1·§5).
  */
 
 import { useRouter } from "next/navigation";
-import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
-import type { BookExtraction } from "@/lib/ai/schemas";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import type { BookExtraction, SceneDigestItem, SceneSourceKind } from "@/lib/ai/schemas";
 import type { IdentifyResult } from "@/lib/identify";
+import { COVER_MAX_IMAGES, JPEG_QUALITY, MAX_IMAGE_EDGE } from "@/lib/upload-limits";
 
 // ---------------------------------------------------------------------------
 // 타입·상수
 // ---------------------------------------------------------------------------
 
-type StepId = "extract" | "identify" | "card";
+type StepId = "extract" | "identify" | "pages" | "card";
 
 /** 진행 UI 문구 (SPEC §3) — 단계 id가 곧 실제 API 호출이다 */
 const STEP_LABEL: Record<StepId, string> = {
   extract: "표지 읽는 중",
   identify: "책 확인 중",
+  pages: "본문 읽는 중",
   card: "카드 만드는 중",
 };
 
 interface DuplicateInfo {
   bookId: string;
   cardId: string | null;
+}
+
+/** `/api/pages` 응답 중 UI가 쓰는 부분 (라우트 응답 shape과 1:1) */
+interface PagesBatchOutcome {
+  batchIndex: number;
+  imageCount: number;
+  fromImageIndex: number;
+  toImageIndex: number;
+  ok: boolean;
+  errorMessage: string | null;
+}
+
+interface PagesReview {
+  sourceKind: SceneSourceKind;
+  scenes: SceneDigestItem[];
+  batches: PagesBatchOutcome[];
+  failedBatchCount: number;
+  messageKo: string | null;
 }
 
 /** 판독 실패(retake) 시 수동 폼에 미리 채울 값 */
@@ -52,9 +76,6 @@ interface ManualPrefill {
   topic: string;
   coverEmoji: string;
 }
-
-const MAX_IMAGE_EDGE = 1500;
-const JPEG_QUALITY = 0.85;
 
 /* 색·크기는 app/globals.css의 토큰 클래스만 쓴다 (docs/DESIGN.md §7) */
 const inputCls = "u-input";
@@ -130,11 +151,23 @@ function inRangeOrNull(v: number | null, min: number, max: number): number | nul
 // 컴포넌트
 // ---------------------------------------------------------------------------
 
-export default function HomeCreate() {
+export default function HomeCreate({
+  /**
+   * 본문 사진 상한·배치 크기는 `lib/ai/client.ts`가 단일 정의처다(PAGES_MAX_IMAGES /
+   * PAGES_BATCH_SIZE). 그 모듈은 `openai`와 API 키를 건드리므로 클라이언트에서
+   * import할 수 없어, 서버 컴포넌트(app/page.tsx)가 읽어 props로 내려준다.
+   * 숫자를 여기 다시 적지 않기 위한 우회로다.
+   */
+  pagesMaxImages,
+  pagesBatchSize,
+}: {
+  pagesMaxImages: number;
+  pagesBatchSize: number;
+}) {
   const router = useRouter();
 
-  /** 열려 있는 입력 패널 — title(제목만) / manual(전체 폼, 고급·폴백) */
-  const [panel, setPanel] = useState<"none" | "title" | "manual">("none");
+  /** 열려 있는 입력 패널 — title(제목만) / manual(전체 폼, 고급·폴백) / pages(본문 촬영) */
+  const [panel, setPanel] = useState<"none" | "title" | "manual" | "pages">("none");
   /** 현재 흐름의 단계 목록(진행 UI에 그대로 표시)과 진행 중 단계 */
   const [steps, setSteps] = useState<StepId[]>([]);
   const [phase, setPhase] = useState<StepId | null>(null);
@@ -147,13 +180,59 @@ export default function HomeCreate() {
   const [prefill, setPrefill] = useState<ManualPrefill | null>(null);
   const [prefillKey, setPrefillKey] = useState(0);
 
+  /** --- 본문·목차 촬영 (선택 경로) --- */
+  const [coverFiles, setCoverFiles] = useState<File[]>([]);
+  const [pageFiles, setPageFiles] = useState<File[]>([]);
+  /** 본문 전체 촬영인지, 챕터북 목차 1~2장인지 (배지·프롬프트가 갈린다) */
+  const [sceneKind, setSceneKind] = useState<SceneSourceKind>("pages");
+  /** 본문 판독 결과 확인 단계 — 이 값이 있으면 카드 생성 전에 검토 패널을 띄운다 */
+  const [review, setReview] = useState<PagesReview | null>(null);
+  /** "본문 읽는 중" 진행 표시용 — 사진이 많으면 오래 걸려 멈춘 줄 알기 쉽다 */
+  const [pagesProgress, setPagesProgress] = useState<{ images: number; batches: number } | null>(
+    null,
+  );
+  const [elapsedSec, setElapsedSec] = useState(0);
+
   const lastCardPayload = useRef<Record<string, unknown> | null>(null);
   /** 오류 패널의 "재시도"가 다시 실행할 동작 (실패한 단계부터) */
   const retryAction = useRef<(() => void) | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const coverInputRef = useRef<HTMLInputElement>(null);
+  const pageInputRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  // 검토 패널은 본문 촬영 패널과 동시에 마운트된다(촬영 패널은 hidden). 같은 ref를
+  // 나눠 쓰면 스크롤이 숨겨진 쪽으로 가므로 각자 ref를 쓴다.
+  const reviewRef = useRef<HTMLDivElement>(null);
+  /** 검토 패널에서 "이대로 만들기"를 누를 때 쓸, 근거를 뺀 카드 페이로드 */
+  const pendingCardPayload = useRef<Record<string, unknown> | null>(null);
+  /** "본문 다시 찍기"가 판독·식별을 다시 하지 않도록 캐시해 둔다 */
+  const richContext = useRef<{ title: string; author: string | null; isFiction: boolean; topic: string } | null>(
+    null,
+  );
+  /** 본문 흐름의 판독 결과 — 400 폴백에서 수동 폼을 프리필하는 데 쓴다 (§9) */
+  const richExtraction = useRef<BookExtraction | null>(null);
+  /**
+   * 지금 고른 표지에 대한 판독·식별이 끝났는가.
+   * true면 본문 사진만 다시 골라도 표지 판독(vision 호출)을 다시 하지 않는다.
+   * 표지를 다시 고르면 false로 되돌려 전체 흐름을 다시 태운다.
+   */
+  const pagesFlowReady = useRef(false);
 
   const busy = phase !== null;
+
+  // 경과 시간 — 본문 판독 중에만 센다. 40장이면 배치 7개라 1분을 넘길 수 있어,
+  // 아무 변화가 없으면 사용자가 멈춘 줄 알고 새로고침한다(그러면 비용만 날아간다).
+  useEffect(() => {
+    if (phase !== "pages") {
+      setElapsedSec(0);
+      return;
+    }
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [phase]);
 
   function clearStatus() {
     setErrorKo(null);
@@ -162,9 +241,20 @@ export default function HomeCreate() {
     setRetakeKo(null);
   }
 
+  /** 실패 공통 처리 — 진행 표시를 끄고 오류 패널을 띄운다 */
+  function fail(messageKo: string, retriable: boolean) {
+    setPhase(null);
+    setErrorKo(messageKo);
+    setCanRetry(retriable);
+  }
+
   function scrollToPanel() {
     setTimeout(
-      () => panelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+      () =>
+        (reviewRef.current ?? panelRef.current)?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        }),
       30,
     );
   }
@@ -272,7 +362,9 @@ export default function HomeCreate() {
   }
 
   async function onFilesSelected(e: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []).slice(0, 2); // 최대 2장 (SPEC §4-1)
+    // 최대 3장 — 표지 / 정보 스티커 / 뒤표지 (SPEC §4-1). 상한은 lib/upload-limits가
+    // 단일 정의처이고 /api/extract의 zod가 같은 값을 쓴다 (한쪽만 고치면 QA F10 재발)
+    const files = Array.from(e.target.files ?? []).slice(0, COVER_MAX_IMAGES);
     e.target.value = ""; // 같은 사진을 다시 골라도 change가 발생하게
     if (files.length === 0) return;
     clearStatus();
@@ -283,22 +375,23 @@ export default function HomeCreate() {
     try {
       dataUrls = await Promise.all(files.map(resizeToJpegDataUrl));
     } catch {
-      setPhase(null);
-      setErrorKo("사진을 불러오지 못했어요. 다른 사진으로 다시 시도해 주세요.");
-      setCanRetry(false);
+      fail("사진을 불러오지 못했어요. 다른 사진으로 다시 시도해 주세요.", false);
       return;
     }
     await runPhotoFlow(dataUrls);
   }
 
-  async function runPhotoFlow(dataUrls: string[]) {
-    setSteps(["extract", "identify", "card"]);
-    setPhase("extract");
-    clearStatus();
-    retryAction.current = () => void runPhotoFlow(dataUrls);
-
-    // (1) 판독
-    let extraction: BookExtraction;
+  /**
+   * (1) 판독 — /api/extract. 표지 흐름과 본문 흐름이 같은 처리를 쓴다.
+   * 판독 실패(retake)는 예외가 아니라 정상 흐름이라 호출측에 그대로 넘긴다 (SPEC §9).
+   */
+  async function callExtract(
+    dataUrls: string[],
+  ): Promise<
+    | { kind: "ok"; extraction: BookExtraction }
+    | { kind: "retake"; extraction: BookExtraction | null; messageKo?: string }
+    | { kind: "error"; messageKo: string }
+  > {
     try {
       const res = await fetch("/api/extract", {
         method: "POST",
@@ -309,67 +402,262 @@ export default function HomeCreate() {
         | { ok?: boolean; reason?: string; messageKo?: string; extraction?: BookExtraction }
         | null;
 
-      if (res.ok && data?.ok && data.extraction) {
-        extraction = data.extraction;
-      } else if (res.ok && data?.reason === "retake") {
-        // 판독 실패는 정상 흐름 (SPEC §9): 안내 + 수동 폼 폴백 (부분 판독값 프리필)
-        setPhase(null);
-        openManualForRetake(data.extraction ?? null, data.messageKo);
-        return;
-      } else {
-        setPhase(null);
-        setErrorKo(data?.messageKo ?? "표지를 읽다가 문제가 생겼어요. 잠시 후 다시 시도해 주세요.");
-        setCanRetry(true);
-        return;
+      if (res.ok && data?.ok && data.extraction) return { kind: "ok", extraction: data.extraction };
+      if (res.ok && data?.reason === "retake") {
+        return { kind: "retake", extraction: data.extraction ?? null, messageKo: data.messageKo };
       }
+      return {
+        kind: "error",
+        messageKo: data?.messageKo ?? "표지를 읽다가 문제가 생겼어요. 잠시 후 다시 시도해 주세요.",
+      };
     } catch {
-      setPhase(null);
-      setErrorKo("서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.");
-      setCanRetry(true);
-      return;
+      return { kind: "error", messageKo: "서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요." };
     }
+  }
 
-    // (2) 식별 — 실패해도 진행 (커버는 이모지)
-    setPhase("identify");
-    const found = await identifyClient(extraction.title ?? "", extraction.author);
-
-    // (3) 생성 — 판독값 + 식별 결과 병합.
-    // 판독 수치는 /api/card 경계 밖이면 null("미상")로 정리해 전달한다 (QA F1):
-    // 범위 밖 오독이 400 재시도 루프로 빠지는 대신 레벨 추정 경로가 흡수한다.
+  /**
+   * 판독값 + 식별 결과 → /api/card 페이로드.
+   * 판독 수치는 /api/card 경계 밖이면 null("미상")로 정리한다 (QA m2-1 F1):
+   * 범위 밖 오독이 400 재시도 루프로 빠지는 대신 레벨 추정 경로가 흡수한다.
+   */
+  function buildCardPayload(
+    extraction: BookExtraction,
+    found: IdentifyResult | null,
+  ): Record<string, unknown> {
     const arLevel = inRangeOrNull(extraction.arLevel, 0, 13);
     const lexile = inRangeOrNull(extraction.lexile, 0, 2000);
     const wordCount = inRangeOrNull(extraction.wordCount, 1, 1_000_000);
     const isFiction =
       extraction.isFiction ?? guessFictionFromCategories(found?.categories) ?? true;
     const topic = extraction.topicGuess || joinedCategories(found) || extraction.title || "";
-    await runCard(
-      {
-        title: extraction.title,
-        author: extraction.author ?? "",
-        series: extraction.series ?? "",
-        isFiction,
-        arLevel,
-        lexile,
-        wordCount,
-        arQuizNo: extraction.arQuizNo ?? "",
-        topic,
-        description: found?.description ?? "",
-        coverEmoji: extraction.coverEmoji ?? "",
-        isbn: found?.isbn ?? undefined,
-        coverUrl: found?.coverUrl ?? undefined,
-        googleBooksId: found?.googleBooksId ?? undefined,
-        // 정리 후 값 기준 — AR 미확보(오독 강등 포함) → 레벨 추정 배지 (SPEC §3)
-        levelEstimated: arLevel == null,
-      },
-      {
-        // 사진 흐름에는 열린 폼이 없다 — 남은 400(빈 제목·너무 긴 값 등)은
-        // §9 수동 폼 폴백으로 연결해 판독값을 프리필한다 (QA F1 보조안).
-        // 서버 messageKo("입력 내용을 확인해 주세요.")보다 사진 맥락 안내가 낫다.
+    return {
+      title: extraction.title,
+      author: extraction.author ?? "",
+      series: extraction.series ?? "",
+      isFiction,
+      arLevel,
+      lexile,
+      wordCount,
+      arQuizNo: extraction.arQuizNo ?? "",
+      topic,
+      description: found?.description ?? "",
+      coverEmoji: extraction.coverEmoji ?? "",
+      isbn: found?.isbn ?? undefined,
+      coverUrl: found?.coverUrl ?? undefined,
+      googleBooksId: found?.googleBooksId ?? undefined,
+      // 정리 후 값 기준 — AR 미확보(오독 강등 포함) → 레벨 추정 배지 (SPEC §3)
+      levelEstimated: arLevel == null,
+      // 뒤표지·책날개 소개글 — 여기서 버리면 줄거리가 3~4문장으로 줄어든다 (HARNESS §3-1)
+      blurbText: extraction.blurbText ?? null,
+    };
+  }
+
+  async function runPhotoFlow(dataUrls: string[]) {
+    setSteps(["extract", "identify", "card"]);
+    setPhase("extract");
+    clearStatus();
+    retryAction.current = () => void runPhotoFlow(dataUrls);
+
+    // (1) 판독
+    const read = await callExtract(dataUrls);
+    if (read.kind === "retake") {
+      // 판독 실패는 정상 흐름 (SPEC §9): 안내 + 수동 폼 폴백 (부분 판독값 프리필)
+      setPhase(null);
+      openManualForRetake(read.extraction, read.messageKo);
+      return;
+    }
+    if (read.kind === "error") {
+      fail(read.messageKo, true);
+      return;
+    }
+    const extraction = read.extraction;
+
+    // (2) 식별 — 실패해도 진행 (커버는 이모지)
+    setPhase("identify");
+    const found = await identifyClient(extraction.title ?? "", extraction.author);
+
+    // (3) 생성
+    await runCard(buildCardPayload(extraction, found), {
+      // 사진 흐름에는 열린 폼이 없다 — 남은 400(빈 제목·너무 긴 값 등)은
+      // §9 수동 폼 폴백으로 연결해 판독값을 프리필한다 (QA F1 보조안).
+      // 서버 messageKo("입력 내용을 확인해 주세요.")보다 사진 맥락 안내가 낫다.
+      onInvalidInput: () =>
+        openManualForRetake(
+          extraction,
+          "사진에서 읽은 정보로는 카드를 만들지 못했어요. 아래 내용을 확인·수정해서 만들어 주시거나, 표지를 다시 찍어 주세요.",
+        ),
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // 흐름 1′ — 표지 + 본문/목차: 판독 → 식별 → 본문 판독 → (확인) → 생성
+  //
+  // 본문 촬영은 **선택**이다. 이 패널에서도 본문 사진을 고르지 않으면 pages 단계가
+  // 통째로 빠지고 위의 표지 흐름과 똑같이 동작한다.
+  // -------------------------------------------------------------------------
+
+  /** (2′) 본문·목차 판독 — /api/pages. 성공하면 검토 패널로 넘긴다 */
+  async function runPagesStep(files: File[], kind: SceneSourceKind): Promise<boolean> {
+    setPhase("pages");
+    setPagesProgress({ images: files.length, batches: Math.ceil(files.length / pagesBatchSize) });
+
+    let dataUrls: string[];
+    try {
+      dataUrls = await Promise.all(files.map(resizeToJpegDataUrl));
+    } catch {
+      fail("본문 사진을 불러오지 못했어요. 다른 사진으로 다시 시도해 주세요.", false);
+      return false;
+    }
+
+    try {
+      const res = await fetch("/api/pages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          images: dataUrls,
+          sourceKind: kind,
+          book: richContext.current ?? undefined,
+        }),
+      });
+      const data = (await res.json().catch(() => null)) as
+        | ({ ok?: boolean; error?: string; messageKo?: string } & Partial<PagesReview>)
+        | null;
+
+      if (res.ok && data?.ok && data.scenes?.length) {
+        setReview({
+          sourceKind: data.sourceKind ?? kind,
+          scenes: data.scenes,
+          batches: data.batches ?? [],
+          failedBatchCount: data.failedBatchCount ?? 0,
+          messageKo: data.messageKo ?? null,
+        });
+        setPhase(null);
+        scrollToPanel();
+        return true;
+      }
+      // 본문 판독 실패는 카드 생성을 막지 않는다 — 검토 패널 대신 오류 패널을 띄우되,
+      // 사용자가 "본문 없이 만들기"를 고를 수 있게 한다(아래 오류 패널의 보조 버튼).
+      fail(
+        data?.messageKo ?? "본문 사진을 읽다가 문제가 생겼어요. 잠시 후 다시 시도해 주세요.",
+        res.status !== 400,
+      );
+      return false;
+    } catch {
+      fail("서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.", true);
+      return false;
+    }
+  }
+
+  async function runRichFlow(covers: File[], pages: File[], kind: SceneSourceKind) {
+    const withPages = pages.length > 0;
+    setSteps(
+      withPages ? ["extract", "identify", "pages", "card"] : ["extract", "identify", "card"],
+    );
+    setPhase("extract");
+    clearStatus();
+    setReview(null);
+    retryAction.current = () => void runRichFlow(covers, pages, kind);
+
+    let coverUrls: string[];
+    try {
+      coverUrls = await Promise.all(covers.map(resizeToJpegDataUrl));
+    } catch {
+      fail("표지 사진을 불러오지 못했어요. 다른 사진으로 다시 시도해 주세요.", false);
+      return;
+    }
+
+    // (1) 판독
+    const read = await callExtract(coverUrls);
+    if (read.kind === "retake") {
+      setPhase(null);
+      openManualForRetake(read.extraction, read.messageKo);
+      return;
+    }
+    if (read.kind === "error") {
+      fail(read.messageKo, true);
+      return;
+    }
+    const extraction = read.extraction;
+
+    // (2) 식별
+    setPhase("identify");
+    const found = await identifyClient(extraction.title ?? "", extraction.author);
+
+    const payload = buildCardPayload(extraction, found);
+    pendingCardPayload.current = payload;
+    richExtraction.current = extraction;
+    pagesFlowReady.current = true;
+    // 본문 판독에 넘길 책 맥락 — 제목·주제를 알면 장면 요약이 훨씬 정확해진다
+    richContext.current = {
+      title: String(payload.title ?? ""),
+      author: (payload.author as string) || null,
+      isFiction: Boolean(payload.isFiction),
+      topic: String(payload.topic ?? ""),
+    };
+
+    // (2′) 본문·목차 판독 — 사진이 없으면 건너뛴다 (기본 경로와 동일해진다)
+    if (!withPages) {
+      await runCard(payload, {
         onInvalidInput: () =>
           openManualForRetake(
             extraction,
             "사진에서 읽은 정보로는 카드를 만들지 못했어요. 아래 내용을 확인·수정해서 만들어 주시거나, 표지를 다시 찍어 주세요.",
           ),
+      });
+      return;
+    }
+    await runPagesStep(pages, kind);
+  }
+
+  /** 검토 패널의 "본문 다시 찍기" — 판독·식별은 다시 하지 않는다 */
+  async function retakePages(files: File[], kind: SceneSourceKind) {
+    if (files.length === 0) return;
+    clearStatus();
+    setReview(null);
+    setSteps(["pages", "card"]);
+    retryAction.current = () => void retakePages(files, kind);
+    await runPagesStep(files, kind);
+  }
+
+  /**
+   * 검토 패널의 "이대로 카드 만들기" — 장면 메모를 근거로 실어 보낸다.
+   *
+   * 400(invalid_input)은 **같은 페이로드를 다시 보내도 똑같이 실패한다** — 재시도 버튼을
+   * 띄우면 사용자가 같은 실패를 반복하게 된다(QA F12). `/api/pages`가 200으로 내려준
+   * 장면이라도 `/api/card`의 길이 상한(labelKo 120자 등)에 걸릴 수 있으므로, 400은
+   * "무엇을 빼면 되는지"를 알려주는 다른 출구로 보낸다:
+   *   - 장면을 실어 보낸 경우 → 장면을 빼고 만들기(오류 패널의 "본문 없이 카드 만들기")
+   *   - 장면 없이도 거절된 경우 → 판독값 자체 문제이므로 §9 수동 폼 폴백
+   */
+  async function createCardWithScenes(scenes: SceneDigestItem[] | null, kind: SceneSourceKind) {
+    const base = pendingCardPayload.current;
+    if (!base) return;
+    const withScenes = Boolean(scenes && scenes.length > 0);
+    setReview(null);
+    setSteps(["card"]);
+    await runCard(
+      {
+        ...base,
+        // 근거를 여기서 빠뜨리면 storySource가 metadata로 떨어져 줄거리가 짧아진다.
+        // sceneKind도 반드시 함께 — 빠지면 목차 근거가 "본문 확인"으로 오표기된다.
+        ...(withScenes ? { sceneKind: kind, sceneDigest: scenes } : {}),
+      },
+      {
+        onInvalidInput: () => {
+          if (withScenes) {
+            // 재시도 버튼을 띄우지 않는다(canRetry=false) — 오류 패널이 대신
+            // "본문 없이 카드 만들기"를 띄우고, 아래 촬영 패널에서 다시 찍을 수도 있다.
+            fail(
+              "정리한 장면 메모가 카드에 담기에는 너무 길거나 형식이 맞지 않아요. 본문 없이 카드를 만들거나, 아래에서 본문을 다시 찍어 주세요.",
+              false,
+            );
+            return;
+          }
+          openManualForRetake(
+            richExtraction.current,
+            "사진에서 읽은 정보로는 카드를 만들지 못했어요. 아래 내용을 확인·수정해서 만들어 주시거나, 표지를 다시 찍어 주세요.",
+          );
+        },
       },
     );
   }
@@ -527,7 +815,7 @@ export default function HomeCreate() {
 
   return (
     <section>
-      {/* 숨긴 파일 입력 (SPEC §4-1 — image/*, 후면 카메라, 최대 2장) */}
+      {/* 숨긴 파일 입력 (SPEC §4-1 — image/*, 후면 카메라, 최대 3장) */}
       <input
         ref={fileInputRef}
         type="file"
@@ -551,7 +839,8 @@ export default function HomeCreate() {
           <span className="u-entry-icon" aria-hidden>📷</span>
           <span className="u-entry-title">표지 사진으로 만들기</span>
           <span className="u-entry-desc">
-            책 표지를 찍어 주세요. 정보 스티커(AR 지수)가 있으면 그 사진까지 최대 2장!
+            표지 · 정보 스티커(AR 지수) · 뒤표지 소개글까지 최대 {COVER_MAX_IMAGES}장! 있는 것만
+            찍어도 돼요.
           </span>
         </button>
 
@@ -572,6 +861,24 @@ export default function HomeCreate() {
           </span>
         </button>
       </div>
+
+      {/*
+       * 본문 촬영 진입점 — 기본 경로(위 버튼 2개)를 무겁게 하지 않으려고 작은 링크로 뺐다.
+       * 본문 촬영은 선택이고, 안 찍어도 표지만으로 카드가 그대로 나온다.
+       */}
+      <button
+        type="button"
+        onClick={() => {
+          clearStatus();
+          setReview(null);
+          setPanel("pages");
+          scrollToPanel();
+        }}
+        disabled={busy}
+        className="t-meta-chip mt-3 inline-block py-2 text-ink-2 underline underline-offset-2"
+      >
+        📖 본문·목차까지 찍어서 줄거리를 자세히 만들기 (선택)
+      </button>
 
       {/* 진행 상태 — 실제 호출 단계와 1:1 (SPEC §3).
           지난 단계·현재 단계는 파란 점, 남은 단계는 옅은 회색 점으로 단정하게. */}
@@ -614,7 +921,22 @@ export default function HomeCreate() {
             ))}
           </ol>
 
-          <p className="t-caption mt-3">보통 20~40초 정도 걸려요. 조금만 기다려 주세요!</p>
+          {/*
+           * 본문 판독은 사진 장수에 비례해 오래 걸린다(40장이면 배치 7개). 화면이
+           * 멈춘 것처럼 보이면 새로고침하게 되고, 그러면 이미 쓴 비용이 날아간다.
+           * 서버가 배치별 진행을 스트리밍하지 않으므로 **지어낸 퍼센트 대신** 사진
+           * 장수·묶음 수와 경과 시간을 사실 그대로 보여준다.
+           */}
+          {phase === "pages" && pagesProgress ? (
+            <p className="t-caption mt-3">
+              사진 {pagesProgress.images}장을 {pagesBatchSize}장씩 {pagesProgress.batches}묶음으로
+              나눠 읽고 있어요 · 경과 {elapsedSec}초
+              <br />
+              사진이 많으면 1~2분까지 걸릴 수 있어요. 창을 닫지 말고 기다려 주세요!
+            </p>
+          ) : (
+            <p className="t-caption mt-3">보통 20~40초 정도 걸려요. 조금만 기다려 주세요!</p>
+          )}
         </div>
       )}
 
@@ -655,14 +977,240 @@ export default function HomeCreate() {
           className="u-box-accent mt-4"
         >
           <p className="t-question-ko text-ink">{errorKo}</p>
-          {canRetry && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {canRetry && (
+              <button
+                type="button"
+                onClick={() => retryAction.current?.()}
+                className="u-btn u-btn-secondary"
+              >
+                재시도
+              </button>
+            )}
+            {/*
+             * 본문 판독이 실패해도 카드 생성을 막지 않는다 (SPEC §9 정신) —
+             * 표지·소개글 근거는 이미 확보돼 있으므로 그것만으로 카드를 만들 수 있다.
+             * 줄거리가 짧아질 뿐 흐름이 끊기지는 않는다.
+             */}
+            {pendingCardPayload.current && (
+              <button
+                type="button"
+                onClick={() => void createCardWithScenes(null, sceneKind)}
+                className="u-btn u-btn-secondary"
+              >
+                본문 없이 카드 만들기
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/*
+       * 검토 패널 — 본문 판독 결과를 확인하고 카드로 넘어간다 (§2-5-3).
+       * 여기서 부분 실패·판독 불확실·누락을 알린다. gapBefore는 불리언이라 "몇 장면이
+       * 빠졌는지"를 표현하지 못하고 마지막 배치 실패는 마커 자체가 없으므로,
+       * 실패한 사진 범위는 batches로 따로 안내한다 (HARNESS §2A-5).
+       */}
+      {!busy && review && (
+        <div ref={reviewRef} className={panelCls}>
+          <h2 className="t-section-title">
+            {review.sourceKind === "toc" ? "목차를 읽었어요" : "본문을 읽었어요"} 📖
+          </h2>
+          <p className="t-caption mt-1">
+            장면 {review.scenes.length}개를 정리했어요. 내용이 이상하면 다시 찍어 주세요 —
+            사진은 저장하지 않고 이 요약만 카드에 남아요.
+          </p>
+
+          {/* 부분 실패 — 어느 사진이 안 읽혔는지 범위로 알린다 */}
+          {review.failedBatchCount > 0 && (
+            <div className="u-box-accent mt-4">
+              <p className="t-question-ko text-ink">
+                ⚠️ {review.messageKo ?? "일부 사진을 읽지 못했어요."}
+              </p>
+              <ul className="t-caption mt-2 list-disc pl-5">
+                {review.batches
+                  .filter((b) => !b.ok)
+                  .map((b) => (
+                    <li key={b.batchIndex}>
+                      {b.fromImageIndex === b.toImageIndex
+                        ? `${b.fromImageIndex}번째 사진`
+                        : `${b.fromImageIndex}~${b.toImageIndex}번째 사진`}
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
+
+          {/* 판독이 불확실한 장면 — 그 장면만 다시 찍으면 된다 */}
+          {review.scenes.some((scene) => scene.confidence === "low") && (
+            <p className="t-caption mt-3">
+              🔍 흐릿하게 읽힌 장면이 있어요 (아래 &lsquo;잘 안 보임&rsquo; 표시). 그 장면만 다시
+              찍어도 좋아요.
+            </p>
+          )}
+
+          <ol className="mt-4 flex flex-col gap-3">
+            {review.scenes.map((scene, i) => (
+              <li
+                key={i}
+                className="rounded-[var(--radius-box)] border border-line bg-bg px-4 py-3"
+              >
+                {scene.gapBefore && (
+                  <p className="t-caption text-ink-3">
+                    ⋯ 이 사이가 비어 있어요 — 사진이 빠졌거나 순서가 바뀐 것 같아요
+                  </p>
+                )}
+                <p className="t-meta-chip font-medium text-accent-ink">
+                  {scene.labelKo}
+                  {scene.confidence === "low" && <span className="text-ink-3"> · 잘 안 보임</span>}
+                </p>
+                <p className="t-question-ko mt-1 text-ink">{scene.summaryKo}</p>
+                {scene.askKo && <p className="t-caption mt-1">💬 {scene.askKo}</p>}
+              </li>
+            ))}
+          </ol>
+
+          <div className="mt-5 flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={() => retryAction.current?.()}
-              className="u-btn u-btn-secondary mt-3"
+              onClick={() => void createCardWithScenes(review.scenes, review.sourceKind)}
+              className="u-btn u-btn-primary"
             >
-              재시도
+              🪄 이대로 학습 카드 만들기
             </button>
+            <button
+              type="button"
+              onClick={() => pageInputRef.current?.click()}
+              className="u-btn u-btn-secondary"
+            >
+              📷 본문 다시 찍기
+            </button>
+            <button
+              type="button"
+              onClick={() => void createCardWithScenes(null, review.sourceKind)}
+              className="u-btn u-btn-secondary"
+            >
+              본문 없이 만들기
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/*
+       * 패널: 본문·목차까지 찍어서 만들기 (선택 경로).
+       * 표지는 필수, 본문/목차는 선택 — 본문을 안 고르면 기본 표지 흐름과 같아진다.
+       */}
+      {panel === "pages" && (
+        <div ref={panelRef} className={`${panelCls} ${busy || duplicate || review ? "hidden" : ""}`}>
+          <h2 className="t-section-title">본문까지 찍어서 만들기</h2>
+          <p className="t-caption mt-1">
+            책을 <b>순서대로</b> 찍어 주시면 장면마다 &lsquo;지금 던질 질문&rsquo;이 붙은 읽기
+            가이드를 만들어요. 사진은 저장하지 않고 우리말 요약만 남아요.
+          </p>
+
+          {/* 1단계 — 표지 (필수) */}
+          <div className="mt-5">
+            <p className={labelCls}>1. 표지 사진 * (최대 {COVER_MAX_IMAGES}장)</p>
+            <p className="t-caption mb-2">표지 · 정보 스티커(AR 지수) · 뒤표지 소개글</p>
+            <input
+              ref={coverInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              multiple
+              className={inputCls}
+              onChange={(e) => {
+                setCoverFiles(Array.from(e.target.files ?? []).slice(0, COVER_MAX_IMAGES));
+                clearStatus();
+                // 표지가 바뀌면 판독 결과가 무효다 — 다음 실행은 처음부터 다시 탄다
+                pagesFlowReady.current = false;
+                setReview(null);
+              }}
+            />
+            {coverFiles.length > 0 && (
+              <p className="t-caption mt-1">✓ 표지 {coverFiles.length}장 골랐어요</p>
+            )}
+          </div>
+
+          {/* 2단계 — 본문 또는 목차 (선택) */}
+          <div className="mt-5">
+            <p className={labelCls}>2. 본문 또는 목차 사진 (선택)</p>
+            <div className="mt-2 flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setSceneKind("pages");
+                  setPageFiles([]);
+                }}
+                aria-pressed={sceneKind === "pages"}
+                className={`t-question-ko min-h-[var(--tap-min)] flex-1 rounded-[var(--radius-box)] border px-3 ${
+                  sceneKind === "pages"
+                    ? "border-accent bg-accent-soft text-accent-ink"
+                    : "border-line bg-bg text-ink"
+                }`}
+              >
+                📖 본문 전체
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSceneKind("toc");
+                  setPageFiles([]);
+                }}
+                aria-pressed={sceneKind === "toc"}
+                className={`t-question-ko min-h-[var(--tap-min)] flex-1 rounded-[var(--radius-box)] border px-3 ${
+                  sceneKind === "toc"
+                    ? "border-accent bg-accent-soft text-accent-ink"
+                    : "border-line bg-bg text-ink"
+                }`}
+              >
+                📑 목차 1장
+              </button>
+            </div>
+            <p className="t-caption mt-2">
+              {sceneKind === "pages"
+                ? `그림책이면 펼침면을 처음부터 순서대로 찍어 주세요 (보통 12~16장, 최대 ${pagesMaxImages}장). 사진 1장이 장면 1개가 돼요.`
+                : "챕터북이면 목차 페이지만 찍으면 돼요 (1~2장). 챕터 하나가 장면 하나가 돼요."}
+            </p>
+            <input
+              ref={pageInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              multiple
+              className={`${inputCls} mt-2`}
+              onChange={(e) => {
+                const picked = Array.from(e.target.files ?? []).slice(0, pagesMaxImages);
+                e.target.value = "";
+                setPageFiles(picked);
+                clearStatus();
+                // 이미 표지 판독이 끝난 상태(검토 패널의 "본문 다시 찍기", 또는 장면이
+                // 거절된 뒤 다시 찍기)라면 표지 판독을 다시 하지 않고 본문만 재판독한다
+                if (pagesFlowReady.current && picked.length > 0) void retakePages(picked, sceneKind);
+              }}
+            />
+            {pageFiles.length > 0 && (
+              <p className="t-caption mt-1">
+                ✓ {sceneKind === "toc" ? "목차" : "본문"} {pageFiles.length}장 골랐어요 (
+                {pagesBatchSize}장씩 {Math.ceil(pageFiles.length / pagesBatchSize)}묶음으로 읽어요)
+              </p>
+            )}
+            <p className="t-caption mt-2">
+              찍은 <b>순서가 곧 장면 순서</b>예요. 순서가 섞이면 앱이 &lsquo;여기가 비어
+              있어요&rsquo;라고 알려 줄 뿐, 내용을 지어내지 않아요.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            disabled={coverFiles.length === 0}
+            onClick={() => void runRichFlow(coverFiles, pageFiles, sceneKind)}
+            className="u-btn u-btn-primary mt-6 w-full disabled:opacity-55"
+          >
+            🪄 학습 카드 만들기
+          </button>
+          {coverFiles.length === 0 && (
+            <p className="t-caption mt-2 text-center">표지 사진을 먼저 골라 주세요.</p>
           )}
         </div>
       )}

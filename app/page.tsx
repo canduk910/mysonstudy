@@ -9,6 +9,10 @@
 
 import Link from "next/link";
 import HomeCreate from "@/components/home-create";
+// 본문 사진 상한·배치 크기는 lib/ai/client.ts가 단일 정의처다. 그 모듈은 openai와
+// API 키를 건드려 클라이언트 번들에 들어갈 수 없으므로, 서버 컴포넌트인 여기서 읽어
+// props로 내려보낸다 (HomeCreate가 숫자를 다시 적지 않게 하는 유일한 방법).
+import { PAGES_BATCH_SIZE, PAGES_MAX_IMAGES } from "@/lib/ai/client";
 import { getStore } from "@/lib/store";
 
 // db.json은 요청 시점에 읽어야 한다 (빌드 시점 정적화 방지)
@@ -31,7 +35,7 @@ export default async function HomePage() {
         <p className="t-lead mt-1">오늘 읽을 영어책으로 우리만의 학습 카드를 만들어요.</p>
       </header>
 
-      <HomeCreate />
+      <HomeCreate pagesMaxImages={PAGES_MAX_IMAGES} pagesBatchSize={PAGES_BATCH_SIZE} />
 
       <section className="mt-10">
         <div className="mb-3 flex items-baseline justify-between gap-3">

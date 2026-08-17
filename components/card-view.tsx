@@ -10,6 +10,13 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+// schemas.ts는 zod 외에 아무것도 import하지 않는 순수 모듈이라 클라이언트 컴포넌트에서
+// 값 import해도 안전하다 (lib/ai/client.ts와 달리 openai·API 키를 건드리지 않는다).
+import {
+  resolveStorySource,
+  STORY_SOURCE_LABELS_KO,
+  type SceneDigestItem,
+} from "@/lib/ai/schemas";
 import type { BookRecord, CardRecord, ReadingRecord } from "@/lib/store";
 import s from "./card-view.module.css";
 
@@ -23,6 +30,66 @@ function ExampleEn({ example, word }: { example: string; word: string }) {
       <b>{example.slice(idx, idx + word.length)}</b>
       {example.slice(idx + word.length)}
     </>
+  );
+}
+
+/**
+ * 장면별 읽기 가이드 (SPEC §4-2 구성 4번) — 호출 A′가 만든 sceneDigest를 보여준다.
+ *
+ * 왜 접히는 섹션인가: 카드는 A4 1~2쪽 인쇄를 목표로 한 **한 장짜리 물건**이다(SPEC §4-2).
+ * 그림책 펼침면 16장이면 장면도 16개라 본문에 펼쳐 놓으면 카드가 아니라 책이 된다.
+ * 그래서 카드 본문에는 확장된 storyOutlineKo만 두고, 장면별 요약은 접어 둔다.
+ * 인쇄에서는 통째로 빠진다(모듈 CSS의 @media print).
+ *
+ * askKo가 이 섹션의 핵심이다 — STEP 4의 질문 8개는 책 전체 기준이라 부모가 "언제
+ * 던질지"를 판단해야 하는데, 장면에 붙은 질문은 그 부담이 없다. 책장을 넘기면서
+ * 그 자리에서 바로 읽으면 된다.
+ */
+function ReadingGuide({ scenes }: { scenes: SceneDigestItem[] }) {
+  const askCount = scenes.filter((scene) => scene.askKo?.trim()).length;
+
+  return (
+    <details className={s.guide}>
+      <summary className={s.guideSummary}>
+        <span className={s.guideTitle}>📑 장면별 읽기 가이드</span>
+        <span className={s.guideMeta}>
+          {scenes.length}장면{askCount > 0 ? ` · 질문 ${askCount}개` : ""}
+        </span>
+        <span className={s.guideToggle} aria-hidden>
+          펼치기
+        </span>
+      </summary>
+
+      <p className={s.guideNote}>
+        책장을 넘기면서 그 자리에서 바로 쓰는 질문이에요. STEP 4의 질문은 다 읽고 나서
+        나누는 대화용이고, 여기 질문은 <b>지금 보고 있는 그 장면</b>에 대한 거예요.
+      </p>
+
+      <ol className={s.scenes}>
+        {scenes.map((scene, i) => (
+          <li key={i} className={s.scene}>
+            {/*
+             * gapBefore는 불리언이라 '몇 장면이 빠졌는지'를 표현하지 못한다
+             * (연속으로 빠져도 마커는 1개). 그래서 개수를 단정하지 않는다.
+             * 앱이 내용을 지어내 메우지 않았다는 사실만 알린다 (SPEC §7-1′).
+             */}
+            {scene.gapBefore && (
+              <p className={s.sceneGap}>
+                ⋯ 이 사이가 비어 있어요 — 사진이 빠졌거나 순서가 바뀐 것 같아요
+              </p>
+            )}
+            <p className={s.sceneLabel}>{scene.labelKo}</p>
+            <p className={s.sceneText}>{scene.summaryKo}</p>
+            {scene.askKo && <p className={s.sceneAsk}>💬 {scene.askKo}</p>}
+            {scene.confidence === "low" && (
+              <p className={s.sceneWarn}>
+                🔍 이 사진은 흐려서 잘 못 읽었어요. 이 장면만 다시 찍으면 더 정확해져요.
+              </p>
+            )}
+          </li>
+        ))}
+      </ol>
+    </details>
   );
 }
 
@@ -189,6 +256,18 @@ export default function CardView({
   const theme = book.isFiction ? "theme-fiction" : "theme-nonfiction";
   const emoji = book.coverEmoji || "📖";
 
+  /*
+   * 줄거리 근거 배지 (SPEC §4-2) — 예상 / 소개글 기반 / 목차 기반 / 본문 확인.
+   * 근거가 두꺼울수록 부모가 더 믿고 쓸 수 있다는 것을 한눈에 보이게 한다.
+   *
+   * 반드시 resolveStorySource()를 거친다. 신규 카드에는 storySource만, 구 카드에는
+   * storyIsGuess만 있어서 어느 한쪽을 직접 비교하면 다른 세대가 조용히 죽는다
+   * (`c.storyIsGuess === true`가 신규 카드에서 항상 false였던 QA F5 회귀).
+   * 배지 문구도 여기 적지 않는다 — STORY_SOURCE_LABELS_KO가 단일 정의처다.
+   */
+  const storySrc = resolveStorySource(c);
+  const sceneDigest = c.sceneDigest ?? [];
+
   const youtubeQuery = [book.title, book.author !== "미상" ? book.author : "", "read aloud"]
     .filter(Boolean)
     .join(" ");
@@ -281,7 +360,7 @@ export default function CardView({
 
         {/*
          * 3. 줄거리/내용 미리보기 (storyOutlineKo, SPEC §4-2) — 픽션은 "줄거리",
-         * 논픽션은 "내용". storyIsGuess=true면 "예상" 배지(레벨 추정 배지와 같은 스타일).
+         * 논픽션은 "내용". 근거 배지는 storySource로 판정(4종).
          * 구(舊) 저장 카드에는 이 필드가 없다 — 부재 시 섹션을 조용히 생략(하위 호환).
          */}
         {c.storyOutlineKo && (
@@ -289,14 +368,26 @@ export default function CardView({
             <div className={s.story}>
               <h3 className={s.storyTitle}>
                 📖 {book.isFiction ? "줄거리 미리보기" : "내용 미리보기"}
-                {c.storyIsGuess === true && <span className={s.chipEstimated}>예상</span>}
+                {storySrc && (
+                  <span className={s.chipEstimated}>{STORY_SOURCE_LABELS_KO[storySrc]}</span>
+                )}
               </h3>
               <p className={s.storyText}>{c.storyOutlineKo}</p>
             </div>
           </section>
         )}
 
-        {/* 4. STEP 1 읽기 전 워밍업 */}
+        {/*
+         * 4. 장면별 읽기 가이드 — sceneDigest가 있을 때만 (SPEC §4-2 구성 4번).
+         * 없으면 섹션 통째 생략: 표지만으로 만든 카드·구 저장 카드는 화면이 그대로다.
+         */}
+        {sceneDigest.length > 0 && (
+          <section className={s.guideSection}>
+            <ReadingGuide scenes={sceneDigest} />
+          </section>
+        )}
+
+        {/* 5. STEP 1 읽기 전 워밍업 */}
         <section className={s.section}>
           <h3 className={s.h3}>
             <span className={s.step}>STEP 1</span> 읽기 전 워밍업 <span className={s.h3en}>Before Reading</span>
@@ -433,9 +524,16 @@ export default function CardView({
       <ReadingLog bookId={book.id} initialReadings={readings} />
 
       <footer className={s.note}>
+        {/* 무엇을 근거로 만들었는지는 storySource가 안다 — 사실과 다른 안내를 하지 않는다 */}
         <p>
-          <b>이 카드는 이렇게 만들어졌어요:</b> 책의 제목·난이도·주제 같은 정보만으로 새로 만든
-          카드예요. 책 본문은 옮기지 않았어요.
+          <b>이 카드는 이렇게 만들어졌어요:</b>{" "}
+          {storySrc === "pages" || storySrc === "toc"
+            ? `책의 제목·난이도·주제 같은 정보와, 올려 주신 ${
+                storySrc === "toc" ? "목차" : "본문"
+              } 사진에서 읽은 우리말 요약을 근거로 새로 만든 카드예요. 영어 원문은 옮기지 않았고, 올린 사진은 저장하지 않아요.`
+            : storySrc === "blurb"
+              ? "책의 제목·난이도·주제 같은 정보와 뒤표지 소개글을 근거로 새로 만든 카드예요. 책 본문은 옮기지 않았어요."
+              : "책의 제목·난이도·주제 같은 정보만으로 새로 만든 카드예요. 책 본문은 옮기지 않았어요."}
         </p>
         {/* 종이에서는 의미 없는 안내 — 인쇄 시 숨김 (M4) */}
         <p className={s.printHide}>🖨️ 인쇄 버튼을 누르면 종이로 뽑아 책 옆에 두고 쓸 수 있어요.</p>

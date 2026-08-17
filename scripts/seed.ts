@@ -46,6 +46,10 @@ const wolvesBook: BookRecord = {
   description: null,
   levelEstimated: false,
   createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+  // 근거 없이 만든 카드(storySource: "metadata") — 재생성해도 metadata 그대로다
+  blurbText: null,
+  sceneKind: null,
+  sceneDigest: null,
 };
 
 const wolvesCard: Card = {
@@ -56,7 +60,8 @@ const wolvesCard: Card = {
   // 논픽션 → 줄거리 대신 책이 다루는 내용을 순서대로 소개 (결말·세부 서술 없음, 직접 창작)
   storyOutlineKo:
     "늑대가 어떤 동물인지 사진과 함께 차근차근 알려주는 책이에요. 먼저 늑대 무리가 어떻게 가족을 이루어 사는지 보여주고, 이어서 사냥하는 법과 새끼 늑대가 자라는 모습을 소개해요. 그런데 늑대는 왜 밤마다 그렇게 길게 울까요? 그 비밀은 책에서 직접 확인해 보세요.",
-  storyIsGuess: false, // 시리즈·주제가 널리 알려진 책 — 일반 상식 수준의 내용 소개
+  // 사진 근거 없이 제목·주제만으로 쓴 내용 소개 → metadata (배지 "예상"). 분량도 metadata 구간(3~4문장)
+  storySource: "metadata",
   beforeReading: [
     {
       ko: "표지 탐정 놀이: 표지의 동물이 강아지인지 늑대인지 추리해 보세요. 어떻게 구별했는지 이유도 꼭 물어봐 주세요.",
@@ -287,6 +292,11 @@ const poohBook: BookRecord = {
   description: null,
   levelEstimated: false,
   createdAt: new Date(Date.now() - 60_000).toISOString(),
+  // 줄거리 근거 (SPEC §5) — 데모용. sceneDigest는 카드 선언 뒤에 복사한다(아래).
+  blurbText:
+    "꿀을 좋아하는 곰돌이 푸가 친구 집에서 벌인 소동을 담은 이야기. 첫 읽기 책 시리즈로, 짧은 문장과 큰 그림으로 되어 있어요.",
+  sceneKind: "pages",
+  sceneDigest: null,
 };
 
 const poohCard: Card = {
@@ -294,10 +304,70 @@ const poohCard: Card = {
     "꿀을 사랑하는 곰돌이 푸가 토끼네 집에 놀러 갔다가 그만 구멍에 끼어 버려요. 친구들이 푸를 어떻게 구해 줄지 함께 응원하며 읽는 이야기예요.",
   levelNoteKo:
     "AR 2.0은 미국 2학년 첫 달 수준이라는 뜻이에요 — 문장이 짧아서 소리 내어 함께 읽기에 딱 좋아요.",
-  // 픽션 → 큰 흐름만 담은 줄거리, 결말은 말하지 않고 마지막 문장으로 궁금증 유발 (직접 창작)
+  // 픽션 → 큰 흐름만 담은 줄거리, 결말은 말하지 않고 마지막 문장으로 궁금증 유발 (직접 창작).
+  // 아래 sceneDigest(장면 6개)를 근거로 삼은 카드이므로 그 장면 수에서 계산한 구간(5~8문장)으로 쓴다
+  // — storyOutlineSentenceRange("pages", 6). 현재 7문장.
   storyOutlineKo:
-    "꿀을 좋아하는 곰돌이 푸가 친구 토끼네 집에 놀러 가요. 토끼가 내어 준 꿀을 푸는 멈추지 못하고 계속 먹어 버려요. 배가 빵빵해진 채 집으로 돌아가려는 순간, 문 구멍에 몸이 꽉 끼어 버리죠. 푸는 과연 구멍에서 빠져나올 수 있을까요?",
-  storyIsGuess: false, // 널리 알려진 이야기 — 일반적인 수준의 줄거리
+    "꿀을 좋아하는 곰돌이 푸가 아침부터 배가 고파 친구 토끼네 집으로 향해요. 토끼는 반갑게 맞아 주면서 꿀단지를 꺼내 주죠. 푸는 한 단지로 멈추지 못하고 계속 꿀을 먹어요. 배가 빵빵해진 채 집으로 돌아가려는 순간, 문 구멍에 몸이 꽉 끼어 버려요. 토끼가 뒤에서 밀고 친구들이 앞에서 당겨 보지만 푸는 꼼짝도 하지 않아요. 결국 친구들은 다른 방법을 찾아보기로 해요. 푸는 과연 구멍에서 빠져나올 수 있을까요?",
+  storySource: "pages", // 아래 sceneDigest(본문 장면 메모)를 근거로 삼았다는 표시 → 배지 "본문 확인"
+  /**
+   * 데모용 장면 메모 — 실제 사진 판독 결과가 아니라 손으로 쓴 시연 데이터다.
+   * 내용은 SPEC §12 픽스처의 주제 한 줄 수준에 머무르고, 원문 전사는 없다.
+   * 목적: API 키 없이도 sceneDigest UI·인쇄를 만들고 확인할 수 있게 하는 것.
+   */
+  sceneDigest: [
+    {
+      seq: 1,
+      labelKo: "1~2쪽",
+      summaryKo:
+        "곰돌이 푸가 아침부터 배가 고파 집을 나서요. 어디로 갈지 벌써 정해 둔 얼굴이에요.",
+      askKo: "푸는 지금 어디로 가는 길일까? 표정을 보고 맞혀 볼까?",
+      confidence: "high",
+      gapBefore: false,
+    },
+    {
+      seq: 2,
+      labelKo: "3~4쪽",
+      summaryKo: "푸가 토끼네 집 앞에 도착해 문 구멍으로 인사를 건네요. 토끼는 반가워하면서도 살짝 걱정하는 표정이에요.",
+      askKo: "토끼는 왜 웃으면서도 걱정하는 얼굴일까?",
+      confidence: "high",
+      gapBefore: false,
+    },
+    {
+      seq: 3,
+      labelKo: "5~6쪽",
+      summaryKo: "토끼가 꺼내 준 꿀을 푸가 하나씩 비워 가요. 그림 속 꿀단지가 점점 줄어드는 게 보여요.",
+      askKo: "꿀단지가 몇 개나 줄었는지 그림에서 세어 볼까?",
+      confidence: "high",
+      gapBefore: false,
+    },
+    {
+      seq: 4,
+      labelKo: "7~8쪽",
+      summaryKo:
+        "배가 빵빵해진 푸가 집에 가려고 문 구멍으로 몸을 밀어 넣어요. 앞발은 밖으로 나왔는데 몸이 더는 움직이지 않아요.",
+      askKo: "푸의 몸이 왜 멈췄을까? 들어올 때와 무엇이 달라졌지?",
+      confidence: "high",
+      gapBefore: false,
+    },
+    {
+      seq: 5,
+      labelKo: "9~10쪽",
+      summaryKo: "토끼가 뒤에서 밀고, 소식을 들은 친구들이 하나둘 모여들어요. 다 같이 당기고 밀어 보지만 푸는 꼼짝도 하지 않아요.",
+      askKo: "너라면 푸를 어떻게 꺼내 줄 것 같아?",
+      confidence: "medium",
+      gapBefore: false,
+    },
+    {
+      seq: 6,
+      labelKo: "11~12쪽",
+      summaryKo:
+        "친구들은 푸가 다시 홀쭉해질 때까지 기다려 보기로 해요. 푸가 어떻게 나오게 되는지는 마지막 장에서 확인해요.",
+      askKo: "푸는 기다리는 동안 무슨 생각을 하고 있을까?",
+      confidence: "high",
+      gapBefore: false,
+    },
+  ],
   beforeReading: [
     {
       ko: "표지 탐정 놀이: 표지에서 누가 누구를 당기고 있는지, 왜 이런 일이 벌어졌는지 그림만 보고 추리해 보세요.",
@@ -488,6 +558,15 @@ const poohCard: Card = {
   ],
 };
 
+/*
+ * 카드가 근거로 삼은 장면 메모를 book에도 복사한다 (SPEC §5).
+ * 카드의 sceneDigest는 "만든 시점의 스냅샷", book의 sceneDigest는 "다시 생성용 원본"이다 —
+ * 사진을 저장하지 않으므로 book 쪽이 사라지면 재생성이 근거를 잃고 줄거리가
+ * 3~4문장 "예상"으로 퇴화한다(QA F7). 두 곳이 같은 데이터를 갖는 상태를 시드로 재현해
+ * 키 없이도 재생성 입력 경로를 눈으로 확인할 수 있게 한다.
+ */
+poohBook.sceneDigest = poohCard.sceneDigest ?? null;
+
 // ---------------------------------------------------------------------------
 // 읽음 기록 (M3) — 서재의 요약·AR 추이 차트를 로컬 데모하기 위한 샘플.
 // 날짜를 3주에 걸쳐 분산: Pooh(AR 2.0)를 먼저, Wolves(AR 3.3)를 나중에 읽은
@@ -527,7 +606,13 @@ const seedReadings: ReadingRecord[] = [
 // ---------------------------------------------------------------------------
 
 function validateOrExit(name: string, book: BookRecord, card: Card): void {
-  const schema = makeLearningCardSchema({ arLevel: book.arLevel, isFiction: book.isFiction });
+  const schema = makeLearningCardSchema({
+    arLevel: book.arLevel,
+    isFiction: book.isFiction,
+    // 시드는 모델 출력이 아니라 손으로 쓴 데모 데이터다 — 근거 게이트는 카드가 스스로 밝힌
+    // storySource를 그대로 인정하고, 개수·중복 같은 구조 규칙만 검사한다.
+    allowedStorySource: card.storySource ?? "metadata",
+  });
   const result = schema.safeParse(card);
   if (!result.success) {
     console.error(`❌ [${name}] 데모 카드가 zod 검증에 실패했습니다:`);

@@ -1,7 +1,10 @@
 /**
  * POST /api/extract — 표지 판독 (SPEC §3-(1)·§7-1, M2)
  *
- * 이미지 1~2장(base64 data URL)을 받아 lib/ai의 extractBook()으로 판독한다
+ * 이미지 1~3장(표지 / 정보 스티커 / 뒤표지, base64 data URL)을 받아 lib/ai의
+ * extractBook()으로 판독한다. 상한이 3장인 이유(SPEC §4-1): 세 면은 서로 대체 불가한
+ * 정보를 담는다 — 표지=제목·저자, 스티커=AR·Lexile·단어 수, 뒤표지=소개글(blurbText).
+ * 2장이면 사용자가 스티커를 포기해야만 뒤표지를 찍을 수 있어 blurbText 판독이 사실상 죽는다
  * (HARNESS §2의 프롬프트·스키마·callWithSchema를 그대로 사용 — 재구현 금지).
  *
  * 개인정보 최소화(SPEC §5): 업로드된 사진은 이 요청의 메모리에서만 쓰고
@@ -21,6 +24,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { extractBook } from "@/lib/ai/client";
+import { COVER_MAX_IMAGES } from "@/lib/upload-limits";
 
 export const runtime = "nodejs";
 
@@ -33,7 +37,10 @@ const bodySchema = z.object({
         .max(8_000_000, "사진이 너무 커요 — 다시 시도해 주세요"),
     )
     .min(1, "사진을 1장 이상 보내 주세요")
-    .max(2, "사진은 최대 2장까지예요"),
+    // SPEC §4-1 · HARNESS §2-2 — 표지 / 정보 스티커 / 뒤표지.
+    // 숫자를 여기 적지 않는다: UI(home-create)와 상한이 어긋나면 뒤표지가 잘려
+    // blurbText 판독이 조용히 죽는다 (QA F10) → lib/upload-limits.ts가 단일 정의처
+    .max(COVER_MAX_IMAGES, `사진은 최대 ${COVER_MAX_IMAGES}장까지예요 (표지 · 정보 스티커 · 뒤표지)`),
 });
 
 export async function POST(req: Request) {

@@ -21,7 +21,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Card } from "./ai/schemas";
+import type { Card, SceneDigestItem, SceneSourceKind } from "./ai/schemas";
 import { FirestoreStore } from "./store-firestore";
 
 // ---------------------------------------------------------------------------
@@ -54,6 +54,33 @@ export interface BookRecord {
   description: string | null;
   levelEstimated: boolean;
   createdAt: string; // ISO 8601
+
+  /**
+   * --- 줄거리 근거 3필드 (SPEC §5) ---
+   *
+   * 사진 원본을 저장하지 않으므로(§1) 이 요약이 **유일한 사본**이다. "다시 생성"이
+   * 사진 재업로드 없이 같은 근거로 돌아야 하고, 그러지 못하면 storySource가
+   * metadata로 떨어져 줄거리가 3~4문장으로 조용히 퇴화한다(QA F7).
+   *
+   * 선택(?)이 아니라 **필수 nullable**로 둔 것은 의도다 — book을 만드는 곳에서
+   * 빠뜨리면 컴파일이 깨져야 근거 유실을 사람이 아니라 타입이 막는다.
+   */
+  /** 호출 A가 뒤표지·책날개에서 판독한 출판사 소개글 */
+  blurbText: string | null;
+  /** sceneDigest의 출처. 빠뜨리면 배지가 "목차 기반" 대신 "본문 확인"으로 오표기된다 */
+  sceneKind: SceneSourceKind | null;
+  /** 호출 A′의 장면별 요약. 저장 전 normalizeSceneDigest()를 통과시킬 것(Firestore는 undefined 거부) */
+  sceneDigest: SceneDigestItem[] | null;
+}
+
+/**
+ * 근거 3필드만 갱신하는 패치 — `/api/pages`가 기존 책에 장면 메모를 붙일 때 쓴다.
+ * 지정한 키만 덮어쓴다(생략한 키는 보존).
+ */
+export interface BookEvidencePatch {
+  blurbText?: string | null;
+  sceneKind?: SceneSourceKind | null;
+  sceneDigest?: SceneDigestItem[] | null;
 }
 
 export interface CardRecord {
@@ -105,6 +132,11 @@ export interface BookCardStore {
    * (존재 확인·404는 호출측 라우트의 몫 — 스토어는 "그 책과 딸린 것이 없는 상태"만 보장).
    */
   deleteBook(bookId: string): Promise<DeleteBookResult>;
+  /**
+   * 줄거리 근거 3필드만 갱신한다 (`/api/pages`가 본문·목차 판독 결과를 붙일 때).
+   * 없는 bookId면 null — 404 판단은 호출측 라우트의 몫.
+   */
+  updateBookEvidence(bookId: string, patch: BookEvidencePatch): Promise<BookRecord | null>;
 
   createCard(input: NewCard): Promise<CardRecord>;
   getCard(id: string): Promise<CardRecord | null>;
@@ -226,6 +258,21 @@ class JsonFileStore implements BookCardStore {
         cards: cardsBefore - db.cards.length,
         readings: readingsBefore - db.readings.length,
       };
+    });
+  }
+
+  async updateBookEvidence(
+    bookId: string,
+    patch: BookEvidencePatch,
+  ): Promise<BookRecord | null> {
+    return this.mutate((db) => {
+      const book = db.books.find((b) => b.id === bookId);
+      if (!book) return null;
+      // 지정한 키만 덮어쓴다 — undefined는 "건드리지 않음"이지 "null로 지움"이 아니다
+      if ("blurbText" in patch) book.blurbText = patch.blurbText ?? null;
+      if ("sceneKind" in patch) book.sceneKind = patch.sceneKind ?? null;
+      if ("sceneDigest" in patch) book.sceneDigest = patch.sceneDigest ?? null;
+      return book;
     });
   }
 

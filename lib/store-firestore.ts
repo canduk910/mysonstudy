@@ -27,6 +27,7 @@ import {
 import {
   normalizeTitleAuthorKey,
   type BookCardStore,
+  type BookEvidencePatch,
   type BookRecord,
   type CardRecord,
   type CardWithBook,
@@ -36,7 +37,12 @@ import {
   type NewReading,
   type ReadingRecord,
 } from "./store";
-import type { Card } from "./ai/schemas";
+import {
+  normalizeSceneDigest,
+  type Card,
+  type SceneDigestItem,
+  type SceneSourceKind,
+} from "./ai/schemas";
 
 // ---------------------------------------------------------------------------
 // Admin SDK 초기화 — 지연 + 중복 방지 (dev HMR에서 앱이 이미 있으면 재사용)
@@ -66,6 +72,20 @@ function toNullable<T>(v: T | null | undefined): T | null {
   return v ?? null;
 }
 
+/**
+ * 저장된 장면 메모 읽기 방어 — 이 필드가 없던 시절의 문서를 읽으면 undefined다.
+ * 배열이 아니면 null로 내리고, 배열이면 선택 키의 undefined를 null로 정규화한다
+ * (다시 쓸 때 Firestore가 undefined를 거부하는 것을 읽기 단계에서 미리 막는다).
+ */
+function toSceneDigest(v: unknown): SceneDigestItem[] | null {
+  if (!Array.isArray(v) || v.length === 0) return null;
+  return normalizeSceneDigest(v as SceneDigestItem[]);
+}
+
+function toSceneKind(v: unknown): SceneSourceKind | null {
+  return v === "toc" || v === "pages" ? v : null;
+}
+
 function toBook(id: string, d: DocumentData): BookRecord {
   return {
     id,
@@ -85,6 +105,10 @@ function toBook(id: string, d: DocumentData): BookRecord {
     description: toNullable(d.description as string | null),
     levelEstimated: Boolean(d.levelEstimated),
     createdAt: toIso(d.createdAt),
+    // 줄거리 근거 3필드 — 이 필드들이 없던 기존 문서는 전부 null로 읽힌다(하위 호환)
+    blurbText: toNullable(d.blurbText as string | null),
+    sceneKind: toSceneKind(d.sceneKind),
+    sceneDigest: toSceneDigest(d.sceneDigest),
   };
 }
 
@@ -136,7 +160,14 @@ export class FirestoreStore implements BookCardStore {
 
   async createBook(input: NewBook): Promise<BookRecord> {
     const ref = this.books().doc();
-    const record: BookRecord = { ...input, id: ref.id, createdAt: new Date().toISOString() };
+    const record: BookRecord = {
+      ...input,
+      // 방어적 정규화 — 장면 항목의 선택 키가 undefined면 Firestore가 쓰기를 거부한다.
+      // 라우트도 통과시키지만, 저장 계층이 마지막 관문이라 여기서 한 번 더 조인다.
+      sceneDigest: input.sceneDigest?.length ? normalizeSceneDigest(input.sceneDigest) : null,
+      id: ref.id,
+      createdAt: new Date().toISOString(),
+    };
     const { id: _id, ...data } = record; // 문서 ID가 곧 id — 본문에 중복 저장하지 않는다
     await ref.set(data);
     return record;
@@ -184,6 +215,29 @@ export class FirestoreStore implements BookCardStore {
     }
 
     return { cards: cardSnap.size, readings: readingSnap.size };
+  }
+
+  async updateBookEvidence(
+    bookId: string,
+    patch: BookEvidencePatch,
+  ): Promise<BookRecord | null> {
+    const ref = this.books().doc(bookId);
+    const snap = await ref.get();
+    if (!snap.exists) return null;
+
+    // Firestore는 undefined를 거부한다 — 지정한 키만, 전부 null 정규화해서 쓴다.
+    const data: Record<string, unknown> = {};
+    if ("blurbText" in patch) data.blurbText = patch.blurbText ?? null;
+    if ("sceneKind" in patch) data.sceneKind = patch.sceneKind ?? null;
+    if ("sceneDigest" in patch) {
+      data.sceneDigest = patch.sceneDigest?.length
+        ? normalizeSceneDigest(patch.sceneDigest)
+        : null;
+    }
+    if (Object.keys(data).length > 0) await ref.update(data);
+
+    const updated = await ref.get();
+    return toBook(updated.id, updated.data()!);
   }
 
   async createCard(input: NewCard): Promise<CardRecord> {
