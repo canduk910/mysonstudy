@@ -1,7 +1,6 @@
----
-name: bookcard-qa
-description: "qa-inspector 에이전트가 검증 작업을 수행할 때 로드하는 스킬. 구현이 docs/HARNESS.md 스펙과 일치하는지, 프롬프트↔JSON Schema↔zod↔eval 4중 정의가 어긋나지 않는지, API↔프론트 경계면이 맞물리는지 교차 검증하는 정합성 매트릭스·체크리스트·리포트 형식을 담는다. 사용자의 검증·QA 요청 진입점은 bookcard-orchestrator 스킬이다."
----
+# 영어(북카드) 정합성 매트릭스·체크리스트
+
+> `study-qa` 스킬에서 영어 과목 검증 시 읽는다. 수학은 `math.md`.
 
 # Bookcard QA — 통합 정합성 검증
 
@@ -40,7 +39,7 @@ description: "qa-inspector 에이전트가 검증 작업을 수행할 때 로드
 - [ ] 모델 ID가 env `OPENAI_MODEL`에서만 옴 — `grep -r "gpt-" lib/ scripts/ app/`로 하드코딩 검출
 - [ ] 재시도 정확히 1회, 재실패 시 throw (§4)
 - [ ] 로깅 shape `{ call, model, inputTokens, outputTokens, ms }`, 성공/실패 무관 기록
-- [ ] eval-cards.ts: 픽스처가 card-eval 스킬 정의와 일치, 항목별 pass/fail 표 출력, 실패 시 exit code 1
+- [ ] eval-cards.ts: 픽스처가 prompt-eval 스킬 정의와 일치, 항목별 pass/fail 표 출력, 실패 시 exit code 1
 - [ ] package.json에 `"eval:cards": "tsx scripts/eval-cards.ts"`
 
 ## 경계면 체크리스트 (앱 연결 후)

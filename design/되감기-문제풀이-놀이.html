@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>되감기 놀이 — 물통 · 용돈 문제</title>
+<style>
+  :root{
+    --sky:#eef4f8; --ink:#1b2a41; --sub:#5d6b7e; --line:#d7e0ea; --card:#fff;
+    --water:#4a9be0; --water-deep:#2b6cb0; --coin:#f2b134; --coin-deep:#b8790e;
+    --rewind:#e5533c; --ok:#2f9e63; --ok-soft:#e3f6ea; --rewind-soft:#fdeae6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--sky);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif;
+    line-height:1.55;padding:20px 12px 60px}
+  .wrap{max-width:820px;margin:0 auto}
+  header{text-align:center;margin-bottom:18px}
+  header h1{font-size:28px;margin:0 0 6px;letter-spacing:-.02em}
+  header h1 span{display:inline-block;background:var(--ink);color:#fff;border-radius:10px;padding:2px 12px;margin-right:6px}
+  header p{margin:0;color:var(--sub);font-size:14.5px}
+
+  .tabs{display:flex;gap:8px;justify-content:center;margin:18px 0 14px}
+  .tabs button{border:2px solid var(--line);background:#fff;border-radius:999px;padding:8px 18px;font-size:15px;font-weight:700;cursor:pointer;color:var(--sub)}
+  .tabs button.on{border-color:var(--ink);color:var(--ink);background:#fff}
+  .tabs button:focus-visible{outline:3px solid var(--water)}
+
+  .card{background:var(--card);border-radius:18px;padding:18px 16px;box-shadow:0 2px 8px rgba(27,42,65,.08);margin-bottom:14px}
+  .problem{font-size:15px;color:#2d3a4f;margin:0 0 4px}
+  .problem b{background:#fff3c4;padding:0 4px;border-radius:4px}
+
+  /* stage */
+  .stage{position:relative;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0 6px;padding-top:6px}
+  .col{text-align:center;position:relative}
+  .col .name{font-weight:800;font-size:17px;margin-bottom:6px}
+  .col .val{font-size:22px;font-weight:800;margin-top:6px;min-height:32px;transition:color .3s}
+  .col .val.changed{color:var(--rewind)}
+  .col .val small{font-size:13px;color:var(--sub);font-weight:600}
+  svg.tank{width:100%;max-width:130px;height:150px;overflow:visible}
+  .fill{transition:height .8s cubic-bezier(.4,0,.2,1),y .8s cubic-bezier(.4,0,.2,1)}
+  .stack rect{transition:y .6s cubic-bezier(.4,0,.2,1),opacity .4s}
+  .q{font-size:44px;font-weight:900;fill:#c8d2de}
+
+  /* moving token */
+  .token{position:absolute;top:70px;left:0;padding:5px 11px;border-radius:999px;font-weight:800;font-size:15px;color:#fff;
+    box-shadow:0 4px 12px rgba(0,0,0,.18);pointer-events:none;opacity:0;white-space:nowrap;z-index:5}
+  .token.water{background:var(--water-deep)} .token.coin{background:var(--coin-deep)}
+
+  /* arrows lane (original moves) */
+  .lane{display:flex;justify-content:center;gap:14px;flex-wrap:wrap;margin:8px 0 2px}
+  .move{display:flex;align-items:center;gap:6px;font-size:14px;font-weight:700;padding:5px 12px;border-radius:999px;border:2px dashed var(--line);color:var(--sub);transition:all .3s}
+  .move.active{border-style:solid;border-color:var(--rewind);color:var(--rewind);background:var(--rewind-soft)}
+  .move.done{border-color:var(--ok);color:var(--ok);background:var(--ok-soft);border-style:solid}
+  .move .arr{font-size:16px}
+
+  /* caption */
+  .caption{border-radius:14px;padding:14px 16px;background:#f5f8fb;min-height:96px;transition:background .3s}
+  .caption.rewind{background:var(--rewind-soft)} .caption.ok{background:var(--ok-soft)}
+  .caption .tag{display:inline-block;font-size:12px;font-weight:800;letter-spacing:.05em;padding:2px 9px;border-radius:6px;background:var(--ink);color:#fff;margin-bottom:6px}
+  .caption.rewind .tag{background:var(--rewind)} .caption.ok .tag{background:var(--ok)}
+  .caption h3{margin:0 0 4px;font-size:17px}
+  .caption p{margin:0;font-size:14.5px;color:#2d3a4f}
+  .caption p.calc{font-family:ui-monospace,Menlo,monospace;font-size:16px;font-weight:700;margin-top:6px;color:var(--ink)}
+
+  /* controls: VCR bar */
+  .vcr{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:12px;background:var(--ink);border-radius:14px;padding:10px}
+  .vcr button{background:#2b3c58;color:#fff;border:0;border-radius:10px;padding:10px 16px;font-size:15px;font-weight:800;cursor:pointer;min-width:64px}
+  .vcr button.main{background:var(--rewind);padding:10px 22px;font-size:16px}
+  .vcr button:disabled{opacity:.35;cursor:default}
+  .vcr button:focus-visible{outline:3px solid #fff}
+  .dots{display:flex;gap:6px;margin:0 6px}
+  .dots i{width:10px;height:10px;border-radius:50%;background:#4a5b78;transition:background .3s,transform .3s}
+  .dots i.on{background:#fff;transform:scale(1.25)}
+
+  /* scale */
+  .scale{margin-top:4px;text-align:center}
+  .scale h3{font-size:16px;margin:0 0 6px}
+  .beam{position:relative;height:110px;max-width:420px;margin:0 auto}
+  .bar{position:absolute;left:50%;top:22px;width:300px;height:8px;background:var(--ink);border-radius:4px;transform:translateX(-50%) rotate(-8deg);transform-origin:center;transition:transform 1s cubic-bezier(.4,0,.2,1)}
+  .bar.even{transform:translateX(-50%) rotate(0deg)}
+  .post{position:absolute;left:50%;top:26px;width:10px;height:70px;background:var(--ink);transform:translateX(-50%);border-radius:0 0 6px 6px}
+  .base{position:absolute;left:50%;bottom:0;width:100px;height:12px;background:var(--ink);transform:translateX(-50%);border-radius:6px}
+  .pan{position:absolute;top:44px;width:120px;padding:8px 6px;border-radius:0 0 40px 40px;background:#fff;border:3px solid var(--ink);text-align:center;font-weight:800;transition:transform 1s cubic-bezier(.4,0,.2,1)}
+  .pan.l{left:calc(50% - 150px);transform:translate(-50%,-22px)} .pan.r{left:calc(50% + 150px);transform:translate(-50%,22px)}
+  .beam.even .pan.l,.beam.even .pan.r{transform:translate(-50%,0)}
+  .pan small{display:block;font-size:11px;color:var(--sub);font-weight:600}
+  .pan .n{font-size:20px}
+  .verdict{font-weight:800;color:var(--ok);font-size:16px;min-height:24px}
+
+  /* rules */
+  .rules{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .rule{border-radius:14px;padding:12px;background:#f5f8fb;text-align:center}
+  .rule .big{font-size:26px;display:block;margin-bottom:2px}
+  .rule b{display:block;font-size:14px}
+  .rule span{font-size:12.5px;color:var(--sub)}
+  .footnote{font-size:12.5px;color:var(--sub);text-align:center;margin-top:12px}
+  @media (max-width:520px){
+    .rules{grid-template-columns:1fr}
+    header h1{font-size:22px}
+    .vcr button{padding:9px 10px;min-width:52px;font-size:14px}
+    .bar{width:240px} .pan{width:100px} .pan.l{left:calc(50% - 120px)} .pan.r{left:calc(50% + 120px)}
+  }
+  @media (prefers-reduced-motion:reduce){ *{transition:none!important} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span>⏪</span>되감기 놀이</h1>
+    <p>끝 장면만 보여주는 문제는 영화를 <b>거꾸로 되감으면</b> 처음 장면이 나와요.<br>버튼을 눌러 한 칸씩 되감아 보세요.</p>
+  </header>
+
+  <div class="tabs" role="tablist">
+    <button class="on" data-p="0" role="tab">🪣 06 물통 문제</button>
+    <button data-p="1" role="tab">🪙 07 용돈 문제</button>
+  </div>
+
+  <section class="card">
+    <p class="problem" id="ptext"></p>
+    <div class="lane" id="lane"></div>
+    <div class="stage" id="stage"><div class="token" id="token"></div></div>
+    <div class="caption" id="caption"></div>
+    <div class="vcr">
+      <button id="prev">◀ 이전</button>
+      <div class="dots" id="dots"></div>
+      <button id="next" class="main">되감기 ▶</button>
+      <button id="reset">⟲ 처음</button>
+    </div>
+  </section>
+
+  <section class="card scale">
+    <h3>⚖️ 검사 저울 — 전체 양은 절대 안 변해요</h3>
+    <div class="beam" id="beam">
+      <div class="bar" id="bar"></div><div class="post"></div><div class="base"></div>
+      <div class="pan l"><small>처음 장면 합</small><div class="n" id="sumL">?</div></div>
+      <div class="pan r"><small>끝 장면 합</small><div class="n" id="sumR">?</div></div>
+    </div>
+    <div class="verdict" id="verdict"></div>
+  </section>
+
+  <section class="card">
+    <div class="rules">
+      <div class="rule"><span class="big">🎁➡️</span><b>줬으면 되감기는 <u>더하기</u></b><span>준 걸 도로 가져오니까</span></div>
+      <div class="rule"><span class="big">⬅️🎁</span><b>받았으면 되감기는 <u>빼기</u></b><span>받은 걸 돌려주니까</span></div>
+      <div class="rule"><span class="big">🔁</span><b>두 번 움직인 사람은 한 번에 하나씩</b><span>영민이처럼 받고 또 준 사람!</span></div>
+    </div>
+    <p class="footnote">끝 장면 숫자가 없으면? → <b>전체 ÷ 사람 수</b>부터 (600원 ÷ 3명 = 200원)</p>
+  </section>
+</div>
+
+<script>
+const PROBLEMS = [
+ {
+  kind:'water', unit:'L', names:['가','나','다'], total:15,
+  text:'통 가에서 나로 <b>1L</b> 붓고, 통 다에서 나로 <b>2L</b> 부었더니 세 통이 모두 <b>5L</b>가 되었어요. 처음에 들어 있던 물은?',
+  moves:[{from:0,to:1,amt:1,label:'가 → 나  1L'},{from:2,to:1,amt:2,label:'다 → 나  2L'}],
+  steps:[
+   {vals:[5,5,5], tag:'끝 장면', title:'영화의 마지막 장면부터 봐요', body:'세 통 다 5L. 여기서 출발해서 화살표를 <b>거꾸로</b> 따라갈 거예요.', mode:'end'},
+   {vals:[6,4,5], move:0, tag:'되감기 1', title:'가가 준 1L를 도로 가져와요', body:'가는 1L를 <b>줬으니까</b> 되감으면 다시 받아요. 나는 그만큼 돌려줘요.', calc:'가: 5 + 1 = 6', mode:'rewind'},
+   {vals:[6,2,7], move:1, tag:'되감기 2', title:'다가 준 2L를 도로 가져와요', body:'다도 2L를 <b>줬으니까</b> 되감으면 다시 받아요. 나는 또 돌려줘요.', calc:'다: 5 + 2 = 7　나: 5 − 1 − 2 = 2', mode:'rewind'},
+   {vals:[6,2,7], tag:'처음 장면', title:'짠! 처음에는 6L · 2L · 7L', body:'나는 두 번 <b>받았으니</b> 두 번 뺐어요. 이게 답이에요.', mode:'start'},
+   {vals:[5,5,5], forward:true, tag:'검사', title:'다시 재생해서 확인!', body:'6에서 1 주면 5, 7에서 2 주면 5, 2가 3 받으면 5. 딱 맞아요! 그리고 6+2+7=15, 5+5+5=15 — 물은 옮겨도 사라지지 않죠.', mode:'ok'}
+  ]
+ },
+ {
+  kind:'coin', unit:'원', names:['승환','영민','지훈'], total:600,
+  text:'셋이 합해 <b>600원</b>. 승환이가 영민이에게 <b>50원</b>, 영민이가 지훈이에게 <b>100원</b>을 줬더니 셋이 가진 돈이 <b>똑같아졌어요</b>. 처음 돈은?',
+  moves:[{from:0,to:1,amt:50,label:'승환 → 영민  50원'},{from:1,to:2,amt:100,label:'영민 → 지훈  100원'}],
+  steps:[
+   {vals:[null,null,null], tag:'끝 장면', title:'어라, 끝 장면 숫자가 없어요!', body:'"똑같아졌다"고만 했죠. 하지만 전체 600원은 안 변하니까…', mode:'end'},
+   {vals:[200,200,200], tag:'첫걸음', title:'600원 ÷ 3명 = 200원씩', body:'세 명이 똑같이 나눠 가진 거예요. 이제 되감기를 시작할 수 있어요.', calc:'600 ÷ 3 = 200', mode:'end'},
+   {vals:[250,150,200], move:0, tag:'되감기 1', title:'승환이가 준 50원을 도로 가져와요', body:'승환이는 <b>줬으니까</b> 더하기. 영민이는 받은 걸 돌려줘요.', calc:'승환: 200 + 50 = 250', mode:'rewind'},
+   {vals:[250,250,100], move:1, tag:'되감기 2', title:'지훈이가 받은 100원을 돌려줘요', body:'지훈이는 <b>받았으니까</b> 빼기. 영민이는 준 100원이 돌아와서 도로 늘어요.', calc:'지훈: 200 − 100 = 100　영민: 200 − 50 + 100 = 250', mode:'rewind'},
+   {vals:[250,250,100], tag:'처음 장면', title:'승환 250 · 영민 250 · 지훈 100', body:'영민이 지갑은 <b>통로</b>였어요. 50원이 들어왔다가 100원이 나갔으니, 되감으면 100원은 돌아오고 50원은 나가요.', mode:'start'},
+   {vals:[200,200,200], forward:true, tag:'검사', title:'다시 재생해서 확인!', body:'250−50=200, 250+50−100=200, 100+100=200. 셋 다 200원! 합도 600=600.', mode:'ok'}
+  ]
+ }
+];
+
+let P=0, S=0, busy=false;
+const $=id=>document.getElementById(id);
+const stage=$('stage'), token=$('token');
+
+function build(){
+  const p=PROBLEMS[P];
+  $('ptext').innerHTML=p.text;
+  $('lane').innerHTML=p.moves.map((m,i)=>`<div class="move" id="mv${i}"><span>${m.label}</span></div>`).join('');
+  stage.querySelectorAll('.col').forEach(c=>c.remove());
+  p.names.forEach((n,i)=>{
+    const col=document.createElement('div'); col.className='col'; col.id='col'+i;
+    col.innerHTML=`<div class="name">${n}</div>${p.kind==='water'?tankSVG(i):stackSVG(i)}<div class="val" id="val${i}"></div>`;
+    stage.appendChild(col);
+  });
+  $('dots').innerHTML=p.steps.map((_,i)=>`<i id="d${i}"></i>`).join('');
+  S=0; render(false);
+}
+function tankSVG(i){
+  return `<svg class="tank" viewBox="0 0 120 150"><defs><clipPath id="c${i}"><rect x="15" y="15" width="90" height="120" rx="6"/></clipPath></defs>
+  <rect x="15" y="15" width="90" height="120" rx="6" fill="#f3f7fb" stroke="#1b2a41" stroke-width="3"/>
+  <ellipse cx="60" cy="15" rx="45" ry="7" fill="#fff" stroke="#1b2a41" stroke-width="3"/>
+  <g clip-path="url(#c${i})"><rect class="fill" id="f${i}" x="15" y="135" width="90" height="0" fill="var(--water)"/></g>
+  <text class="q" id="q${i}" x="60" y="92" text-anchor="middle" opacity="0">?</text></svg>`;
+}
+function stackSVG(i){
+  let r=''; for(let k=0;k<6;k++) r+=`<rect id="s${i}_${k}" x="30" y="135" width="60" height="16" rx="8" fill="var(--coin)" stroke="#b8790e" stroke-width="2" opacity="0"/>`;
+  return `<svg class="tank" viewBox="0 0 120 150"><line x1="15" y1="137" x2="105" y2="137" stroke="#1b2a41" stroke-width="3" stroke-linecap="round"/><g class="stack">${r}</g><text class="q" id="q${i}" x="60" y="92" text-anchor="middle" opacity="0">?</text></svg>`;
+}
+function setVal(i,v,changed){
+  const p=PROBLEMS[P];
+  const q=$('q'+i);
+  if(v==null){ $('val'+i).innerHTML='<small>모름</small>'; q.setAttribute('opacity',1); if(p.kind==='water'){$('f'+i).setAttribute('height',0);$('f'+i).setAttribute('y',135);} else for(let k=0;k<6;k++)$(`s${i}_${k}`).setAttribute('opacity',0); return; }
+  q.setAttribute('opacity',0);
+  $('val'+i).innerHTML=`${v}<small>${p.unit}</small>`;
+  $('val'+i).classList.toggle('changed',!!changed);
+  if(p.kind==='water'){ const h=v/8*120; $('f'+i).setAttribute('height',h); $('f'+i).setAttribute('y',135-h); }
+  else { const n=Math.round(v/50); for(let k=0;k<6;k++){const e=$(`s${i}_${k}`); e.setAttribute('opacity',k<n?1:0); e.setAttribute('y',k<n?135-14-k*14:135);} }
+}
+function colX(i){ const c=$('col'+i).getBoundingClientRect(), s=stage.getBoundingClientRect(); return c.left-s.left+c.width/2; }
+function fly(from,to,label,cls){
+  return new Promise(res=>{
+    token.className='token '+cls; token.textContent=label; token.style.opacity=1;
+    const w=token.offsetWidth; const x1=colX(from)-w/2, x2=colX(to)-w/2;
+    const a=token.animate([{transform:`translate(${x1}px,0)`},{transform:`translate(${(x1+x2)/2}px,-42px)`},{transform:`translate(${x2}px,0)`}],{duration:900,easing:'ease-in-out',fill:'forwards'});
+    a.onfinish=()=>{ token.style.opacity=0; res(); };
+  });
+}
+async function render(animate){
+  const p=PROBLEMS[P], st=p.steps[S], prev=p.steps[S-1];
+  const cap=$('caption');
+  cap.className='caption '+(st.mode==='rewind'?'rewind':st.mode==='ok'?'ok':'');
+  cap.innerHTML=`<span class="tag">${st.tag}</span><h3>${st.title}</h3><p>${st.body}</p>${st.calc?`<p class="calc">${st.calc}</p>`:''}`;
+  p.moves.forEach((m,i)=>{ const e=$('mv'+i); e.className='move'+(st.move===i?' active':(S>p.steps.findIndex(s=>s.move===i)&&st.mode!=='ok'&&p.steps.findIndex(s=>s.move===i)>=0?' done':'')); e.innerHTML=`<span>${m.label}</span>${st.move===i?'<span class="arr">⏪</span>':''}`; });
+  document.querySelectorAll('.dots i').forEach((d,i)=>d.classList.toggle('on',i===S));
+  $('prev').disabled=S===0; $('next').disabled=S===p.steps.length-1;
+  $('next').textContent = S===p.steps.length-1?'끝!':(st.mode==='start'?'검사하기 ▶':S===0&&p.kind==='coin'?'첫걸음 ▶':'되감기 ▶');
+  // scale
+  const startStep=p.steps.find(s=>s.mode==='start');
+  const known=st.mode==='start'||st.mode==='ok';
+  $('sumL').textContent=known?startStep.vals.reduce((a,b)=>a+b,0):'?';
+  $('sumR').textContent=(S>=1||p.kind==='water')?p.total:'?';
+  $('bar').classList.toggle('even',known); $('beam').classList.toggle('even',known);
+  $('verdict').textContent=known?`✔ ${startStep.vals.join(' + ')} = ${p.total} — 끝 장면 합과 똑같아요!`:'';
+
+  busy=true;
+  if(animate && st.move!=null && prev){
+    const m=p.moves[st.move];
+    await fly(m.to,m.from,`${m.amt}${p.unit} 돌아가요`,p.kind);
+  }
+  if(animate && st.forward && prev){
+    // play forward: run original moves in order
+    let cur=[...prev.vals];
+    for(const m of p.moves){ await fly(m.from,m.to,`${m.amt}${p.unit}`,p.kind); cur[m.from]-=m.amt; cur[m.to]+=m.amt; cur.forEach((v,i)=>setVal(i,v,false)); await new Promise(r=>setTimeout(r,500)); }
+  }
+  st.vals.forEach((v,i)=>setVal(i,v, prev && prev.vals[i]!==v && st.mode==='rewind'));
+  busy=false;
+}
+$('next').onclick=()=>{ if(busy) return; if(S<PROBLEMS[P].steps.length-1){S++;render(true);} };
+$('prev').onclick=()=>{ if(busy) return; if(S>0){S--;render(false);} };
+$('reset').onclick=()=>{ if(busy) return; S=0; render(false); };
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{ if(busy) return; document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); P=+b.dataset.p; build(); });
+build();
+</script>
+</body>
+</html>

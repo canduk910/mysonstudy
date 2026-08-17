@@ -1,7 +1,6 @@
----
-name: card-eval
-description: "card-tuner 에이전트가 카드 품질 튜닝 작업을 수행할 때 로드하는 스킬. 카드 생성 프롬프트 다이얼(단어 개수·challenge 비율·질문 구성·hintKo 밀도) 수정과 prompts.ts↔zod↔eval 동기화 규칙, eval:cards 실행·결과 해석, 픽스처 정의, 카드 품질 회귀 테스트 절차를 담는다. 사용자의 튜닝·품질 피드백 요청 진입점은 bookcard-orchestrator 스킬이다."
----
+# 영어(북카드) 다이얼과 픽스처
+
+> `prompt-eval` 스킬에서 영어 과목 튜닝 시 읽는다. 수학은 `math-dials.md`.
 
 # Card Eval — 프롬프트 튜닝과 회귀 평가
 
@@ -27,7 +26,7 @@ description: "card-tuner 에이전트가 카드 품질 튜닝 작업을 수행�
 | hintKo 밀도 | "절반 정도" 문구 | — | 점검 항목 4 (30~70%) |
 | 사이트워드 목록 | 서술만 (변경 불필요) | 공유 상수 import | 같은 상수 import — 목록 자체는 schemas.ts 한 곳만 수정 |
 
-수정 후 bookcard-qa 스킬의 정합성 매트릭스로 대조하면 누락을 잡을 수 있다.
+수정 후 study-qa 스킬의 정합성 매트릭스로 대조하면 누락을 잡을 수 있다.
 
 ## 픽스처 (docs/SPEC.md §12 원본 값 — 임의 변경 금지)
 

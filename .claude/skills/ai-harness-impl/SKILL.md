@@ -1,11 +1,24 @@
 ---
 name: ai-harness-impl
-description: "ai-engineer·app-builder 에이전트가 구현 작업을 수행할 때 로드하는 스킬. lib/ai/client.ts·prompts.ts·schemas.ts·scripts/eval-cards.ts 작성 규칙, OpenAI Responses API + Structured Outputs 호출, callWithSchema 래퍼, zod 이중 검증, /api/extract·/api/card 라우트와 Google Books 연동 지침을 담는다. 사용자의 구현·수정 요청 진입점은 bookcard-orchestrator 스킬이다."
+description: "ai-engineer·app-builder 에이전트가 구현 작업을 수행할 때 로드하는 스킬(과목 공통). lib/ai/client.ts(공유 래퍼) 작성 규칙, OpenAI Responses API + Structured Outputs 호출, callWithSchema 래퍼, zod 이중 검증, 라우트 연결 지침을 담는다. 과목별 프롬프트·스키마는 lib/ai/{english,math}/에 두고 스펙은 docs/harness/{english,math}.md를 따른다. 사용자의 구현·수정 요청 진입점은 study-orchestrator 스킬이다."
 ---
 
 # AI Harness Impl — 스펙 기반 구현 가이드
 
 AI 호출은 `docs/HARNESS.md`, 앱 전체는 `docs/SPEC.md`가 진실 원천이다. 구현 전 반드시 둘 다 읽는다. 이 스킬은 스펙을 재서술하지 않는다 — 스펙이 그대로 코드가 되게 하는 실무 규칙과, 스펙이 말하지 않는 SDK 세부만 담는다.
+
+## 과목 라우팅 — 먼저 읽을 것
+
+이 저장소는 과목 둘을 기른다. **작업 과목의 스펙만** 정독한다(둘 다 읽으면 컨텍스트만 늘고 프롬프트가 섞인다).
+
+| 과목 | 스펙 | 프롬프트·스키마 | eval |
+|---|---|---|---|
+| 영어 (북카드) | `docs/harness/english.md` | `lib/ai/english/` | `scripts/eval-english.ts` |
+| 수학 (수학코치) | `docs/harness/math.md` | `lib/ai/math/` | `scripts/eval-math.ts` |
+
+`lib/ai/client.ts`는 **과목 공유**다. 여기를 고치면 두 과목이 함께 영향받으므로, 과목별 분기는 client가 아니라 호출부에 둔다.
+
+수학에는 이 스킬이 다루지 않는 영역이 둘 있다 — **호출 C·검산 파이프라인은 math-verifier(`math-pipeline` 스킬)**, **호출 E·플레이어 키트는 player-builder(`player-kit` 스킬)** 소관이다. 그쪽 파일을 건드리지 말고 필요하면 오케스트레이터에게 위임을 요청하라.
 
 ## 절대 규칙
 
@@ -59,11 +72,11 @@ const raw = res.output_text; // SDK 편의 getter
 
 ## eval-cards.ts 픽스처
 
-픽스처 2권(Wolves, Pooh Gets Stuck)의 값은 `docs/SPEC.md` §12를 그대로 사용한다 (`.claude/skills/card-eval/SKILL.md`의 픽스처 표와 동일). 임의 값으로 만들면 bookcard-qa가 "픽스처가 §12 정의와 불일치"로 실패 판정한다.
+픽스처 2권(Wolves, Pooh Gets Stuck)의 값은 `docs/SPEC.md` §12를 그대로 사용한다 (`.claude/skills/prompt-eval/SKILL.md`의 픽스처 표와 동일). 임의 값으로 만들면 bookcard-qa가 "픽스처가 §12 정의와 불일치"로 실패 판정한다.
 
 ## 완료 기준
 
 - [ ] `tsc` 통과 (strict)
-- [ ] bookcard-qa 스킬의 정합성 매트릭스 + 스펙 준수 체크리스트 통과
+- [ ] study-qa 스킬의 정합성 매트릭스 + 스펙 준수 체크리스트 통과
 - [ ] `package.json`에 `"eval:cards": "tsx scripts/eval-cards.ts"` 등록
 - [ ] 임의 판단(스펙 공백)이 전부 빌드 리포트에 목록화됨
