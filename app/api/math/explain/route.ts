@@ -14,16 +14,23 @@
  *   - 저장은 결과를 바꾸지 않는다. 금지된 것은 답을 손보거나 held를 뒤집는 일이지
  *     기록을 남기는 일이 아니다.
  *
- * ┌─ 호출 E(2단 플레이어 HTML)를 왜 안 부르는가 ─────────────────────────────────┐
- * │ `explainProblem(input, { renderSceneHtml })`의 두 번째 인자를 **일부러 비워 둔다.**│
- * │ 미주입은 버그가 아니라 M1의 정상 상태다:                                        │
- * │   - `sceneHtml`은 항상 null (2단 그림은 M2.5에서 player-builder가 붙인다)        │
- * │   - 1단 장면(`content.scene`)이 있으면 `sceneTier: 'typed'`,                    │
- * │     없으면 `'none'`. **`'html'`은 M1에서 절대 나오지 않는다.**                   │
- * │ 파이프라인이 주입 방식인 이유는 (1) 2단 구현에 컴파일 타임으로 묶이지 않고        │
- * │ (2) held·재시도 흐름을 실호출 없이 스텁으로 돌리기 위해서다.                     │
- * │ 조용히 null이 되므로 "그림이 왜 안 나오지?"를 버그로 오해하기 쉽다 — 그때         │
- * │ 고칠 곳은 이 라우트(렌더러 주입)이지 pipeline.ts가 아니다.                      │
+ * ┌─ 호출 E(2단 플레이어 HTML) 주입 [M2.5] ──────────────────────────────────────┐
+ * │ `explainProblem(problem, { renderSceneHtml })` — 두 번째 인자가 **2단 렌더러다.**│
+ * │ (M1까지는 이 자리가 비어 있었고 `sceneHtml`이 항상 null이었다. 이제 아니다.)      │
+ * │                                                                              │
+ * │ 주입은 이 라우트에서만 한다. `renderSceneHtml`은 `lib/ai/math/player.ts`의       │
+ * │ **서버 전용** 값이라 클라이언트 컴포넌트가 import하면 OpenAI SDK와 API 키가       │
+ * │ 브라우저 번들로 따라간다 — 화면은 결과(`sceneHtml` 문자열)만 받는다.             │
+ * │                                                                              │
+ * │ 언제 무엇이 나오는가 (§5-3):                                                   │
+ * │   - 1단 장면(`content.scene`)이 있으면 → `sceneTier: 'typed'`, 호출 E는 안 나간다 │
+ * │   - `status === 'ok'` + 1단 없음 + `sceneHtmlRequest` → 호출 E → `'html'`       │
+ * │   - 호출 E가 검사(정적·답 태그)를 두 번 다 못 넘기면 null → `'none'`             │
+ * │ **`held`면 2단을 만들지 않는다.** 답이 흔들리는데 그림까지 그리면 틀린 답을        │
+ * │ 움직이는 그림으로 가르치게 된다 — 파이프라인이 막는다(여기서 뒤집지 마라).        │
+ * │                                                                              │
+ * │ 렌더러는 실패해도 던지지 않는다. 그림이 없다고 3막 설명까지 잃을 이유가 없다.      │
+ * │ 그래서 "그림이 왜 안 나오지?"는 조용하다 — 사유는 `{call:"math-player"}` 로그에.  │
  * └──────────────────────────────────────────────────────────────────────────────┘
  *
  * 응답 shape (단일 정의처는 `lib/math-explain-contract.ts`):
@@ -39,6 +46,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { resolveModel } from "@/lib/ai/client";
 import { explainProblem } from "@/lib/ai/math/pipeline";
+import { renderSceneHtml } from "@/lib/ai/math/player";
 import type { MathExplainSuccess } from "@/lib/math-explain-contract";
 import { getStore, type MathProblemInput } from "@/lib/store";
 
@@ -149,8 +157,8 @@ export async function POST(req: Request) {
   };
 
   try {
-    // 두 번째 인자(호출 E 렌더러)를 넘기지 않는 것이 M1의 정상 상태다 — 파일 상단 주석 참조.
-    const result = await explainProblem(problem);
+    // [M2.5] 2단 렌더러 주입 — 파일 상단 주석 참조. 호출 E가 실제로 나가는 유일한 자리다.
+    const result = await explainProblem(problem, { renderSceneHtml });
 
     // [M4 §9-3] 자동 저장 — best-effort. 여기서 던져도 설명은 그대로 내려간다.
     let id: string | null = null;

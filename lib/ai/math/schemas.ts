@@ -1,8 +1,9 @@
 /**
  * lib/ai/math/schemas.ts — 출력 JSON Schema + zod 이중 검증 (docs/harness/math.md §2-3·§3-3·§6)
  *
- * 이 파일이 담는 호출: **A(문제 판독) · B(설명 설계) · D(연습문제)**.
- * 호출 C(검산)의 `answer_check`는 pipeline.ts 쪽(§5-1), 호출 E의 `{html, stepCount}`는 §3-4 소관이다.
+ * 이 파일이 담는 호출: **A(문제 판독) · B(설명 설계) · D(연습문제) · E(플레이어 HTML)**.
+ * 호출 C(검산)의 `answer_check`는 pipeline.ts 쪽(§5-1)에 있다 — B의 답을 절대 넘기지 않는
+ * 독립 심판이라 입력 조립이 B와 섞이지 않게 파일을 갈랐다.
  *
  * 규약(docs/HARNESS.md §1):
  * - JSON Schema는 strict 모드용 — 모든 필드 `required`, 모든 객체에 `additionalProperties: false`,
@@ -306,6 +307,14 @@ export const RULES_RANGE = [2, 3] as const;
 export const SCENE_STEPS_RANGE = [3, 8] as const;
 /** [M5] 두 번째 풀이의 단계 수 (§10-3·§10-6 "stepsKo는 2~3단계") */
 export const INSIGHT_STEPS_RANGE = [2, 3] as const;
+/**
+ * [M2.5] 2단 플레이어 HTML의 단계 수 (§3-4 "3~8단계").
+ *
+ * 1단 장면의 `SCENE_STEPS_RANGE`와 값이 같지만 **상수를 공유하지 않는다.** 둘은 다른 물건의
+ * 다이얼이다 — 1단은 검산 가능한 대본의 단계 수이고, 2단은 아이가 버튼을 누르는 횟수다.
+ * 한쪽을 튜닝할 때 다른 쪽이 딸려 움직이면, 왜 바뀌었는지 아무도 설명하지 못한다.
+ */
+export const PLAYER_STEPS_RANGE = [3, 8] as const;
 /**
  * 말풍선 한 단계의 글자 수 상한 — **`act2.steps[].say`와 `insight.stepsKo`가 같은 잣대를 쓴다.**
  *
@@ -827,6 +836,77 @@ export interface Practice {
 }
 
 // ---------------------------------------------------------------------------
+// 호출 E — player_html (§3-4)
+//
+// 이 호출만 결과가 JSON이 아니라 **HTML 문자열**이다. Structured Outputs가 문자열 하나를 그냥
+// 돌려줄 수는 없으므로 `{html, stepCount}` 객체에 감싸 받는다(§3-4 원문).
+//
+// **이 스키마는 HTML이 안전한지 아무것도 보증하지 않는다.** 모양만 본다. 내용 검사는
+// `lib/scene/html.ts`의 정적 검사와 답 태그 대조가 하고, 그마저도 2차 그물이다 —
+// 1차 방어는 iframe 격리(sandbox에 allow-same-origin 없음 + CSP default-src 'none')다.
+// ---------------------------------------------------------------------------
+
+export const PLAYER_HTML_JSON_SCHEMA: StrictJsonSchema = {
+  name: "player_html",
+  strict: true,
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      html: {
+        type: "string",
+        description:
+          "<body> 안에 들어갈 HTML 조각 하나. <html>/<head>/<body> 태그 없이. " +
+          "인라인 <style>과 <script>는 허용. 답은 <script type=\"application/json\" id=\"answer\">에 넣는다",
+      },
+      stepCount: {
+        type: "number",
+        description: "Kit.mount에 넘긴 단계 배열의 길이 (3~8)",
+      },
+    },
+    required: ["html", "stepCount"],
+  },
+};
+
+/**
+ * 호출 E — zod 이중 검증.
+ *
+ * 여기서 잡는 것은 **두 가지뿐**이다: 빈 HTML, 그리고 단계 수 3~8(§3-4).
+ * 개수 제약을 JSON Schema가 아니라 zod에 두는 것은 이 파일 전체의 규약이다(strict 모드 제약).
+ *
+ * `stepCount`는 모델이 스스로 세어 적은 숫자라 HTML과 어긋날 수 있다 — 그래서 이 값은
+ * **로그·집계용 신고값**으로 다루고, 실제로 몇 단계가 그려졌는지는 iframe이 보내오는
+ * `ready` 메시지의 `steps`가 말한다(`public/player-kit/kit.js`). 둘이 자주 갈리면 프롬프트를
+ * 볼 신호지, 여기서 억지로 맞출 값이 아니다.
+ */
+export const playerHtmlSchema = z
+  .object({
+    html: z.string(),
+    stepCount: z.number(),
+  })
+  .superRefine((out, ctx) => {
+    if (out.html.trim() === "") {
+      ctx.addIssue({ code: "custom", path: ["html"], message: "html이 비어 있습니다" });
+    }
+    const [min, max] = PLAYER_STEPS_RANGE;
+    if (!Number.isInteger(out.stepCount) || out.stepCount < min || out.stepCount > max) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["stepCount"],
+        message: `단계 수는 ${min}~${max}여야 합니다 (현재 ${out.stepCount})`,
+      });
+    }
+  });
+
+/** 호출 E의 결과 타입 (§3-4 `{ html, stepCount }`) */
+export interface PlayerHtml {
+  /** `<body>` 안에 들어갈 HTML 조각. iframe srcdoc으로 조립된다 (`lib/scene/html.ts`) */
+  html: string;
+  /** 모델이 신고한 단계 수 3~8. 실제 단계 수는 iframe의 `ready` 메시지가 말한다 */
+  stepCount: number;
+}
+
+// ---------------------------------------------------------------------------
 // 컴파일 타임 대조 — zod 추론 타입 ↔ 손으로 쓴 타입
 //
 // zod를 JSON Schema에서 자동 변환하지 않는 대신(스펙의 스키마 원문이 기준), 이 대조가
@@ -842,7 +922,9 @@ const _explanationMatchesType: AssertExact<
   Explanation
 > = true;
 const _practiceMatchesType: AssertExact<z.infer<typeof practiceSchema>, Practice> = true;
+const _playerHtmlMatchesType: AssertExact<z.infer<typeof playerHtmlSchema>, PlayerHtml> = true;
 
 void _sceneMatchesSceneType;
 void _explanationMatchesType;
 void _practiceMatchesType;
+void _playerHtmlMatchesType;

@@ -4,11 +4,13 @@
  * 수학 서재 화면 (M4, docs/harness/math.md §9-4) — 클라이언트 컴포넌트.
  *
  * - 상단 요약: 전체 / 틀린 문제 / 보류 건수(숫자를 크게, 라벨은 작게)
- * - 유형별 통계: `problemPattern`별 건수 · 정답률 · 보류율.
+ * - 유형별 통계: `problemPattern`별 건수 · 정답률 · 보류율 · 그림 단계(1단/2단/없음).
  *   **정답률 분모에서 `childGrade === 'none'`을 뺀다** — 아이가 답을 쓰지 않아 채점할 것이
  *   없었던 문제다. 분모가 0이면 비율 대신 "—"를 보인다(§9-4).
  *   보류율은 §8의 "held 비율을 유형별로 남긴다"가 겨냥한 신호다 — 특정 유형에서 잦으면
  *   그 유형 프롬프트를 손볼 신호이지 검산을 느슨하게 할 신호가 아니다.
+ *   그림 단계는 §8[개정 4]의 "sceneTier를 유형별로 집계해 서재에 보여준다"이고, 겨냥한 신호는
+ *   **다음에 만들 전용 렌더러**다 — 2단(AI HTML)으로 자주 그려지는 유형이 곧 승격 후보다.
  * - 목록 필터 3종: 전체 / 틀린 문제(childGrade가 wrong·partial) / 보류(verify.status === 'held')
  * - 관리 모드: 켜야 삭제 버튼이 나타나고, 그 자리에서 인라인 확인을 거친다
  *   (window.confirm 금지 — 영어 서재와 같은 규약)
@@ -29,6 +31,7 @@ import { useState } from "react";
 import type { ChildGrade, ProblemPattern } from "@/lib/ai/math/schemas";
 // 채점 배지 문구는 설명 화면과 **한 정의처**를 공유한다 — 예전엔 두 벌이라 `wrong`이 어긋나 있었다
 import { GRADE_BADGE } from "@/lib/math-labels";
+import type { SceneTier } from "@/lib/scene/types";
 
 // ---------------------------------------------------------------------------
 // 데이터 (서버가 만들어 넘긴다)
@@ -61,6 +64,11 @@ export interface PatternStat {
   gradedCount: number;
   correctCount: number;
   heldCount: number;
+  /**
+   * 그림 단계별 건수 (§8[개정 4]). `typed`(1단 전용 렌더러) · `html`(2단 AI HTML) · `none`(글만).
+   * 세 값이 **항상 들어 있다**(0 포함) — 서버가 `SCENE_TIERS`로 깔고 시작한다.
+   */
+  tierCounts: Record<SceneTier, number>;
 }
 
 /**
@@ -82,6 +90,20 @@ const PATTERN_LABEL_KO: Record<ProblemPattern, string> = {
   counting: "빠짐없이 세기",
   other: "그 밖에",
 };
+
+/**
+ * 그림 단계 열 이름 (§8[개정 4]). 열 머리는 **짧게** 두고 뜻은 표 아래 캡션이 한 번 설명한다 —
+ * 모바일에서 표를 넓히는 것은 거의 항상 열 머리 글자수다.
+ * `Record<SceneTier, string>`이라 단수가 늘면 **여기서 컴파일이 깨진다**(PATTERN_LABEL_KO와 같은 장치).
+ */
+const SCENE_TIER_LABEL_KO: Record<SceneTier, string> = {
+  typed: "1단",
+  html: "2단",
+  none: "없음",
+};
+
+/** 표의 열 순서 — 그린 정도가 센 쪽부터(전용 그림 → AI HTML → 없음) */
+const SCENE_TIER_ORDER: SceneTier[] = ["typed", "html", "none"];
 
 type FilterKey = "all" | "wrong" | "held";
 
@@ -234,15 +256,36 @@ export default function MathLibraryView({
             설명이 쌓이면 어떤 유형에서 자주 막히는지 여기에 모아 드릴게요.
           </p>
         ) : (
-          /* 표가 좁은 화면에서 넘치면 표만 가로로 스크롤한다 — 페이지는 밀리지 않는다 */
+          /*
+           * 표가 좁은 화면에서 넘치면 표만 가로로 스크롤한다 — 페이지는 밀리지 않는다.
+           *
+           * 모든 칸에 `whitespace-nowrap`을 준다(360px 실측 근거). 그림 단계 3열이 붙으면서
+           * 표가 313px 컨테이너에 눌리는데, 그대로 두면 브라우저가 **한국어 낱말을 가운데서
+           * 쪼갠다** — "건/수", "정답/률", "길이·넓/이·모양"처럼. 줄바꿈을 막으면 표는 376px가
+           * 되어 이 컨테이너 안에서만 가로 스크롤이 생기고(360px에서 63px, 390px에서 33px,
+           * 414px에서 9px, 430px 이상은 0), 머리글 37px·행 45px로 **열이 늘기 전과 같은 한 줄
+           * 높이**를 지킨다(쪼갤 때는 58px·72.5px였다).
+           * 페이지 자체는 어느 폭에서도 넘치지 않는다(문서 스크롤 폭 = 화면 폭, 실측).
+           */
           <div className="overflow-x-auto">
-            <table className="u-table">
+            <table className="u-table whitespace-nowrap">
               <thead>
                 <tr>
                   <th scope="col">유형</th>
                   <th scope="col" className="text-right">건수</th>
                   <th scope="col" className="text-right">정답률</th>
                   <th scope="col" className="text-right">보류율</th>
+                  {/*
+                   * 그림 단계 3열 (§8[개정 4]). 머리에는 이름만 둔다 — 앞 4열(성적)과 다른
+                   * 이야기라는 표시(🎬)와 뜻풀이는 표 아래 캡션이 맡는다. 머리에 🎬을 붙여
+                   * 봤더니 표가 15px 넓어져 430px 화면에서 스크롤이 생겼다(실측). 좁은 화면에서
+                   * 표를 넓히는 것은 거의 항상 머리글자다.
+                   */}
+                  {SCENE_TIER_ORDER.map((tier) => (
+                    <th key={tier} scope="col" className="text-right">
+                      {SCENE_TIER_LABEL_KO[tier]}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -255,6 +298,12 @@ export default function MathLibraryView({
                       {ratio(stat.correctCount, stat.gradedCount)}
                     </td>
                     <td className="t-meta-chip text-right">{ratio(stat.heldCount, stat.count)}</td>
+                    {/* 0도 그대로 적는다 — "이 유형은 2단을 한 번도 안 탔다"가 곧 신호다 */}
+                    {SCENE_TIER_ORDER.map((tier) => (
+                      <td key={tier} className="t-meta-chip text-right">
+                        {stat.tierCounts[tier]}
+                      </td>
+                    ))}
                   </tr>
                 ))}
               </tbody>
@@ -269,11 +318,25 @@ export default function MathLibraryView({
          * 보류율은 전체 건수. 같은 줄에 나란히 있으면 같은 분모로 읽히기 쉽다.
          */}
         {stats.length > 0 && (
-          <p className="t-caption mt-2">
-            정답률은 <b className="font-medium text-ink">은우가 답을 쓴 문제</b>만 세요 (답을 안 쓴
-            문제는 채점할 것이 없어 뺐어요). 잴 것이 없으면 &ldquo;—&rdquo;로 둡니다.{" "}
-            <b className="font-medium text-ink">보류율은 전체 건수 기준</b>이에요.
-          </p>
+          <>
+            <p className="t-caption mt-2">
+              정답률은 <b className="font-medium text-ink">은우가 답을 쓴 문제</b>만 세요 (답을 안 쓴
+              문제는 채점할 것이 없어 뺐어요). 잴 것이 없으면 &ldquo;—&rdquo;로 둡니다.{" "}
+              <b className="font-medium text-ink">보류율은 전체 건수 기준</b>이에요.
+            </p>
+            {/*
+             * 그림 단계 열의 뜻 (§8[개정 4]). 열 머리를 짧게 두는 대신 여기서 한 번 풀어 준다.
+             * 마지막 문장이 이 집계를 만든 이유다 — 숫자만 있고 "그래서 뭘 보라는 건지"가
+             * 없으면 아무도 읽지 않는다.
+             */}
+            <p className="t-caption mt-1">
+              🎬 오른쪽 세 칸(<b className="font-medium text-ink">그림 단계</b>)은 그 유형을 어떻게
+              그렸는지예요. <b className="font-medium text-ink">1단</b>은 앱이 가진 전용 그림,{" "}
+              <b className="font-medium text-ink">2단</b>은 AI가 그때그때 그린 그림,{" "}
+              <b className="font-medium text-ink">없음</b>은 글 설명만이에요. 2단이 많이 쌓인
+              유형일수록 전용 그림으로 만들 값어치가 큰 유형이에요.
+            </p>
+          </>
         )}
       </section>
 
@@ -401,13 +464,13 @@ export default function MathLibraryView({
                        * 답을 접은 뜻이 없어진다(설명 화면과 같은 규칙).
                        */}
                       <span className="t-caption mt-0.5 block truncate">
-                        {item.held ? "답은 접어 뒀어요 — 아빠와 함께 확인해요" : item.answerText}
+                        {item.held ? "답은 접어 뒀어요 — 엄빠와 함께 확인해요" : item.answerText}
                       </span>
                       <span className="mt-1.5 flex flex-wrap items-center gap-1.5">
                         <span className="u-chip">🏷️ {item.patternNameKo}</span>
                         {item.held ? (
                           <span className="u-chip border-accent bg-accent text-bg">
-                            ⚠️ 아빠 확인 필요
+                            ⚠️ 엄빠 확인 필요
                           </span>
                         ) : (
                           item.childGrade !== "none" && (

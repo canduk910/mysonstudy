@@ -21,6 +21,7 @@ import MathLibraryView, {
 } from "@/components/math-library-view";
 import { type ProblemPattern } from "@/lib/ai/math/schemas";
 import { isRenderableExplanation } from "@/lib/math-record";
+import { SCENE_TIERS, type SceneTier } from "@/lib/scene/types";
 import { getStore } from "@/lib/store";
 
 // 저장 데이터는 요청 시점에 읽는다 (빌드 시점 정적화 방지)
@@ -33,6 +34,16 @@ export const metadata: Metadata = {
 
 /** 가족용 소규모 앱 — 전체 목록으로 충분한 상한 (영어 서재의 500과 같은 규모 감각) */
 const LIST_LIMIT = 500;
+
+/**
+ * 그림 단계 집계의 시작값 — **세 값을 모두 0으로 깔고 시작한다.**
+ * `SCENE_TIERS`에서 만들므로 단수가 늘면(예: 새 전용 렌더러 단계) 여기가 저절로 따라온다.
+ * 화면은 `Record<SceneTier, number>`를 받아 빠짐없이 그린다 — "그 유형에 2단이 0건"과
+ * "집계에 그 칸이 없다"는 다른 말이고, 뒤엣것은 표에서 빈칸으로 새어 나온다.
+ */
+function emptyTierCounts(): Record<SceneTier, number> {
+  return Object.fromEntries(SCENE_TIERS.map((t) => [t, 0])) as Record<SceneTier, number>;
+}
 
 export default async function MathLibraryPage() {
   const store = getStore();
@@ -70,6 +81,14 @@ export default async function MathLibraryPage() {
    *                 채점할 것이 없었던 문제를 빼야 정답률이 거짓말을 하지 않는다(§9-4).
    * - correctCount: 'correct'만 센다. 'partial'은 분모에 남고 분자에서는 빠진다 —
    *                 반만 맞은 것을 맞았다고 세면 "자주 막히는 유형"이 흐려진다.
+   * - tierCounts  : **그림 단계별 건수** (§8[개정 4] "sceneTier를 유형별로 집계해 서재에
+   *                 보여준다"). 이 숫자를 읽는 목적이 하나 더 있다 — **HTML(2단)로 자주
+   *                 그려지는 유형이 곧 다음에 만들 전용 렌더러(1단)다.** 2단은 문제마다 호출
+   *                 E를 한 번씩 더 태우는 가장 비싼 경로라, 어느 유형에서 그 비용이 반복되는지
+   *                 보이면 승격 대상이 정해진다.
+   *
+   * `record.sceneTier`를 키로 그대로 쓴다 — 값이 SCENE_TIERS 안에 있다는 것은 위
+   * `isRenderableExplanation()`이 이미 확인했다(모르는 값이면 목록에도 걸리지 않는다).
    */
   const byPattern = new Map<ProblemPattern, PatternStat>();
   for (const record of records) {
@@ -80,6 +99,7 @@ export default async function MathLibraryPage() {
       gradedCount: 0,
       correctCount: 0,
       heldCount: 0,
+      tierCounts: emptyTierCounts(),
     };
     stat.count += 1;
     if (record.content.childGrade !== "none") {
@@ -87,6 +107,7 @@ export default async function MathLibraryPage() {
       if (record.content.childGrade === "correct") stat.correctCount += 1;
     }
     if (record.verify.status === "held") stat.heldCount += 1;
+    stat.tierCounts[record.sceneTier] += 1;
     byPattern.set(pattern, stat);
   }
   // 많이 푼 유형이 위로 — 표를 위에서부터 읽으면 "요즘 하는 것"이 먼저 온다

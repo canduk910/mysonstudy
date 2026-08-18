@@ -57,9 +57,17 @@ export interface MathExplainSuccess {
   id: string | null;
   /** 호출 B의 3막 설명. 장면 검산이 실패했으면 `content.scene`은 null이다(텍스트는 살아 있다) */
   content: Explanation;
-  /** 2단 플레이어 HTML. M1은 호출 E 렌더러를 주입하지 않으므로 **항상 null**이다 */
+  /**
+   * 2단 플레이어 HTML (§3-4). `<body>` 안에 들어갈 조각이고, 화면은 이것을
+   * `buildSceneSrcdoc()`으로 감싸 sandbox iframe에 띄운다 —
+   * **`dangerouslySetInnerHTML`로 본문에 직접 붙이면 안 된다.** AI가 쓴 코드라
+   * 격리(iframe sandbox + CSP)가 유일한 방어선이다.
+   *
+   * null인 경우: 1단 장면이 있었거나(`'typed'`), `held`라 만들지 않았거나,
+   * 호출 E가 검사를 두 번 다 못 넘겼거나(§3-4 1~2번). 셋 다 정상 흐름이다.
+   */
   sceneHtml: string | null;
-  /** 'typed'(1단 장면 있음) | 'html'(2단, M1에선 안 나옴) | 'none' */
+  /** 'typed'(1단 장면 있음) | 'html'(2단 HTML 있음) | 'none'(그림 없음) */
   sceneTier: SceneTier;
   verify: ExplainVerifyReport;
 }

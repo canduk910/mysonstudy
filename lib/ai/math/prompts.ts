@@ -6,16 +6,18 @@
  * eval 하네스(scripts/eval-math.ts)와 zod(schemas.ts)가 그 숫자에 걸려 있다.
  * 프롬프트 수정 → `npm run eval:math` 통과 확인 → 커밋 순서를 지킬 것.
  *
- * 이 파일이 담는 호출: **A(문제 판독) · B(설명 설계) · D(연습문제)**.
+ * 이 파일이 담는 호출: **A(문제 판독) · B(설명 설계) · D(연습문제) · E(플레이어 HTML)**.
  * - 호출 C(검산)는 `lib/ai/math/pipeline.ts` 쪽(§5-1)에 있다. B의 답을 절대 넘기지 않는 독립 심판이라
  *   입력 조립이 B와 섞이면 anchoring이 생긴다 — 그래서 파일을 갈랐다.
- * - 호출 E(플레이어 HTML)는 `public/player-kit/`와 함께 움직이므로 별도(§3-4).
+ * - 호출 E(플레이어 HTML)는 §1 파일 배치대로 여기 둔다(few-shot HTML 포함). 실행은
+ *   `lib/ai/math/player.ts`, 결과 검사·iframe 조립은 `lib/scene/html.ts`다.
+ *   **E 프롬프트 [내용] 절의 Kit 함수 이름과 `public/player-kit/kit.js`는 같은 커밋에서 움직인다.**
  */
 
 // 상대 경로로 import한다 — `scripts/eval-math.ts`가 tsx로 직접 실행되므로 `@/` 별칭에 기대지 않는다
 // (기존 lib/·scripts/ 전부 같은 관례).
 import type { Scene } from "../../scene/types";
-import type { ProblemPattern } from "./schemas";
+import type { Explanation, ProblemPattern } from "./schemas";
 
 // ---------------------------------------------------------------------------
 // 호출 A — 문제 판독 (vision) · §2
@@ -77,6 +79,7 @@ export const EXPLAIN_SYSTEM_PROMPT = `너는 초등학생 아이와 수학 문�
    틀린 답을 자신 있게 쓰는 것이 최악이다.
 2. 설명은 아이에게 말 걸듯 다정하고 짧게. 한 문장은 25자 안팎, 어려운 말은 쓰지 않는다.
    부모용 hint는 실전 코칭(아이가 막히는 지점, 던질 질문).
+   글 안에서 보호자를 부를 때는 "엄빠"라고 쓴다. "아빠"나 "엄마"로 한쪽만 부르지 않는다.
 3. 비유(analogy)는 아이의 생활에서 가져온다 (영화 되감기, 사탕 통, 시소, 계단 등). 매번 같은 비유를
    쓰지 말고 문제에 맞는 것을 고른다.
 4. 출력은 지정된 JSON 스키마로만.
@@ -281,4 +284,273 @@ patternNameKo: ${input.patternNameKo}
 ${sceneBlock}
 
 같은 구조로 숫자와 소재만 바꾼 연습문제 1개를 만들어줘.`;
+}
+
+// ---------------------------------------------------------------------------
+// 호출 E — 플레이어 HTML 생성 (2단) · §3-4
+//
+// 이 호출만 **출력이 JSON이 아니라 HTML 문자열**이다(Structured Outputs로 {html, stepCount}에 감싸 받는다).
+// 그리고 이 앱에서 유일하게 **AI가 짠 코드를 실제로 실행**한다. 그래서 두 겹으로 막는다:
+//   1차 — iframe 격리(sandbox에 allow-same-origin 없음 + CSP default-src 'none')
+//   2차 — 정적 검사 금지 문자열 + 답 태그 대조 (lib/scene/html.ts)
+// **순서를 뒤집지 마라.** 프롬프트와 금지 목록은 "명백한 것을 일찍 걸러 재생성 기회를 주는" 그물이지
+// 안전을 보증하는 물건이 아니다.
+// ---------------------------------------------------------------------------
+
+/**
+ * 호출 E — 플레이어 HTML 생성 시스템 프롬프트 (HARNESS §3-4 원문 그대로).
+ *
+ * 이 문장들이 강제하는 것과 이유:
+ * - `<html><head><body>` 금지 → srcdoc으로 조립하므로 문서 뼈대는 앱이 만든다.
+ * - 외부 자원 전면 금지 → 격리를 뚫는 통로를 애초에 없앤다(CSP가 어차피 막지만, 막힌 채 죽는
+ *   플레이어를 보여주느니 재생성하는 편이 낫다).
+ * - 색은 CSS 변수만 → 이걸 풀면 문제마다 색이 달라져 "우리 집 스타일"이 깨진다.
+ * - `Kit.mount(steps)` + 각 step의 `render()` → 되돌아가기가 동작하려면 상태를 렌더 함수로
+ *   다시 만들 수 있어야 한다.
+ * - 답을 `<script type="application/json" id="answer">`로 → 앱이 대조할 **유일한 접점**이다.
+ *
+ * [내용] 절이 이름으로 부르는 Kit 함수(shape · grid · tank · coins · bar · numberline · scale ·
+ * tween · fly · countUp · mount · done)는 `public/player-kit/kit.js`에 **전부 있어야 한다.**
+ * 한쪽만 고치면 AI가 없는 함수를 부르고, 그 실패는 런타임에만 드러난다.
+ */
+export const PLAYER_HTML_SYSTEM_PROMPT = `너는 초등 수학 설명 플레이어를 만드는 프론트엔드 개발자다. 아래 3막 설명을 아이가 버튼을 눌러가며
+한 단계씩 보는 '움직이는 그림'으로 옮긴다.
+
+[환경 — 반드시 지킬 것]
+- 출력은 <body> 안에 들어갈 HTML 조각 하나. <html><head><body> 태그, 외부 링크, <link>, CDN, fetch, XMLHttpRequest,
+  WebSocket, localStorage, cookie, eval, new Function, document.write 금지. 인라인 <style>과 <script>는 허용.
+- 인라인 SVG에 xmlns 속성을 쓰지 마라(HTML5에서 불필요하다). 주소 문자열(http:// https://)이 하나라도 들어가면 거부된다.
+- 이미 로드된 전역 Kit와 kit.css의 CSS 변수를 사용한다. 색은 var(--ink) var(--water) var(--coin) var(--rewind)
+  var(--ok) var(--sub) var(--line) 같은 변수만 쓴다. 임의 hex 색 금지.
+- 폰트·아이콘은 시스템 것과 이모지만.
+- 단계 배열을 만들고 Kit.mount(steps)로 VCR 바를 붙인다. 각 step은 {tag, title, body, calc, render()}이고
+  render()에서 SVG/DOM 상태를 갱신한다(Kit.tween/Kit.fly/Kit.countUp 사용). 되돌아가기(이전)도 동작해야 한다.
+- 3~8단계. 첫 단계는 문제 상황, 마지막 단계는 답이 보이는 검사 장면. 되감기형이면 마지막에서 '다시 재생'.
+- 마지막에 Kit.done()을 호출한다.
+- 최종 답을 <script type="application/json" id="answer">[{"label":"…","value":24,"unit":"㎠"}]</script> 로
+  본문에 넣는다. 앱이 이 값을 대조한다. 정확히 주어진 answer와 같아야 한다.
+- 폭 360px 모바일에서 깨지지 않게. 애니메이션은 0.6~0.9초, 과하지 않게. 글은 짧고 다정하게(아이 말).
+
+[내용]
+- 주어진 3막의 act2 단계를 그림 단계로 옮긴다. 도형은 Kit.shape, 수열·표는 Kit.grid나 상자 나열,
+  양은 Kit.tank/coins/bar, 수직선은 Kit.numberline. 없는 것은 인라인 SVG로 직접 그린다.
+- 세기(counting) 문제는 '무엇을 세는지'를 먼저 보이고, 센 것을 하나씩 색으로 채워 나간다.
+  이미 센 것과 아직 안 센 것이 늘 구분돼야 한다 — 빠짐없이·중복없이가 이 유형의 전부다.
+- 검사 장면에서 보존량이 있으면 Kit.scale(저울)을 쓴다.
+- 새 내용을 지어내지 않는다. 숫자·답은 주어진 것만.`;
+
+/**
+ * 호출 E few-shot — 완성된 플레이어 HTML 1개 (도형 넓이 문제).
+ *
+ * **few-shot은 프롬프트 문장보다 강하게 작동한다.** 스타일·구조를 바꾸고 싶으면 문장보다 이 예시를
+ * 먼저 고쳐라. 여기서 가르치는 것:
+ *   - `kit-` 접두 클래스와 `.kit-wrap` / `.kit-card` / `.kit-stage` 뼈대 (프롬프트에는 없는 정보다)
+ *   - `Kit.shape`의 안쪽 SVG를 문자열로 넘기는 법, `kit-part` 강조 상태('on'|'now'|'dim')
+ *   - 각 step의 `render()`가 **상태를 통째로 다시 세우는** 모양 — 그래야 '이전'이 동작한다
+ *   - `Kit.countUp` / `Kit.tween` 사용, 마지막 단계에서 `Kit.done()`
+ *   - 답 태그를 본문에 두는 위치와 형식
+ */
+export const PLAYER_HTML_FEWSHOT = `<div class="kit-wrap">
+  <div class="kit-card">
+    <p class="kit-problem">가로 <b>8cm</b>, 세로 <b>6cm</b>인 색종이의 오른쪽 아래에서 가로 <b>3cm</b>, 세로 <b>2cm</b>를 잘라냈어요. 남은 ㄱ자 모양의 넓이는 몇 ㎠일까요?</p>
+    <div class="kit-stage" id="stage"></div>
+    <p class="kit-count" id="area">?<small>㎠</small></p>
+  </div>
+
+  <div class="kit-card">
+    <div class="kit-rules">
+      <div class="kit-rule"><span class="kit-big">✂️</span><b>잘라낸 건 빼기</b><span>통째로 세고 자른 만큼 덜어요</span></div>
+      <div class="kit-rule"><span class="kit-big">🧩</span><b>둘로 나눠 더하기</b><span>어느 길로 가도 답은 같아요</span></div>
+    </div>
+  </div>
+</div>
+
+<script type="application/json" id="answer">[{"label":"넓이","value":42,"unit":"㎠"}]</script>
+
+<script>
+var S = Kit.shape("#stage", {
+  viewBox: "0 0 230 165",
+  svg:
+    '<rect id="pa" class="kit-part" x="30" y="15" width="160" height="80"/>' +
+    '<rect id="pb" class="kit-part" x="30" y="95" width="100" height="40"/>' +
+    '<rect id="pcut" class="kit-part kit-dim" x="130" y="95" width="60" height="40" stroke-dasharray="6 5"/>' +
+    '<text class="kit-len" x="110" y="9" text-anchor="middle">8cm</text>' +
+    '<text class="kit-len" x="208" y="60">6cm</text>' +
+    '<text class="kit-len-sub" x="160" y="152" text-anchor="middle">자른 3cm x 2cm</text>'
+});
+
+var areaEl = document.getElementById("area");
+function showArea(v) { areaEl.innerHTML = (v == null ? "?" : v) + "<small>㎠</small>"; }
+
+var steps = [
+  {
+    tag: "문제", mode: "end",
+    title: "ㄱ자 색종이가 남았어요",
+    body: "오른쪽 아래를 <b>싹둑</b> 잘라냈어요. 남은 넓이를 구해 볼까요?",
+    calc: null,
+    render: function () {
+      S.reset();
+      S.highlight("pcut", "dim");
+      showArea(null);
+    }
+  },
+  {
+    tag: "1단계", mode: "rewind",
+    title: "먼저 통째로 세어 봐요",
+    body: "자르기 전에는 <b>가로 8, 세로 6</b>인 직사각형이었어요.",
+    calc: "8 × 6 = 48",
+    render: function () {
+      S.highlight("pa", "now");
+      S.highlight("pb", "now");
+      S.highlight("pcut", "now");
+      return Kit.countUp(areaEl, 0, 48, 800, "㎠");
+    }
+  },
+  {
+    tag: "2단계", mode: "rewind",
+    title: "잘라낸 조각은 얼마일까요",
+    body: "자른 곳은 <b>가로 3, 세로 2</b>인 작은 직사각형이에요.",
+    calc: "3 × 2 = 6",
+    render: function () {
+      S.highlight("pa", "on");
+      S.highlight("pb", "on");
+      S.highlight("pcut", "now");
+      showArea(48);
+      return Kit.tween(S.part("pcut"), { opacity: 0.35 }, 700);
+    }
+  },
+  {
+    tag: "3단계", mode: "rewind",
+    title: "통째에서 자른 만큼 빼요",
+    body: "48에서 6을 덜어 내면 남은 넓이가 나와요.",
+    calc: "48 − 6 = 42",
+    render: function () {
+      S.highlight("pa", "on");
+      S.highlight("pb", "on");
+      S.highlight("pcut", "dim");
+      Kit.tween(S.part("pcut"), { opacity: 1 }, 300);
+      return Kit.countUp(areaEl, 48, 42, 800, "㎠");
+    }
+  },
+  {
+    tag: "검사", mode: "ok",
+    title: "둘로 나눠서 다시 세어 봐요",
+    body: "위 조각 <b>8 × 4</b>, 아래 조각 <b>5 × 2</b>. 더하면 똑같이 42예요!",
+    calc: "32 + 10 = 42",
+    render: function () {
+      S.highlight("pa", "on");
+      S.highlight("pb", "now");
+      S.highlight("pcut", "dim");
+      showArea(42);
+      Kit.done();
+    }
+  }
+];
+
+Kit.mount(steps);
+</script>`;
+
+/**
+ * 호출 E 파라미터 (HARNESS §1 표: temperature 0.4 · 출력 한도 ~8,000).
+ *
+ * **이 하네스에서 가장 비싼 호출이다.** §8이 말한 비용 구조가 여기 있다 — 1단으로 되는 문제가
+ * E로 새지 않게 하는 것보다, E 호출 수와 출력 토큰을 **로그로 보고 자주 나오는 유형을 1단 렌더러로
+ * 승격**하는 쪽이 실제로 돈을 줄인다. `call` 라벨이 로그의 집계 키다.
+ */
+export const PLAYER_HTML_CALL_OPTIONS = {
+  call: "math-player",
+  temperature: 0.4,
+  maxOutputTokens: 8_000,
+} as const;
+
+/**
+ * 실제로 전송하는 시스템 메시지 = 원문 프롬프트 + few-shot.
+ *
+ * 원문(`PLAYER_HTML_SYSTEM_PROMPT`)을 상수로 따로 둔 이유는 **스펙과 글자 단위로 대조할 수 있게**
+ * 하기 위해서다. few-shot을 원문 안에 섞어 넣으면 "원문 그대로"인지 아무도 확인할 수 없게 된다.
+ */
+export const PLAYER_HTML_SYSTEM_MESSAGE = `${PLAYER_HTML_SYSTEM_PROMPT}
+
+[예시 — 이런 모양으로 낸다]
+${PLAYER_HTML_FEWSHOT}`;
+
+/** 호출 E 사용자 메시지 입력 (§3-4: 호출 B의 결과 + 문제 문장) */
+export interface PlayerHtmlUserMessageInput {
+  /** 문제 번호 */
+  number?: string | null;
+  /** 문제 문장 (원문 그대로) */
+  text: string;
+  /** 그림·표 설명 */
+  figureDesc?: string | null;
+  /** 호출 B의 3막 설명 전체 */
+  explanation: Explanation;
+  /**
+   * 재생성 지시문. 정적 검사·답 태그 대조에 걸렸을 때만 채운다(`lib/scene/html.ts`가 넘긴다).
+   * 비워 두면 1차 호출과 글자 단위로 같은 메시지가 나간다.
+   */
+  retryNote?: string | null;
+}
+
+/**
+ * 호출 E — 사용자 메시지 조립.
+ *
+ * §3-4는 담을 **항목**(3막 텍스트 · answer · problemPattern · 문제 문장)만 지정하고 형식은 정하지
+ * 않았다. §3-2 · §6과 같은 `[블록] 라벨: 값` 형식을 따른다 — 세 호출의 사용자 메시지 형식이 갈리면
+ * 프롬프트를 손볼 때 사람이 대조하기 어렵다.
+ *
+ * `answer`를 **JSON 한 줄로도 함께 실어 준다.** 답 태그 대조(§3-4 2번)에서 걸리는 가장 흔한 원인이
+ * "AI가 라벨을 제 마음대로 다시 쓰는 것"인데, 그대로 복사할 문자열을 주면 그 실패가 거의 사라진다.
+ * 재생성 1회는 토큰이 8,000짜리라 **막을 수 있는 재생성은 프롬프트에서 막는 편이 싸다.**
+ */
+export function buildPlayerHtmlUserMessage(input: PlayerHtmlUserMessageInput): string {
+  const e = input.explanation;
+  const act2 = e.act2.steps
+    .map((s, i) => `${i + 1}. ${s.say}${s.calc ? ` (${s.calc})` : ""}`)
+    .join("\n");
+  const act3 = e.act3.checks.map((c) => `- ${c.titleKo}: ${c.bodyKo}`).join("\n");
+  const rules = e.rules.map((r) => `- ${r.emoji} ${r.ko} — ${r.why}`).join("\n");
+
+  const base = `[문제]
+번호: ${input.number ?? "-"}
+문장: ${input.text}
+그림 설명: ${input.figureDesc ?? "없음"}
+
+[유형]
+problemPattern: ${e.problemPattern}
+patternNameKo: ${e.patternNameKo}
+
+[비유]
+${e.analogy.titleKo}: ${e.analogy.bodyKo}
+
+[1막 탐정 시간]
+등장: ${e.act1.castKo.join(", ")}
+움직임: ${e.act1.movesKo.join(" / ")}
+끝 장면: ${e.act1.endSceneKo}
+구할 것: ${e.act1.goalKo}
+함정: ${e.act1.trap ?? "없음"}
+
+[2막 되감기]
+${act2}
+
+[3막 다시 재생]
+${act3}
+
+[규칙]
+${rules}
+
+[답]
+${e.answerText}
+아래 JSON을 <script type="application/json" id="answer"> 안에 **그대로** 넣어라:
+${JSON.stringify(e.answer)}
+
+이 설명을 되감기 플레이어 HTML로 만들어줘.`;
+
+  const retryNote = input.retryNote?.trim();
+  if (!retryNote) return base;
+  // 재생성 지시는 끝에 붙인다 — 마지막 지시가 가장 세게 걸리고, 앞부분이 1차 호출과 같아
+  // 프롬프트 캐시도 유지된다(§3-2 retryNote와 같은 관례).
+  return `${base}
+
+[다시 만들기]
+${retryNote}`;
 }

@@ -1,0 +1,259 @@
+/*
+ * public/player-kit/kit.css — 되감기 플레이어 2단(iframe) 키트 스타일
+ * (docs/harness/math.md §3-4 · 원본 design/되감기-문제풀이-놀이.html의 <style>에서 추출·일반화)
+ *
+ * 이 파일은 **우리 집 부엌**이다. AI(호출 E)는 이 위에서 장면 로직만 짜고, 색·간격·컨트롤은
+ * 전부 여기서 나온다. 그래서 어떤 문제로 만든 플레이어든 늘 같은 얼굴을 한다.
+ *
+ * AI는 색을 **CSS 변수로만** 쓴다(호출 E 프롬프트 [환경] 절: "임의 hex 색 금지").
+ * 변수 이름을 바꾸면 이미 저장된 sceneHtml이 색을 잃는다 — 이름은 breaking change다.
+ *
+ * 클래스 접두어는 전부 `kit-`다. AI가 자기 마크업에 붙이는 클래스와 섞이지 않게 하기 위한 것이고,
+ * 이 규칙은 프롬프트 문장이 아니라 few-shot HTML이 가르친다.
+ */
+
+:root {
+  /* 프롬프트가 이름으로 지목한 7개 — 이 이름들은 함부로 바꾸지 않는다 */
+  --ink: #1b2a41;      /* 본문·테두리·VCR 바 바탕 */
+  --water: #4a9be0;    /* 물·차가운 양 */
+  --coin: #f2b134;     /* 돈·따뜻한 양 */
+  --rewind: #e5533c;   /* 되감기(지금 일어나는 변화) */
+  --ok: #2f9e63;       /* 검사 통과 */
+  --sub: #5d6b7e;      /* 보조 글자 */
+  --line: #d7e0ea;     /* 옅은 선 */
+
+  /* 보조 토큰 */
+  --sky: #eef4f8;         /* 바탕 */
+  --card: #ffffff;
+  --water-deep: #2b6cb0;
+  --coin-deep: #b8790e;
+  --ok-soft: #e3f6ea;
+  --rewind-soft: #fdeae6;
+  --soft: #f5f8fb;        /* 캡션·규칙 카드 바탕 */
+  --mark: #fff3c4;        /* 문제 문장 속 숫자 형광펜 */
+  --ghost: #c8d2de;       /* "?" 같은 아직 모르는 값 */
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 14px 12px 24px;
+  background: var(--sky);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif;
+  line-height: 1.55;
+  font-size: 15px;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* 폭 360px 모바일이 기준이다. 넓은 화면에서는 가운데로 모은다 */
+.kit-wrap { max-width: 560px; margin: 0 auto; }
+
+/* ── 카드 ───────────────────────────────────────────────────────────────── */
+.kit-card {
+  background: var(--card);
+  border-radius: 18px;
+  padding: 16px 14px;
+  box-shadow: 0 2px 8px rgba(27, 42, 65, .08);
+  margin-bottom: 12px;
+}
+.kit-problem { font-size: 14.5px; color: #2d3a4f; margin: 0 0 6px; }
+.kit-problem b { background: var(--mark); padding: 0 4px; border-radius: 4px; }
+.kit-title { font-size: 17px; font-weight: 800; margin: 0 0 8px; letter-spacing: -.01em; }
+.kit-sub { color: var(--sub); font-size: 13px; margin: 0; }
+
+/* ── 무대(가로로 늘어놓는 위젯들) ────────────────────────────────────────── */
+.kit-stage {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: flex-end;
+  gap: 10px;
+  margin: 10px 0 4px;
+}
+.kit-stage > * { flex: 1 1 90px; min-width: 84px; }
+
+.kit-widget { text-align: center; position: relative; }
+.kit-widget-name { font-weight: 800; font-size: 15px; margin-bottom: 4px; }
+.kit-widget svg { width: 100%; max-width: 130px; height: auto; overflow: visible; }
+.kit-val {
+  font-size: 20px; font-weight: 800; margin-top: 4px; min-height: 28px;
+  transition: color .3s;
+}
+.kit-val.kit-changed { color: var(--rewind); }
+.kit-val small { font-size: 12.5px; color: var(--sub); font-weight: 600; }
+.kit-note { font-size: 12.5px; color: var(--sub); min-height: 18px; }
+.kit-ghost { font-size: 40px; font-weight: 900; fill: var(--ghost); }
+
+/* 물통·동전 채움: 되돌아가기(이전)에서는 kit.js가 duration 0으로 부르므로 여기서 끊기지 않는다 */
+.kit-fill { transition: none; }
+.kit-coin-slot { transition: opacity .3s; }
+
+/* ── 날아가는 토큰 (Kit.fly) ─────────────────────────────────────────────── */
+/* position:fixed다 — 뷰포트 좌표(getBoundingClientRect)를 그대로 쓰므로 스크롤과 무관하다 */
+.kit-token {
+  position: fixed; left: 0; top: 0; z-index: 20;
+  padding: 5px 11px; border-radius: 999px;
+  font-weight: 800; font-size: 14px; color: #fff; background: var(--ink);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .18);
+  pointer-events: none; opacity: 0; white-space: nowrap;
+}
+.kit-token-water { background: var(--water-deep); }
+.kit-token-coin { background: var(--coin-deep); }
+.kit-token-rewind { background: var(--rewind); }
+.kit-token-ok { background: var(--ok); }
+
+/* ── 띠(bar) ─────────────────────────────────────────────────────────────── */
+.kit-bar-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.kit-bar-label { flex: 0 0 62px; text-align: right; font-weight: 700; font-size: 13.5px; }
+.kit-bar-track {
+  flex: 1 1 auto; height: 26px; background: var(--soft);
+  border: 2px solid var(--line); border-radius: 8px; position: relative; overflow: hidden;
+}
+.kit-bar-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--water); }
+.kit-bar-fill.kit-coin { background: var(--coin); }
+.kit-bar-fill.kit-diff { background: var(--rewind); }
+.kit-bar-num { flex: 0 0 56px; text-align: left; font-weight: 800; font-size: 14px; }
+
+/* ── 수직선 ──────────────────────────────────────────────────────────────── */
+.kit-numberline { padding: 6px 0 2px; }
+.kit-nl-axis { stroke: var(--ink); stroke-width: 2.5; stroke-linecap: round; }
+.kit-nl-tick { stroke: var(--line); stroke-width: 2; }
+.kit-nl-label { font-size: 10px; fill: var(--sub); }
+.kit-nl-mark { fill: var(--rewind); }
+.kit-nl-arc { fill: none; stroke: var(--rewind); stroke-width: 2.5; stroke-linecap: round; }
+
+/* ── 저울 (보존량 검사) ──────────────────────────────────────────────────── */
+.kit-scale { text-align: center; }
+.kit-beam { position: relative; height: 108px; max-width: 400px; margin: 0 auto; }
+.kit-beam-bar {
+  position: absolute; left: 50%; top: 22px; width: 260px; height: 8px;
+  background: var(--ink); border-radius: 4px;
+  transform: translateX(-50%) rotate(-8deg); transform-origin: center;
+  transition: transform 1s cubic-bezier(.4, 0, .2, 1);
+}
+.kit-beam.kit-even .kit-beam-bar { transform: translateX(-50%) rotate(0deg); }
+.kit-beam-post {
+  position: absolute; left: 50%; top: 26px; width: 10px; height: 68px;
+  background: var(--ink); transform: translateX(-50%); border-radius: 0 0 6px 6px;
+}
+.kit-beam-base {
+  position: absolute; left: 50%; bottom: 0; width: 96px; height: 12px;
+  background: var(--ink); transform: translateX(-50%); border-radius: 6px;
+}
+.kit-pan {
+  position: absolute; top: 44px; width: 108px; padding: 6px 4px;
+  border-radius: 0 0 40px 40px; background: var(--card); border: 3px solid var(--ink);
+  text-align: center; font-weight: 800;
+  transition: transform 1s cubic-bezier(.4, 0, .2, 1);
+}
+.kit-pan small { display: block; font-size: 11px; color: var(--sub); font-weight: 600; }
+.kit-pan .kit-pan-num { font-size: 19px; }
+.kit-pan-l { left: calc(50% - 130px); transform: translate(-50%, -22px); }
+.kit-pan-r { left: calc(50% + 130px); transform: translate(-50%, 22px); }
+.kit-beam.kit-even .kit-pan-l, .kit-beam.kit-even .kit-pan-r { transform: translate(-50%, 0); }
+.kit-verdict { font-weight: 800; color: var(--ok); font-size: 15px; min-height: 22px; }
+
+/* ── 표·점판 (Kit.grid) — 세기 문제의 '이미 센 것 / 아직 안 센 것' ────────── */
+.kit-grid { display: grid; gap: 5px; justify-content: center; margin: 8px 0; }
+.kit-cell {
+  min-width: 34px; min-height: 34px; display: flex; align-items: center; justify-content: center;
+  border: 2px solid var(--line); border-radius: 8px; background: var(--card);
+  font-weight: 800; font-size: 14px; color: var(--sub);
+  transition: background .3s, border-color .3s, color .3s, transform .3s;
+}
+.kit-cell.kit-on { background: var(--ok-soft); border-color: var(--ok); color: var(--ok); }   /* 이미 센 것 */
+.kit-cell.kit-now { background: var(--rewind-soft); border-color: var(--rewind); color: var(--rewind); transform: scale(1.08); } /* 지금 세는 것 */
+.kit-cell.kit-dim { opacity: .4; }
+.kit-count { font-size: 22px; font-weight: 900; }
+.kit-count small { font-size: 13px; color: var(--sub); font-weight: 600; }
+
+/* ── 도형 (Kit.shape) ────────────────────────────────────────────────────── */
+.kit-shape svg { width: 100%; max-width: 300px; height: auto; overflow: visible; }
+.kit-shape .kit-face { fill: var(--soft); stroke: var(--ink); stroke-width: 3; stroke-linejoin: round; }
+.kit-shape .kit-edge { stroke: var(--ink); stroke-width: 3; stroke-linecap: round; }
+.kit-shape .kit-dash { stroke: var(--rewind); stroke-width: 2.5; stroke-dasharray: 6 5; fill: none; }
+.kit-shape .kit-len { font-size: 13px; font-weight: 800; fill: var(--ink); }
+.kit-shape .kit-len-sub { font-size: 12px; fill: var(--sub); }
+/* 부분 강조: 이미 본 것(kit-on) / 지금 보는 것(kit-now) 가 늘 구분돼야 한다 */
+.kit-shape .kit-part { fill: var(--card); stroke: var(--ink); stroke-width: 3; transition: fill .4s, opacity .4s; }
+.kit-shape .kit-part.kit-on { fill: var(--ok-soft); }
+.kit-shape .kit-part.kit-now { fill: var(--rewind-soft); stroke: var(--rewind); }
+.kit-shape .kit-part.kit-dim { opacity: .35; }
+
+/* ── 움직임 뱃지 (원래 이동을 늘어놓는 줄) ───────────────────────────────── */
+.kit-lane { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; margin: 8px 0 2px; }
+.kit-move {
+  display: flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 700;
+  padding: 4px 11px; border-radius: 999px; border: 2px dashed var(--line); color: var(--sub);
+  transition: all .3s;
+}
+.kit-move.kit-active { border-style: solid; border-color: var(--rewind); color: var(--rewind); background: var(--rewind-soft); }
+.kit-move.kit-done { border-style: solid; border-color: var(--ok); color: var(--ok); background: var(--ok-soft); }
+
+/* ── 캡션 (Kit.mount가 만든다) ───────────────────────────────────────────── */
+.kit-caption {
+  border-radius: 14px; padding: 13px 15px; background: var(--soft);
+  min-height: 92px; transition: background .3s; margin-top: 10px;
+}
+.kit-caption.kit-rewind { background: var(--rewind-soft); }
+.kit-caption.kit-ok { background: var(--ok-soft); }
+.kit-caption .kit-tag {
+  display: inline-block; font-size: 11.5px; font-weight: 800; letter-spacing: .05em;
+  padding: 2px 9px; border-radius: 6px; background: var(--ink); color: #fff; margin-bottom: 6px;
+}
+.kit-caption.kit-rewind .kit-tag { background: var(--rewind); }
+.kit-caption.kit-ok .kit-tag { background: var(--ok); }
+.kit-caption h3 { margin: 0 0 4px; font-size: 16px; }
+.kit-caption p { margin: 0; font-size: 14px; color: #2d3a4f; }
+.kit-caption p.kit-calc {
+  font-family: ui-monospace, Menlo, monospace; font-size: 15px; font-weight: 700;
+  margin-top: 6px; color: var(--ink);
+}
+
+/* ── VCR 바 (Kit.mount가 만든다) ─────────────────────────────────────────── */
+.kit-vcr {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  margin-top: 10px; background: var(--ink); border-radius: 14px; padding: 9px;
+}
+.kit-vcr button {
+  background: #2b3c58; color: #fff; border: 0; border-radius: 10px;
+  padding: 10px 14px; font-size: 14px; font-weight: 800; cursor: pointer; min-width: 58px;
+  font-family: inherit;
+}
+.kit-vcr button.kit-main { background: var(--rewind); padding: 10px 18px; font-size: 15px; }
+.kit-vcr button:disabled { opacity: .35; cursor: default; }
+.kit-vcr button:focus-visible { outline: 3px solid #fff; outline-offset: 1px; }
+.kit-dots { display: flex; gap: 5px; margin: 0 4px; }
+.kit-dots i {
+  width: 9px; height: 9px; border-radius: 50%; background: #4a5b78;
+  transition: background .3s, transform .3s;
+}
+.kit-dots i.kit-on { background: #fff; transform: scale(1.25); }
+
+/* ── 규칙 카드 ───────────────────────────────────────────────────────────── */
+.kit-rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+.kit-rule { border-radius: 14px; padding: 11px; background: var(--soft); text-align: center; }
+.kit-rule .kit-big { font-size: 24px; display: block; margin-bottom: 2px; }
+.kit-rule b { display: block; font-size: 13.5px; }
+.kit-rule span { font-size: 12px; color: var(--sub); }
+.kit-footnote { font-size: 12px; color: var(--sub); text-align: center; margin-top: 10px; }
+
+/* 답 태그는 앱이 읽는 데이터다. 화면에는 나오지 않는다 */
+script[type="application/json"] { display: none; }
+
+@media (max-width: 380px) {
+  body { padding: 12px 8px 20px; }
+  .kit-vcr button { padding: 9px 9px; min-width: 50px; font-size: 13px; }
+  .kit-beam-bar { width: 210px; }
+  .kit-pan { width: 94px; }
+  .kit-pan-l { left: calc(50% - 108px); }
+  .kit-pan-r { left: calc(50% + 108px); }
+}
+
+/* 애니메이션을 줄이라고 한 사람에게는 즉시 전환만 보여준다.
+   kit.js도 이 질의를 읽어 tween/fly 시간을 0으로 만든다 — CSS만 끄면 JS 애니메이션이 남는다 */
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
