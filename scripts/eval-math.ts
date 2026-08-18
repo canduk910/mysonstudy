@@ -20,18 +20,35 @@
  *   **insight가 null이어야 통과**한다. 억지 생성을 실패로 세는 것이 이 점검의 요점이다(§10-2).
  *   실호출 없이 도는 짝은 O6(프롬프트 문안)·O7(zod 제약)이다.
  *
- * **[M1 범위] 점검 9(2단 그림)는 아직 통과시킬 수 없다.** 호출 E와 `lib/scene/html.ts`가
- * 없기 때문이다(M2.5 예정). 없는 기능을 '실패'로 세면 회귀 신호가 오염되므로 **SKIP으로 표시하고
- * exit code에서 제외**한다. 대신 호출 B까지 확인 가능한 부분(`sceneHtmlRequest` 값)은 9-A로 채점한다.
+ * **[M2.5] 점검 9(2단 그림)** — §3-4. `rect-count` **한 픽스처에만** 건다(§7이 그 픽스처를 2단
+ *   담당으로 지목한다). 파이프라인에 호출 E 렌더러를 주입해 실제로 HTML을 받아 오고, 받은 것을
+ *   9-B~9-F로 다시 잰다. **전체 픽스처에 걸지 마라** — 호출 E는 출력 한도 8,000의 가장 비싼
+ *   호출이고 §8의 비용 구조가 호출 수에 곧바로 걸린다.
+ *
+ *   재는 것: `sceneTier==='html'`(9-B) · 정적 검사(9-C) · **답 태그 대조**(9-D, §5-2 `compare()`) ·
+ *   단계 수 3~8(9-E) · srcdoc 조립(9-F).
+ *   **못 재는 것: "headless iframe 3초 내 'ready'"(9-G는 언제나 SKIP).** playwright/puppeteer가
+ *   devDependency에 없고 **eval에 브라우저 의존을 새로 들이지 않기로 했다**(CI는 `npm ci`→`tsc`→
+ *   `build`만 돈다). 단계 수는 브라우저 대신 `Kit.mount(steps)`의 인자 길이를 세어 대신한다 —
+ *   kit.js가 `ready`에 싣는 `steps.length`와 **같은 값**이다(`public/player-kit/kit.js`).
+ *   조용히 빼면 다음 사람이 "검증됐다"고 오해하므로 9-G 행은 지우지 말고 SKIP으로 남겨 둔다.
+ *   실호출 없이 도는 짝은 O8(스텁으로 9-B~9-F 판정을 실증)이다.
+ *
+ * **O9(프롬프트 ↔ 스펙 원문 대조)** — 이 파일의 프롬프트 상수가 `docs/harness/math.md`의 코드블록과
+ *   글자 단위로 같은지를 **파일을 읽어서** 확인한다. O4·O6이 재는 것은 프롬프트↔`schemas.ts`의
+ *   다이얼 상수이지 스펙 문서가 아니다. 방식·정규화 범위·제외 사유는 `scripts/spec-sync.ts`와
+ *   아래 O9 절의 주석에 있다.
  */
 
-import { existsSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
 
 import {
   ACT2_STEPS_RANGE,
   ACT3_CHECKS_RANGE,
   INSIGHT_STEPS_RANGE,
+  PLAYER_STEPS_RANGE,
   PROBLEM_PATTERNS,
   RULES_RANGE,
   SCENE_STEPS_RANGE,
@@ -42,12 +59,37 @@ import {
   type Insight,
   type ProblemPattern,
 } from "../lib/ai/math/schemas";
-import { EXPLAIN_SYSTEM_PROMPT, type ExplainUserMessageInput } from "../lib/ai/math/prompts";
 import {
+  EXPLAIN_SYSTEM_PROMPT,
+  PLAYER_HTML_FEWSHOT,
+  PLAYER_HTML_SYSTEM_PROMPT,
+  PRACTICE_SYSTEM_PROMPT,
+  WORKSHEET_EXTRACT_SYSTEM_PROMPT,
+  WORKSHEET_EXTRACT_USER_TEXT,
+  type ExplainUserMessageInput,
+} from "../lib/ai/math/prompts";
+import {
+  VERIFY_SYSTEM_PROMPT,
   buildVerifyUserMessage,
   explainProblem,
   type ExplainProblemResult,
 } from "../lib/ai/math/pipeline";
+import {
+  checkSpecSync,
+  printSpecSyncDetails,
+  type SpecSyncOutcome,
+  type SpecSyncTarget,
+} from "./spec-sync";
+// 호출 E 렌더러 — **주입은 2단 픽스처에서만 한다**(main 참고). import만으로는 호출이 나가지 않는다
+// (`getOpenAIClient()`는 지연 생성이고, 이 파일은 직접 실행일 때만 main을 돈다).
+import { renderSceneHtml } from "../lib/ai/math/player";
+import {
+  SCENE_IFRAME_CSP,
+  SCENE_IFRAME_SANDBOX,
+  SCENE_READY_TIMEOUT_MS,
+  buildSceneSrcdoc,
+  inspectSceneHtml,
+} from "../lib/scene/html";
 import { compare, formatAnswer, verifyScene } from "../lib/scene/verify";
 import type {
   AnswerItem,
@@ -234,10 +276,16 @@ export const FIXTURES: Fixture[] = [
     expectedGrade: "none",
     expectSceneHtmlRequest: false,
     revision1: null,
-    // §10-5 표의 (b) 갈래 — **정석이 곧 최단인 문제.**
-    // 8×3=24, 96÷24=4. 순서를 바꾼 96÷8=12, 12÷3=4는 같은 두 번의 계산이지 지름길이 아니다.
-    // "왜 그렇게 되는지 한 번에 보이는" 방법이 없으므로 insight는 null이어야 한다(§10-2).
-    expectedInsight: "absent",
+    // 원래 §10-5 표의 (b) 갈래(정석이 최단)로 배정했으나 **실호출 결과를 보고 되돌렸다.**
+    // 모델이 낸 통찰: "머리핀 하나마다 24cm씩 떼면 돼" → 8×3=24, 96÷24=4.
+    // 계산 횟수는 정석(96÷8=12, 12÷3=4)과 같지만, **단위를 '리본 조각'에서
+    // '머리핀 한 개분'으로 바꿔 나눗셈 한 번으로 끝내는** 것은 아이에게 다른 생각이다.
+    // 억지 논리가 아니므로 실패로 셀 수 없다 — 사람 판단으로 unpinned로 내린다.
+    //
+    // **주의: 이 저장소에 `absent` 갈래 픽스처가 지금 하나도 없다.** 판정 코드(§10-5 (b))는
+    // 살아 있지만 아무도 그것을 밟지 않으므로, 억지 생성 감시는 당분간 실사용 관찰이 맡는다.
+    // "정석이 곧 최단"이 분명한 문제를 만나면 그 픽스처를 absent로 배정하라.
+    expectedInsight: "unpinned",
   },
   {
     id: "rect-count",
@@ -479,12 +527,14 @@ export function runFixtureChecks(fixture: Fixture, result: ExplainProblemResult)
   );
 
   // --- 9-A. 2단 요청 여부 (호출 B까지 확인 가능한 부분) ---
-  // §7 점검 9의 나머지(E 결과 정적 검사·답 대조·iframe ready·단계 3~8)는 호출 E가 없어 SKIP이다.
   pass(
     `9-A. sceneHtmlRequest === ${fixture.expectSceneHtmlRequest}`,
     content.sceneHtmlRequest === fixture.expectSceneHtmlRequest,
     `sceneHtmlRequest=${content.sceneHtmlRequest} · sceneTier=${result.sceneTier}`,
   );
+
+  // --- 9-B~9-G. 2단 그림 — **2단 픽스처에서만.** 1단 픽스처는 9-A로 끝이다(§7) ---
+  if (fixture.expectSceneHtmlRequest) results.push(...runSceneHtmlChecks(fixture, result));
 
   // --- 10. [개정 1] 방향·차 표현 — 이 eval이 존재하는 이유 ---
   if (fixture.revision1 === null) {
@@ -650,35 +700,244 @@ export function runHeldCheck(runs: { fixture: Fixture; result: ExplainProblemRes
 }
 
 // ---------------------------------------------------------------------------
-// 점검 9 — 2단 그림. **M1에서는 구현 대상이 아니다** (호출 E · lib/scene/html.ts 없음).
+// 점검 9 — 2단 그림 (§7 · §3-4). **`rect-count` 한 픽스처에만 건다.**
 //
-// 없는 기능을 '실패'로 세면 회귀 신호가 오염되므로 SKIP으로 표시하고 exit code에서 뺀다.
-// 대신 **구현되면 알려 주는 지뢰선**을 둔다: `lib/scene/html.ts`가 생겼는데 이 점검이 아직
-// SKIP이면 eval이 낡은 것이다 — 그때는 FAIL로 바꿔 사람을 부른다(파일 존재만 보고, import는
-// 하지 않는다. 없는 모듈을 import하면 eval 전체가 죽는다).
+// 호출 E는 출력 한도 8,000의 가장 비싼 호출이고, 이 점검은 문제당 E를 1~2회(재생성 포함) 더
+// 태운다. §7이 `rect-count`를 2단 담당으로 지목했으므로 거기서만 잰다 — 전체 픽스처에 걸면
+// §8의 비용 구조가 곧바로 무너진다.
+//
+// **브라우저를 새로 들이지 않았다.** 스펙은 "headless iframe 3초 내 'ready'"까지 재라고 하지만
+// playwright/puppeteer는 devDependency에 없고, eval에 브라우저를 들이면 CI(`npm ci`→`tsc`→`build`)가
+// 무거워지고 깨지기 쉬워진다. 그래서 **브라우저 없이 잴 수 있는 것까지 재고(9-B~9-F), 실행 확인은
+// 9-G 행에 SKIP으로 남겨 "못 쟀다"를 눈에 보이게 둔다.** 조용히 빼지 마라.
 // ---------------------------------------------------------------------------
 
-const SCENE_HTML_MODULE = fileURLToPath(new URL("../lib/scene/html.ts", import.meta.url));
+/**
+ * `Kit.mount(steps)`에 넘어간 단계 수 — 브라우저 없이 재는 대역(代役).
+ *
+ * kit.js는 `mount` 직후 `postMessage({type:'ready', steps: steps.length})`를 보낸다. 즉 여기서 세는
+ * 값은 **`ready`가 신고할 값과 같은 숫자**다(모델이 스스로 신고한 `stepCount`가 아니라 실제 배열 길이).
+ *
+ * 방법: HTML 안의 `<script>`(답 태그 제외)를 `node:vm`의 새 컨텍스트에서 **최상위만** 실행하고
+ * `Kit.mount`의 인자를 가로챈다. `render()`는 부르지 않는다(그림을 그리는 것이 목적이 아니다).
+ *
+ * **`node:vm`은 보안 경계가 아니다.** 여기서 도는 코드는 (a) 개발자만 실행하는 eval에서,
+ * (b) 이미 정적 검사를 통과한 HTML의, (c) 최상위 문장뿐이고, (d) 새 컨텍스트에는 `require`·`process`·
+ * `fetch`가 없으며, (e) 폭주 루프는 `timeout`이 끊는다. 앱 런타임에서 AI HTML을 실행하는 경로는
+ * 여전히 iframe+CSP 하나뿐이다(§3-4) — **이 함수를 그 자리에 쓰지 마라.**
+ */
+const SCRIPT_TAG_RE = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
+const STEP_COUNT_TIMEOUT_MS = 1_000;
 
-export function runSceneHtmlCheck(): CheckResult {
-  const implemented = existsSync(SCENE_HTML_MODULE);
-  if (!implemented) {
+function autoStub(): unknown {
+  // 무엇을 물어도 다시 스텁을 주는 만능 대역. AI 코드가 최상위에서 만지는 DOM·Kit 반환값을 받는다.
+  const target = function () {} as unknown as object;
+  return new Proxy(target, {
+    get(_t, prop) {
+      if (prop === Symbol.toPrimitive) return () => 0;
+      // Promise·전개 연산자에 잘못 걸리지 않게 둘만 비운다 (걸리면 아래 try/catch가 사유를 남긴다)
+      if (prop === "then" || prop === Symbol.iterator) return undefined;
+      return autoStub();
+    },
+    apply: () => autoStub(),
+    construct: () => autoStub() as object,
+    set: () => true,
+    has: () => true,
+  });
+}
+
+export function countMountedSteps(html: string): { count: number | null; note: string } {
+  let captured: unknown[] | null = null;
+  const kit = new Proxy({} as Record<string, unknown>, {
+    get(_t, prop) {
+      if (prop === "mount") {
+        return (steps: unknown) => {
+          if (Array.isArray(steps)) captured = steps;
+          return autoStub();
+        };
+      }
+      return autoStub();
+    },
+  });
+  const sandbox: Record<string, unknown> = {
+    Kit: kit,
+    document: autoStub(),
+    window: autoStub(),
+    parent: autoStub(),
+    self: autoStub(),
+    navigator: autoStub(),
+    // 새 vm 컨텍스트에는 타이머가 없다. 최상위에서 예약만 하고 실행은 하지 않는다.
+    setTimeout: () => 0,
+    clearTimeout: () => undefined,
+    setInterval: () => 0,
+    clearInterval: () => undefined,
+    requestAnimationFrame: () => 0,
+    console: { log() {}, warn() {}, error() {} },
+  };
+
+  const notes: string[] = [];
+  SCRIPT_TAG_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = SCRIPT_TAG_RE.exec(html)) !== null) {
+    const attrs = m[1] ?? "";
+    if (/type\s*=\s*(?:"|')?application\/json/i.test(attrs)) continue; // 답 태그는 데이터다
+    try {
+      runInNewContext(m[2] ?? "", sandbox, { timeout: STEP_COUNT_TIMEOUT_MS });
+    } catch (error) {
+      notes.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  if (captured === null) {
     return {
-      fixture: "rect-count (2단)",
-      check: "9. 2단 그림 (E 정적 검사·답 대조·iframe ready·단계 3~8)",
-      status: "skip",
-      detail:
-        "미구현(M2.5) — 호출 E와 lib/scene/html.ts가 아직 없다. exit code에서 제외했다. " +
-        "구현되면 이 행을 실제 점검으로 바꿔라: E 호출 → 정적 검사 → 답 태그 대조 → headless iframe 3초 내 'ready' → 단계 3~8.",
+      count: null,
+      note: notes.join(" / ") || "Kit.mount(steps) 호출을 찾지 못했다",
     };
   }
+  return { count: (captured as unknown[]).length, note: notes.join(" / ") };
+}
+
+/** 키트 원본 — srcdoc 조립(9-F)에 넣는다. 화면은 fetch로 읽지만 eval은 파일에서 바로 읽는다 */
+function readPlayerKit(): { css: string; js: string } {
+  const dir = new URL("../public/player-kit/", import.meta.url);
   return {
-    fixture: "rect-count (2단)",
-    check: "9. 2단 그림 (E 정적 검사·답 대조·iframe ready·단계 3~8)",
-    status: "fail",
+    css: readFileSync(new URL("kit.css", dir), "utf-8"),
+    js: readFileSync(new URL("kit.js", dir), "utf-8"),
+  };
+}
+
+/**
+ * 점검 9 본체 (§3-4 앱 측 처리 1~4번). **순수 함수다 — 실호출을 하지 않는다.**
+ * 이미 받아 온 `result.sceneHtml`을 다시 잰다. 그래서 O8이 스텁으로 이 판정을 그대로 실증할 수 있다.
+ *
+ * 렌더러(`resolveSceneHtml`)가 이미 같은 검사를 하고 실패한 HTML은 null로 돌려주지만, **eval은 그
+ * 판정을 믿지 않고 스스로 한 번 더 잰다.** 렌더러가 조용히 느슨해지면 그것을 잡는 것이 이 행의 몫이다.
+ */
+export function runSceneHtmlChecks(
+  fixture: Fixture,
+  result: ExplainProblemResult,
+): CheckResult[] {
+  const out: CheckResult[] = [];
+  const add = (check: string, status: Status, detail: string) =>
+    out.push({ fixture: fixture.label, check, status, detail });
+  const pass = (check: string, ok: boolean, detail: string) =>
+    add(check, ok ? "pass" : "fail", detail);
+
+  const html = result.sceneHtml;
+
+  // --- 9-B. 2단이 실제로 만들어졌는가 (§5-3 sceneTier) ---
+  const tierOk = result.sceneTier === "html" && html !== null;
+  pass(
+    "9-B. sceneTier === 'html' (호출 E 결과가 살아남음)",
+    tierOk,
+    tierOk
+      ? `sceneHtml ${html!.length.toLocaleString()}자 · scene(1단)=null`
+      : [
+          `sceneTier=${result.sceneTier}`,
+          result.verify.status === "held"
+            ? "held라 E를 부르지 않았다 (보류된 답은 그림으로 다시 주장하지 않는다 · 점검 8이 1차 신호)"
+            : null,
+          result.content.scene !== null ? "1단 scene이 나와 E 경로로 가지 않았다" : null,
+          result.content.sceneHtmlRequest === false ? "sceneHtmlRequest=false (점검 9-A 참고)" : null,
+          html === null && result.verify.status === "ok" && result.content.sceneHtmlRequest
+            ? "E가 두 번 다 검사를 통과하지 못해 null — 사유는 위 math-player 로그의 reasons"
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" / "),
+  );
+
+  if (html === null) {
+    // 아래 행들은 HTML이 있어야 잴 수 있다. 없는 것을 실패로 또 세면 같은 사고가 4줄로 불어난다.
+    add("9-C~9-G. 정적 검사·답 대조·단계 수·srcdoc·ready", "skip", "sceneHtml이 없어 잴 대상이 없다 (9-B 참고)");
+    return out;
+  }
+
+  // --- 9-C·9-D. 정적 검사 + 답 태그 대조 (§3-4 1~2번) ---
+  // 답 비교는 §5-2의 `compare()`를 쓰는 `inspectSceneHtml` 그대로다 — eval 전용 비교 함수를 만들지 마라.
+  const inspection = inspectSceneHtml(html, result.content.answer);
+  pass(
+    `9-C. 정적 검사 — 금지 문자열 0건`,
+    inspection.forbidden.length === 0,
+    inspection.forbidden.length === 0
+      ? "금지 문자열 없음"
+      : `걸림: ${inspection.forbidden.join(", ")}`,
+  );
+
+  const answerFailure = inspection.failures.find((f) => f !== "static-check");
+  pass(
+    '9-D. 답 태그 대조 — HTML의 id="answer" ≡ 호출 B의 answer (§5-2 compare)',
+    answerFailure === undefined,
+    answerFailure === undefined
+      ? `${formatAnswer(inspection.answer ?? [])} (호출 B: ${formatAnswer(result.content.answer)})`
+      : inspection.reasons.filter((r) => !r.startsWith("정적 검사")).join(" / "),
+  );
+
+  // --- 9-E. 단계 수 3~8 (§3-4 프롬프트 "3~8단계") ---
+  const [minSteps, maxSteps] = PLAYER_STEPS_RANGE;
+  const steps = countMountedSteps(html);
+  if (steps.count === null) {
+    // 세지 못한 것과 범위를 벗어난 것은 다르다. 파서 한계를 실패로 세면 멀쩡한 생성이 떨어진다.
+    // 모델이 신고한 stepCount는 zod가 이미 3~8로 걸렀다(schemas.ts) — 그것이 남은 그물이다.
+    add(
+      `9-E. 단계 수 ${minSteps}~${maxSteps}`,
+      "skip",
+      `Kit.mount(steps)를 정적으로 세지 못했다: ${steps.note} · 모델 신고분은 zod가 ${minSteps}~${maxSteps}로 이미 걸렀다`,
+    );
+  } else {
+    pass(
+      `9-E. 단계 수 ${minSteps}~${maxSteps} (Kit.mount(steps) 길이 = ready의 steps)`,
+      inRange(steps.count, PLAYER_STEPS_RANGE),
+      `${steps.count}단계${steps.note ? ` · 실행 경고: ${steps.note}` : ""}`,
+    );
+  }
+
+  // --- 9-F. srcdoc 조립 (§3-4 3번) — 브라우저에 넘길 문서가 문자열 단계에서 온전한가 ---
+  let srcdocDetail: string;
+  let srcdocOk: boolean;
+  try {
+    const kit = readPlayerKit();
+    const srcdoc = buildSceneSrcdoc({ html, kitCss: kit.css, kitJs: kit.js });
+    const hasCsp = srcdoc.includes(SCENE_IFRAME_CSP);
+    const hasKit = srcdoc.includes("Kit") && srcdoc.includes("--ink");
+    const hasBody = srcdoc.includes(html);
+    srcdocOk = hasCsp && hasKit && hasBody;
+    srcdocDetail = srcdocOk
+      ? `${Math.round(srcdoc.length / 1024)}KB · CSP meta 포함 · kit.css/kit.js 임베드 · sandbox="${SCENE_IFRAME_SANDBOX}"`
+      : [
+          hasCsp ? null : "CSP meta 없음",
+          hasKit ? null : "kit.css/kit.js가 안 실렸다",
+          hasBody ? null : "본문 HTML이 변형됐다",
+        ]
+          .filter(Boolean)
+          .join(" / ");
+  } catch (error) {
+    srcdocOk = false;
+    srcdocDetail = `조립 실패: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  pass("9-F. srcdoc 조립 (CSP meta · 키트 임베드 · 본문 보존)", srcdocOk, srcdocDetail);
+
+  // --- 9-G. 실행 확인 — **못 잰다.** 지우지 말고 남겨 둔다 ---
+  add(
+    `9-G. headless iframe ${SCENE_READY_TIMEOUT_MS / 1000}초 내 'ready'`,
+    "skip",
+    "**측정하지 않음** — 브라우저가 필요하고 playwright/puppeteer는 devDependency에 없다. " +
+      "eval에 브라우저 의존을 새로 들이지 않기로 했다(CI는 npm ci→tsc→build만 돈다). " +
+      "단계 수는 9-E가 Kit.mount 인자로 대신 재지만, **초기화 중 예외로 ready가 안 오는 경우는 여기서 잡히지 않는다** — " +
+      "앱은 이 경우 3초 폴백으로 텍스트 3막만 보여준다(§3-4 4번).",
+  );
+
+  return out;
+}
+
+/** 오프라인 모드(EVAL_OFFLINE_ONLY=1)에서 점검 9 자리에 남기는 표시 — 실호출이 필요하다 */
+export function sceneHtmlOfflineNotice(fixture: Fixture): CheckResult {
+  return {
+    fixture: fixture.label,
+    check: "9. 2단 그림 (호출 E)",
+    status: "skip",
     detail:
-      "lib/scene/html.ts가 생겼는데 점검 9가 아직 SKIP이다 — eval이 낡았다. " +
-      "§7 점검 9를 구현하고(explainProblem에 renderSceneHtml 주입) 이 함수를 교체하라.",
+      "EVAL_OFFLINE_ONLY=1 — 호출 E가 필요해 건너뛴다. 판정 로직 자체는 O8이 스텁으로 확인한다.",
   };
 }
 
@@ -808,6 +1067,61 @@ function sampleExplanation(): Explanation {
         { label: "지우개", value: 300, unit: "원" },
       ],
       parentNoteKo: "합과 차가 함께 주어질 때만 통해요. 차를 모르면 쓸 수 없어요.",
+    },
+  };
+}
+
+/**
+ * [M2.5] 점검 9를 실호출 없이 실증하기 위한 손수 만든 2단 HTML (`rect-count` 모양).
+ *
+ * 호출 E의 출력이 어떻게 생겼는지는 `PLAYER_HTML_FEWSHOT`이 보여 준다. 여기서는 **판정이 실제로
+ * 갈리는지**만 보면 되므로 최소 형태로 만든다 — 답 태그 하나와 `Kit.mount(steps)` 하나.
+ */
+function sceneHtmlSample(answer: AnswerItem[], stepCount: number): string {
+  return `<div class="kit-wrap">
+  <div class="kit-card"><div class="kit-stage" id="stage"></div></div>
+</div>
+
+<script type="application/json" id="answer">${JSON.stringify(answer)}</script>
+
+<script>
+var G = Kit.grid("#stage", { label: "직사각형", rows: 1, cols: 6, size: 34 });
+var steps = [];
+for (var i = 0; i < ${stepCount}; i++) {
+  steps.push({
+    tag: "단계", title: "빠짐없이 세어요", body: "센 것은 색을 칠해요.", calc: null,
+    render: function () { G.markAll("on"); }
+  });
+}
+Kit.mount(steps);
+</script>`;
+}
+
+/** 점검 9에 먹일 가짜 파이프라인 결과 — `runSceneHtmlChecks`가 읽는 자리만 채운다 */
+function sceneHtmlSampleResult(html: string | null, answer: AnswerItem[]): ExplainProblemResult {
+  const content: Explanation = {
+    ...sampleExplanation(),
+    problemPattern: "counting",
+    patternNameKo: "빠짐없이 세기",
+    answer,
+    answerText: "모두 21개예요.",
+    scene: null,
+    sceneHtmlRequest: true,
+    insight: null,
+  };
+  return {
+    content,
+    sceneHtml: html,
+    sceneTier: html ? "html" : "none",
+    verify: {
+      status: "ok",
+      answerMatch: true,
+      sceneCheck: true,
+      attempts: 1,
+      sceneErrors: [],
+      insightDropped: false,
+      heldReasons: [],
+      checkAnswer: answer,
     },
   };
 }
@@ -1018,7 +1332,163 @@ export function runOfflineChecks(): CheckResult[] {
     tooManyResult.success ? "거부되지 않았다 — 개수 다이얼이 무력하다" : zodIssues(tooManyResult.error),
   );
 
+  // O8. [M2.5] **점검 9가 실제로 판정을 내는가.** 점검 9는 호출 E가 있어야 돌아서 오프라인에서는
+  //     한 번도 실행되지 않는다 — 그 사이에 판정이 무력해져도(항상 pass를 주는 형태로) 아무도 모른다.
+  //     그래서 스텁 HTML 두 벌로 **통과 한 건 + 답 불일치 실패 한 건**을 여기서 매번 확인한다.
+  const rectFixture = FIXTURES.find((f) => f.id === "rect-count")!;
+  const rectAnswer = rectFixture.expectedAnswer;
+  const judged = (rows: CheckResult[], needle: string) => rows.find((r) => r.check.startsWith(needle));
+
+  const goodRows = runSceneHtmlChecks(rectFixture, sceneHtmlSampleResult(sceneHtmlSample(rectAnswer, 5), rectAnswer));
+  const goodFails = goodRows.filter((r) => r.status === "fail");
+  add(
+    "rect-count (2단)",
+    "O8. [M2.5] 정상 2단 HTML이 점검 9(9-B~9-F)를 통과",
+    goodFails.length === 0,
+    goodFails.length === 0
+      ? goodRows.map((r) => `${r.check.slice(0, 4)}${statusLabel(r.status)}`).join(" · ")
+      : goodFails.map((r) => `${r.check}: ${r.detail}`).join(" / "),
+  );
+
+  // 답 태그만 21 → 20으로 바꾼다. **그림이 틀린 답을 주장하는 경우**가 정확히 이 모양이다(§3-4).
+  const wrongAnswer: AnswerItem[] = [{ ...rectAnswer[0], value: rectAnswer[0].value - 1 }];
+  const badRows = runSceneHtmlChecks(
+    rectFixture,
+    sceneHtmlSampleResult(sceneHtmlSample(wrongAnswer, 5), rectAnswer),
+  );
+  const mismatchRow = judged(badRows, "9-D");
+  add(
+    "rect-count (2단)",
+    "O8. [M2.5] 답이 다른 2단 HTML을 9-D가 거부",
+    mismatchRow?.status === "fail",
+    mismatchRow === undefined
+      ? "9-D 행이 사라졌다 — 답 태그 대조가 없어졌다"
+      : mismatchRow.status === "fail"
+        ? mismatchRow.detail
+        : "거부되지 않았다 — 그림이 틀린 답을 주장해도 통과한다",
+  );
+
+  // 정적 검사도 같이 — 금지 문자열 하나면 9-C가 걸려야 한다.
+  const dirtyRows = runSceneHtmlChecks(
+    rectFixture,
+    sceneHtmlSampleResult(
+      sceneHtmlSample(rectAnswer, 5).replace("<div class=\"kit-wrap\">", "<div class=\"kit-wrap\"><link rel=\"stylesheet\">"),
+      rectAnswer,
+    ),
+  );
+  const staticRow = judged(dirtyRows, "9-C");
+  add(
+    "rect-count (2단)",
+    "O8. [M2.5] 금지 문자열(<link)이 든 HTML을 9-C가 거부",
+    staticRow?.status === "fail",
+    staticRow === undefined
+      ? "9-C 행이 사라졌다 — 정적 검사가 없어졌다"
+      : staticRow.status === "fail"
+        ? staticRow.detail
+        : "거부되지 않았다 — 정적 검사가 무력하다",
+  );
+
+  // 단계 수 세기가 **실제 호출 E 출력 모양**에서도 되는가. few-shot이 그 모양의 유일한 표본이다
+  // (5단계: 문제 → 1~3단계 → 검사). 여기서 null이 나오면 9-E는 언제나 SKIP이 된다.
+  const fewshotSteps = countMountedSteps(PLAYER_HTML_FEWSHOT);
+  add(
+    "rect-count (2단)",
+    "O8. [M2.5] few-shot HTML에서 Kit.mount 단계 5개를 세어 냄",
+    fewshotSteps.count === 5,
+    fewshotSteps.count === null
+      ? `세지 못했다: ${fewshotSteps.note} — 9-E가 언제나 SKIP이 된다`
+      : `${fewshotSteps.count}단계${fewshotSteps.note ? ` · 경고: ${fewshotSteps.note}` : ""}`,
+  );
+
+  // O9. 프롬프트 원문 ↔ 스펙 문서 대조 (아래 SPEC_SYNC_TARGETS 참고)
+  results.push(...runSpecSyncChecks());
+
   return results;
+}
+
+// ---------------------------------------------------------------------------
+// O9. 프롬프트 원문 ↔ 스펙 문서 대조 — `docs/harness/math.md`가 진실 원천인지 코드로 확인한다
+//
+// O4·O6은 프롬프트 문자열과 `schemas.ts`의 **다이얼 상수**가 같은 숫자를 말하는지를 잰다.
+// 그것만으로는 "프롬프트가 스펙과 같은가"를 묻지 못한다 — 지금까지 그 근거는 사람이 그때그때
+// 돌린 diff뿐이었고, 이 세션에서만 프롬프트를 세 번 고쳤다(§10-6 insight 절 / 호출 E의 xmlns 한 줄 /
+// 호칭 규칙 "엄빠" 한 줄). 한 번만 빠뜨리면 스펙과 프롬프트가 **조용히** 갈라진다. O9가 그 구멍이다.
+//
+// 매핑은 "몇 번째 코드블록"으로 못 박지 않는다. 스펙의 코드블록을 전부 뽑아 두고 **내용으로**
+// 같은 블록을 찾는다 (`scripts/spec-sync.ts` 머리주석 참고). 절이 하나 늘어도 깨지지 않는다.
+//
+// 대조에서 **뺀 것과 그 사유** — 조용히 빼지 않고 여기 남긴다:
+//   - `PLAYER_HTML_FEWSHOT`: 스펙에 원문이 없다. §1 파일 배치가 "(+E few-shot HTML)"이라고 존재만
+//     적고 §8이 "키트를 늘리면 few-shot을 갱신한다"고 할 뿐, 대조할 원문 자체가 문서에 없다.
+//     대신 O8이 이 few-shot에서 Kit.mount 단계 5개를 세어 내는 것으로 형태를 지킨다.
+//   - `PLAYER_HTML_SYSTEM_MESSAGE`: `${PLAYER_HTML_SYSTEM_PROMPT}` + 접착 문구 + `${PLAYER_HTML_FEWSHOT}`
+//     보간이라 런타임 값과 스펙 원문이 구조적으로 다르다. 구성 요소인 `PLAYER_HTML_SYSTEM_PROMPT`를
+//     따로 대조하므로 스펙 원문 부분은 그대로 덮인다(원문을 상수로 가른 이유가 이것이다).
+//   - `buildExplainUserMessage` 등 사용자 메시지 빌더: 함수이고 런타임 값을 보간한다. 스펙 §3-2·§6의
+//     템플릿은 플레이스홀더가 든 서술이라 "원문 그대로" 대조가 성립하지 않는다.
+// ---------------------------------------------------------------------------
+
+const MATH_SPEC_URL = new URL("../docs/harness/math.md", import.meta.url);
+
+const SPEC_SYNC_TARGETS: readonly SpecSyncTarget[] = [
+  {
+    constName: "WORKSHEET_EXTRACT_SYSTEM_PROMPT",
+    source: "lib/ai/math/prompts.ts",
+    specLabel: "§2-1 호출 A 시스템 프롬프트",
+    text: WORKSHEET_EXTRACT_SYSTEM_PROMPT,
+    mode: "block",
+  },
+  {
+    constName: "WORKSHEET_EXTRACT_USER_TEXT",
+    source: "lib/ai/math/prompts.ts",
+    specLabel: "§2-2 사용자 메시지",
+    text: WORKSHEET_EXTRACT_USER_TEXT,
+    // 스펙에 코드블록이 아니라 인라인 코드 한 줄로 적혀 있다 — 본문 포함 여부로 본다
+    mode: "inline",
+  },
+  {
+    constName: "EXPLAIN_SYSTEM_PROMPT",
+    source: "lib/ai/math/prompts.ts",
+    specLabel: "§3-1 호출 B 시스템 프롬프트 (+§10-6 삽입 절)",
+    text: EXPLAIN_SYSTEM_PROMPT,
+    mode: "block",
+  },
+  {
+    constName: "PLAYER_HTML_SYSTEM_PROMPT",
+    source: "lib/ai/math/prompts.ts",
+    specLabel: "§3-4 호출 E 시스템 프롬프트",
+    text: PLAYER_HTML_SYSTEM_PROMPT,
+    mode: "block",
+  },
+  {
+    constName: "VERIFY_SYSTEM_PROMPT",
+    source: "lib/ai/math/pipeline.ts",
+    specLabel: "§5-1 호출 C 시스템 프롬프트",
+    text: VERIFY_SYSTEM_PROMPT,
+    mode: "block",
+  },
+  {
+    constName: "PRACTICE_SYSTEM_PROMPT",
+    source: "lib/ai/math/prompts.ts",
+    specLabel: "§6 호출 D 시스템 프롬프트",
+    text: PRACTICE_SYSTEM_PROMPT,
+    mode: "block",
+  },
+];
+
+/** 표 뒤에 상세 diff를 찍기 위해 남겨 둔다 (main이 읽는다) */
+const specSyncOutcomes: SpecSyncOutcome[] = [];
+
+export function runSpecSyncChecks(): CheckResult[] {
+  specSyncOutcomes.length = 0;
+  specSyncOutcomes.push(...checkSpecSync(MATH_SPEC_URL, SPEC_SYNC_TARGETS));
+  return specSyncOutcomes.map((o) => ({
+    fixture: "프롬프트 ↔ 스펙",
+    check: `O9. ${o.constName}이 math.md 원문 그대로`,
+    // 스펙을 못 읽거나 블록을 못 찾으면 FAIL이다. SKIP으로 삼키면 대조가 조용히 꺼진다.
+    status: o.ok ? ("pass" as Status) : ("fail" as Status),
+    detail: o.summary,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1106,8 +1576,11 @@ async function main(): Promise<void> {
   // ── 비용 게이트: 여기서 return하면 아래 실호출 구간에 절대 닿지 않는다 ──
   // (아래 for 루프의 explainProblem()이 이 파일의 유일한 네트워크 경로다.)
   if (OFFLINE_ONLY) {
-    results.push(runSceneHtmlCheck());
+    for (const f of FIXTURES.filter((x) => x.expectSceneHtmlRequest)) {
+      results.push(sceneHtmlOfflineNotice(f));
+    }
     printTable(results);
+    printSpecSyncDetails(specSyncOutcomes);
     const { passed, failed, skipped } = summarize(results);
     console.log(
       "EVAL_OFFLINE_ONLY=1 — 실호출 0회. 모델 출력 품질(점검 1~10)은 검증하지 않았습니다.",
@@ -1127,9 +1600,12 @@ async function main(): Promise<void> {
     );
     process.exit(1);
   }
+  const twoTier = fixtures.filter((f) => f.expectSceneHtmlRequest).length;
   console.log(
     `\n실호출 예상: 픽스처 ${fixtures.length}개 × (B+C 2회, 재시도 시 4회) = ${fixtures.length * 2}~${fixtures.length * 4}회` +
-      " (호출 E는 M1 미구현이라 0회)",
+      (twoTier > 0
+        ? ` + 호출 E ${twoTier}~${twoTier * 2}회(2단 ${twoTier}개 · 재생성 1회 포함, 출력 한도 8,000)`
+        : " (2단 픽스처 없음 — 호출 E 0회)"),
   );
 
   const runs: { fixture: Fixture; result: ExplainProblemResult }[] = [];
@@ -1137,9 +1613,12 @@ async function main(): Promise<void> {
   for (const fixture of fixtures) {
     console.log(`\n=== 설명 생성: ${fixture.label} (${fixture.source}) ===`);
     try {
-      // 호출 E 렌더러(renderSceneHtml)를 주입하지 않는다 — M1에는 lib/scene/html.ts가 없고,
-      // 주입하지 않으면 파이프라인이 2단을 만들지 않는다(sceneTier: 'none'). 비용도 그만큼 안 든다.
-      const result = await explainProblem(fixture.problem);
+      // 호출 E 렌더러는 **2단 픽스처에만** 주입한다. 주입하지 않으면 파이프라인이 2단을 만들지
+      // 않고(sceneTier: 'none') 그만큼 비용도 안 든다 — §8의 비용 구조가 호출 수에 곧바로 걸린다.
+      const result = await explainProblem(
+        fixture.problem,
+        fixture.expectSceneHtmlRequest ? { renderSceneHtml } : {},
+      );
       printExplanation(result);
       runs.push({ fixture, result });
       results.push(...runFixtureChecks(fixture, result));
@@ -1156,13 +1635,25 @@ async function main(): Promise<void> {
   }
 
   if (runs.length > 0) results.push(runHeldCheck(runs));
-  results.push(runSceneHtmlCheck());
+  // 점검 9는 픽스처 루프 안에서 났다(9-B~9-G) — 2단 픽스처를 건너뛰었으면 그 사실을 남긴다.
+  for (const f of FIXTURES.filter((x) => x.expectSceneHtmlRequest)) {
+    if (!fixtures.some((x) => x.id === f.id)) {
+      results.push({
+        fixture: f.label,
+        check: "9. 2단 그림 (호출 E)",
+        status: "skip",
+        detail: "이번 실행에서 제외된 픽스처다 (EVAL_ONLY / EVAL_SKIP_2DAN).",
+      });
+    }
+  }
 
   printTable(results);
+  printSpecSyncDetails(specSyncOutcomes);
 
   const { passed, failed, skipped } = summarize(results);
   if (skipped > 0) {
-    console.log(`SKIP ${skipped}건 — 미구현(M2.5) 항목은 exit code에서 제외했습니다.`);
+    // SKIP은 대개 9-G(브라우저 없이는 못 재는 'ready')와 이번 실행에서 제외된 픽스처다.
+    console.log(`SKIP ${skipped}건 — 측정하지 않은 항목은 exit code에서 제외했습니다(상세 열 참고).`);
   }
   if (failed > 0) {
     console.error(`FAIL — ${failed}개 항목 실패 (통과 ${passed}). 프롬프트/스키마를 점검하세요.`);

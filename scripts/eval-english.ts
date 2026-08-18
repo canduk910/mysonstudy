@@ -6,6 +6,10 @@
  *   (Wolves / Pooh / Pooh+장면 메모. EVAL_SKIP_PAGES=1이면 마지막 변형을 건너뛰어 2회)
  * 픽스처 2권(Wolves, Pooh Gets Stuck)의 값은 docs/SPEC.md §12 그대로다. 임의 변경 금지.
  * 호출 A′(page_digest)는 사진이 있어야 재현되므로 실호출 대신 zod 규칙을 고정 입력으로 검사한다.
+ *
+ * `EVAL_OFFLINE_ONLY=1`이면 실호출 0회로 정의 동기화만 본다. 그 안에 **프롬프트 원문 ↔ 스펙 문서
+ * 대조**가 들어 있다 — `lib/ai/english/prompts.ts`의 시스템 프롬프트가 `docs/harness/english.md`의
+ * 코드블록과 글자 단위로 같은지 파일을 읽어서 확인한다(`scripts/spec-sync.ts`).
  */
 
 import { generateCard } from "../lib/ai/client";
@@ -29,7 +33,20 @@ import {
   type LearningCard,
   type SceneDigestItem,
 } from "../lib/ai/english/schemas";
-import { buildCardUserMessage, type CardUserMessageInput } from "../lib/ai/english/prompts";
+import {
+  CARD_SYSTEM_PROMPT,
+  EXTRACT_SYSTEM_PROMPT,
+  EXTRACT_USER_TEXT,
+  PAGES_SYSTEM_PROMPT,
+  buildCardUserMessage,
+  type CardUserMessageInput,
+} from "../lib/ai/english/prompts";
+import {
+  checkSpecSync,
+  printSpecSyncDetails,
+  type SpecSyncOutcome,
+  type SpecSyncTarget,
+} from "./spec-sync";
 
 // .env.local / .env 로드 (없으면 무시). 이미 설정된 환경 변수가 우선한다.
 for (const envFile of [".env.local", ".env"]) {
@@ -710,6 +727,72 @@ function toCardInput(fixture: Fixture): CardUserMessageInput {
   };
 }
 
+// ---------------------------------------------------------------------------
+// 프롬프트 원문 ↔ 스펙 문서 대조 — `docs/harness/english.md`가 진실 원천인지 코드로 확인한다
+//
+// 이 저장소는 "스펙이 단일 진실 원천"으로 돌아가는데, 스펙의 프롬프트 원문과 여기 실제로 쓰는
+// 문자열이 같은지 **확인하는 코드가 없었다.** 근거는 사람이 그때그때 돌린 diff뿐이었다.
+// 한 번만 빠뜨리면 스펙과 프롬프트가 조용히 갈라지고, 그다음부터 스펙을 읽어 고친 사람은
+// 코드에 없는 문장을 고치게 된다.
+//
+// 매핑은 "몇 번째 코드블록"으로 못 박지 않는다. 스펙의 코드블록을 전부 뽑아 두고 **내용으로**
+// 같은 블록을 찾는다 (`scripts/spec-sync.ts` 머리주석에 방식·정규화 범위가 있다).
+//
+// 대조에서 **뺀 것과 그 사유** — 조용히 빼지 않고 여기 남긴다:
+//   - `buildPagesUserMessage` · `buildCardUserMessage`: 함수이고 런타임 값을 보간한다(`${...}`).
+//     스펙 §2A-2·§3-2의 템플릿은 플레이스홀더가 든 서술이라 "원문 그대로" 대조가 성립하지 않는다.
+//     이 둘이 지시하는 다이얼은 `runStoryLengthDialChecks()`가 값으로 검사한다.
+// ---------------------------------------------------------------------------
+
+const ENGLISH_SPEC_URL = new URL("../docs/harness/english.md", import.meta.url);
+
+const SPEC_SYNC_TARGETS: readonly SpecSyncTarget[] = [
+  {
+    constName: "EXTRACT_SYSTEM_PROMPT",
+    source: "lib/ai/english/prompts.ts",
+    specLabel: "§2-1 호출 A 시스템 프롬프트",
+    text: EXTRACT_SYSTEM_PROMPT,
+    mode: "block",
+  },
+  {
+    constName: "EXTRACT_USER_TEXT",
+    source: "lib/ai/english/prompts.ts",
+    specLabel: "§2-2 사용자 메시지",
+    text: EXTRACT_USER_TEXT,
+    // 스펙에 코드블록이 아니라 인라인 코드 한 줄로 적혀 있다 — 본문 포함 여부로 본다
+    mode: "inline",
+  },
+  {
+    constName: "PAGES_SYSTEM_PROMPT",
+    source: "lib/ai/english/prompts.ts",
+    specLabel: "§2A-1 호출 A′ 시스템 프롬프트",
+    text: PAGES_SYSTEM_PROMPT,
+    mode: "block",
+  },
+  {
+    constName: "CARD_SYSTEM_PROMPT",
+    source: "lib/ai/english/prompts.ts",
+    specLabel: "§3-1 호출 B 시스템 프롬프트",
+    text: CARD_SYSTEM_PROMPT,
+    mode: "block",
+  },
+];
+
+/** 표 뒤에 상세 diff를 찍기 위해 남겨 둔다 (main이 읽는다) */
+const specSyncOutcomes: SpecSyncOutcome[] = [];
+
+function runSpecSyncChecks(): CheckResult[] {
+  specSyncOutcomes.length = 0;
+  specSyncOutcomes.push(...checkSpecSync(ENGLISH_SPEC_URL, SPEC_SYNC_TARGETS));
+  return specSyncOutcomes.map((o) => ({
+    book: "프롬프트 ↔ 스펙",
+    check: `${o.constName}이 english.md 원문 그대로`,
+    // 스펙을 못 읽거나 블록을 못 찾으면 FAIL이다. SKIP으로 삼키면 대조가 조용히 꺼진다.
+    pass: o.ok,
+    detail: o.summary,
+  }));
+}
+
 function printTable(results: CheckResult[]): void {
   const header = `| ${"결과".padEnd(4)} | ${"책".padEnd(16)} | 점검 항목 | 상세 |`;
   console.log("");
@@ -729,11 +812,14 @@ async function main(): Promise<void> {
   // 실호출 0회 — 호출 A′ 스키마·하위 호환 헬퍼·분량 다이얼부터 검사한다 (키 없이도 돈다)
   allResults.push(...runPageDigestChecks());
   allResults.push(...runStoryLengthDialChecks());
+  // 프롬프트 원문이 스펙 문서와 같은지 — 파일을 읽어서 대조한다 (실호출 0회)
+  allResults.push(...runSpecSyncChecks());
 
   // 실호출 없이 정적 검증만 하고 끝낸다 — OPENAI_API_KEY가 없거나 비용을 쓰기 전에
   // 다이얼 동기화만 확인할 때 쓴다. 통과해도 "카드 품질 통과"가 아니라 "정의 동기화 통과"다.
   if (process.env.EVAL_OFFLINE_ONLY === "1") {
     printTable(allResults);
+    printSpecSyncDetails(specSyncOutcomes);
     const offlineFailed = allResults.filter((r) => !r.pass);
     console.log("EVAL_OFFLINE_ONLY=1 — 실호출 0회. 모델 출력 품질은 검증하지 않았습니다.");
     if (offlineFailed.length > 0) {
@@ -773,6 +859,7 @@ async function main(): Promise<void> {
   }
 
   printTable(allResults);
+  printSpecSyncDetails(specSyncOutcomes);
 
   const failed = allResults.filter((r) => !r.pass);
   if (failed.length > 0) {
