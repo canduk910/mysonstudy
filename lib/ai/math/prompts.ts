@@ -2,7 +2,7 @@
  * lib/ai/math/prompts.ts — 수학코치 AI 호출 프롬프트 원문 (docs/harness/math.md §2-1·§3-1·§3-2·§6)
  *
  * 주의: 시스템 프롬프트는 스펙 원문 그대로다. 문구를 다듬거나 요약하지 않는다.
- * 개수·범위 다이얼(act2 단계 3~6개, 규칙 2~3개, steps 3~8개, "합계 100 이하")이 문장 안에 박혀 있고,
+ * 개수·범위 다이얼(act2 단계 3~6개, 규칙 2~3개, steps 3~8개, insight 2~3단계, "합계 100 이하")이 문장 안에 박혀 있고,
  * eval 하네스(scripts/eval-math.ts)와 zod(schemas.ts)가 그 숫자에 걸려 있다.
  * 프롬프트 수정 → `npm run eval:math` 통과 확인 → 커밋 순서를 지킬 것.
  *
@@ -94,6 +94,18 @@ export const EXPLAIN_SYSTEM_PROMPT = `너는 초등학생 아이와 수학 문�
 - rules: 이 유형에서 기억할 규칙 2~3개, 각각 {emoji, ko(짧게), why(한 문장)}.
 - parentTip: 부모용 티칭 포인트 1개.
 
+[다른 방법 — insight]
+정석(3막)과 **다른 길**로도 풀리는 문제라면, 그 방법을 insight에 담는다.
+- 통찰은 "왜 그렇게 되는지 한 번에 보이는" 방법이다. 대칭, 전체에서 빼기, 짝지어 더하기,
+  차를 먼저 떼어 내기, 거꾸로 세기 같은 것이다.
+- **stepsKo는 2~3단계이고 act2보다 반드시 짧아야 한다.** 길면 그것은 통찰이 아니라 또 다른 정석이다.
+- **한 단계는 60자를 넘기지 마라.** 넘으면 단계를 늘리지 말고 문장을 줄인다.
+- **억지로 만들지 마라.** 정석이 곧 가장 빠른 길인 문제가 많다. 그럴 때는 insight를 null로 둔다.
+  없는 지름길을 지어내면 아이가 그 억지 논리를 그대로 배운다.
+- insight.answer에는 이 방법으로 나온 답을 적는다. 3막의 answer와 같아야 한다.
+  다르면 둘 중 하나가 틀린 것이니, 그때는 문제를 다시 풀어 두 답을 맞춘다.
+- parentNoteKo에는 이 방법이 언제 통하고 언제 안 통하는지를 부모에게 한두 문장으로 적는다.
+
 [답과 채점]
 - answer: 구조화된 답 {label, value, unit}[]. 값은 숫자. 라벨은 문제 속 이름 그대로(가/나/다, 승환/영민/지훈).
 - answerText: 아이에게 보여줄 한 줄 답.
@@ -134,11 +146,15 @@ export const EXPLAIN_SYSTEM_PROMPT = `너는 초등학생 아이와 수학 문�
 
 (공통) 각 단계 caption: {tag(예: "되감기 1"), title, body(아이 말), calc(있으면)}. steps는 3~8개.`;
 
-/** 호출 B 파라미터 (HARNESS §1 표: temperature 0.5 · 출력 한도 ~5,000) */
+/**
+ * 호출 B 파라미터 (HARNESS §1 표: temperature 0.5 · 출력 한도 ~6,500).
+ * [M5] 한도를 5,000 → 6,500으로 올렸다 — 두 번째 풀이(`insight`)가 같은 호출에 함께 실린다(§10-3).
+ * 한도를 되돌리면 `insight`가 붙는 응답이 `incomplete`로 잘려 재요청 1회를 태우고, 그래도 잘리면 throw다.
+ */
 export const EXPLAIN_CALL_OPTIONS = {
   call: "math-explain",
   temperature: 0.5,
-  maxOutputTokens: 5_000,
+  maxOutputTokens: 6_500,
 } as const;
 
 /** 호출 B 사용자 메시지 템플릿 입력 (HARNESS §3-2) — 호출 A 결과를 사용자가 수정한 값이 들어온다 */

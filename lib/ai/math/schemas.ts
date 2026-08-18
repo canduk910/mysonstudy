@@ -11,7 +11,7 @@
  * - zod는 JSON Schema에서 자동 변환하지 않고 손으로 쓰되, 필드·타입이 1:1인지 대조한다.
  *   `Scene`·`Explanation`은 파일 끝의 컴파일 타임 대조(AssertExact)가 그 1:1을 강제한다.
  *
- * 다이얼 숫자(act2 3~6, checks 2~3, rules 2~3, steps 3~8)는 프롬프트 문장 안에도 박혀 있다.
+ * 다이얼 숫자(act2 3~6, checks 2~3, rules 2~3, steps 3~8, insight stepsKo 2~3)는 프롬프트 문장 안에도 박혀 있다.
  * 여기 상수를 고치면 `lib/ai/math/prompts.ts`의 문구와 `scripts/eval-math.ts`도 함께 고쳐야 한다.
  */
 
@@ -304,6 +304,51 @@ export const ACT3_CHECKS_RANGE = [2, 3] as const;
 export const RULES_RANGE = [2, 3] as const;
 /** 1단 장면 단계 수 (§3-1 "steps는 3~8개") */
 export const SCENE_STEPS_RANGE = [3, 8] as const;
+/** [M5] 두 번째 풀이의 단계 수 (§10-3·§10-6 "stepsKo는 2~3단계") */
+export const INSIGHT_STEPS_RANGE = [2, 3] as const;
+/**
+ * 말풍선 한 단계의 글자 수 상한 — **`act2.steps[].say`와 `insight.stepsKo`가 같은 잣대를 쓴다.**
+ *
+ * 숫자의 출처는 §7 점검 6("act2 각 `say` ≤ 60자")이다. §10은 통찰의 단계 개수(2~3)만 정하고
+ * 길이를 정하지 않았는데, 상한이 없으면 "2단계지만 각 단계가 문단"인 출력이 §10-3의
+ * `stepsKo.length < act2.steps.length`를 형식적으로만 지나간다. 통찰의 한 단계가 정석의 한 단계보다
+ * 길 이유가 없으므로 **새 숫자를 만들지 않고 같은 다이얼을 공유**한다.
+ *
+ * **한 곳에만 산다.** `scripts/eval-math.ts`(점검 6)와 §10-6 프롬프트 문안 점검(O6)이 이 상수를
+ * import한다 — 값을 두 곳에 두면 act2 다이얼을 튜닝했을 때 통찰만 조용히 어긋난다.
+ * 이 값을 바꾸면 §10-6 프롬프트 문구("한 단계는 60자를 넘기지 마라")도 함께 고쳐야 O6이 통과한다.
+ */
+export const STEP_SAY_MAX_CHARS = 60;
+
+/**
+ * [M5] 두 번째 풀이(`insight`)의 JSON Schema — §10-3 `Insight`.
+ *
+ * **nullable을 `type: ["object","null"]`로 쓴다.** `scene`·`difference`·`conservation`이 이미 쓰는
+ * 그 형태다(이 파일의 다른 nullable 객체와 같은 방식). enum만 `anyOf`를 쓰는 예외이고, 객체는 아니다.
+ * strict 모드라 하위 필드는 전부 `required`이고 `additionalProperties: false`다 —
+ * "없으면 없는 것이 정답"은 필드를 빼는 방식이 아니라 **insight 전체를 null로 두는 방식**으로 표현된다(§10-2).
+ *
+ * `titleKo`·`hookKo`의 설명은 §10-6 프롬프트 문안에 없다(스펙이 두 필드를 프롬프트에서 언급하지 않는다).
+ * 프롬프트 원문은 손대지 않고 §10-3 타입 주석의 설명을 여기 `description`으로 옮겼다 —
+ * description은 스키마의 일부이지 프롬프트 문안이 아니므로 원문 보존 규칙을 어기지 않는다.
+ */
+const INSIGHT_JSON_SCHEMA = {
+  type: ["object", "null"],
+  additionalProperties: false,
+  properties: {
+    titleKo: { type: "string", description: '방법 이름, 아이 말 (예: "차를 먼저 떼어 내기")' },
+    hookKo: { type: "string", description: "왜 빠른지 한 줄 (25자 안팎)" },
+    stepsKo: {
+      type: "array",
+      items: { type: "string" },
+      description: "2~3단계. act2.steps보다 반드시 짧아야 한다",
+    },
+    answer: ANSWER_ARRAY_JSON_SCHEMA,
+    parentNoteKo: { type: "string", description: "부모용: 이 방법이 언제 통하고 언제 안 통하는지" },
+  },
+  required: ["titleKo", "hookKo", "stepsKo", "answer", "parentNoteKo"],
+  description: "다른 길로도 풀리는 문제만. 정석이 곧 최단이면 null (억지로 만들지 않는다)",
+} as const;
 
 export const EXPLANATION_JSON_SCHEMA: StrictJsonSchema = {
   name: "explanation",
@@ -396,11 +441,13 @@ export const EXPLANATION_JSON_SCHEMA: StrictJsonSchema = {
         type: "boolean",
         description: "1단 scene이 안 되는 문제만 true. scene이 있으면 반드시 false (1단 우선)",
       },
+      insight: INSIGHT_JSON_SCHEMA,
     },
     required: [
       "problemPattern", "patternNameKo", "analogy", "act1", "act2", "act3",
       "rules", "parentTip", "answer", "answerText", "confidence",
       "uncertaintyNote", "childGrade", "gradeNote", "scene", "sceneHtmlRequest",
+      "insight",
     ],
   },
 };
@@ -468,6 +515,69 @@ const answerItemSchema = z.object({
   unit: z.string().nullable(),
 });
 
+/**
+ * [M5] 두 번째 풀이의 zod 스키마 (§10-3 `Insight`).
+ *
+ * 여기서 보는 것은 **모양**뿐이다. `stepsKo.length < act2.steps.length`는 act2를 함께 봐야 하므로
+ * `makeExplanationSchema`의 superRefine이 본다.
+ *
+ * **`insight.answer`와 `answer`의 일치는 zod가 보지 않는다.** §10-3의 삼자 대조는 어긋난 통찰을
+ * **버리는**(insight = null) 처리이고 그것은 파이프라인(math-verifier 소관)의 몫이다.
+ * 여기서 거부하면 재요청 1회 뒤 throw라 **부가물 하나 때문에 설명 전체를 잃는다** —
+ * §10-3이 명시적으로 금지한 결과다("부가물의 오류가 본체를 죽이지 않는다").
+ */
+const insightSchema = z
+  .object({
+    titleKo: z.string(),
+    hookKo: z.string(),
+    stepsKo: z.array(z.string()),
+    answer: z.array(answerItemSchema),
+    parentNoteKo: z.string(),
+  })
+  .superRefine((insight, ctx) => {
+    checkRange(ctx, insight.stepsKo.length, INSIGHT_STEPS_RANGE, ["stepsKo"], "두 번째 풀이 단계");
+
+    insight.stepsKo.forEach((stepKo, i) => {
+      if (stepKo.trim() === "") {
+        ctx.addIssue({ code: "custom", path: ["stepsKo", i], message: "빈 단계는 둘 수 없습니다" });
+        return;
+      }
+      // 이모지·한글을 코드 포인트로 센다 (eval의 charCount와 같은 방식)
+      const length = [...stepKo].length;
+      if (length > STEP_SAY_MAX_CHARS) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["stepsKo", i],
+          message: `한 단계는 ${STEP_SAY_MAX_CHARS}자 이하여야 합니다 (현재 ${length}자)`,
+        });
+      }
+    });
+
+    // 통찰의 답은 §10-3 삼자 대조의 '세 번째 눈'이다. 비어 있으면 대조할 것이 없다
+    if (insight.answer.length === 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["answer"],
+        message: "insight.answer는 1개 이상이어야 합니다 (삼자 대조의 세 번째 눈)",
+      });
+    }
+
+    // 접힌 카드가 빈 껍데기로 그려지는 것을 막는다 (§10-4: null이면 카드 자체를 그리지 않는다)
+    for (const [field, value] of [
+      ["titleKo", insight.titleKo],
+      ["hookKo", insight.hookKo],
+      ["parentNoteKo", insight.parentNoteKo],
+    ] as const) {
+      if (value.trim() === "") {
+        ctx.addIssue({
+          code: "custom",
+          path: [field],
+          message: `insight를 냈으면 ${field}를 비워 두지 마세요 (없으면 insight 전체를 null로)`,
+        });
+      }
+    }
+  });
+
 /** 호출 B zod 검증에 필요한 입력 쪽 사실 — 카드(영어)와 같은 팩토리 패턴 */
 export interface ExplanationValidationMeta {
   /**
@@ -513,6 +623,7 @@ export function makeExplanationSchema(meta: ExplanationValidationMeta) {
       gradeNote: z.string().nullable(),
       scene: sceneSchema.nullable(),
       sceneHtmlRequest: z.boolean(),
+      insight: insightSchema.nullable(),
     })
     .superRefine((explanation, ctx) => {
       checkRange(ctx, explanation.act2.steps.length, ACT2_STEPS_RANGE, ["act2", "steps"], "되감기 단계");
@@ -570,6 +681,22 @@ export function makeExplanationSchema(meta: ExplanationValidationMeta) {
           message: "scene(1단)이 있으면 sceneHtmlRequest는 false여야 합니다 (1단이 우선)",
         });
       }
+
+      // [M5] **통찰이 정석보다 길면 통찰이 아니다** (§10-3).
+      // strict JSON Schema는 배열 길이를 못 걸고, 두 배열을 함께 봐야 하는 규칙이라
+      // **zod가 이것을 강제하는 유일한 그물이다.** 여기를 지우면 §10-3이 코드에서 사라진다.
+      // 두 길이를 메시지에 실어 재요청 프롬프트가 "몇 개를 몇 개 아래로 줄여야 하는지" 알게 한다.
+      const insight = explanation.insight;
+      if (insight !== null && insight.stepsKo.length >= explanation.act2.steps.length) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["insight", "stepsKo"],
+          message:
+            `두 번째 풀이는 3막보다 짧아야 합니다: insight.stepsKo ${insight.stepsKo.length}개 < ` +
+            `act2.steps ${explanation.act2.steps.length}개여야 하는데 지금은 그렇지 않습니다. ` +
+            "더 짧게 줄일 수 없으면 insight를 null로 두세요 (없어도 됩니다).",
+        });
+      }
     });
 }
 
@@ -587,6 +714,26 @@ function checkRange(
       message: `${labelKo}는 ${min}~${max}개여야 합니다 (현재 ${actual}개)`,
     });
   }
+}
+
+/**
+ * [M5] 두 번째 풀이 (§10-3).
+ *
+ * **보너스다. 본체가 아니다.** 정석은 3막이 이미 맡고 있고, 정석이 곧 최단인 문제에서는
+ * `Explanation.insight`가 null인 것이 정답이다(§10-2). 없는 지름길을 지어내면 아이가 그
+ * 억지 논리를 그대로 배운다 — 이 앱에서 가장 위험한 실패 모습이다.
+ */
+export interface Insight {
+  /** 방법 이름, 아이 말 (예: "차를 먼저 떼어 내기") */
+  titleKo: string;
+  /** 왜 빠른지 한 줄 (25자 안팎) */
+  hookKo: string;
+  /** 2~3단계. **act2.steps보다 반드시 짧다** — `makeExplanationSchema`가 강제한다 */
+  stepsKo: string[];
+  /** 이 방법으로 나온 답 — §10-3 삼자 대조용 (`answer`와 어긋나면 파이프라인이 insight를 버린다) */
+  answer: AnswerItem[];
+  /** 부모용: 이 방법이 언제 통하고 언제 안 통하는지 */
+  parentNoteKo: string;
 }
 
 /** 호출 B의 결과 타입 (§3-3 `Explanation`) */
@@ -613,6 +760,8 @@ export interface Explanation {
   gradeNote: string | null;
   scene: Scene | null;
   sceneHtmlRequest: boolean;
+  /** [M5] 두 번째 풀이. 없으면 null — 화면은 이때 카드 자체를 그리지 않는다 (§10-4) */
+  insight: Insight | null;
 }
 
 // ---------------------------------------------------------------------------

@@ -15,6 +15,11 @@
  * | `EVAL_SKIP_2DAN=1`    | 2단(호출 E) 대상 픽스처를 건너뛴다              | 6~12회 |
  * | (없음)                | 픽스처 4개 전부                                 | 8~16회 |
  *
+ * **[M5] 점검 11(두 번째 풀이 insight)** — §10-5. 픽스처를 두 갈래로 나눠 잰다:
+ *   통찰이 있는 문제(`ruler-eraser`)는 insight가 있어야 하고, 정석이 최단인 문제(`ribbon-hairpin`)는
+ *   **insight가 null이어야 통과**한다. 억지 생성을 실패로 세는 것이 이 점검의 요점이다(§10-2).
+ *   실호출 없이 도는 짝은 O6(프롬프트 문안)·O7(zod 제약)이다.
+ *
  * **[M1 범위] 점검 9(2단 그림)는 아직 통과시킬 수 없다.** 호출 E와 `lib/scene/html.ts`가
  * 없기 때문이다(M2.5 예정). 없는 기능을 '실패'로 세면 회귀 신호가 오염되므로 **SKIP으로 표시하고
  * exit code에서 제외**한다. 대신 호출 B까지 확인 가능한 부분(`sceneHtmlRequest` 값)은 9-A로 채점한다.
@@ -26,11 +31,15 @@ import { fileURLToPath } from "node:url";
 import {
   ACT2_STEPS_RANGE,
   ACT3_CHECKS_RANGE,
+  INSIGHT_STEPS_RANGE,
   PROBLEM_PATTERNS,
   RULES_RANGE,
   SCENE_STEPS_RANGE,
+  STEP_SAY_MAX_CHARS,
+  makeExplanationSchema,
   type ChildGrade,
   type Explanation,
+  type Insight,
   type ProblemPattern,
 } from "../lib/ai/math/schemas";
 import { EXPLAIN_SYSTEM_PROMPT, type ExplainUserMessageInput } from "../lib/ai/math/prompts";
@@ -94,6 +103,17 @@ type ExpectedScene =
   /** 장면이 없어야 한다 (2단 대상) */
   | null;
 
+/**
+ * 점검 11 [M5] — 두 번째 풀이(§10-5 표).
+ *
+ * - `required`  : 통찰이 있는 문제. `insight != null` · 답 일치 · act2보다 짧음.
+ * - `absent`    : **정석이 곧 최단인 문제.** `insight == null`이면 통과 —
+ *                 §10-2대로 **억지 생성을 실패로 센다.** 여기서 FAIL이 나면 코드 버그가 아니라
+ *                 "억지로 만들지 마라"가 프롬프트에서 덜 먹혔다는 뜻이다(prompt-tuner 신호).
+ * - `unpinned`  : 스펙이 이 문제의 통찰 유무를 고정하지 않았다. 있으면 모양만 보고, 없어도 통과.
+ */
+type ExpectedInsight = "required" | "absent" | "unpinned";
+
 /** 점검 10 — [개정 1]이 실제로 살아 있는지 재는 항목. 픽스처마다 재는 대상이 다르다 */
 type Revision1Probe =
   | { kind: "moves-arrow"; names: [string, string] }
@@ -120,6 +140,8 @@ export interface Fixture {
   expectSceneHtmlRequest: boolean;
   /** 점검 10 — [개정 1] 실증 대상. 없으면 해당 없음 */
   revision1: Revision1Probe | null;
+  /** 점검 11 [M5] — 두 번째 풀이 기대 (§10-5) */
+  expectedInsight: ExpectedInsight;
 }
 
 export const FIXTURES: Fixture[] = [
@@ -151,6 +173,9 @@ export const FIXTURES: Fixture[] = [
     expectedGrade: "partial",
     expectSceneHtmlRequest: false,
     revision1: { kind: "moves-arrow", names: ["민희", "철희"] },
+    // 합(20자루)이 보존되는 문제라 "전체에서 빼기"류의 통찰이 성립할 수도 있다.
+    // §10-5 표가 이 문제를 어느 갈래로도 지정하지 않았으므로 유무를 고정하지 않는다.
+    expectedInsight: "unpinned",
   },
   {
     id: "ruler-eraser",
@@ -181,6 +206,8 @@ export const FIXTURES: Fixture[] = [
     expectedGrade: "wrong",
     expectSceneHtmlRequest: false,
     revision1: { kind: "difference-split", amount: 300 },
+    // §10-5 표의 (a) 갈래 그 자체 — "합·차 → 차를 먼저 떼기". 통찰이 있어야 하는 문제다.
+    expectedInsight: "required",
   },
   {
     id: "ribbon-hairpin",
@@ -207,6 +234,10 @@ export const FIXTURES: Fixture[] = [
     expectedGrade: "none",
     expectSceneHtmlRequest: false,
     revision1: null,
+    // §10-5 표의 (b) 갈래 — **정석이 곧 최단인 문제.**
+    // 8×3=24, 96÷24=4. 순서를 바꾼 96÷8=12, 12÷3=4는 같은 두 번의 계산이지 지름길이 아니다.
+    // "왜 그렇게 되는지 한 번에 보이는" 방법이 없으므로 insight는 null이어야 한다(§10-2).
+    expectedInsight: "absent",
   },
   {
     id: "rect-count",
@@ -228,6 +259,8 @@ export const FIXTURES: Fixture[] = [
     expectedGrade: "none",
     expectSceneHtmlRequest: true,
     revision1: null,
+    // 세기 문제에는 "선을 고른다"류의 통찰이 있지만 초3에게 통할지는 스펙이 정하지 않았다.
+    expectedInsight: "unpinned",
   },
 ];
 
@@ -384,8 +417,10 @@ export function runFixtureChecks(fixture: Fixture, result: ExplainProblemResult)
     }`,
   );
 
-  // --- 6. 말투 길이 — act2 각 say ≤ 60자, act1 각 항목 ≤ 40자, 영어 문장 없음 ---
-  const ACT2_SAY_MAX = 60;
+  // --- 6. 말투 길이 — 말풍선 ≤ 60자, act1 각 항목 ≤ 40자, 영어 문장 없음 ---
+  // 상한 60은 `schemas.ts`의 STEP_SAY_MAX_CHARS 하나에서 온다 — zod(insight.stepsKo)·프롬프트
+  // 문구(§10-6)·이 점검이 같은 숫자를 봐야 act2 다이얼을 튜닝했을 때 통찰만 어긋나는 일이 없다.
+  // **[M5] insight.stepsKo도 같은 잣대로 잰다.** 아이가 읽는 말풍선인 것은 act2와 다르지 않다.
   const ACT1_ITEM_MAX = 40;
   const act1Items: { where: string; text: string }[] = [
     ...content.act1.castKo.map((t, i) => ({ where: `castKo[${i}]`, text: t })),
@@ -394,19 +429,23 @@ export function runFixtureChecks(fixture: Fixture, result: ExplainProblemResult)
     { where: "goalKo", text: content.act1.goalKo },
     ...(content.act1.trap ? [{ where: "trap", text: content.act1.trap }] : []),
   ];
-  const act2Items = content.act2.steps.map((s, i) => ({ where: `act2.steps[${i}].say`, text: s.say }));
+  const sayItems = [
+    ...content.act2.steps.map((s, i) => ({ where: `act2.steps[${i}].say`, text: s.say })),
+    // insight가 null이면 빈 배열 — 없는 것이 정답인 경로(§10-2)를 이 점검이 벌하지 않는다.
+    ...(content.insight?.stepsKo ?? []).map((t, i) => ({ where: `insight.stepsKo[${i}]`, text: t })),
+  ];
 
   const longAct1 = act1Items.filter((it) => charCount(it.text) > ACT1_ITEM_MAX);
-  const longAct2 = act2Items.filter((it) => charCount(it.text) > ACT2_SAY_MAX);
-  const englishHits = [...act1Items, ...act2Items].filter(
+  const longSay = sayItems.filter((it) => charCount(it.text) > STEP_SAY_MAX_CHARS);
+  const englishHits = [...act1Items, ...sayItems].filter(
     (it) => longestEnglishWordRun(it.text) >= ENGLISH_WORD_RUN_LIMIT,
   );
   const lengthDetail = [
     longAct1.length > 0
       ? `act1 초과: ${longAct1.map((it) => `${it.where}(${charCount(it.text)}자)`).join(", ")}`
       : null,
-    longAct2.length > 0
-      ? `act2 초과: ${longAct2.map((it) => `${it.where}(${charCount(it.text)}자)`).join(", ")}`
+    longSay.length > 0
+      ? `말풍선 초과: ${longSay.map((it) => `${it.where}(${charCount(it.text)}자)`).join(", ")}`
       : null,
     englishHits.length > 0
       ? `영어 문장: ${englishHits.map((it) => `${it.where}="${it.text}"`).join(" / ")}`
@@ -415,12 +454,12 @@ export function runFixtureChecks(fixture: Fixture, result: ExplainProblemResult)
     .filter(Boolean)
     .join(" / ");
   pass(
-    `6. 말투 길이 (act2 say ≤${ACT2_SAY_MAX}자 · act1 항목 ≤${ACT1_ITEM_MAX}자 · 영어 문장 없음)`,
-    longAct1.length === 0 && longAct2.length === 0 && englishHits.length === 0,
+    `6. 말투 길이 (act2 say·insight 단계 ≤${STEP_SAY_MAX_CHARS}자 · act1 항목 ≤${ACT1_ITEM_MAX}자 · 영어 문장 없음)`,
+    longAct1.length === 0 && longSay.length === 0 && englishHits.length === 0,
     lengthDetail ||
-      `act1 최장 ${Math.max(0, ...act1Items.map((it) => charCount(it.text)))}자 · act2 최장 ${Math.max(
+      `act1 최장 ${Math.max(0, ...act1Items.map((it) => charCount(it.text)))}자 · 말풍선 최장 ${Math.max(
         0,
-        ...act2Items.map((it) => charCount(it.text)),
+        ...sayItems.map((it) => charCount(it.text)),
       )}자`,
   );
 
@@ -484,7 +523,103 @@ export function runFixtureChecks(fixture: Fixture, result: ExplainProblemResult)
     );
   }
 
+  // --- 11. [M5] 두 번째 풀이 — insight (§10-5) ---
+  // **없으면 없는 것이 정답이다.** 억지로 만든 통찰을 통과시키면 아이가 그 억지 논리를 배운다.
+  results.push(...insightChecks(fixture, content, result));
+
   return results;
+}
+
+/**
+ * 점검 11 [M5] — §10-5 표 두 갈래.
+ *
+ * 통찰이 있어야 하는 문제: `insight != null` · `insight.answer == answer`(§5-2 `compare()` 그대로) ·
+ * `stepsKo.length < act2.steps.length`.
+ * 정석이 최단인 문제: `insight == null`이면 통과. 있으면 실패 — 억지 생성이다.
+ */
+function insightChecks(
+  fixture: Fixture,
+  content: Explanation,
+  result: ExplainProblemResult,
+): CheckResult[] {
+  const insight: Insight | null = content.insight;
+  const out: CheckResult[] = [];
+  const add = (check: string, status: Status, detail: string) =>
+    out.push({ fixture: fixture.label, check, status, detail });
+
+  // 파이프라인(§10-3 삼자 대조)이 답이 어긋난 통찰을 버렸는지.
+  const dropped = result.verify.insightDropped;
+  const droppedNote = dropped ? " · 삼자 대조에서 버려짐(insightDropped)" : "";
+
+  if (insight === null) {
+    switch (fixture.expectedInsight) {
+      case "required":
+        add(
+          "11. [M5] 두 번째 풀이 (있어야 하는 문제)",
+          "fail",
+          `insight=null — §10-5가 통찰을 기대하는 문제다${droppedNote}`,
+        );
+        break;
+      case "absent":
+        // **"없었다"와 "버렸다"를 가른다.** 모델이 통찰을 억지로 만들었는데 그 답이 3막과 달라
+        // 삼자 대조(§10-3)가 버렸다면 `content.insight`는 여기서도 null이다 — 만들지 않은 출력과
+        // 모양이 같다. 그것을 통과로 세면 §10-5가 재려는 "억지 생성을 실패로 센다"가 정확히
+        // 가장 나쁜 형태(지어낸 지름길 + 틀린 답)에서만 무력해진다.
+        // `verify.insightDropped`가 둘을 가르는 유일한 신호다(false=없었다 · true=버렸다).
+        add(
+          "11. [M5] 두 번째 풀이 (정석이 최단 → null이 정답)",
+          dropped ? "fail" : "pass",
+          dropped
+            ? "억지 생성 — 통찰을 냈으나 답이 3막과 달라 삼자 대조에서 버려졌다(insightDropped) · " +
+              "§10-2는 정석이 최단인 문제에서 통찰을 만들지 말라고 한다"
+            : "insight=null — 억지로 만들지 않았다 (§10-2)",
+        );
+        break;
+      default:
+        add(
+          "11. [M5] 두 번째 풀이 (유무 미고정)",
+          "pass",
+          `insight=null${droppedNote}`,
+        );
+    }
+    return out;
+  }
+
+  const summary =
+    `"${insight.titleKo}" · ${insight.stepsKo.length}단계(act2 ${content.act2.steps.length}단계) · ` +
+    `답 ${formatAnswer(insight.answer)}`;
+
+  if (fixture.expectedInsight === "absent") {
+    add(
+      "11. [M5] 두 번째 풀이 (정석이 최단 → null이 정답)",
+      "fail",
+      `억지 생성 — ${summary} / hook="${insight.hookKo}" / steps=${JSON.stringify(insight.stepsKo)}`,
+    );
+    return out;
+  }
+
+  // 답 대조 — 정석의 답과 같아야 한다(§10-3). 라벨 정규화는 §5-2 `compare()` 그대로다.
+  const answerOk = compare(insight.answer, content.answer);
+  // 통찰이 정석보다 길면 통찰이 아니다(§10-3). zod가 이미 막지만 4중 정의를 여기서도 재 둔다.
+  const shorterOk = insight.stepsKo.length < content.act2.steps.length;
+  const countOk = inRange(insight.stepsKo.length, INSIGHT_STEPS_RANGE);
+
+  const label =
+    fixture.expectedInsight === "required"
+      ? `11. [M5] 두 번째 풀이 (있음 · 답 일치 · act2보다 짧음 · ${rangeText(INSIGHT_STEPS_RANGE)}단계)`
+      : `11. [M5] 두 번째 풀이 (유무 미고정 — 있으면 모양 점검)`;
+  add(
+    label,
+    answerOk && shorterOk && countOk ? "pass" : "fail",
+    [
+      answerOk ? null : `답이 3막과 다르다: 3막=${formatAnswer(content.answer)}`,
+      shorterOk ? null : "act2보다 짧지 않다 — 또 다른 정석이다",
+      countOk ? null : `단계 수가 ${rangeText(INSIGHT_STEPS_RANGE)} 밖이다`,
+    ]
+      .filter(Boolean)
+      .join(" / ") || summary,
+  );
+  return out;
 }
 
 function inRange(value: number, [min, max]: readonly [number, number]): boolean {
@@ -615,6 +750,73 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+/**
+ * [M5] zod 제약을 실호출 없이 재기 위한 손수 만든 정상 출력 (ruler-eraser 모양).
+ *
+ * §10-3의 `stepsKo.length < act2.steps.length`는 **JSON Schema로는 걸 수 없는 제약**이라
+ * zod가 유일한 그물이다. 그물이 실제로 걸리는지는 픽스처를 직접 parse시켜야만 알 수 있다 —
+ * 실호출로 확인하려면 모델이 마침 그 실수를 해 주기를 기다려야 하는데, 그런 회귀 테스트는 없다.
+ */
+function sampleExplanation(): Explanation {
+  return {
+    problemPattern: "part-whole",
+    patternNameKo: "합과 차형 · 띠 두 개",
+    analogy: { titleKo: "시소 맞추기", bodyKo: "한쪽이 무거우면 그만큼 떼어 놓고 봐요." },
+    act1: {
+      castKo: ["자", "지우개"],
+      movesKo: ["자 → 지우개보다 300원 비쌈"],
+      endSceneKo: "둘을 합하면 900원이에요.",
+      goalKo: "자와 지우개 값을 각각 구해요.",
+      trap: "조심! 합만 보고 반씩 나누면 안 돼요. 차 300원이 숨어 있어요.",
+    },
+    act2: {
+      steps: [
+        { say: "둘을 합하면 900원이에요.", calc: null },
+        { say: "자가 300원 더 비싸니 그만큼 먼저 떼요.", calc: "900 − 300 = 600" },
+        { say: "남은 600원을 똑같이 둘로 나눠요.", calc: "600 ÷ 2 = 300" },
+        { say: "떼어 둔 300원을 자에게 돌려줘요.", calc: "300 + 300 = 600" },
+      ],
+    },
+    act3: {
+      checks: [
+        { titleKo: "답에서 다시 해 보기", bodyKo: "600 + 300 = 900, 600 − 300 = 300 맞아요." },
+        { titleKo: "저울 검사", bodyKo: "둘을 합하면 언제나 900원이에요." },
+      ],
+    },
+    rules: [
+      { emoji: "✂️", ko: "차를 먼저 떼기", why: "남은 것이 똑같아져서 반으로 나눌 수 있어요." },
+      { emoji: "⚖️", ko: "합은 안 변해요", why: "둘을 합한 값은 처음부터 끝까지 같아요." },
+    ],
+    parentTip: "아이에게 '차 300원은 어디로 갔을까?'를 먼저 물어보세요.",
+    answer: [
+      { label: "자", value: 600, unit: "원" },
+      { label: "지우개", value: 300, unit: "원" },
+    ],
+    answerText: "자는 600원, 지우개는 300원이에요.",
+    confidence: "high",
+    uncertaintyNote: null,
+    childGrade: "none",
+    gradeNote: null,
+    scene: clone(RULER_SCENE),
+    sceneHtmlRequest: false,
+    insight: {
+      titleKo: "차를 먼저 떼어 내기",
+      hookKo: "차를 떼면 둘이 똑같아져요.",
+      stepsKo: ["900에서 300을 떼요.", "남은 600을 둘로 나눠요.", "뗀 300을 자에게 돌려줘요."],
+      answer: [
+        { label: "자", value: 600, unit: "원" },
+        { label: "지우개", value: 300, unit: "원" },
+      ],
+      parentNoteKo: "합과 차가 함께 주어질 때만 통해요. 차를 모르면 쓸 수 없어요.",
+    },
+  };
+}
+
+/** zod 실패 사유를 한 줄로 (재요청 프롬프트가 쓰는 형태와 같다) */
+function zodIssues(error: { issues: { path: PropertyKey[]; message: string }[] }): string {
+  return error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join(" / ");
+}
+
 export function runOfflineChecks(): CheckResult[] {
   const results: CheckResult[] = [];
   const add = (fixture: string, check: string, ok: boolean, detail: string) =>
@@ -741,6 +943,81 @@ export function runOfflineChecks(): CheckResult[] {
     );
   }
 
+  // O6. [M5] 프롬프트가 §10-6 절을 그대로 갖고 있는가 — 점검 11이 여기 걸려 있다.
+  //     프롬프트에서 이 절이 사라지면 모델은 insight를 낼 이유가 없고, 점검 11이 통째로 무너진다.
+  const insightNeedles: { label: string; needle: string }[] = [
+    { label: "절 제목", needle: "[다른 방법 — insight]" },
+    { label: "단계 수 다이얼", needle: `stepsKo는 ${rangeText(INSIGHT_STEPS_RANGE)}단계` },
+    // 길이 다이얼이 프롬프트에서 빠지면 모델은 이 한도를 zod 거부로만 배운다 — 재요청 1회를 태운다(§1 규약).
+    { label: "단계 길이 다이얼", needle: `한 단계는 ${STEP_SAY_MAX_CHARS}자를 넘기지 마라` },
+    { label: "억지 생성 금지", needle: "억지로 만들지 마라" },
+    { label: "null 허용", needle: "insight를 null로 둔다" },
+    { label: "답 일치 지시", needle: "3막의 answer와 같아야 한다" },
+  ];
+  for (const c of insightNeedles) {
+    const has = EXPLAIN_SYSTEM_PROMPT.includes(c.needle);
+    add(
+      "다이얼",
+      `O6. [M5] 프롬프트에 "${c.needle}" (${c.label})`,
+      has,
+      has ? "§10-6 문안 보존" : "§10-6 문안이 사라졌다 — 점검 11이 무력해진다",
+    );
+  }
+
+  // O7. [M5] **zod가 §10-3을 실제로 강제하는가.** JSON Schema로는 걸 수 없는 제약이라
+  //     이 그물이 뚫리면 "정석보다 긴 두 번째 풀이"가 그대로 아이에게 간다.
+  const schema = makeExplanationSchema({ hasChildAnswer: false });
+
+  const good = schema.safeParse(sampleExplanation());
+  add(
+    "zod",
+    "O7. [M5] 정상 출력(stepsKo 3 < act2 4)이 통과",
+    good.success,
+    good.success ? "insight 3단계 · act2 4단계 · 답 일치" : zodIssues(good.error),
+  );
+
+  // act2를 3단계로 줄여 stepsKo(3) >= act2(3)을 만든다. 개수 다이얼(2~3)은 그대로 지켜서
+  // **오직 §10-3 길이 비교만** 걸리게 한다 — 다른 규칙에 묻히면 그물을 실증한 것이 아니다.
+  const tooLong = sampleExplanation();
+  tooLong.act2.steps = tooLong.act2.steps.slice(0, 3);
+  const tooLongResult = schema.safeParse(tooLong);
+  const tooLongIssues = tooLongResult.success ? "" : zodIssues(tooLongResult.error);
+  const caught =
+    !tooLongResult.success &&
+    tooLongResult.error.issues.some(
+      (i) => i.path.join(".") === "insight.stepsKo" && i.message.includes("3개"),
+    );
+  add(
+    "zod",
+    "O7. [M5] stepsKo(3) >= act2.steps(3)을 거부 (§10-3)",
+    caught,
+    tooLongResult.success
+      ? "거부되지 않았다 — 통찰이 정석보다 짧다는 보장이 사라졌다"
+      : tooLongIssues,
+  );
+
+  // insight는 보너스다. 없다고 검증이 떨어지면 §10-2("없으면 만들지 않는다")가 코드에서 죽는다.
+  const noInsight = sampleExplanation();
+  noInsight.insight = null;
+  const noInsightResult = schema.safeParse(noInsight);
+  add(
+    "zod",
+    "O7. [M5] insight=null이 통과 (없으면 없는 것이 정답 · §10-2)",
+    noInsightResult.success,
+    noInsightResult.success ? "null 통과" : zodIssues(noInsightResult.error),
+  );
+
+  // 단계 수 다이얼(2~3)도 zod가 잡는가 — 프롬프트 문구(O6)와 같은 숫자여야 한다.
+  const tooMany = sampleExplanation();
+  tooMany.insight!.stepsKo = ["하나.", "둘.", "셋.", "넷."];
+  const tooManyResult = schema.safeParse(tooMany);
+  add(
+    "zod",
+    `O7. [M5] stepsKo ${rangeText(INSIGHT_STEPS_RANGE)}개 밖(4개)을 거부`,
+    !tooManyResult.success,
+    tooManyResult.success ? "거부되지 않았다 — 개수 다이얼이 무력하다" : zodIssues(tooManyResult.error),
+  );
+
   return results;
 }
 
@@ -776,6 +1053,13 @@ function printExplanation(result: ExplainProblemResult): void {
   console.log(`  act1.movesKo: ${JSON.stringify(c.act1.movesKo)}`);
   console.log(`  trap: ${c.act1.trap ?? "없음"}`);
   console.log(`  답: ${c.answerText} (${formatAnswer(c.answer)})`);
+  console.log(
+    `  insight: ${
+      c.insight
+        ? `"${c.insight.titleKo}" ${c.insight.stepsKo.length}단계 → ${formatAnswer(c.insight.answer)}`
+        : "없음 (정석이 최단이거나 만들지 않았다)"
+    }`,
+  );
   console.log(
     `  검증: status=${result.verify.status} · attempts=${result.verify.attempts} · sceneTier=${result.sceneTier}` +
       (result.verify.heldReasons.length > 0 ? ` · held=${result.verify.heldReasons.join(",")}` : ""),

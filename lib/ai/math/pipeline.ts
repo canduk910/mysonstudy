@@ -188,6 +188,18 @@ export interface ExplainVerifyReport {
   attempts: number;
   /** 마지막 시도의 `verifyScene` 실패 사유. 장면을 왜 못 그렸는지 사람이 읽는 자리 */
   sceneErrors: string[];
+  /**
+   * 삼자 대조(§10-3)에서 두 번째 풀이(`insight`)를 버렸는가.
+   * `insight.answer`가 본체 `answer`와 달라 `content.insight`를 null로 만든 경우에만 true다.
+   *
+   * **모델이 통찰을 아예 내지 않은 정상 출력(§10-2)은 false다.** "없었다"와 "버렸다"는 다른
+   * 사건이고, §8에서 유형별로 집계할 때 둘이 섞이면 신호가 죽는다.
+   *
+   * **true여도 `status`는 `held`가 되지 않는다.** 통찰은 부가물이고 B·C 일치가 이미 답을
+   * 뒷받침한다 — 부가물의 오류가 본체를 죽이지 않는 것은 장면 검산 실패 시 `scene`만 버리는
+   * 처리(§5-3)와 같은 원칙이다.
+   */
+  insightDropped: boolean;
   /** 보류 사유(복수 가능). status가 'ok'면 빈 배열 */
   heldReasons: HeldReason[];
   /** 마지막 검산(심판)의 답. 보류 화면에서 "검산은 이렇게 봤어요"로 쓸 수 있다 */
@@ -195,7 +207,11 @@ export interface ExplainVerifyReport {
 }
 
 export interface ExplainProblemResult {
-  /** 호출 B의 3막 설명. 장면 검산이 실패했으면 `content.scene`은 null이다(텍스트는 살아 있다) */
+  /**
+   * 호출 B의 3막 설명. **부가물은 버려졌을 수 있고 본체 텍스트는 언제나 살아 있다** —
+   * 장면 검산이 실패했으면 `content.scene`이 null이고(§5-3),
+   * 삼자 대조가 어긋났으면 `content.insight`가 null이다(§10-3 · `verify.insightDropped`).
+   */
   content: Explanation;
   /** 2단 그림 HTML (호출 E). 없으면 null */
   sceneHtml: string | null;
@@ -270,9 +286,29 @@ export async function explainProblem(
     else heldReasons.push("answer-mismatch");
   }
 
-  // 장면만 버리고 텍스트 3막은 살린다 — 그림 하나 때문에 설명을 통째로 날릴 이유가 없다.
+  // ── 부가물 버리기 — 어긋난 자리만 비우고 3막 텍스트는 살린다 ──────────────────────────
+  //
+  // 장면: 그림 하나 때문에 설명을 통째로 날릴 이유가 없다(§5-3).
+  // 통찰: **삼자 대조**(§10-3). 호출 C(독립 검산)에 더해 `insight.answer`가 세 번째 눈이다.
+  //   B·C는 같은데 통찰만 다르면 **통찰만 버린다.** `held`로 만들지 않는다 — 통찰은 부가물이고
+  //   다수결(B·C 일치)이 이미 답을 뒷받침한다. 부가물의 오류가 본체를 죽이지 않는다.
+  //
+  // **이 자리에 둔 이유**: 재시도가 일어났다면 `explanation`은 이미 **재시도 후의 B**다.
+  // `sceneErrors`가 재시도 뒤 다시 계산되는 것과 같은 이유로 통찰도 마지막 B의 것을 대조해야
+  // 한다. 첫 B의 통찰만 보고 재시도 결과를 그냥 두면 **검사되지 않은 통찰이 화면에 나간다.**
+  //
+  // `compare()`는 §5-2 구현(`lib/scene/verify.ts`)을 그대로 쓴다. 통찰 전용 비교 함수를 새로
+  // 만들면 두 판정이 언젠가 갈리고, 그때 어느 쪽이 옳은지 아무도 모른다.
+  //
+  // `!= null`인 이유: 모델이 통찰을 안 낸 정상 출력(null, §10-2)과 `insight` 이전에 저장된
+  // 옛 레코드(undefined)를 함께 "없음"으로 본다. **없는 것은 버린 것이 아니다** → false.
+  const insightDropped =
+    explanation.insight != null && !compare(explanation.insight.answer, explanation.answer);
+
   // 입력 객체를 그 자리에서 바꾸지 않고 새 객체로 만든다(호출자가 원본을 로그·eval에 쓴다).
-  const content: Explanation = sceneErrors.length > 0 ? { ...explanation, scene: null } : explanation;
+  let content: Explanation = explanation;
+  if (sceneErrors.length > 0) content = { ...content, scene: null };
+  if (insightDropped) content = { ...content, insight: null };
 
   // AI가 스스로 자신 없다고 하면(§3-1 절대 규칙 1) 답이 맞아 보여도 보류다.
   if (content.confidence === "low") heldReasons.push("low-confidence");
@@ -302,6 +338,10 @@ export async function explainProblem(
       answerMatch,
       sceneCheck: sceneErrors.length === 0,
       sceneErrorCount: sceneErrors.length,
+      // 통찰이 "있었는가"와 "버려졌는가"를 함께 남긴다 — 둘이 있어야 §10-3이 말한
+      // "어느 유형에서 통찰이 자주 어긋나는지"를 비율로 낼 수 있다(분모 없이 분자만으론 못 본다).
+      insightPresent: explanation.insight != null,
+      insightDropped,
       heldReasons,
       sceneTier,
     }),
@@ -317,6 +357,7 @@ export async function explainProblem(
       sceneCheck: sceneErrors.length === 0,
       attempts,
       sceneErrors,
+      insightDropped,
       heldReasons,
       checkAnswer: check.solvable ? check.answer : null,
     },
