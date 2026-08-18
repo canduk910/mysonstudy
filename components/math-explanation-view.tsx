@@ -1,9 +1,10 @@
 /**
  * 수학 3막 설명 화면 (M1) — `POST /api/math/explain` 결과를 그리는 표현 전용 컴포넌트.
  *
- * 구성 순서(개발 프롬프트 §4-3):
+ * 구성 순서(개발 프롬프트 §4-3 + math.md §10-4):
  *   문제 헤더(유형 칩·채점 배지·보류 배지) → 한 줄 비유 → **1막 탐정 시간** →
- *   2막 되감기(단계 카드) → 3막 다시 재생(검사) → 아빠 티칭 포인트 → 규칙 카드
+ *   2막 되감기(단계 카드) → 3막 다시 재생(검사) →
+ *   💡 다른 방법도 있어요(insight · 접힘, 있을 때만) → 아빠 티칭 포인트 → 규칙 카드
  *
  * ── 두 가지 설계 원칙 ───────────────────────────────────────────────────────
  * 1) **1막이 가장 또렷하다.** 이 아이는 계산이 아니라 "문장 → 식" 단계에서 무너진다
@@ -26,8 +27,9 @@
  */
 
 import type { HeldReason } from "@/lib/ai/math/pipeline";
-import type { ChildGrade } from "@/lib/ai/math/schemas";
 import type { MathExplainSuccess } from "@/lib/math-explain-contract";
+// 채점 배지 문구는 목록 화면과 **한 정의처**를 공유한다 (lib/math-labels.ts)
+import { GRADE_BADGE } from "@/lib/math-labels";
 import type { SceneTier } from "@/lib/scene/types";
 
 // ---------------------------------------------------------------------------
@@ -59,13 +61,6 @@ const HELD_REASON_TEXT: Record<HeldReason, { emoji: string; ko: string; why: str
     ko: "AI가 스스로 자신 없어 해요",
     why: "설명을 만든 AI가 답에 확신이 없다고 했어요.",
   },
-};
-
-/** 채점 배지 — `none`(아이 답 없음)은 배지를 만들지 않는다 */
-const GRADE_BADGE: Record<Exclude<ChildGrade, "none">, string> = {
-  correct: "🎉 잘 맞혔어요",
-  partial: "🙂 반은 맞았어요",
-  wrong: "💪 다시 한 번 해봐요",
 };
 
 /** 그림 준비 상태 — M2·M2.5에서 되감기 플레이어가 붙을 자리를 표시한다 */
@@ -178,20 +173,17 @@ function HeldBanner({ verify, uncertaintyNote }: {
  * 답 — `ok`면 펼쳐서, `held`면 접어서 보여준다(§5-3 "답은 접어 둔다").
  *
  * 접는 자리를 한 곳으로 모은 이유: 답이 화면 여러 곳에 흩어지면 보류일 때 한 군데를
- * 빠뜨리기 쉽다. 채점 결과도 답에 딸린 판단이라 보류 시 함께 접는다 —
- * 확인되지 않은 답을 근거로 "틀렸어요"를 아이에게 보여주는 것이 가장 나쁘다.
+ * 빠뜨리기 쉽다.
+ *
+ * **보류 건은 채점을 아예 내지 않는다**(QA P3-5 — 목록 화면과 같은 규칙). `held`는 AI가
+ * 자기 답을 확신하지 못한 상태다. 그 답을 기준으로 매긴 채점을 "틀렸어요"로 아이에게
+ * 내미는 것은 이 앱의 핵심 안전장치(§5-3)와 어긋난다 — 접어 둔 안쪽이라도 마찬가지다.
+ * 그 자리는 위쪽 "⚠️ 아빠가 한 번 확인해 주세요" 배너가 맡는다.
  */
 function AnswerBlock({ content, verify }: {
   content: MathExplainSuccess["content"];
   verify: MathExplainSuccess["verify"];
 }) {
-  const gradeLine =
-    content.childGrade !== "none" && content.gradeNote ? (
-      <p className="t-question-ko mt-3 text-ink">
-        {GRADE_BADGE[content.childGrade]} — {content.gradeNote}
-      </p>
-    ) : null;
-
   if (verify.status === "ok") {
     return (
       <div className="u-box mt-4">
@@ -221,9 +213,47 @@ function AnswerBlock({ content, verify }: {
       ) : (
         <p className="t-question-ko">답을 내지 못했어요.</p>
       )}
-
-      {gradeLine}
     </details>
+  );
+}
+
+/**
+ * [M5 §10-4] 두 번째 풀이 — **접힌 카드**. 3막 뒤, 아빠 티칭 포인트 앞에 놓인다.
+ *
+ * `<details>`/`<summary>`를 쓰는 이유는 두 가지다(§10-4): JS 없이 접힘이 동작하고,
+ * 인쇄하면 브라우저가 펼쳐 준다. 기본은 **닫힘** — §10-1의 "지름길을 먼저 가르치지 마라"가
+ * 화면 순서와 기본 상태 양쪽에 걸려 있다. 정석(1~3막)을 지나야 여기에 닿는다.
+ *
+ * 컬러바(`u-cardbar`)를 두르지 않았다: 파랑은 보류 배너·1막의 "조심!"·아빠 티칭 포인트
+ * 셋에만 쓴다. 통찰은 **보너스**라 정석보다 시선을 끌면 안 된다(§10-1).
+ * `parentNoteKo`만 `t-parent-hint`(부모용 작은 글자)로 내려 위계를 만든다 —
+ * 색이 아니라 크기로 가른다(DESIGN §4).
+ */
+function InsightCard({ insight }: { insight: NonNullable<MathExplainSuccess["content"]["insight"]> }) {
+  return (
+    <section className="mt-8">
+      <details className="u-card">
+        <summary className="t-section-title cursor-pointer p-4 sm:p-5">
+          💡 다른 방법도 있어요
+        </summary>
+        <div className="px-4 pb-4 sm:px-5 sm:pb-5">
+          <p className="t-list-title">{insight.titleKo}</p>
+          <p className="t-question-ko mt-1 text-ink">{insight.hookKo}</p>
+
+          {/* 2~3단계. 2막 단계 카드와 같은 모양이되 여기서 끝난다(답은 3막 것을 쓴다) */}
+          <ol className="mt-3 flex flex-col gap-2">
+            {insight.stepsKo.map((step, i) => (
+              <li key={i} className="u-box flex items-start gap-3">
+                <span className="u-chip u-chip-accent shrink-0">{i + 1}</span>
+                <p className="t-question-ko min-w-0 text-ink">{step}</p>
+              </li>
+            ))}
+          </ol>
+
+          <p className="t-parent-hint mt-4">👨‍👩‍👦 {insight.parentNoteKo}</p>
+        </div>
+      </details>
+    </section>
   );
 }
 
@@ -412,7 +442,17 @@ export default function MathExplanationView({
         </ol>
       </section>
 
-      {/* ── 7. 아빠 티칭 포인트 ──────────────────────────────────────── */}
+      {/*
+        ── 7. 두 번째 풀이(insight) — 접힌 카드 (M5 §10-4) ──────────────
+        `insight`가 없으면 **카드 자체를 그리지 않는다.** 빈 카드가 "안 나왔네?"로
+        읽히면 안 된다(§10-4).
+
+        `=== null`이 아니라 **truthy 판정**인 것이 중요하다: M4에서 저장된 옛 기록의
+        `content`에는 `insight` 키가 아예 없어 읽으면 `undefined`다(null이 아니다).
+      */}
+      {content.insight && <InsightCard insight={content.insight} />}
+
+      {/* ── 8. 아빠 티칭 포인트 ──────────────────────────────────────── */}
       <section className="mt-8">
         <h2 className="t-section-title">👨‍👩‍👦 아빠 티칭 포인트</h2>
         <div className="u-box-accent mt-3">
@@ -420,7 +460,7 @@ export default function MathExplanationView({
         </div>
       </section>
 
-      {/* ── 8. 규칙 카드 ─────────────────────────────────────────────── */}
+      {/* ── 9. 규칙 카드 ─────────────────────────────────────────────── */}
       <section className="mt-8">
         <h2 className="t-section-title">📌 기억할 규칙</h2>
         <ul className="mt-3 grid gap-3 sm:grid-cols-2">
