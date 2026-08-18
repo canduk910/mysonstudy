@@ -114,7 +114,7 @@ export default function MathHomePage() {
             ▶️ <b>3막 다시 재생</b> — 나온 답으로 문제를 다시 해 보며 검사
           </li>
           <li className="u-box t-question-ko">
-            ⚠️ 답이 두 번 다르게 나오면 <b>답을 접고</b> &lsquo;아빠가 확인해
+            ⚠️ 답이 두 번 다르게 나오면 <b>답을 접고</b> &lsquo;엄빠가 확인해
             주세요&rsquo;라고 정직하게 알려요
           </li>
         </ul>

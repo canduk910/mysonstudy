@@ -589,7 +589,7 @@ export default function CardView({
           </ul>
         </section>
 
-        {/* 5. STEP 2 필수 단어장 + 아빠 티칭 포인트 */}
+        {/* 5. STEP 2 필수 단어장 + 엄빠 티칭 포인트 */}
         <section className={s.section}>
           <h3 className={s.h3}>
             <span className={s.step}>STEP 2</span> 필수 단어장{" "}
@@ -643,7 +643,7 @@ export default function CardView({
             </table>
           </div>
           <div className={s.tip}>
-            <b>아빠 티칭 포인트:</b> {c.teachingTipKo}
+            <b>엄빠 티칭 포인트:</b> {c.teachingTipKo}
           </div>
         </section>
 
@@ -677,11 +677,11 @@ export default function CardView({
           </ol>
         </section>
 
-        {/* 8. [논픽션만] 아빠 찬스: 재미있는 사실 */}
+        {/* 8. [논픽션만] 엄빠 찬스: 재미있는 사실 */}
         {!book.isFiction && c.funFacts && c.funFacts.length > 0 && (
           <section className={s.section}>
             <h3 className={s.h3}>
-              <span className={s.step}>보너스</span> 아빠 찬스 · 재미있는 사실{" "}
+              <span className={s.step}>보너스</span> 엄빠 찬스 · 재미있는 사실{" "}
               <span className={s.h3en}>Fun Facts</span>
             </h3>
             <ul className={s.plain}>

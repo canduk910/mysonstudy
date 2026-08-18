@@ -45,7 +45,7 @@ export default async function UnlockPage({ searchParams }: UnlockPageProps) {
 
       <UnlockForm next={next} />
 
-      <p className="t-caption mt-6 text-center">PIN이 기억나지 않으면 아빠에게 물어보세요.</p>
+      <p className="t-caption mt-6 text-center">PIN이 기억나지 않으면 엄빠에게 물어보세요.</p>
     </main>
   );
 }

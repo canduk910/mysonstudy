@@ -489,7 +489,7 @@
   color: var(--ink);
 }
 
-/* 아빠 티칭 포인트 — 부모용 참고라 13/300, 연한 파랑 박스 */
+/* 엄빠 티칭 포인트 — 부모용 참고라 13/300, 연한 파랑 박스 */
 .tip {
   margin-top: 16px;
   background: var(--accent-soft);
