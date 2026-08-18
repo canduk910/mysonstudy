@@ -1,7 +1,10 @@
 # 수학(수학코치) 다이얼과 픽스처
 
 > `prompt-eval` 스킬에서 수학 과목 튜닝 시 읽는다. 영어는 `english-dials.md`.
-> 원문 스펙: `docs/harness/math.md` §3-1(호출 B)·§6(호출 D)·§7(eval).
+> 원문 스펙: `docs/harness/math.md` §3-1(호출 B)·§6(호출 D)·§7(eval)·§10-6([M5] insight).
+>
+> `STEP_SAY_MAX_CHARS`(60)는 `lib/ai/math/schemas.ts` **한 곳에만 산다** — act2 `say`(점검 6)와
+> `insight.stepsKo`(zod·점검 6)가 같은 상수를 본다. 값을 바꾸면 §10-6 프롬프트 문구도 함께 고쳐야 O6이 통과한다.
 
 ## 다이얼 → 동기화 지점
 
@@ -13,6 +16,8 @@
 | act3 검사 개수 (2~3) | act3 문구 | 배열 길이 | 점검 7 |
 | 규칙 카드 개수 (2~3) | `rules` 문구 | 배열 길이 | 점검 7 |
 | 말투 길이 (act2 say ≤60자, act1 항목 ≤40자) | "25자 안팎" 문구 | — | 점검 6 |
+| **[M5] insight 단계 수 (2~3)** | `[다른 방법 — insight]` "stepsKo는 2~3단계" | `INSIGHT_STEPS_RANGE` | 점검 11 · O6 · O7 |
+| **[M5] insight 단계 길이 (≤60자)** | `[다른 방법 — insight]` "한 단계는 60자를 넘기지 마라" | `STEP_SAY_MAX_CHARS` | 점검 6 · O6 |
 | scene steps 수 (3~8) | `[scene]` 공통 문구 | 배열 길이 | 점검 2 경유 |
 | 연습문제 숫자 범위 | 호출 D "합계 100 이하" 문구 | 값 범위 검증 | (D 전용 점검) |
 | 비유 종류 | `[절대 규칙] 3` 예시 목록 | — | (정성 — 사람이 본다) |

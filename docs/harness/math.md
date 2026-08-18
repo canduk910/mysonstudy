@@ -37,7 +37,7 @@
 | 호출 | 목적 | 성격 | temperature | 출력 한도 |
 |---|---|---|---|---|
 | **A. 문제 판독** | 사진 → 문제 목록(+아이 필기·채점 표시) | 정확성 (보이는 것만) | 0 | ~2,500 |
-| **B. 설명 설계** | 문제 1개 → 3막 설명 + 답 + 장면 JSON + 채점 | 창작 품질 + 정확성 | 0.5 | ~5,000 |
+| **B. 설명 설계** | 문제 1개 → 3막 설명 + (있으면) 두 번째 풀이 + 답 + 장면 JSON + 채점 | 창작 품질 + 정확성 | 0.5 | ~6,500 |
 | **C. 검산** | 문제 문장만 → 답 재계산 | 정확성, 독립성 | 0 | ~800 |
 | **D. 연습문제** | 문제 패턴 → 숫자 바꾼 새 문제 | 창작 | 0.7 | ~2,000 |
 | **E. 플레이어 HTML** | 3막 설명 → 키트 위 HTML(2단 그림) | 창작 | 0.4 | ~8,000 |
@@ -496,7 +496,7 @@ return { content: b, sceneHtml, sceneTier, verify: { status, answerMatch, sceneC
 | 3 | 유형 분류 | `problemPattern === expectedPattern` |
 | 4 | 함정 감지 | expectedTrap이 있으면 `act1.trap`이 null 아니고 핵심어 포함 |
 | 5 | 채점 | `pencil-transfer` → 'partial'(한 사람만 맞음), `ruler-eraser` → 'wrong', `ribbon-hairpin` → 'none' |
-| 6 | 말투 길이 | act2 각 `say` ≤ 60자, act1 각 항목 ≤ 40자, 영어 문장 없음 |
+| 6 | 말투 길이 | act2 각 `say` ≤ 60자, **[M5] `insight.stepsKo` 각 단계 ≤ 60자**, act1 각 항목 ≤ 40자, 영어 문장 없음 |
 | 7 | 구조 개수 | steps 3~6, checks 2~3, rules 2~3, act3 첫 check 제목에 "다시" 포함 |
 | 8 | 보류율 | 픽스처 전체에서 'held' 0건 |
 | 9 | 2단 그림 | `rect-count`에서 `sceneHtmlRequest=true`, E 결과가 정적 검사·답 대조 통과, headless iframe 3초 내 'ready', 단계 3~8. 1단 픽스처에서는 `sceneHtmlRequest=false` |
@@ -518,9 +518,224 @@ return { content: b, sceneHtml, sceneTier, verify: { status, answerMatch, sceneC
   - E 호출 수와 출력 토큰을 로깅한다. 1단 승격이 비용을 얼마나 줄였는지 재기 위해서다.
 - `held` 비율을 유형별로 남긴다(`{problemPattern, status, attempts}`). 특정 유형에서 잦으면 그 유형 프롬프트를
   손볼 신호다 — 검산을 느슨하게 할 신호가 아니다.
-- 아이 반응 보고 조정할 다이얼: 비유의 종류, act2 단계 수, 규칙 카드 개수, 연습문제 숫자 범위.
+- 아이 반응 보고 조정할 다이얼: 비유의 종류, act2 단계 수, 규칙 카드 개수, 연습문제 숫자 범위, insight 단계 수(§10).
   전부 프롬프트 숫자만 바꾸면 되고, 바꾼 뒤 `npm run eval:math`.
 - Kit 함수를 늘리면(`Kit.clock`, `Kit.pie` 등) E 프롬프트의 `[내용]` 절에 한 줄 추가하고 few-shot을 갱신한다.
   **키트와 프롬프트가 어긋나면 AI가 없는 함수를 부른다.**
 - 새 전용 렌더러를 추가할 때: ① 픽스처 1문제 추가 → ② 렌더러 kind + 검산 규칙 추가 → ③ B 프롬프트의 1단 목록에
   그 kind 규칙 몇 줄 추가 → ④ eval 통과. 픽스처가 먼저 있어야 승격이 실제로 나아졌는지 잴 수 있다.
+
+## 9. 저장·기록 — `explanations` (M4)
+
+M1은 저장이 없다. 만든 설명이 새로고침과 함께 사라진다. §3-4와 §8이 `explanations` 컬렉션을
+전제하면서도 그 모양을 정의한 적이 없어, 이 절이 그 빈자리를 메운다.
+
+### 9-1. 무엇을 남기는가
+
+**설명 1건 = 문서 1개.** 목록·통계용 요약 인덱스를 따로 두지 않는다 — 필요한 값
+(`problemPattern` · `childGrade` · `verify.status`)이 전부 이 문서 안에 있고, 가족용 규모
+(수백 건)에서는 전문을 읽어도 무겁지 않다. 영어의 `CardRecord`가 `content: Card`를 통째로
+안는 것과 같은 규약이다.
+
+```ts
+/** 호출 B에 넣은 입력 그대로 (= MathExplainRequest의 정규화된 형태) */
+export interface MathProblemInput {
+  number: string | null;
+  text: string;
+  figureDesc: string | null;
+  givens: { label: string; value: number; unit: string | null }[] | null;
+  childAnswer: string | null;
+  childWork: string | null;
+  childNote: string | null;
+}
+
+export interface ExplanationRecord {
+  id: string;
+  problem: MathProblemInput;
+  content: Explanation;        // 3막 설명 전문. 장면 검산이 실패했으면 content.scene은 null
+  sceneHtml: string | null;    // 호출 E 결과 — M4 시점에는 항상 null (M2.5에서 채워진다)
+  sceneTier: SceneTier;
+  verify: ExplainVerifyReport; // status·answerMatch·sceneCheck·attempts·heldReasons·checkAnswer
+  model: string;               // 설명을 만든 모델 ID
+  createdAt: string;           // ISO 8601
+}
+
+export type NewExplanation = Omit<ExplanationRecord, "id" | "createdAt">;
+```
+
+**`problem`을 통째로 남기는 이유**: 다시 보기 화면이 "무엇을 물었는지"를 보여줘야 하고,
+재생성과 연습문제(호출 D)가 같은 입력을 다시 쓴다. `content`만 남기면 질문이 사라진다.
+
+**`verify`를 남기는 이유**: §8이 요구하는 `{problemPattern, status, attempts}` 집계의 원천이다.
+보류가 잦은 유형을 찾는 신호가 여기서 나온다 — 검산을 느슨하게 할 신호가 아니라 그 유형
+프롬프트를 손볼 신호다.
+
+### 9-2. Store 확장
+
+백엔드가 하나이므로 인터페이스를 쪼개지 않고 `BookCardStore`에 네 메서드를 더한다.
+이름이 영어 전용으로 읽히므로 **`StudyStore`를 새 이름으로 두고 `BookCardStore`는 그 별칭으로
+남긴다** — 기존 import를 하나도 깨지 않는다.
+
+```ts
+createExplanation(input: NewExplanation): Promise<ExplanationRecord>;
+getExplanation(id: string): Promise<ExplanationRecord | null>;
+/** 최신순. 가족용 규모라 전체 조회로 충분하다 */
+listExplanations(limit?: number): Promise<ExplanationRecord[]>;
+/** 지웠으면 true, 없는 id였으면 false — deleteCard와 같은 규약 */
+deleteExplanation(id: string): Promise<boolean>;
+```
+
+`DbShape`에 `explanations: ExplanationRecord[]`를 더하고, 읽을 때 `parsed.explanations ?? []`로
+**기존 `db.json`이 그대로 열리게** 한다(마이그레이션 없음). Firestore 컬렉션명은 `explanations`.
+
+### 9-3. 저장 시점 — 자동, 그러나 best-effort
+
+`POST /api/math/explain`이 파이프라인 성공 직후 저장한다.
+
+- **`held`도 저장한다.** 보류율 집계가 §8의 목적이고, 접어 둔 답도 부모가 나중에 확인할 근거다.
+- **저장 실패가 설명을 죽이면 안 된다.** try/catch로 감싸고, 실패하면 로그만 남긴 뒤 `id: null`로
+  응답한다. 설명은 이미 만들어졌고 사용자에게는 그것이 본체다.
+- 응답 계약 `MathExplainSuccess`에 `id: string | null`을 더한다.
+
+라우트의 "결과를 그대로 내려준다" 원칙은 그대로다 — 저장은 결과를 바꾸지 않는다.
+**금지된 것은 답을 손보거나 `held`를 뒤집는 일이지 기록을 남기는 일이 아니다.**
+
+### 9-4. 화면
+
+```
+/math/library        목록 + 유형별 통계
+/math/problem/[id]   저장된 설명 보기
+```
+
+둘 다 **서버 컴포넌트에서 `getStore()`를 직접 읽는다**(영어 `/library`와 같은 규약,
+`export const dynamic = "force-dynamic"`). 목록 조회용 API 라우트를 만들지 않는다.
+
+`/math/problem/[id]`는 레코드를 `MathExplainSuccess` 모양으로 되살려 **기존
+`<MathExplanationView>`에 그대로 넘긴다.** 새 뷰를 만들지 마라 — 두 벌이 되면 어긋난다.
+
+목록 필터 셋:
+
+| 필터 | 조건 |
+|---|---|
+| 전체 | — |
+| 틀린 문제 | `content.childGrade`가 `wrong` 또는 `partial` |
+| 보류 | `verify.status === 'held'` |
+
+통계는 `problemPattern`별 **건수 · 정답률 · 보류율**. 정답률 분모에서 `childGrade === 'none'`은
+뺀다 — 아이가 답을 쓰지 않아 채점할 것이 없었던 문제다. 분모가 0이면 비율 대신 "—"를 보인다.
+
+`/math` 홈에 "지난 문제 보기" 진입을 더한다.
+
+### 9-5. 삭제
+
+`DELETE /api/math/explanations/[id]`. 연쇄 삭제는 없다(딸린 것이 없다).
+`lib/prod-guard.ts`를 통과시키고 `isProdGuardError`를 영어 라우트(`app/api/cards/[id]`)와
+**같은 방식으로** 처리한다.
+
+## 10. 두 번째 풀이 — `insight` (M5)
+
+같은 문제를 **정석**과 **통찰** 두 갈래로 보여 준다. 정석은 이미 3막이 맡고 있으므로,
+이 절은 그 뒤에 붙는 두 번째 갈래만 규정한다.
+
+### 10-1. 3막을 건드리지 않는다
+
+`act1`·`act2`·`act3`는 그대로다. `insight`는 **별도 최상위 필드**로 붙는다.
+
+§0이 실측으로 정한 것 — 이 아이는 계산이 아니라 **문장을 식으로 옮기는 단계**에서 무너진다.
+방법을 둘 동시에 던지면 "어느 걸 써야 하지?"가 새 장벽이 된다. 그래서:
+
+- 화면에서 **정석이 먼저**고 통찰은 **접힌 카드**다(기본 닫힘, §10-4).
+- 통찰은 **보너스**다. 본체가 아니다. 없어도 설명은 온전하다.
+
+**지름길을 먼저 가르치지 마라.** 구조를 잡기 전에 요령부터 배우면 "그냥 외우면 되네"로 굳는다.
+
+### 10-2. 없으면 만들지 않는다
+
+**초등 문제 상당수는 정석이 곧 최단이다.** 없는 통찰을 억지로 만들면 AI가 억지 논리를
+지어내고, 아이는 그것을 그대로 배운다 — 이 앱에서 가장 위험한 실패 모습이다.
+
+그래서 `insight`는 **nullable**이고, 프롬프트가 이를 명시적으로 허락한다.
+eval은 "통찰이 없어야 할 문제에서 null이 나오는 것"도 **통과 조건**으로 센다(§10-5).
+
+### 10-3. 타입과 검산
+
+```ts
+export interface Insight {
+  titleKo: string;       // 방법 이름, 아이 말 (예: "차를 먼저 떼어 내기")
+  hookKo: string;        // 왜 빠른지 한 줄 (25자 안팎)
+  stepsKo: string[];     // 2~3단계. **act2.steps보다 반드시 짧다**
+  answer: AnswerItem[];  // 이 방법으로 나온 답 — 대조용 (§10-3 삼자 대조)
+  parentNoteKo: string;  // 부모용: 이 방법이 언제 통하고 언제 안 통하는지
+}
+```
+
+`Explanation`에 `insight: Insight | null`을 더한다. 호출 B가 **한 번에** 만든다 —
+이미 문제를 푼 모델이 두 번째 방법을 내는 것이 자연스럽고 싸다. 별도 호출을 만들지 마라
+(§8의 비용 구조가 호출 수에 곧바로 걸린다). 출력 한도만 ~6,500으로 올린다(§1).
+
+**`stepsKo.length < act2.steps.length`는 zod가 강제한다.** 통찰이 정석보다 길면 통찰이 아니다.
+strict JSON Schema는 배열 길이 제약을 걸 수 없으므로 프롬프트 + zod 두 곳에서 잡는다(§1 규약).
+
+#### 삼자 대조 — 새로 생기는 안전 그물
+
+호출 C(독립 검산)에 더해 `insight.answer`가 **세 번째 눈**이 된다. `compare()`는 §5-2를 그대로 쓴다.
+
+| B.answer | C.answer | insight.answer | 처리 |
+|---|---|---|---|
+| 같음 | 같음 | 같음 | `ok` — 세 경로가 같은 답 |
+| 같음 | 같음 | **다름** | **`insight`만 버린다**(null). 설명 본체는 살린다 |
+| **다름** | — | — | 기존 §5-3 그대로 — 재시도 1회 → `held` |
+
+**`insight` 불일치로 `held`를 만들지 않는다.** 통찰은 부가물이고, 다수결(B·C 일치)이 이미
+답을 뒷받침한다. 버리는 정책은 장면 검산 실패 시 `scene`만 버리는 것(§5-3)과 같다 —
+**부가물의 오류가 본체를 죽이지 않는다.** 버렸으면 `verify.insightDropped`를 true로 남긴다
+(유형별로 집계하면 어느 유형에서 통찰이 자주 어긋나는지 보인다).
+
+### 10-4. 화면
+
+3막 뒤, 규칙 카드 앞에 **접힌 카드** 하나. 기본은 닫힘.
+
+```
+🔍 1막 탐정 시간
+⏪ 2막 되감기          ← 정석
+▶️ 3막 다시 재생
+💡 다른 방법도 있어요  ▾  ← insight (접힘, 기본 닫힘)
+📝 규칙 카드
+👨 아빠 티칭 포인트
+```
+
+- `insight`가 null이면 **카드 자체를 그리지 않는다.** 빈 카드가 "안 나왔네?"로 읽히면 안 된다.
+- 펼치면 `titleKo` → `hookKo` → `stepsKo` → `parentNoteKo` 순. `parentNoteKo`는 부모용
+  글자 크기(작게)로 구분한다(DESIGN §4 — 위계는 색이 아니라 크기).
+- `<details>`/`<summary>`를 쓴다. JS 없이 접힘이 동작하고, 인쇄하면 펼쳐진다.
+- 새 CSS를 만들지 않는다 — `u-card`·`t-*` 재사용.
+
+### 10-5. eval
+
+`scripts/eval-math.ts` 픽스처에 두 갈래를 **모두** 둔다.
+
+| 픽스처 | 기대 |
+|---|---|
+| 통찰이 있는 문제 (합·차 → "차를 먼저 떼기") | `insight != null` · `insight.answer == answer` · `stepsKo.length < act2.steps.length` |
+| 정석이 최단인 문제 | `insight == null` **이면 통과** — 억지 생성을 실패로 센다 |
+
+`insight`가 붙어도 기존 체크(답 일치·장면 검산·3막 분량)는 그대로 통과해야 한다.
+**두 번째 풀이를 넣느라 첫 번째가 얇아지면 회귀다.**
+
+### 10-6. 프롬프트에 더할 절
+
+호출 B 시스템 프롬프트(§3-1)의 `[3막 구조]` 뒤에 넣는다:
+
+```
+[다른 방법 — insight]
+정석(3막)과 **다른 길**로도 풀리는 문제라면, 그 방법을 insight에 담는다.
+- 통찰은 "왜 그렇게 되는지 한 번에 보이는" 방법이다. 대칭, 전체에서 빼기, 짝지어 더하기,
+  차를 먼저 떼어 내기, 거꾸로 세기 같은 것이다.
+- **stepsKo는 2~3단계이고 act2보다 반드시 짧아야 한다.** 길면 그것은 통찰이 아니라 또 다른 정석이다.
+- **한 단계는 60자를 넘기지 마라.** 넘으면 단계를 늘리지 말고 문장을 줄인다.
+- **억지로 만들지 마라.** 정석이 곧 가장 빠른 길인 문제가 많다. 그럴 때는 insight를 null로 둔다.
+  없는 지름길을 지어내면 아이가 그 억지 논리를 그대로 배운다.
+- insight.answer에는 이 방법으로 나온 답을 적는다. 3막의 answer와 같아야 한다.
+  다르면 둘 중 하나가 틀린 것이니, 그때는 문제를 다시 풀어 두 답을 맞춘다.
+- parentNoteKo에는 이 방법이 언제 통하고 언제 안 통하는지를 부모에게 한두 문장으로 적는다.
+```
