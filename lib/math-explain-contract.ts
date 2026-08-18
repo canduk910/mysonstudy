@@ -47,6 +47,14 @@ export interface MathExplainRequest {
  */
 export interface MathExplainSuccess {
   ok: true;
+  /**
+   * 저장된 설명 기록의 id (M4, §9-3). `/math/problem/[id]`로 여는 주소가 된다.
+   *
+   * **null일 수 있다 — 저장은 best-effort다.** 스토어가 실패해도 설명은 이미 만들어졌고
+   * 사용자에게는 그것이 본체라, 화면을 죽이는 대신 "이번 건은 보관하지 못했다"만 알린다.
+   * `/math/problem/[id]`가 저장된 레코드를 되살릴 때는 그 레코드의 id가 들어온다.
+   */
+  id: string | null;
   /** 호출 B의 3막 설명. 장면 검산이 실패했으면 `content.scene`은 null이다(텍스트는 살아 있다) */
   content: Explanation;
   /** 2단 플레이어 HTML. M1은 호출 E 렌더러를 주입하지 않으므로 **항상 null**이다 */

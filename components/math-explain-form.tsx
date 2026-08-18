@@ -4,9 +4,13 @@
  * 문제 직접 입력 → 3막 설명 (M1) — `/math/new` 화면의 본체.
  *
  * 흐름: 입력 폼 → `POST /api/math/explain` → 결과를 **같은 화면에서** 교체 렌더.
- * 저장하지 않는다(M1 범위 밖 — Firestore `explanations`는 M4). 새로고침하면 사라진다.
- * 그래서 결과 화면으로 라우팅하지 않고 상태로만 전환한다 — 주소를 만들면 저장이 없는데
- * 링크가 생겨 "열었더니 빈 화면"이 된다.
+ * 결과 화면으로 라우팅하지 않고 상태로만 전환한다 — 기다린 30초 끝에 화면이 통째로
+ * 바뀌면 "다시 만드나?" 싶어진다. 대신 결과 아래에 보관된 기록으로 가는 링크를 둔다.
+ *
+ * [M4] 라우트가 만든 설명을 `explanations`에 자동 저장하므로 결과가 더 이상 새로고침과
+ * 함께 사라지지 않는다. 응답의 `id`가 그 기록의 주소(`/math/problem/[id]`)이고,
+ * 목록은 `/math/library`에 있다. **저장은 best-effort라 `id`가 null일 수 있다** —
+ * 그때도 화면의 설명은 온전하다(§9-3).
  *
  * 입력 3칸은 HARNESS §3-2 사용자 메시지 템플릿의 슬롯이다:
  *   문장(필수) · 그림 설명(선택) · 아이가 쓴 답(선택)
@@ -141,10 +145,33 @@ export default function MathExplainForm() {
             🔢 수학 홈으로
           </Link>
         </div>
-        <p className="t-caption mt-3">
-          이 설명은 아직 저장되지 않아요. 화면을 새로고침하면 사라지니, 필요하면 지금
-          보여 주세요. (설명 보관은 다음 단계에서 붙어요)
-        </p>
+        {/*
+         * [QA P3-8] 저장 결과를 알린다. 라우트는 설명을 만들자마자 `explanations`에
+         * 자동 저장하고 그 기록의 주소를 `id`로 돌려준다(§9-3).
+         *
+         * **`id`가 null이면 저장이 실패한 것이다** — 저장은 best-effort라 화면을 죽이지
+         * 않는다. 그래도 담담하게 알려야 한다. 알리지 않으면 부모가 나중에 서재에서
+         * 찾다가 없는 것을 앱의 배신으로 읽는다.
+         */}
+        {result.id ? (
+          <p className="t-caption mt-3">
+            ✅ 이 설명은 보관됐어요 →{" "}
+            <Link
+              href={`/math/problem/${result.id}`}
+              className="font-medium text-accent underline"
+            >
+              보기
+            </Link>{" "}
+            · <Link href="/math/library" className="font-medium text-accent underline">
+              지난 문제 모아 보기
+            </Link>
+          </p>
+        ) : (
+          <p className="t-caption mt-3">
+            🗒️ 이번 건은 보관하지 못했어요. 화면의 설명은 그대로예요 — 새로고침하면
+            사라지니, 필요하면 지금 보여 주세요.
+          </p>
+        )}
       </div>
     );
   }

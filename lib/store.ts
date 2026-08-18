@@ -1,5 +1,8 @@
 /**
- * lib/store.ts — 저장 계층 (books / cards / readings)
+ * lib/store.ts — 저장 계층 (books / cards / readings / explanations)
+ *
+ * [M4] 수학 설명 기록(`explanations`)이 더해졌다 — 영어 3종과 같은 백엔드,
+ * 같은 인터페이스 뒤에 산다(docs/harness/math.md §9-2).
  *
  * [M3] 두 가지 `BookCardStore` 구현을 인터페이스 뒤에서 선택한다:
  * - Firestore(Native mode, Admin SDK + ADC) — `lib/store-firestore.ts` (운영)
@@ -22,6 +25,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Card, SceneDigestItem, SceneSourceKind } from "./ai/english/schemas";
+// 수학 설명 기록(M4)이 통째로 안는 타입들 — **전부 `import type`이다.**
+// `lib/ai/math/pipeline.ts`는 openai 클라이언트를 값으로 끌고 오므로 값 import를
+// 하면 저장 계층이 AI 모듈에 묶인다. 타입만 가져오면 빌드에서 지워진다.
+import type { ExplainVerifyReport } from "./ai/math/pipeline";
+import type { Explanation } from "./ai/math/schemas";
+import type { SceneTier } from "./scene/types";
 import { FirestoreStore } from "./store-firestore";
 
 // ---------------------------------------------------------------------------
@@ -100,9 +109,48 @@ export interface ReadingRecord {
   noteKo: string | null;
 }
 
+/**
+ * 호출 B에 넣은 입력 그대로 (= `MathExplainRequest`의 정규화된 형태, math.md §9-1).
+ *
+ * **선택(?)이 아니라 필수 nullable이다** — BookRecord의 근거 3필드와 같은 이유로,
+ * 만드는 쪽에서 빠뜨리면 타입이 먼저 막는다. Firestore는 undefined를 거부하기도 한다.
+ */
+export interface MathProblemInput {
+  number: string | null;
+  text: string;
+  figureDesc: string | null;
+  givens: { label: string; value: number; unit: string | null }[] | null;
+  childAnswer: string | null;
+  childWork: string | null;
+  childNote: string | null;
+}
+
+/**
+ * 설명 1건 = 문서 1개 (math.md §9-1). 목록·통계용 요약 인덱스를 따로 두지 않는다 —
+ * 필요한 값(problemPattern·childGrade·verify.status)이 전부 이 문서 안에 있고,
+ * 가족용 규모(수백 건)에서는 전문을 읽어도 무겁지 않다. `CardRecord`가 `content: Card`를
+ * 통째로 안는 것과 같은 규약이다.
+ */
+export interface ExplanationRecord {
+  id: string;
+  /** 무엇을 물었는가 — 다시 보기 화면과 재생성·연습문제(호출 D)가 같은 입력을 다시 쓴다 */
+  problem: MathProblemInput;
+  /** 3막 설명 전문. 장면 검산이 실패했으면 `content.scene`은 null이다 */
+  content: Explanation;
+  /** 호출 E 결과 — M4 시점에는 항상 null (M2.5에서 채워진다) */
+  sceneHtml: string | null;
+  sceneTier: SceneTier;
+  /** §8이 요구하는 {problemPattern, status, attempts} 집계의 원천 */
+  verify: ExplainVerifyReport;
+  /** 설명을 만든 모델 ID */
+  model: string;
+  createdAt: string; // ISO 8601
+}
+
 export type NewBook = Omit<BookRecord, "id" | "createdAt">;
 export type NewCard = Omit<CardRecord, "id" | "createdAt">;
 export type NewReading = Omit<ReadingRecord, "id">;
+export type NewExplanation = Omit<ExplanationRecord, "id" | "createdAt">;
 
 /** 책 삭제로 함께 지워진 개수 — 삭제 완료 안내에 그대로 쓴다 */
 export interface DeleteBookResult {
@@ -119,7 +167,7 @@ export interface CardWithBook {
 // 저장 계층 인터페이스 — 라우트·페이지가 의존하는 유일한 면
 // ---------------------------------------------------------------------------
 
-export interface BookCardStore {
+export interface StudyStore {
   createBook(input: NewBook): Promise<BookRecord>;
   getBook(id: string): Promise<BookRecord | null>;
   listBooks(): Promise<BookRecord[]>;
@@ -156,10 +204,26 @@ export interface BookCardStore {
   /** 홈 미리보기용 — 최신 카드 + 책 조인, 최신순 */
   listRecentCards(limit: number): Promise<CardWithBook[]>;
 
-  // readings — M3에서 구현·사용할 자리. 인터페이스만 먼저 고정한다.
+  // readings — M3(서재·읽음 기록).
   addReading(input: NewReading): Promise<ReadingRecord>;
   listReadings(bookId?: string): Promise<ReadingRecord[]>;
+
+  // ---- explanations — 수학 설명 기록 (M4, math.md §9-2) ----
+  // 백엔드가 하나이므로 인터페이스를 쪼개지 않고 여기에 네 개를 더한다.
+  createExplanation(input: NewExplanation): Promise<ExplanationRecord>;
+  getExplanation(id: string): Promise<ExplanationRecord | null>;
+  /** 최신순. 가족용 규모라 전체 조회로 충분하다 */
+  listExplanations(limit?: number): Promise<ExplanationRecord[]>;
+  /** 지웠으면 true, 없는 id였으면 false — deleteCard와 같은 규약 */
+  deleteExplanation(id: string): Promise<boolean>;
 }
+
+/**
+ * 예전 이름. 과목이 영어뿐이던 시절의 이름이라 수학 기록까지 안는 지금은 좁게 읽히지만,
+ * **별칭으로 남겨 기존 import를 하나도 깨지 않는다**(math.md §9-2).
+ * 새 코드는 `StudyStore`를 쓸 것.
+ */
+export type BookCardStore = StudyStore;
 
 // ---------------------------------------------------------------------------
 // JSON 파일 구현 (M1 — data/db.json)
@@ -169,13 +233,14 @@ export interface DbShape {
   books: BookRecord[];
   cards: CardRecord[];
   readings: ReadingRecord[];
+  explanations: ExplanationRecord[];
 }
 
 const DB_DIR = path.join(process.cwd(), "data");
 const DB_PATH = path.join(DB_DIR, "db.json");
 
 function emptyDb(): DbShape {
-  return { books: [], cards: [], readings: [] };
+  return { books: [], cards: [], readings: [], explanations: [] };
 }
 
 async function readDb(): Promise<DbShape> {
@@ -186,6 +251,8 @@ async function readDb(): Promise<DbShape> {
       books: parsed.books ?? [],
       cards: parsed.cards ?? [],
       readings: parsed.readings ?? [],
+      // M4 이전에 만들어진 db.json에는 이 키가 없다 — 마이그레이션 없이 그대로 열린다
+      explanations: parsed.explanations ?? [],
     };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyDb();
@@ -211,6 +278,23 @@ export function normalizeTitleAuthorKey(title: string, author: string): string {
 
 function byCreatedAtDesc(a: { createdAt: string }, b: { createdAt: string }): number {
   return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0;
+}
+
+/**
+ * 설명 기록의 문제 입력 정규화 — 저장 직전에 `givens[].unit`의 `undefined`를 `null`로 조인다.
+ * (요청 zod가 `nullish`라 undefined로 들어올 수 있고, Firestore는 undefined를 아예 거부한다.)
+ *
+ * **두 백엔드가 같은 것을 저장하도록 여기서만 정의한다** — `normalizeTitleAuthorKey`와 같은 자리,
+ * 같은 이유다. 예전에는 Firestore 구현에만 있어서, 파일 백엔드는 `unit` 키가 통째로 사라진
+ * 레코드를 남겼다(타입은 `string | null`인데 읽으면 `undefined`).
+ */
+export function normalizeProblem(problem: MathProblemInput): MathProblemInput {
+  return {
+    ...problem,
+    givens:
+      problem.givens?.map((g) => ({ label: g.label, value: g.value, unit: g.unit ?? null })) ??
+      null,
+  };
 }
 
 class JsonFileStore implements BookCardStore {
@@ -342,6 +426,41 @@ class JsonFileStore implements BookCardStore {
     const list = bookId ? db.readings.filter((r) => r.bookId === bookId) : db.readings;
     return [...list].sort((a, b) => (a.readAt < b.readAt ? 1 : -1));
   }
+
+  // ---- explanations (M4) ----
+
+  async createExplanation(input: NewExplanation): Promise<ExplanationRecord> {
+    const record: ExplanationRecord = {
+      ...input,
+      // Firestore 구현과 같은 정규화를 태운다 — 두 백엔드가 같은 것을 저장해야 한다
+      problem: normalizeProblem(input.problem),
+      id: randomUUID(),
+      createdAt: new Date().toISOString(),
+    };
+    return this.mutate((db) => {
+      db.explanations.push(record);
+      return record;
+    });
+  }
+
+  async getExplanation(id: string): Promise<ExplanationRecord | null> {
+    const db = await readDb();
+    return db.explanations.find((e) => e.id === id) ?? null;
+  }
+
+  async listExplanations(limit?: number): Promise<ExplanationRecord[]> {
+    const db = await readDb();
+    const sorted = [...db.explanations].sort(byCreatedAtDesc);
+    return limit == null ? sorted : sorted.slice(0, limit);
+  }
+
+  async deleteExplanation(id: string): Promise<boolean> {
+    return this.mutate((db) => {
+      const before = db.explanations.length;
+      db.explanations = db.explanations.filter((e) => e.id !== id);
+      return db.explanations.length < before;
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -369,10 +488,10 @@ function resolveStoreBackend(): StoreBackend {
 
 declare global {
   // dev(HMR)에서 모듈 재평가로 인스턴스가 늘어나는 것을 막기 위한 전역 캐시
-  var __bookcardStore: BookCardStore | undefined;
+  var __bookcardStore: StudyStore | undefined;
 }
 
-export function getStore(): BookCardStore {
+export function getStore(): StudyStore {
   if (!globalThis.__bookcardStore) {
     const backend = resolveStoreBackend();
     globalThis.__bookcardStore = backend === "firestore" ? new FirestoreStore() : new JsonFileStore();
@@ -411,5 +530,6 @@ export async function mergeDbForSeed(seed: DbShape): Promise<void> {
     books: mergeById(cur.books, seed.books),
     cards: mergeById(cur.cards, seed.cards),
     readings: mergeById(cur.readings, seed.readings),
+    explanations: mergeById(cur.explanations, seed.explanations),
   });
 }

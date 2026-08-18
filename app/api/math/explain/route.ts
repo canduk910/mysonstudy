@@ -1,5 +1,5 @@
 /**
- * POST /api/math/explain — 문제 1개 → 3막 설명 (M1)
+ * POST /api/math/explain — 문제 1개 → 3막 설명 (M1) + 설명 기록 저장 (M4)
  *
  * 흐름: zod 입력 검증 → `explainProblem()` (호출 B ∥ 호출 C → 답 비교 + 장면 검산 →
  * 어긋나면 1회 재시도 → `ok`/`held` 판정, docs/harness/math.md §5-3) → 결과 반환.
@@ -7,8 +7,12 @@
  * **입력을 다듬어 넘기고 결과를 그대로 내려주는 일만** 한다 — 여기서 답을 손보거나
  * held를 뒤집으면 검산 두 겹이 하는 일이 없어진다.
  *
- * 저장 없음(M1). 만든 설명을 화면에 보여주기만 하고 새로고침하면 사라진다.
- * Firestore `explanations` 컬렉션은 M4다.
+ * [M4] 파이프라인 성공 직후 `explanations`에 **자동 저장**한다(§9-3).
+ *   - `held`도 저장한다 — 보류율 집계가 §8의 목적이고, 접어 둔 답도 부모가 나중에 볼 근거다.
+ *   - **best-effort**: 저장 실패가 설명을 죽이면 안 된다. try/catch로 감싸고 실패하면
+ *     로그만 남긴 뒤 `id: null`로 응답한다.
+ *   - 저장은 결과를 바꾸지 않는다. 금지된 것은 답을 손보거나 held를 뒤집는 일이지
+ *     기록을 남기는 일이 아니다.
  *
  * ┌─ 호출 E(2단 플레이어 HTML)를 왜 안 부르는가 ─────────────────────────────────┐
  * │ `explainProblem(input, { renderSceneHtml })`의 두 번째 인자를 **일부러 비워 둔다.**│
@@ -23,7 +27,8 @@
  * └──────────────────────────────────────────────────────────────────────────────┘
  *
  * 응답 shape (단일 정의처는 `lib/math-explain-contract.ts`):
- * - 200 { ok: true, content, sceneHtml, sceneTier, verify }   ← **held도 200이다**
+ * - 200 { ok: true, id, content, sceneHtml, sceneTier, verify }   ← **held도 200이다**
+ *       (`id`는 저장된 기록의 id. 저장에 실패했으면 null — 설명은 그대로 온다)
  * - 400 { ok: false, error: "invalid_input", messageKo, issues }
  * - 500 { ok: false, error: "ai_failed", messageKo, retriable: true }   ← 재시도 소진(throw)
  * - 501 { ok: false, error: "no_api_key", messageKo }
@@ -32,8 +37,10 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { explainProblem, type ExplainProblemInput } from "@/lib/ai/math/pipeline";
+import { resolveModel } from "@/lib/ai/client";
+import { explainProblem } from "@/lib/ai/math/pipeline";
 import type { MathExplainSuccess } from "@/lib/math-explain-contract";
+import { getStore, type MathProblemInput } from "@/lib/store";
 
 export const runtime = "nodejs";
 
@@ -126,11 +133,16 @@ export async function POST(req: Request) {
 
   // 파이프라인 입력을 **키 하나씩 명시적으로** 짓는다. `{...input}` 스프레드를 쓰면
   // 나중에 스키마에 필드가 늘었을 때 무엇이 프롬프트로 나가는지 이 자리에서 안 보인다.
-  const problem: ExplainProblemInput = {
+  //
+  // 타입이 `ExplainProblemInput`이 아니라 `MathProblemInput`(§9-1)인 것은 의도다 —
+  // **프롬프트에 넣은 값과 기록에 남는 값이 같은 객체 하나**여야 "무엇을 물었는지"가
+  // 어긋나지 않는다. 선택 키가 없는 필수 nullable 모양이라 그대로 `explainProblem()`에
+  // 넘길 수 있고, 저장 시 undefined가 섞여 Firestore가 거부하는 일도 없다.
+  const problem: MathProblemInput = {
     number: input.number ?? null,
     text: input.text,
     figureDesc: input.figureDesc ?? null,
-    givens: input.givens ?? null,
+    givens: input.givens?.map((g) => ({ label: g.label, value: g.value, unit: g.unit ?? null })) ?? null,
     childAnswer: input.childAnswer ?? null,
     childWork: input.childWork ?? null,
     childNote: input.childNote ?? null,
@@ -140,8 +152,28 @@ export async function POST(req: Request) {
     // 두 번째 인자(호출 E 렌더러)를 넘기지 않는 것이 M1의 정상 상태다 — 파일 상단 주석 참조.
     const result = await explainProblem(problem);
 
+    // [M4 §9-3] 자동 저장 — best-effort. 여기서 던져도 설명은 그대로 내려간다.
+    let id: string | null = null;
+    try {
+      const saved = await getStore().createExplanation({
+        problem,
+        content: result.content,
+        sceneHtml: result.sceneHtml,
+        sceneTier: result.sceneTier,
+        verify: result.verify,
+        // 기록에 남길 모델은 **호출 B(설명)를 만든 모델**이다. 검산(호출 C)은
+        // `OPENAI_MODEL_VERIFY`로 따로 갈 수 있지만, 저장하는 `content`를 지은 것은 B다.
+        model: resolveModel(),
+      });
+      id = saved.id;
+    } catch (err) {
+      // 로그만 남기고 계속 간다 — 사용자에게는 설명이 본체다.
+      console.error("[/api/math/explain] 설명 기록 저장 실패(설명은 그대로 반환):", err);
+    }
+
     const payload: MathExplainSuccess = {
       ok: true,
+      id,
       content: result.content,
       sceneHtml: result.sceneHtml,
       sceneTier: result.sceneTier,

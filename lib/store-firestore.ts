@@ -1,8 +1,9 @@
 /**
- * lib/store-firestore.ts — `BookCardStore`의 Firestore(Native mode) 구현 (M3)
+ * lib/store-firestore.ts — `StudyStore`의 Firestore(Native mode) 구현 (M3·M4)
  *
  * - 컬렉션: books / cards / readings (SPEC §5 필드 그대로 + M1의 추가 필드
- *   coverEmoji·description — 빌드 리포트 M1 §5-2 근거 참조)
+ *   coverEmoji·description — 빌드 리포트 M1 §5-2 근거 참조) + explanations
+ *   (수학 설명 기록 — math.md §9-1 필드 그대로)
  * - 인증: Admin SDK + ADC(Application Default Credentials).
  *   Cloud Run에서는 서비스 계정, 로컬에서는 GOOGLE_APPLICATION_CREDENTIALS 키 파일.
  * - 날짜: 파일 스토어와 동일하게 ISO 8601 "문자열"로 저장한다 — 인터페이스가
@@ -25,18 +26,26 @@ import {
   type Firestore,
 } from "firebase-admin/firestore";
 import {
+  normalizeProblem,
   normalizeTitleAuthorKey,
-  type BookCardStore,
   type BookEvidencePatch,
   type BookRecord,
   type CardRecord,
   type CardWithBook,
   type DeleteBookResult,
+  type ExplanationRecord,
+  type MathProblemInput,
   type NewBook,
   type NewCard,
+  type NewExplanation,
   type NewReading,
   type ReadingRecord,
+  type StudyStore,
 } from "./store";
+// 설명 기록(M4)이 안는 타입 — 값 import는 `SCENE_TIERS` 하나뿐이다(읽기 방어용 상수).
+import type { ExplainVerifyReport } from "./ai/math/pipeline";
+import type { Explanation } from "./ai/math/schemas";
+import { SCENE_TIERS, type SceneTier } from "./scene/types";
 import {
   normalizeSceneDigest,
   type Card,
@@ -124,6 +133,31 @@ function toCard(id: string, d: DocumentData): CardRecord {
   };
 }
 
+/**
+ * 설명 기록 읽기 방어 (M4).
+ *
+ * `problem`·`content`·`verify`는 **쓰기 시 zod·파이프라인을 통과한 값만** 저장되므로
+ * `toCard`가 `content`를 다루는 것과 같은 방식으로 캐스팅한다. 문서마다 다시 검증하면
+ * 목록 한 번에 수백 번 zod를 돌리게 되고, 그래 봐야 고칠 수 있는 것이 없다.
+ * 스칼라 필드만 누락·오염을 흡수한다 — 그 자리는 화면이 곧바로 쓰는 값이라서다.
+ */
+function toSceneTier(v: unknown): SceneTier {
+  return (SCENE_TIERS as readonly string[]).includes(v as string) ? (v as SceneTier) : "none";
+}
+
+function toExplanation(id: string, d: DocumentData): ExplanationRecord {
+  return {
+    id,
+    problem: d.problem as MathProblemInput,
+    content: d.content as Explanation,
+    sceneHtml: toNullable(d.sceneHtml as string | null),
+    sceneTier: toSceneTier(d.sceneTier),
+    verify: d.verify as ExplainVerifyReport,
+    model: String(d.model ?? ""),
+    createdAt: toIso(d.createdAt),
+  };
+}
+
 function toReading(id: string, d: DocumentData): ReadingRecord {
   return {
     id,
@@ -149,7 +183,7 @@ const BATCH_LIMIT = 450;
 // 구현
 // ---------------------------------------------------------------------------
 
-export class FirestoreStore implements BookCardStore {
+export class FirestoreStore implements StudyStore {
   private books(): CollectionReference {
     return getDb().collection("books");
   }
@@ -158,6 +192,9 @@ export class FirestoreStore implements BookCardStore {
   }
   private readings(): CollectionReference {
     return getDb().collection("readings");
+  }
+  private explanations(): CollectionReference {
+    return getDb().collection("explanations");
   }
 
   async createBook(input: NewBook): Promise<BookRecord> {
@@ -307,5 +344,43 @@ export class FirestoreStore implements BookCardStore {
     return snap.docs
       .map((d) => toReading(d.id, d.data()))
       .sort((a, b) => (a.readAt < b.readAt ? 1 : a.readAt > b.readAt ? -1 : 0));
+  }
+
+  // ---- explanations (M4, math.md §9-2) ----
+
+  async createExplanation(input: NewExplanation): Promise<ExplanationRecord> {
+    const ref = this.explanations().doc();
+    const record: ExplanationRecord = {
+      ...input,
+      problem: normalizeProblem(input.problem),
+      id: ref.id,
+      createdAt: new Date().toISOString(),
+    };
+    const { id: _id, ...data } = record; // 문서 ID가 곧 id — 본문에 중복 저장하지 않는다
+    await ref.set(data);
+    return record;
+  }
+
+  async getExplanation(id: string): Promise<ExplanationRecord | null> {
+    const snap = await this.explanations().doc(id).get();
+    return snap.exists ? toExplanation(snap.id, snap.data()!) : null;
+  }
+
+  async listExplanations(limit?: number): Promise<ExplanationRecord[]> {
+    // createdAt은 ISO 문자열이라 사전순 = 시간순 — 단일 필드 정렬이라 복합 인덱스가 없다
+    const base = this.explanations().orderBy("createdAt", "desc");
+    const snap = await (limit == null ? base.get() : base.limit(limit).get());
+    return snap.docs.map((d) => toExplanation(d.id, d.data()));
+  }
+
+  async deleteExplanation(id: string): Promise<boolean> {
+    // 개발 환경에서 실데이터를 지우는 것을 막는다 (2026-08-17 사고 — lib/prod-guard.ts)
+    assertDestructiveAllowed("deleteExplanation");
+    // 연쇄 삭제 없음 — 설명에 딸린 것이 없다(§9-5). deleteCard와 같은 모양.
+    const ref = this.explanations().doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return false;
+    await ref.delete();
+    return true;
   }
 }

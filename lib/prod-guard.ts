@@ -20,7 +20,7 @@
  */
 
 /** 파괴적 작업 이름 — 에러 메시지에 그대로 실린다 */
-export type DestructiveOp = "deleteBook" | "deleteCard";
+export type DestructiveOp = "deleteBook" | "deleteCard" | "deleteExplanation";
 
 export class ProdGuardError extends Error {
   readonly code = "prod_guard";

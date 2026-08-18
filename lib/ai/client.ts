@@ -44,7 +44,7 @@ import {
  */
 export const DEFAULT_OPENAI_MODEL = "gpt-5.5";
 
-function resolveModel(): string {
+export function resolveModel(): string {
   return process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL;
 }
 

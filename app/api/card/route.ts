@@ -26,7 +26,7 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { DEFAULT_OPENAI_MODEL, generateCard } from "@/lib/ai/client";
+import { generateCard, resolveModel } from "@/lib/ai/client";
 import type { CardUserMessageInput } from "@/lib/ai/english/prompts";
 import {
   attachSceneDigest,
@@ -133,10 +133,6 @@ function aiFailed() {
     },
     { status: 500 },
   );
-}
-
-function resolveModel(): string {
-  return process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL;
 }
 
 /** AI 호출 — throw(재시도 소진)를 500 응답으로 변환하기 위한 래핑 */

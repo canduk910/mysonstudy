@@ -1,12 +1,13 @@
 /**
- * 수학(수학코치) 홈 `/math` — 진입 버튼 두 개.
+ * 수학(수학코치) 홈 `/math` — 진입 버튼 두 개 + 지난 문제(M4) 진입.
  *
  * 경로 규약(subject-routing에서 확정, 이 파일이 그 목록의 유지처):
  *   화면  `/math`                 이 파일 — 진입점
  *         `/math/new`             문제 직접 입력 → 3막 설명 (M1, **동작함**)
- *         `/math/problem/[id]`    저장된 설명 보기 (M4 — `explanations` 컬렉션이 생긴 뒤)
- *         `/math/library`         수학 서재 (별도 작업 — 영어 `/library`는 건드리지 않는다)
- *   API   `/api/math/explain`     호출 B→C→장면 검산 파이프라인 (M1, **동작함**)
+ *         `/math/problem/[id]`    저장된 설명 보기 (M4, **동작함**)
+ *         `/math/library`         수학 서재 — 목록 + 유형별 통계 (M4, **동작함**)
+ *   API   `/api/math/explain`     호출 B→C→장면 검산 파이프라인 + 설명 자동 저장 (M1·M4, **동작함**)
+ *         `/api/math/explanations/[id]`  저장된 설명 삭제 (M4, **동작함**)
  *         `/api/math/extract`     호출 A (문제집 사진 판독, vision) — M3
  *         `/api/math/practice`    호출 D (연습문제) — 이후
  *
@@ -33,9 +34,13 @@ export default function MathHomePage() {
   return (
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
       <header className="mb-8">
+        {/* 과목 선택 ↔ 수학 홈 ↔ 지난 문제 — 영어 홈과 같은 알약 버튼(.u-navbtn) */}
         <div className="flex items-center justify-between gap-3">
           <Link href="/" className="u-navbtn">
             ← 과목 선택
+          </Link>
+          <Link href="/math/library" className="u-navbtn">
+            <span aria-hidden>🧮</span> 지난 문제
           </Link>
         </div>
         <h1 className="t-book-title mt-4">🔢 은우 수학코치</h1>
@@ -84,6 +89,17 @@ export default function MathHomePage() {
       <p id="photo-soon" className="t-caption mt-3">
         📷 사진으로 읽기는 준비 중이에요. 지금은 문제를 직접 적어 주세요.
       </p>
+
+      {/*
+       * 지난 문제 보기(M4) — 만든 설명은 이제 자동으로 남는다. 헤더의 알약 버튼과 같은
+       * 곳으로 가지만, 진입 타일 바로 아래에도 한 번 더 둔다: 설명을 만든 직후 돌아온
+       * 사람이 가장 먼저 찾는 것이 "방금 그거 어디 갔지?"다.
+       */}
+      <div className="mt-6">
+        <Link href="/math/library" className="u-btn u-btn-secondary">
+          <span aria-hidden>🧮</span> 지난 문제 보기
+        </Link>
+      </div>
 
       <section className="mt-10">
         <h2 className="t-section-title">설명은 이렇게 나와요</h2>
