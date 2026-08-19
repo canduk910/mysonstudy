@@ -24,7 +24,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { extractBook } from "@/lib/ai/client";
-import { COVER_MAX_IMAGES } from "@/lib/upload-limits";
+import { COVER_MAX_IMAGES, MAX_IMAGE_DATA_URL_CHARS } from "@/lib/upload-limits";
 
 export const runtime = "nodejs";
 
@@ -34,7 +34,10 @@ const bodySchema = z.object({
       z
         .string()
         .regex(/^data:image\/[a-z0-9.+-]+;base64,/i, "이미지 data URL 형식이어야 해요")
-        .max(8_000_000, "사진이 너무 커요 — 다시 시도해 주세요"),
+        // 한 장의 길이 상한도 lib/upload-limits가 단일 정의처다 — 수학 판독
+        // (`/api/math/extract`)이 같은 숫자를 쓴다. 한쪽만 고치면 같은 사진이
+        // 한 라우트에서만 거절되는 일이 생긴다.
+        .max(MAX_IMAGE_DATA_URL_CHARS, "사진이 너무 커요 — 다시 시도해 주세요"),
     )
     .min(1, "사진을 1장 이상 보내 주세요")
     // SPEC §4-1 · HARNESS §2-2 — 표지 / 정보 스티커 / 뒤표지.

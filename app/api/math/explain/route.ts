@@ -47,7 +47,7 @@ import { z } from "zod";
 import { resolveModel } from "@/lib/ai/client";
 import { explainProblem } from "@/lib/ai/math/pipeline";
 import { renderSceneHtml } from "@/lib/ai/math/player";
-import type { MathExplainSuccess } from "@/lib/math-explain-contract";
+import { MATH_EXPLAIN_LIMITS, type MathExplainSuccess } from "@/lib/math-explain-contract";
 import { getStore, type MathProblemInput } from "@/lib/store";
 
 export const runtime = "nodejs";
@@ -61,26 +61,53 @@ export const runtime = "nodejs";
  * 클라이언트가 `retryNote`를 실어 보내도 프롬프트에 닿지 않는다.
  * (파이프라인 내부 값이다 — 열어 두면 "이전 답이 틀렸다"는 거짓 맥락으로 모델을 흔들 수 있다.)
  *
- * 길이 상한은 프롬프트 폭주 방지용 안전장치다. 초등 문제 문장은 길어야 몇 줄이라
- * 2,000자면 서술형까지 넉넉히 덮는다.
+ * 길이 상한은 프롬프트 폭주 방지용 안전장치이고, **숫자는 여기 살지 않는다** —
+ * `MATH_EXPLAIN_LIMITS`(`lib/math-explain-contract.ts`)가 단일 정의처다.
+ * 화면이 같은 값을 읽어 보내기 **전에** 넘치는 문장을 짚어 준다(QA F3). 여기에 숫자를
+ * 따로 적어 두면 화면은 무엇이 거절될지 모른 채 보내고, 사용자는 이유 없는 400만 본다.
+ *
+ * 거절 사유는 한국어로 적는다 — 화면이 `issues[].message`를 그대로 사용자에게 보여 준다.
  */
+const L = MATH_EXPLAIN_LIMITS;
 const bodySchema = z.object({
-  text: z.string().trim().min(1, "문제 문장을 적어 주세요.").max(2000),
-  number: z.string().trim().max(20).nullish(),
-  figureDesc: z.string().trim().max(2000).nullish(),
+  text: z
+    .string()
+    .trim()
+    .min(1, "문제 문장을 적어 주세요.")
+    .max(L.text, `문제 문장이 너무 길어요 — ${L.text.toLocaleString("ko-KR")}자까지 보낼 수 있어요.`),
+  number: z.string().trim().max(L.number, `문제 번호는 ${L.number}자까지예요.`).nullish(),
+  figureDesc: z
+    .string()
+    .trim()
+    .max(
+      L.figureDesc,
+      `그림·표 설명이 너무 길어요 — ${L.figureDesc.toLocaleString("ko-KR")}자까지 보낼 수 있어요.`,
+    )
+    .nullish(),
   givens: z
     .array(
       z.object({
-        label: z.string().trim().min(1).max(100),
+        label: z.string().trim().min(1).max(L.givenLabel, `숫자 이름은 ${L.givenLabel}자까지예요.`),
         value: z.number(),
-        unit: z.string().trim().max(20).nullish(),
+        unit: z.string().trim().max(L.givenUnit, `단위는 ${L.givenUnit}자까지예요.`).nullish(),
       }),
     )
-    .max(30)
+    .max(L.givens, `주어진 숫자는 ${L.givens}개까지 보낼 수 있어요.`)
     .nullish(),
-  childAnswer: z.string().trim().max(500).nullish(),
-  childWork: z.string().trim().max(2000).nullish(),
-  childNote: z.string().trim().max(500).nullish(),
+  childAnswer: z
+    .string()
+    .trim()
+    .max(L.childAnswer, `은우가 쓴 답이 너무 길어요 — ${L.childAnswer}자까지예요.`)
+    .nullish(),
+  childWork: z
+    .string()
+    .trim()
+    .max(
+      L.childWork,
+      `은우가 쓴 풀이가 너무 길어요 — ${L.childWork.toLocaleString("ko-KR")}자까지예요.`,
+    )
+    .nullish(),
+  childNote: z.string().trim().max(L.childNote, `메모가 너무 길어요 — ${L.childNote}자까지예요.`).nullish(),
 });
 
 // ---------------------------------------------------------------------------

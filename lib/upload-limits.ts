@@ -24,3 +24,15 @@ export const MAX_IMAGE_EDGE = 1500;
 
 /** 리사이즈 JPEG 품질 */
 export const JPEG_QUALITY = 0.85;
+
+/**
+ * base64 data URL 문자열 하나의 길이 상한 — 라우트 zod의 안전장치.
+ *
+ * `MAX_IMAGE_EDGE`로 리사이즈한 JPEG는 보통 0.3~0.8MB(≈0.4~1.1M자)라 한참 아래다.
+ * 이 상한이 막는 것은 **리사이즈를 건너뛴 요청**이다 — 최신 폰 원본은 한 장에 5~10MB라
+ * 그대로 오면 요청 본문 파싱과 프롬프트 조립에서 메모리를 밀어붙이고, vision 토큰도 함께 뛴다.
+ *
+ * 영어 표지 판독(`/api/extract`)과 수학 문제집 판독(`/api/math/extract`)이 **같은 숫자**를 쓴다.
+ * 두 라우트에 따로 적어 두면 한쪽만 고쳐 놓고 다른 쪽에서 "왜 여긴 거절되지?"를 만난다.
+ */
+export const MAX_IMAGE_DATA_URL_CHARS = 8_000_000;

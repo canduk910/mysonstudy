@@ -1,13 +1,17 @@
 /**
- * lib/math-explain-contract.ts — `POST /api/math/explain`의 요청·응답 타입 (M1)
- *
- * **타입만 있는 모듈이다.** 값 export가 하나도 없으므로 `import type`으로 가져가면
- * 서버(route handler)와 클라이언트 컴포넌트가 같은 정의를 보면서도 클라이언트 번들에는
- * 아무것도 들어가지 않는다. (`lib/ai/*`는 openai·API 키를 건드리므로 클라이언트에서
- * 절대 import하지 않는다 — 이 파일이 그 경계를 대신 서는 자리다.)
+ * lib/math-explain-contract.ts — `POST /api/math/explain`의 요청·응답 계약 (M1)
  *
  * 한 곳에 모아 둔 이유: 라우트가 내려주는 shape과 화면이 기대하는 shape이 서로 다른 파일에
  * 따로 적히면 반드시 어긋난다. qa-inspector가 경계면을 교차 검증할 때 볼 단일 정의처다.
+ *
+ * **클라이언트에서 import해도 안전하다.** 타입 3개는 `import type`이라 완전히 지워지고,
+ * 값은 `MATH_EXPLAIN_LIMITS`(순수 숫자) 하나뿐이다 — 런타임 의존성이 없다.
+ * (`lib/ai/*`는 openai·API 키를 건드리므로 클라이언트에서 절대 import하지 않는다 —
+ * 이 파일이 그 경계를 대신 서는 자리다. 그 성질은 값 하나가 늘어도 그대로다.)
+ *
+ * **길이 상한이 여기 사는 이유**(QA F3): 상한은 타입만큼이나 계약의 일부다. 라우트 zod에만
+ * 적어 두면 화면은 무엇이 거절될지 모른 채 보내고, 사용자는 이유 없는 400만 본다.
+ * 실제로 판독(호출 A)에는 문장 길이 상한이 없어서 긴 서술형 하나가 그대로 400이 됐다.
  *
  * 참조: `docs/harness/math.md` §3-2(호출 B 입력) · §5-3(explainProblem 반환)
  */
@@ -15,6 +19,30 @@
 import type { ExplainVerifyReport } from "./ai/math/pipeline";
 import type { Explanation } from "./ai/math/schemas";
 import type { SceneTier } from "./scene/types";
+
+/**
+ * 요청 필드 길이 상한 — **라우트 zod와 화면이 같은 숫자를 본다.**
+ *
+ * 이 숫자들은 품질 기준이 아니라 **프롬프트 폭주 방지용 안전장치**다. 초등 문제 문장은
+ * 길어야 몇 줄이라 2,000자면 서술형까지 넉넉히 덮는다. 판독이 이보다 긴 문장을 내놓았다면
+ * 대개 문제 분리가 어긋나 두세 문제가 한 덩어리로 붙은 것이라, 그대로 보내면 설명도 엉킨다.
+ *
+ * 화면은 이 값으로 ① 입력창 `maxLength`를 걸고 ② 보내기 **전에** 넘치는 문제를 짚어
+ * 줄이도록 안내한다. 라우트는 같은 값으로 zod 상한을 짓는다. 숫자를 여기서 바꾸면
+ * 양쪽이 함께 움직인다 — 한쪽에만 적으면 "왜 안 보내지는지 모르겠다"가 다시 생긴다.
+ */
+export const MATH_EXPLAIN_LIMITS = {
+  text: 2000,
+  number: 20,
+  figureDesc: 2000,
+  /** `givens` 배열의 최대 항목 수 */
+  givens: 30,
+  givenLabel: 100,
+  givenUnit: 20,
+  childAnswer: 500,
+  childWork: 2000,
+  childNote: 500,
+} as const;
 
 /**
  * 요청 본문 — HARNESS §3-2 사용자 메시지 템플릿이 받는 값 그대로.

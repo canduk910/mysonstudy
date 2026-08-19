@@ -4,16 +4,19 @@
  * 경로 규약(subject-routing에서 확정, 이 파일이 그 목록의 유지처):
  *   화면  `/math`                 이 파일 — 진입점
  *         `/math/new`             문제 직접 입력 → 3막 설명 (M1, **동작함**)
+ *         `/math/photo`           문제집 사진 판독 → 문제 고르기 → 3막 설명 (M3, **동작함**)
  *         `/math/problem/[id]`    저장된 설명 보기 (M4, **동작함**)
  *         `/math/library`         수학 서재 — 목록 + 유형별 통계 (M4, **동작함**)
  *   API   `/api/math/explain`     호출 B→C→장면 검산 파이프라인 + 설명 자동 저장 (M1·M4, **동작함**)
  *         `/api/math/explanations/[id]`  저장된 설명 삭제 (M4, **동작함**)
- *         `/api/math/extract`     호출 A (문제집 사진 판독, vision) — M3
+ *         `/api/math/extract`     호출 A (문제집 사진 판독, vision) — M3, **동작함**
  *         `/api/math/practice`    호출 D (연습문제) — 이후
  *
- * 사진 입력(M3)이 아직 준비 중인 이유: 문제집 사진은 비공개 저장소(버킷)와 서명 URL,
- * 새 환경 변수가 함께 있어야 안전하게 다룰 수 있다. 그 인프라가 서기 전까지는
- * 버튼을 눌리지 않게 두는 편이 낫다 — 눌리는데 안 되는 버튼이 가장 나쁘다.
+ * 사진 입력(M3)에 버킷은 필요 없었다. 이 주석은 오래 "비공개 저장소(버킷)와 서명 URL,
+ * 새 환경 변수가 함께 있어야 한다"고 적어 두었는데 **과한 전제였고, 그 전제가 M3을 계속
+ * 미루게 했다.** 영어 표지 판독(`/api/extract`)이 이미 같은 일을 버킷 없이 한다 —
+ * 클라이언트에서 리사이즈해 base64 data URL로 보내고, 판독에만 쓰고 저장하지 않는다.
+ * 근거와 경위는 `docs/harness/math.md` §11-2에 있다.
  *
  * 잠금: `proxy.ts`는 허용목록(=`/unlock`·정적 자산) 밖을 전부 막으므로 이 경로도,
  * `/math/new`도, `/api/math/explain`도 자동으로 PIN 게이트 안이다. 별도 등록이 필요 없다.
@@ -52,10 +55,21 @@ export default function MathHomePage() {
 
       <div className="grid gap-3 sm:grid-cols-2">
         {/*
-         * 동작하는 쪽을 주요(파랑)로 둔다. 영어 홈은 사진이 주요지만, 수학은 지금
-         * 직접 입력만 동작하므로 그쪽이 화면의 주인공이다.
+         * [M3] 사진이 주요(파랑)가 됐다. 영어 홈과 같은 배치다 — 소마 사고력수학은 도형·규칙
+         * 찾기가 많아 **그림은 타이핑으로 옮길 수단이 아예 없다.** 평소 쓰는 길이 이쪽이다.
+         * 직접 입력은 사진이 잘 안 읽힐 때의 확실한 뒷길로 남는다.
          */}
-        <Link href="/math/new" className="u-entry u-entry-primary">
+        <Link href="/math/photo" className="u-entry u-entry-primary">
+          <span className="u-entry-icon" aria-hidden>
+            📷
+          </span>
+          <span className="u-entry-title">문제집 사진으로</span>
+          <span className="u-entry-desc">
+            페이지를 찍으면 문제를 하나씩 읽어 드려요. 그중 설명이 필요한 문제만 고르면 돼요.
+          </span>
+        </Link>
+
+        <Link href="/math/new" className="u-entry u-entry-secondary">
           <span className="u-entry-icon" aria-hidden>
             ✏️
           </span>
@@ -64,30 +78,10 @@ export default function MathHomePage() {
             문제 문장을 적으면 3막 설명을 만들어요. 은우가 쓴 답도 함께 봐 드려요.
           </span>
         </Link>
-
-        {/*
-         * 준비 중 — <button disabled>로 둔다. Link로 두면 눌리는데 아무 일도 일어나지
-         * 않거나 404가 나서, 고장으로 보인다. disabled 버튼은 `.u-entry:disabled`가
-         * 흐리게 처리하고 커서로도 알려준다.
-         */}
-        <button
-          type="button"
-          disabled
-          aria-describedby="photo-soon"
-          className="u-entry u-entry-secondary"
-        >
-          <span className="u-entry-icon" aria-hidden>
-            📷
-          </span>
-          <span className="u-entry-title">문제집 사진으로</span>
-          <span className="u-entry-desc">
-            페이지를 찍으면 문제를 하나씩 읽어 드려요. 아직 준비 중이에요.
-          </span>
-        </button>
       </div>
 
-      <p id="photo-soon" className="t-caption mt-3">
-        📷 사진으로 읽기는 준비 중이에요. 지금은 문제를 직접 적어 주세요.
+      <p className="t-caption mt-3">
+        📷 사진은 한 번에 한 페이지씩 읽어요. 은우가 쓴 답과 채점 표시도 함께 찾아 드려요.
       </p>
 
       {/*
