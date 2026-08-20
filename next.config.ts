@@ -46,6 +46,59 @@ const nextConfig: NextConfig = {
         source: "/:path*",
         headers: [{ key: "Content-Security-Policy", value: "frame-src 'self'" }],
       },
+      {
+        /**
+         * 페이지 문서·RSC 페이로드는 **공유 캐시에 저장 금지 + 매 요청 재검증**.
+         * (2026-08-20 "배포했는데 옛 화면이 보인다" 사고 대응 — 실측표는
+         *  `_workspace/build_app-builder_fresh-deploy_report.md`)
+         *
+         * ── 무엇이 문제였나 ──────────────────────────────────────────────────
+         * Next는 프리렌더된 정적 페이지(`○`: `/`, `/math`, `/math/new`, `/math/photo`)의
+         * HTML과 RSC 페이로드에 **`Cache-Control: s-maxage=31536000`**(1년)을 붙인다.
+         * 이 값은 "배포할 때 CDN을 퍼지한다"는 전제 위에 서 있다. 그런데 우리 배포
+         * 경로에는 **퍼지 단계가 없다**: 커스텀 도메인은 Firebase Hosting → Cloud Run
+         * 리라이트(firebase.json)이고, GitHub Actions는 `gcloud run deploy`만 한다
+         * (`.github/workflows/*`). Hosting CDN은 `firebase deploy --only hosting`
+         * 때만 퍼지되므로, Cloud Run만 새로 올리면 **엣지에 남은 옛 HTML이 최대 1년
+         * 그대로 나갈 수 있다.**
+         *
+         * 옛 HTML이 위험한 이유는 그 자체보다 그것이 물고 있는 자산이다. 프리렌더
+         * HTML에는 `/_next/static/<BUILD_ID>/...`가 박혀 있고 그 청크는
+         * `immutable`(1년)이라 브라우저에 그대로 남는다 → **옛 앱이 통째로 계속
+         * 돈다.** 2026-08-20 로그에서 같은 세션의 `/math` 요청에 옛/새 `_rsc` 해시가
+         * 섞여 있던 것이 이 상태다(옛 번들이 옛 해시를 계산한다).
+         *
+         * ── 왜 `private, no-cache, must-revalidate`인가 ──────────────────────
+         * · `private` — 공유 캐시(Hosting CDN 등)가 **저장 자체를 못 한다**. 퍼지 단계가
+         *   없는 배포 경로에서는 이게 유일하게 확실한 방법이다. 게다가 이 앱의 모든
+         *   페이지는 PIN 뒤의 가족 전용 화면이라 엣지에 둘 이유가 애초에 없다.
+         * · `no-cache` — 브라우저는 저장은 하되 **매번 원본에 물어본다**. 정적 페이지
+         *   HTML에는 ETag가 붙으므로 바뀐 게 없으면 304(본문 0바이트)로 끝난다.
+         *   `no-store`가 아닌 이유가 이것이다 — 신선도는 동일하고 왕복 비용만 아낀다.
+         * · `must-revalidate` — `no-cache`를 무시하는 구형 캐시에 대한 이중 방어.
+         *
+         * 동적 페이지(`ƒ`)는 Next가 이미 `private, no-cache, no-store, max-age=0,
+         * must-revalidate`를 주므로 이 규칙과 방향이 같다. 즉 **바뀌는 것은 정적
+         * 페이지 4개(+RSC 페이로드)뿐**이고, 사이트 전체가 같은 정책으로 통일된다.
+         *
+         * ── 무엇을 건드리지 않는가 (source의 두 부정 선견) ────────────────────
+         * · `(?!_next/|api/)` —
+         *   `/_next/static/**`는 파일명에 콘텐츠 해시가 있어 `public, max-age=31536000,
+         *   immutable`이 **정답**이다. 여기서 덮으면 배포마다 전 자산을 다시 받는다.
+         *   (Next 문서는 이 값을 못 덮는다고 하지만 **실측 결과 덮인다** — 그래서
+         *   제외가 필수다.)
+         *   `/api/**`는 라우트 핸들러가 각자 정하게 둔다 — 예: `/api/version`은 스스로
+         *   `no-store`를 건다. 여기서 덮으면 그 의도가 지워진다.
+         * · `(?!.*\.[a-zA-Z0-9]+$)` — 확장자로 끝나는 경로 제외.
+         *   `/player-kit/kit.js`·`/fonts/*.woff2`·`/icon.svg`·`/favicon.ico`는 지금
+         *   `public, max-age=0`(= 매번 재검증)이라 이미 신선하다. 손댈 이유가 없다.
+         *
+         * PIN 잠금 응답(`proxy.ts`의 307·401)은 proxy가 직접 `no-store`를 박고,
+         * **그 값이 이 규칙보다 우선한다**(실측). 잠금 응답은 그대로 `no-store`다.
+         */
+        source: "/:path((?!_next/|api/)(?!.*\\.[a-zA-Z0-9]+$).*)",
+        headers: [{ key: "Cache-Control", value: "private, no-cache, must-revalidate" }],
+      },
     ];
   },
 };
