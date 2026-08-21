@@ -50,3 +50,21 @@ jobs:
             --region asia-northeast3 \
             --project eunwoo-bookcard \
             --quiet
+
+      # Hosting CDN 퍼지 — 이 단계가 없어서 배포한 화면이 안 보이는 사고가 났다(2026-08-20).
+      #
+      # eunwoo.site → Firebase Hosting(CDN) --rewrite--> Cloud Run 구조인데,
+      # `gcloud run deploy`는 오리진만 갈아 끼울 뿐 **엣지에 남은 응답을 비우지 않는다.**
+      # Next가 정적 페이지에 붙이던 `s-maxage=31536000`(1년)은 "배포 때 CDN을 퍼지한다"는
+      # 전제 위에 있는 값이라, 퍼지가 없으면 옛 HTML이 최대 1년 그대로 나간다.
+      # 옛 HTML은 `/_next/static/<BUILD_ID>/…`를 물고 있어 **옛 앱이 통째로 계속 돈다.**
+      #
+      # 헤더는 이미 `private, no-cache, must-revalidate`로 고쳤다(next.config.ts).
+      # 이 단계는 그 뒤에 서는 안전망이다 — 앞으로 어떤 경로가 다시 공유 캐시를 받더라도
+      # 배포마다 엣지가 갱신된다. `public-hosting/`은 rewrite 설정만 담은 빈 디렉터리라
+      # 올라가는 파일이 사실상 없고, 릴리스 생성이 곧 무효화다.
+      #
+      # 권한: github-deployer SA에 roles/firebasehosting.admin 이 필요하다.
+      # firebase-tools는 google-github-actions/auth 가 설정한 자격증명을 그대로 쓴다.
+      - name: Purge Hosting CDN
+        run: npx --yes firebase-tools@15 deploy --only hosting --project eunwoo-bookcard --non-interactive
