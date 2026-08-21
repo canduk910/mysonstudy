@@ -46,13 +46,21 @@ export const VERIFY_SYSTEM_PROMPT = `너는 초등 수학 문제 검산 담당�
 사진에 여러 문제가 있으면 [문제]의 문장과 같은 문제만 본다.`;
 
 /**
- * 호출 C 파라미터 (§1 표: temperature 0 · 출력 한도 ~800).
+ * 호출 C 파라미터 (§1 표: temperature 0 · 출력 한도 ~2,500).
  * 모델은 `OPENAI_MODEL_VERIFY`(없으면 `OPENAI_MODEL`) — 심판만 더 강한 모델로 올릴 여지를 남긴 것이다.
+ *
+ * **한도를 800에서 올린 이유(2026-08-21 실사용):** 주사위 공간 추리 문제에서 검산이 두 번 연속
+ * `incomplete / max_output_tokens`로 잘려 `held`가 됐다. C는 "답만 낸다"는 설계라 800이면
+ * 넉넉하다고 봤는데, **모델은 답을 내기 전에 생각을 출력한다** — 공간 추리·경우의 수처럼
+ * 추론이 긴 유형에서 그 몫이 한도를 넘긴다. 검산이 답을 못 내면 그 문제는 통째로 보류된다.
+ *
+ * **한도는 상한이지 목표가 아니다.** 평소 C의 출력은 100자 안팎이라 이 상향으로 평균 비용은
+ * 거의 늘지 않는다. 늘어나는 것은 "원래 잘려서 버려지던 호출"이 살아나는 경우뿐이다.
  */
 export const VERIFY_CALL_OPTIONS = {
   call: "math-verify",
   temperature: 0,
-  maxOutputTokens: 800,
+  maxOutputTokens: 2_500,
 } as const;
 
 /** 호출 C 출력 스키마 `answer_check` (§5-1, strict) */
