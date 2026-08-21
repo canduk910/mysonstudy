@@ -33,6 +33,17 @@
  * │ 그래서 "그림이 왜 안 나오지?"는 조용하다 — 사유는 `{call:"math-player"}` 로그에.  │
  * └──────────────────────────────────────────────────────────────────────────────┘
  *
+ * ┌─ 문제 사진을 호출 B·C에 넘긴다 [M6 §12] ─────────────────────────────────────┐
+ * │ 요청에 `imageDataUrl`(판독에 쓴 사진 **그대로**, 크롭 없음)이 오면 파이프라인이   │
+ * │ 호출 B와 호출 C **둘 다에** 이미지 파트로 실어 보낸다(§12-2). 재시도 때도 같다.   │
+ * │ 도형·점판·보조선처럼 `figureDesc` 한 줄로 안 옮겨지는 그림의 유일한 경로다.       │
+ * │                                                                              │
+ * │ **저장하지 않는다**(§9-1·§12-4). 아래에서 `problem`(기록에 남는 객체)과           │
+ * │ `explainInput`(프롬프트로 나가는 객체)을 **일부러 갈라 둔 것**이 그 경계다.       │
+ * │ 사진은 선택이다 — 없으면 M6 이전과 똑같이 텍스트만으로 돈다(`/math/new`).         │
+ * │ 비용: 문제 1개 ~4,800 → ~7,200 입력 토큰(재시도 시 ~14,400, §12-6).             │
+ * └──────────────────────────────────────────────────────────────────────────────┘
+ *
  * 응답 shape (단일 정의처는 `lib/math-explain-contract.ts`):
  * - 200 { ok: true, id, content, sceneHtml, sceneTier, verify }   ← **held도 200이다**
  *       (`id`는 저장된 기록의 id. 저장에 실패했으면 null — 설명은 그대로 온다)
@@ -45,10 +56,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { resolveModel } from "@/lib/ai/client";
-import { explainProblem } from "@/lib/ai/math/pipeline";
+import { type ExplainProblemInput, explainProblem } from "@/lib/ai/math/pipeline";
 import { renderSceneHtml } from "@/lib/ai/math/player";
+import { MATH_IMAGE_DATA_URL_PATTERN } from "@/lib/ai/math/prompts";
 import { MATH_EXPLAIN_LIMITS, type MathExplainSuccess } from "@/lib/math-explain-contract";
 import { getStore, type MathProblemInput } from "@/lib/store";
+import { MAX_IMAGE_DATA_URL_CHARS } from "@/lib/upload-limits";
 
 export const runtime = "nodejs";
 
@@ -108,6 +121,25 @@ const bodySchema = z.object({
     )
     .nullish(),
   childNote: z.string().trim().max(L.childNote, `메모가 너무 길어요 — ${L.childNote}자까지예요.`).nullish(),
+  /**
+   * [M6 §12] 판독에 쓴 문제집 사진 — 있으면 호출 B·C가 둘 다 본다(§12-2).
+   *
+   * **`/api/math/extract`와 글자 그대로 같은 검사여야 한다.** 정규식은 `MATH_IMAGE_DATA_URL_PATTERN`
+   * (`lib/ai/math/prompts.ts`)을 그대로 가져다 쓴다 — 파이프라인의 `assertImageDataUrl()`이 던질 때
+   * 보는 것과 **같은 객체**다. 같은 리터럴을 여기 다시 적으면 나중에 한쪽만 고쳐졌을 때 라우트가
+   * 통과시킨 값을 파이프라인이 던져 400이어야 할 것이 500으로 나간다.
+   * 길이 상한도 같은 이유로 `MAX_IMAGE_DATA_URL_CHARS`(`lib/upload-limits.ts`)를 재사용한다 —
+   * 새 숫자를 만들면 **같은 사진이 판독은 되고 설명은 거절되는** 일이 생긴다.
+   *
+   * `.trim()`을 걸지 않는다: data URL은 사람이 고치는 값이 아니고, 다른 필드와 달리 잘라 낼
+   * 여백이 애초에 없다. 형식이 어긋나면 여기서 400으로 끝낸다 — 조용히 버리면 사진이 빠진 채
+   * 설명이 만들어지고, 화면은 "왜 여전히 그림을 못 읽지?"만 남는다.
+   */
+  imageDataUrl: z
+    .string()
+    .regex(MATH_IMAGE_DATA_URL_PATTERN, "이미지 data URL 형식이어야 해요")
+    .max(MAX_IMAGE_DATA_URL_CHARS, "사진이 너무 커요 — 다시 시도해 주세요")
+    .nullish(),
 });
 
 // ---------------------------------------------------------------------------
@@ -183,9 +215,24 @@ export async function POST(req: Request) {
     childNote: input.childNote ?? null,
   };
 
+  /**
+   * [M6 §12] 프롬프트로 나가는 입력 = 기록에 남는 `problem` **+ 사진 한 장**.
+   *
+   * 사진을 `problem`에 섞지 않는 것이 이 두 줄의 요점이다. `problem`은 그대로
+   * `createExplanation()`에 넘어가 기록이 되는데, **사진은 저장하지 않는다**(§9-1·§12-4).
+   * 한 객체로 합치면 8MB짜리 base64가 Firestore 문서로 따라 들어간다(문서 1MB 상한을
+   * 넘겨 저장이 통째로 실패하고, 성공하더라도 아이 필기가 찍힌 사진이 남는다).
+   *
+   * 여기서 스프레드를 쓰는 것은 위 `problem`과 성격이 다르다 — 저 위가 금지한 것은
+   * **zod가 파싱한 요청 본문**을 통째로 펼치는 일이고(무엇이 프롬프트로 나가는지 안 보인다),
+   * 이쪽은 바로 위에서 키를 하나씩 지어 둔 객체에 필드 하나를 더하는 것이라
+   * "기록에 남는 것 + 사진"이라는 관계가 오히려 이 모양에서 가장 잘 보인다.
+   */
+  const explainInput: ExplainProblemInput = { ...problem, imageDataUrl: input.imageDataUrl ?? null };
+
   try {
     // [M2.5] 2단 렌더러 주입 — 파일 상단 주석 참조. 호출 E가 실제로 나가는 유일한 자리다.
-    const result = await explainProblem(problem, { renderSceneHtml });
+    const result = await explainProblem(explainInput, { renderSceneHtml });
 
     // [M4 §9-3] 자동 저장 — best-effort. 여기서 던져도 설명은 그대로 내려간다.
     let id: string | null = null;

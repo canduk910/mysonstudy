@@ -15,13 +15,15 @@
  */
 
 import { z } from "zod";
-import { callWithSchema, resolveVerifyModel, textPart } from "../client";
+import { callWithSchema, resolveVerifyModel, textPart, type UserContentPart } from "../client";
 import type { AnswerItem, SceneTier } from "../../scene/types";
 import { compare, formatAnswer, verifyScene } from "../../scene/verify";
 import {
   EXPLAIN_CALL_OPTIONS,
   EXPLAIN_SYSTEM_PROMPT,
-  buildExplainUserMessage,
+  assertImageDataUrl,
+  buildExplainUserParts,
+  problemImageParts,
   type ExplainUserMessageInput,
 } from "./prompts";
 import {
@@ -37,7 +39,11 @@ import {
 
 /** 호출 C 시스템 프롬프트 (§5-1 원문 그대로) */
 export const VERIFY_SYSTEM_PROMPT = `너는 초등 수학 문제 검산 담당이다. 문제 문장만 보고 스스로 푼 뒤 답만 낸다.
-설명·비유는 쓰지 않는다. 라벨은 문제 속 이름 그대로 쓴다. 답을 확정할 수 없으면 solvable을 false로.`;
+설명·비유는 쓰지 않는다. 라벨은 문제 속 이름 그대로 쓴다. 답을 확정할 수 없으면 solvable을 false로.
+사진이 함께 오면 그것을 보고 푼다. 그림 설명보다 사진이 우선이다.
+다만 [문제]의 문장·숫자는 사람이 고쳤을 수 있다. 문장의 숫자·조건은 문장을 따르고,
+사진은 그림을 읽는 데 쓴다.
+사진에 여러 문제가 있으면 [문제]의 문장과 같은 문제만 본다.`;
 
 /**
  * 호출 C 파라미터 (§1 표: temperature 0 · 출력 한도 ~800).
@@ -97,10 +103,22 @@ export interface AnswerCheck {
   answer: AnswerItem[];
 }
 
-/** 호출 C 사용자 메시지 입력 — **문제 문장과 그림 설명뿐이다** */
+/** 호출 C 사용자 메시지 입력 — **문제 문장과 그림 설명, 그리고 (있으면) 문제 사진뿐이다** */
 export interface VerifyUserMessageInput {
   text: string;
   figureDesc?: string | null;
+  /**
+   * 문제집 페이지 사진 (base64 data URL · 선택 · §12-2).
+   *
+   * **C에 안 주면 C가 구조적으로 불리해진다.** 그림을 본 B와 못 본 C의 답이 어긋나고,
+   * §5-3이 그것을 `held`로 접는다 — 검산이 일하는 게 아니라 **근거가 달라서 지는 것**이다.
+   * 독립 검산은 같은 근거 위에서만 공정하다. 그래서 B가 받는 사진을 C도 그대로 받는다.
+   * 재시도(§5-3)의 두 번째 검산도 **같은 사진**을 다시 받아야 한다.
+   *
+   * 이것은 앵커링 예외가 아니다 — 사진은 **문제 그 자체**이지 B의 풀이가 아니다.
+   * 아래 상자의 금지 목록(B의 답·3막 텍스트·이전 검산 결과)은 그대로 살아 있다.
+   */
+  imageDataUrl?: string | null;
 }
 
 /**
@@ -113,7 +131,8 @@ export interface VerifyUserMessageInput {
  * │                                                                          │
  * │ "컨텍스트를 더 주면 정확해지지 않나?"라는 **선의의 수정이 반드시 들어오는**  │
  * │ 자리다. 답·풀이·3막 텍스트·아이가 쓴 답(childAnswer)·이전 검산 결과 —        │
- * │ 무엇도 넘기지 않는다. C가 받는 것은 문제 문장과 그림 설명, 그 둘뿐이다.      │
+ * │ 무엇도 넘기지 않는다. C가 받는 것은 문제 문장과 그림 설명, 그리고 [M6] 문제  │
+ * │ 사진(§12-2)뿐이다 — **사진은 문제 그 자체이지 B의 풀이가 아니다.**           │
  * │ 재시도 때도 같다(§5-3의 c2는 retryNote 없이 처음과 똑같은 입력으로 부른다).  │
  * │                                                                          │
  * │ 정확도를 올리고 싶으면 여기에 맥락을 붙이는 대신 `OPENAI_MODEL_VERIFY`로     │
@@ -128,12 +147,35 @@ ${input.text}
 답을 계산해줘.`;
 }
 
+/**
+ * 호출 C — 사용자 메시지 **파트 배열** (사진 + 텍스트 · §12-5).
+ *
+ * 호출 A·B와 **같은 관례**다: 이미지 파트를 먼저, 지시 텍스트를 나중에.
+ * 사진이 없으면 `[textPart(buildVerifyUserMessage(input))]` 한 개이고, 그 텍스트는
+ * 지금까지 나가던 것과 **글자 단위로 같다**(§12-4).
+ *
+ * ⚠️ **사진에는 아이 필기와 어른 채점 표시가 함께 찍혀 있다**(§2-1 4번). 즉 텍스트로는
+ * 넘기지 않는 `childAnswer`·`childWork`가 사진 안에는 보인다. §12-2가 사진을 C에도 주라고
+ * 명시했으므로 그대로 따르되, 이것이 §5-1 앵커링 방어의 **유일한 구멍**임을 여기 남긴다.
+ * eval O5는 텍스트 경로만 감시할 수 있다(사진 안의 필기는 코드로 못 읽는다).
+ * 아이 답이 검산을 끌어당기는 정황이 보이면 §12-2로 되돌아가 crop·마스킹을 다시 논해야 한다.
+ */
+export function buildVerifyUserParts(input: VerifyUserMessageInput): UserContentPart[] {
+  return [
+    ...problemImageParts(input.imageDataUrl, VERIFY_CALL_OPTIONS.call),
+    textPart(buildVerifyUserMessage(input)),
+  ];
+}
+
 /** 호출 C 실행 — 문제를 독립적으로 다시 푼다 */
 export async function callAnswerCheck(input: VerifyUserMessageInput): Promise<AnswerCheck> {
   return callWithSchema<AnswerCheck>({
     call: VERIFY_CALL_OPTIONS.call,
     system: VERIFY_SYSTEM_PROMPT,
-    user: [textPart(buildVerifyUserMessage(input))],
+    // [M6] **파트 빌더를 쓴다.** `textPart(buildVerifyUserMessage(input))`으로 되돌리면 사진이
+    // 조용히 빠지고 C만 눈이 먼다 — 그림을 본 B와 못 본 C가 갈려 §5-3이 held로 접는다.
+    // 사진이 없으면 이 호출의 결과는 예전과 글자 단위로 같다(§12-4). eval O12가 이 줄을 지킨다.
+    user: buildVerifyUserParts(input),
     jsonSchema: ANSWER_CHECK_JSON_SCHEMA,
     zodSchema: answerCheckSchema,
     temperature: VERIFY_CALL_OPTIONS.temperature,
@@ -151,7 +193,10 @@ export async function callExplain(input: ExplainUserMessageInput): Promise<Expla
   return callWithSchema<Explanation>({
     call: EXPLAIN_CALL_OPTIONS.call,
     system: EXPLAIN_SYSTEM_PROMPT,
-    user: [textPart(buildExplainUserMessage(input))],
+    // [M6] **파트 빌더를 쓴다.** 재시도(§5-3)는 `{ ...input, retryNote }`로 부르므로 사진이
+    // 스프레드로 그대로 따라간다 — 재시도 때도 같은 사진을 다시 보낸다(§12-2).
+    // 사진이 없으면 결과는 예전과 글자 단위로 같다(§12-4). eval O12가 이 줄을 지킨다.
+    user: buildExplainUserParts(input),
     // childGrade 규칙은 "아이가 쓴 답을 넘겼는가"가 정한다 (schemas.ts §makeExplanationSchema).
     // 빈 문자열은 사용자가 지운 것이므로 '없음'으로 본다 — 프롬프트에도 빈칸으로 나간다.
     zodSchema: makeExplanationSchema({ hasChildAnswer: (input.childAnswer ?? "").trim() !== "" }),
@@ -249,7 +294,30 @@ export async function explainProblem(
   input: ExplainProblemInput,
   deps: ExplainProblemDeps = {},
 ): Promise<ExplainProblemResult> {
-  const problem: VerifyUserMessageInput = { text: input.text, figureDesc: input.figureDesc ?? null };
+  // [M6] 사진 형식은 **어느 호출보다 먼저** 여기서 던진다.
+  //
+  // `buildXParts()`도 같은 검사를 하지만, 그 경로만 믿으면 보증이 우연에 기댄다:
+  // 호출 C는 `safeAnswerCheck()`가 감싸고 있어 **형식 오류를 held로 삼켜 버린다**(의도된 동작 —
+  // 심판이 죽어도 3막 설명은 살리려는 것이다). 지금 예외가 밖으로 나오는 것은 순전히 호출 B가
+  // 같은 값으로 함께 던지기 때문이고, B의 throw가 언젠가 감싸이면 **B만 눈 뜬 채로 검산이 도는**
+  // 상태가 조용히 생긴다. 그것이 §12-2가 막으려던 바로 그 그림이다.
+  // 한 줄 앞당겨 두면 그 보증이 구조가 된다 — 정상 경로(형식이 맞거나 사진이 없음)에는 무영향이다.
+  const photo = input.imageDataUrl?.trim();
+  if (photo) assertImageDataUrl(photo, "math-pipeline");
+
+  // 호출 C에 넘길 입력 — **문제 문장·그림 설명·문제 사진뿐이다.**
+  // 여기에 `input`을 통째로 펼치지 마라(`{ ...input }`). `ExplainProblemInput`에는 B의 답을
+  // 끌어당기는 것들(childAnswer·childWork·retryNote)이 함께 들어 있고, 스프레드로 새면
+  // 심판이 선수 답안지를 보게 된다(§5-1 앵커링 방어). 필드를 **하나씩 손으로 옮기는 것**이
+  // 그 사고를 막는 장치다 — eval O5가 이 결과를 감시한다.
+  const problem: VerifyUserMessageInput = {
+    text: input.text,
+    figureDesc: input.figureDesc ?? null,
+    // §12-2 — B가 보는 사진을 C도 본다. 사진은 앵커링 예외가 아니라 **문제 그 자체**다.
+    // 이 줄이 빠지면 C만 그림을 못 본 채 답을 내고, 그 불일치를 §5-3이 held로 접는다.
+    // 검산이 일하는 게 아니라 근거가 달라서 지는 것이다.
+    imageDataUrl: input.imageDataUrl ?? null,
+  };
 
   // B(설명)와 C(검산)를 동시에 띄운다. C는 B의 결과를 입력으로 쓰지 않으므로 순서 의존이 없고,
   // 순차로 돌리면 지연만 두 배가 된다.

@@ -31,6 +31,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { callWorksheetExtract } from "@/lib/ai/math/extract";
+import { MATH_IMAGE_DATA_URL_PATTERN } from "@/lib/ai/math/prompts";
 import { MAX_IMAGE_DATA_URL_CHARS } from "@/lib/upload-limits";
 
 export const runtime = "nodejs";
@@ -38,11 +39,16 @@ export const runtime = "nodejs";
 /**
  * 이미지 **1장**만 받는다 (§2-2). 길이 상한은 `lib/upload-limits.ts`가 단일 정의처다 —
  * 여기에 숫자를 직접 적으면 영어 라우트·UI와 어긋나고, 어긋난 상한은 조용히 실패한다.
+ *
+ * [M6 §12] 형식 정규식도 같은 이유로 `MATH_IMAGE_DATA_URL_PATTERN`을 가져다 쓴다.
+ * **여기서 통과한 사진이 그대로 `/api/math/explain`으로 다시 간다**(§12-3 — 판독에 쓴 사진
+ * 그대로). 두 라우트가 같은 리터럴을 각자 적고 있으면 한쪽만 손봤을 때 "판독은 됐는데
+ * 설명은 거절되는" 사진이 생긴다. 정규식·상한 모두 한 곳만 본다.
  */
 const bodySchema = z.object({
   image: z
     .string()
-    .regex(/^data:image\/[a-z0-9.+-]+;base64,/i, "이미지 data URL 형식이어야 해요")
+    .regex(MATH_IMAGE_DATA_URL_PATTERN, "이미지 data URL 형식이어야 해요")
     .max(MAX_IMAGE_DATA_URL_CHARS, "사진이 너무 커요 — 다시 시도해 주세요"),
 });
 

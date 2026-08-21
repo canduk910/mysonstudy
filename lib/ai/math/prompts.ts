@@ -16,8 +16,64 @@
 
 // 상대 경로로 import한다 — `scripts/eval-math.ts`가 tsx로 직접 실행되므로 `@/` 별칭에 기대지 않는다
 // (기존 lib/·scripts/ 전부 같은 관례).
+import { imagePart, textPart, type UserContentPart } from "../client";
 import type { Scene } from "../../scene/types";
+import { IMAGE_DATA_URL_PATTERN } from "../../upload-limits";
 import type { Explanation, ProblemPattern } from "./schemas";
+
+// ---------------------------------------------------------------------------
+// 문제 사진 파트 — 호출 A·B·C가 공유한다 (§12)
+//
+// [M6] 사진을 보는 것이 호출 A 하나뿐이던 시절에는 이 코드가 `extract.ts` 안에만 있었다.
+// 이제 B·C도 같은 사진을 받으므로(§12-2) **판정처를 하나로 모은다** — 형식 검사가 호출마다
+// 따로 살면 "A는 통과했는데 B에서 400"처럼 갈라진다.
+// ---------------------------------------------------------------------------
+
+/**
+ * 영어 `/api/extract` 라우트의 zod 검사와 같은 형식 — base64 data URL만 받는다.
+ *
+ * **정의는 `lib/upload-limits.ts`에 있다**(QA P3-1). 이 모듈은 `../client`를 통해 `openai` SDK를
+ * 끌어오므로, 클라이언트가 프리플라이트 형식 검사를 하려고 여기를 import하면 SDK가 번들에 딸려 온다.
+ * 길이 상한(`MAX_IMAGE_DATA_URL_CHARS`)과 같은 파일에 두어 사진 검사 두 축을 한 곳에서 본다.
+ *
+ * 이 이름은 **별칭으로 남긴다** — 수학 두 라우트(`/api/math/extract`·`/api/math/explain`)가
+ * 이 이름으로 import하고 있고, 라우트 파일은 app-builder 소관이다. 그쪽이 `lib/upload-limits.ts`를
+ * 직접 보게 바뀌면 이 재수출은 지워도 된다.
+ */
+export { IMAGE_DATA_URL_PATTERN as MATH_IMAGE_DATA_URL_PATTERN } from "../../upload-limits";
+
+/**
+ * data URL 형식 검사. **vision 호출이라 이미지 토큰이 붙으므로 호출 전에 막는다** —
+ * 형식이 틀리면 어차피 API가 400을 내고, 그 전에 여기서 이유가 분명한 오류를 던지는 편이 낫다.
+ */
+export function assertImageDataUrl(dataUrl: string, call: string): void {
+  if (!IMAGE_DATA_URL_PATTERN.test(dataUrl)) {
+    throw new Error(`[ai:${call}] imageDataUrl은 "data:image/…;base64,…" 형식이어야 합니다.`);
+  }
+}
+
+/**
+ * 사용자 메시지의 **사진 파트** (없으면 빈 배열).
+ *
+ * 사진은 선택이다(§12-4) — `/math/new`(직접 입력)와 저장된 기록의 "다시 만들기"에는 사진이 없고,
+ * 그 경로는 지금까지와 똑같이 텍스트만으로 돈다. 그래서 널이면 **파트를 아예 만들지 않는다**:
+ * 빈 이미지 파트를 끼우면 사진 없는 요청의 메시지가 예전과 달라진다.
+ *
+ * **형식이 틀린 값은 조용히 버리지 않고 던진다.** 사진을 버리면 호출 C만 눈이 멀 수 있고
+ * (B는 통과, C는 실패), 그러면 §12-2가 막으려던 "근거가 달라서 지는 검산"이 그대로 재현된다.
+ * 없는 것과 잘못된 것은 다른 사건이다.
+ */
+export function problemImageParts(
+  imageDataUrl: string | null | undefined,
+  call: string,
+): UserContentPart[] {
+  const dataUrl = imageDataUrl?.trim();
+  if (!dataUrl) return [];
+  assertImageDataUrl(dataUrl, call);
+  // `imagePart()`가 붙이는 `detail: "high"`가 여기서도 그대로 필요하다 — 읽어야 하는 것이
+  // 점판의 점, 보조선, 각도 표시처럼 작은 그림 요소다(§12-1).
+  return [imagePart(dataUrl)];
+}
 
 // ---------------------------------------------------------------------------
 // 호출 A — 문제 판독 (vision) · §2
@@ -73,6 +129,15 @@ export const EXPLAIN_SYSTEM_PROMPT = `너는 초등학생 아이와 수학 문�
 방향을 뒤집는 실수를 한다. 그래서 1막(탐정 시간)이 이 설명의 중심이다 — 무엇이 주어졌고 무엇을
 구하는지, 누가 누구에게 얼마를 옮겼는지를 먼저 또렷하게 잡아 준다. 계산 과정을 잘게 쪼개는 것보다
 구조를 보여 주는 쪽에 공을 들여라.
+
+[문제 사진]
+사진이 함께 오면 **그것이 그림의 진짜 근거다.** 그림 설명 한 줄보다 사진을 우선한다.
+도형·표·점판·보조선·색칠된 부분·각도 표시는 사진에서 직접 읽는다.
+다만 [문제]의 문장·숫자는 사람이 고쳤을 수 있다. 문장의 숫자·조건은 문장을 따르고,
+사진은 그림을 읽는 데 쓴다.
+사진에 여러 문제가 있으면 [문제]의 번호에 해당하는 것만 본다. 번호가 "-"이면
+[문제]의 문장과 같은 문제를 찾아본다. 다른 문제를 섞지 마라.
+사진이 없으면 그림 설명만으로 푼다.
 
 [절대 규칙]
 1. 먼저 문제를 정확히 푼다. 답이 확실하지 않으면 confidence를 낮게 쓰고 그 이유를 uncertaintyNote에 적는다.
@@ -177,6 +242,23 @@ export interface ExplainUserMessageInput {
   /** 아이에 대한 추가 메모 (선택) */
   childNote?: string | null;
   /**
+   * 문제집 페이지 사진 (base64 data URL · 선택 · §12).
+   *
+   * **호출 A가 판독할 때 쓴 사진을 그대로 넘긴다.** 문제 영역만 잘라 보내지 않는 이유는
+   * §12-3이다 — 크롭 좌표가 조금만 어긋나면 도형의 일부가 잘려 나가는데, 그림이 필요해서
+   * 넣는 기능이 그림을 훼손하게 된다. 페이지 전체를 보내고 템플릿의 `번호:` 필드가 어느
+   * 문제인지 지목한다(프롬프트 `[문제 사진]` 절이 "번호에 해당하는 것만 본다"고 못 박는다).
+   * `number`가 널이면 그 필드는 `번호: -`가 되므로 지목이 풀린다 — 그래서 같은 절이
+   * "번호가 `-`이면 [문제]의 문장과 같은 문제를 찾아본다"는 폴백을 함께 준다(§12-3).
+   *
+   * 없으면 null — 직접 입력(`/math/new`)과 저장된 기록의 "다시 만들기"가 그 경로다.
+   * 사진은 저장하지 않으므로(§9-1) 기록에서 되살린 문제에는 사진이 없다.
+   *
+   * **이 값은 텍스트 메시지에 한 글자도 나타나지 않는다** — `buildExplainUserMessage()`의
+   * 출력은 사진 유무와 무관하게 같고, 사진은 `buildExplainUserParts()`가 별도 파트로 싣는다.
+   */
+  imageDataUrl?: string | null;
+  /**
    * 재시도 지시문 (HARNESS §5-3 `callB(problem, retryNote)`).
    * 답 불일치·장면 검산 실패 뒤의 **1회 재시도**에서만 채운다. pipeline.ts가 넘긴다.
    * 비워 두면 §3-2 템플릿과 완전히 동일한 메시지가 나간다.
@@ -216,6 +298,24 @@ export function buildExplainUserMessage(input: ExplainUserMessageInput): string 
 
 [다시 풀기]
 ${retryNote}`;
+}
+
+/**
+ * 호출 B — 사용자 메시지 **파트 배열** (사진 + 텍스트 · §12-5).
+ *
+ * 호출 A(`extract.ts`)·영어 표지 판독(`extractBook`)과 **같은 관례**다: 이미지 파트를 먼저,
+ * 지시 텍스트를 나중에 싣는다. 새 방식을 만들지 않았다 — 세 호출이 같은 모양이어야
+ * "사진을 어떻게 싣더라"를 매번 다시 정하지 않는다.
+ *
+ * **사진이 없으면 결과는 `[textPart(buildExplainUserMessage(input))]` 한 개다** —
+ * 지금까지 나가던 메시지와 **글자 단위로 같다**(§12-4). 기존 픽스처가 그대로 통과하는 것이
+ * 그 증거이고, eval O10이 두 갈래를 스텁으로 실증한다.
+ */
+export function buildExplainUserParts(input: ExplainUserMessageInput): UserContentPart[] {
+  return [
+    ...problemImageParts(input.imageDataUrl, EXPLAIN_CALL_OPTIONS.call),
+    textPart(buildExplainUserMessage(input)),
+  ];
 }
 
 // ---------------------------------------------------------------------------

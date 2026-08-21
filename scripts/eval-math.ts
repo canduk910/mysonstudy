@@ -66,16 +66,22 @@ import {
   PRACTICE_SYSTEM_PROMPT,
   WORKSHEET_EXTRACT_SYSTEM_PROMPT,
   WORKSHEET_EXTRACT_USER_TEXT,
+  buildExplainUserMessage,
+  buildExplainUserParts,
   type ExplainUserMessageInput,
 } from "../lib/ai/math/prompts";
 import {
   VERIFY_SYSTEM_PROMPT,
   buildVerifyUserMessage,
+  buildVerifyUserParts,
   explainProblem,
   type ExplainProblemResult,
 } from "../lib/ai/math/pipeline";
+import type { UserContentPart } from "../lib/ai/client";
 import {
   checkSpecSync,
+  extractSpecBlocks,
+  normalizeForCompare,
   printSpecSyncDetails,
   type SpecSyncOutcome,
   type SpecSyncTarget,
@@ -1131,6 +1137,47 @@ function zodIssues(error: { issues: { path: PropertyKey[]; message: string }[] }
   return error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join(" / ");
 }
 
+// ---------------------------------------------------------------------------
+// [M6] 사진 경로 스텁 — §12-7
+//
+// **실제 사진 파일을 픽스처에 넣지 않는다.** 저장소가 무거워지고, 픽스처에 사진이 붙으면
+// 실호출 eval의 입력 토큰이 문제당 ~1,200씩 는다(§12-6). 재는 것은 "사진이 있고 없고에 따라
+// 메시지가 어떻게 달라지는가"이고, 그것은 1×1 PNG로 충분히 재진다 — 모델이 볼 일이 없다.
+// (오프라인 점검 전용이다. 네트워크는 파일 머리의 게이트가 이미 막아 두었다.)
+// ---------------------------------------------------------------------------
+
+/** 1×1 투명 PNG. 형식만 맞으면 되는 자리다 */
+const STUB_PROBLEM_PHOTO =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+
+/** 파트 배열에서 텍스트만 이어 붙인다 (실제로 모델이 읽는 글이 이것이다) */
+function partsText(parts: readonly UserContentPart[]): string {
+  return parts.flatMap((part) => (part.type === "input_text" ? [part.text] : [])).join("\n");
+}
+
+/**
+ * 소스에서 주석을 걷어 낸다 (O12 배선 점검 전용).
+ *
+ * 배선 점검은 "이 줄이 코드에 있는가"를 묻는데, **주석이 안티패턴을 인용하면 오탐이 난다** —
+ * `pipeline.ts`의 [M6] 주석이 실제로 `textPart(buildVerifyUserMessage(input))`를 인용해
+ * "이렇게 되돌리지 마라"고 적고 있다. 경고를 지우게 만드는 점검은 나쁜 점검이다.
+ *
+ * 블록 주석과 **줄 전체가 주석인 줄**만 지운다. 코드 줄 끝의 `//`는 남지만 그 자리에
+ * 배선 패턴이 올 일이 없고, 문자열 안의 `//`를 잘못 자르지 않는 쪽이 더 중요하다.
+ */
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("//"))
+    .join("\n");
+}
+
+/** 파트 배열의 모양을 한 줄로 — 표에 찍어 사람이 눈으로 확인한다 */
+function partsShape(parts: readonly UserContentPart[]): string {
+  return parts.map((part) => part.type).join(" + ");
+}
+
 export function runOfflineChecks(): CheckResult[] {
   const results: CheckResult[] = [];
   const add = (fixture: string, check: string, ok: boolean, detail: string) =>
@@ -1239,21 +1286,38 @@ export function runOfflineChecks(): CheckResult[] {
 
   // O5. 앵커링 방어 — 호출 C의 입력에 B의 답도, 아이가 쓴 답도 들어가지 않는다(§5-1).
   //     "컨텍스트를 더 주면 정확해지지 않나?"라는 선의의 수정이 반드시 들어오는 자리다.
+  //
+  //     [M6] **조립된 파트 배열**을 재도록 바꿨다. 사진이 붙으면서 실제로 나가는 메시지는
+  //     문자열이 아니라 파트 배열이 됐고, 문자열만 계속 보면 파트 쪽에 붙은 유출을 놓친다.
+  //     사진을 붙인 갈래도 함께 재는 이유: 사진 때문에 텍스트가 한 글자라도 늘면 여기서 걸린다.
+  //     **사진 안에 찍힌 아이 필기는 코드로 못 읽는다** — 그 구멍은 pipeline.ts의
+  //     `buildVerifyUserParts` 주석에 남겨 두었다(§12-2가 사진을 C에도 주라고 명시한 결과다).
   for (const f of FIXTURES) {
-    const message = buildVerifyUserMessage({ text: f.problem.text, figureDesc: f.problem.figureDesc });
     const childAnswer = (f.problem.childAnswer ?? "").trim();
     const childWork = (f.problem.childWork ?? "").trim();
-    const leaks = [
-      childAnswer !== "" && message.includes(childAnswer) ? "아이가 쓴 답" : null,
-      childWork !== "" && message.includes(childWork) ? "아이가 쓴 풀이" : null,
-      message.includes("아이가 쓴") ? "아이 정보 블록" : null,
-      message.includes("[다시 풀기]") ? "재시도 지시문" : null,
-    ].filter(Boolean);
+    const leaks: string[] = [];
+    for (const [branch, imageDataUrl] of [["사진 없음", null], ["사진 있음", STUB_PROBLEM_PHOTO]] as const) {
+      const message = partsText(
+        buildVerifyUserParts({
+          text: f.problem.text,
+          figureDesc: f.problem.figureDesc,
+          imageDataUrl,
+        }),
+      );
+      for (const [what, hit] of [
+        ["아이가 쓴 답", childAnswer !== "" && message.includes(childAnswer)],
+        ["아이가 쓴 풀이", childWork !== "" && message.includes(childWork)],
+        ["아이 정보 블록", message.includes("아이가 쓴")],
+        ["재시도 지시문", message.includes("[다시 풀기]")],
+      ] as const) {
+        if (hit) leaks.push(`${branch}: ${what}`);
+      }
+    }
     add(
       f.label,
       "O5. 호출 C 입력에 B의 답·아이 답이 없음 (앵커링 방어)",
       leaks.length === 0,
-      leaks.length === 0 ? "문제 문장 + 그림 설명뿐" : `유출: ${leaks.join(", ")}`,
+      leaks.length === 0 ? "문제 문장 + 그림 설명뿐 (사진 유무 두 갈래)" : `유출: ${leaks.join(", ")}`,
     );
   }
 
@@ -1335,14 +1399,22 @@ export function runOfflineChecks(): CheckResult[] {
   // O8. [M2.5] **점검 9가 실제로 판정을 내는가.** 점검 9는 호출 E가 있어야 돌아서 오프라인에서는
   //     한 번도 실행되지 않는다 — 그 사이에 판정이 무력해져도(항상 pass를 주는 형태로) 아무도 모른다.
   //     그래서 스텁 HTML 두 벌로 **통과 한 건 + 답 불일치 실패 한 건**을 여기서 매번 확인한다.
-  const rectFixture = FIXTURES.find((f) => f.id === "rect-count")!;
+  //
+  //     픽스처는 **id로 집는다**(QA P3-3). 인덱스로 집으면 픽스처 순서가 바뀐 날 다른 문제를 재면서
+  //     표에는 그대로 `rect-count`라고 찍는다 — 조용히 거짓말하는 점검이 된다. 표 라벨도 픽스처에서
+  //     가져와야 같은 이유로 갈라지지 않는다. 아래 O10(§12-7 사진 경로)도 이 상수를 함께 쓴다.
+  const rectFixture = FIXTURES.find((f) => f.id === "rect-count");
+  if (!rectFixture) {
+    // 사라졌다면 건너뛸 게 아니라 멈춘다 — 조용히 넘기면 O8·O10이 아무것도 재지 않는 상태가 된다.
+    throw new Error("[eval:math] 픽스처 `rect-count`를 찾지 못했다 (O8 점검 9 표본 · O10 §12-7 사진 경로)");
+  }
   const rectAnswer = rectFixture.expectedAnswer;
   const judged = (rows: CheckResult[], needle: string) => rows.find((r) => r.check.startsWith(needle));
 
   const goodRows = runSceneHtmlChecks(rectFixture, sceneHtmlSampleResult(sceneHtmlSample(rectAnswer, 5), rectAnswer));
   const goodFails = goodRows.filter((r) => r.status === "fail");
   add(
-    "rect-count (2단)",
+    rectFixture.label,
     "O8. [M2.5] 정상 2단 HTML이 점검 9(9-B~9-F)를 통과",
     goodFails.length === 0,
     goodFails.length === 0
@@ -1358,7 +1430,7 @@ export function runOfflineChecks(): CheckResult[] {
   );
   const mismatchRow = judged(badRows, "9-D");
   add(
-    "rect-count (2단)",
+    rectFixture.label,
     "O8. [M2.5] 답이 다른 2단 HTML을 9-D가 거부",
     mismatchRow?.status === "fail",
     mismatchRow === undefined
@@ -1378,7 +1450,7 @@ export function runOfflineChecks(): CheckResult[] {
   );
   const staticRow = judged(dirtyRows, "9-C");
   add(
-    "rect-count (2단)",
+    rectFixture.label,
     "O8. [M2.5] 금지 문자열(<link)이 든 HTML을 9-C가 거부",
     staticRow?.status === "fail",
     staticRow === undefined
@@ -1392,13 +1464,229 @@ export function runOfflineChecks(): CheckResult[] {
   // (5단계: 문제 → 1~3단계 → 검사). 여기서 null이 나오면 9-E는 언제나 SKIP이 된다.
   const fewshotSteps = countMountedSteps(PLAYER_HTML_FEWSHOT);
   add(
-    "rect-count (2단)",
+    rectFixture.label,
     "O8. [M2.5] few-shot HTML에서 Kit.mount 단계 5개를 세어 냄",
     fewshotSteps.count === 5,
     fewshotSteps.count === null
       ? `세지 못했다: ${fewshotSteps.note} — 9-E가 언제나 SKIP이 된다`
       : `${fewshotSteps.count}단계${fewshotSteps.note ? ` · 경고: ${fewshotSteps.note}` : ""}`,
   );
+
+  // O10. [M6] 문제 사진을 실은 사용자 메시지 — **두 갈래를 스텁으로 실증한다**(§12-4·§12-7).
+  //
+  //   (1) 사진 없음: 파트는 텍스트 하나뿐이고, 그 글은 §3-2·§5-1 템플릿 그대로다.
+  //       **기존 경로가 글자 하나 달라지지 않는 것**이 이 점검의 요점이다 — `/math/new`(직접 입력),
+  //       저장된 기록의 "다시 만들기"(§9-1은 사진을 저장하지 않는다)가 전부 이 갈래로 돈다.
+  //   (2) 사진 있음: 이미지 파트가 **먼저**, 텍스트가 나중(호출 A·영어 표지 판독과 같은 관례).
+  //       그리고 텍스트는 (1)과 **글자 단위로 같아야** 한다 — 사진은 별도 파트로만 실리고
+  //       템플릿 문자열에는 흔적을 남기지 않는다.
+  for (const [call, buildText, buildParts] of [
+    ["B", buildExplainUserMessage, buildExplainUserParts],
+    ["C", buildVerifyUserMessage, buildVerifyUserParts],
+  ] as const) {
+    const problem = rectFixture.problem; // §12-7이 지목한 사진 경로 픽스처(도형 세기)
+    const withoutPhoto = buildParts({ ...problem, imageDataUrl: null });
+    const withPhoto = buildParts({ ...problem, imageDataUrl: STUB_PROBLEM_PHOTO });
+    const baseText = buildText(problem);
+
+    const noPhotoOk =
+      withoutPhoto.length === 1 &&
+      withoutPhoto[0].type === "input_text" &&
+      partsText(withoutPhoto) === baseText;
+    add(
+      rectFixture.label,
+      `O10. [M6] 호출 ${call} — 사진 없으면 기존 메시지 그대로`,
+      noPhotoOk,
+      noPhotoOk
+        ? `파트 ${partsShape(withoutPhoto)} · 텍스트 ${baseText.length}자 (템플릿과 동일)`
+        : `달라졌다 — 파트 ${partsShape(withoutPhoto)} · 사진 없는 경로가 깨졌다`,
+    );
+
+    const image = withPhoto[0];
+    const photoOk =
+      withPhoto.length === 2 &&
+      image.type === "input_image" &&
+      image.image_url === STUB_PROBLEM_PHOTO &&
+      image.detail === "high" &&
+      withPhoto[1].type === "input_text" &&
+      partsText(withPhoto) === baseText;
+    add(
+      rectFixture.label,
+      `O10. [M6] 호출 ${call} — 사진은 파트로만 실리고 텍스트는 불변`,
+      photoOk,
+      photoOk
+        ? `파트 ${partsShape(withPhoto)} · detail high · 텍스트는 사진 없을 때와 동일`
+        : `파트 ${partsShape(withPhoto)} · 순서/detail/텍스트 중 하나가 어긋난다`,
+    );
+
+    // 형식이 틀린 값은 **조용히 버리지 않고 던진다.** 사진을 버리면 B는 보고 C는 못 보는
+    // 상태가 될 수 있고, 그것이 §12-2가 막으려던 "근거가 달라서 지는 검산"이다.
+    let threw = false;
+    try {
+      buildParts({ ...problem, imageDataUrl: "https://example.com/page.jpg" });
+    } catch {
+      threw = true;
+    }
+    add(
+      rectFixture.label,
+      `O10. [M6] 호출 ${call} — data URL이 아닌 사진을 거부`,
+      threw,
+      threw ? "throw (호출 전에 막는다)" : "통과시켰다 — 형식 검사가 무력해졌다",
+    );
+  }
+
+  // O10. 비용 가드 — 픽스처에 실제 사진을 넣지 않는다(§12-7). 넣는 순간 실호출 eval의 입력
+  //      토큰이 문제당 ~1,200씩 늘고(§12-6) 저장소도 무거워진다. 사진 경로는 위 스텁이 잰다.
+  //      **일부러 사진 픽스처를 들이기로 했다면** 이 점검을 지우는 것이 그 결정의 기록이 된다.
+  const withPhotoFixtures = FIXTURES.filter((f) => (f.problem.imageDataUrl ?? "") !== "");
+  add(
+    "픽스처",
+    "O10. [M6] 픽스처에 실제 사진이 없다 (실호출 비용 고정)",
+    withPhotoFixtures.length === 0,
+    withPhotoFixtures.length === 0
+      ? "사진 0장 — 실호출 토큰은 M6 이전과 같다"
+      : `사진이 붙은 픽스처: ${withPhotoFixtures.map((f) => f.id).join(", ")}`,
+  );
+
+  // O12. [M6] **배선** — 호출부가 파트 빌더를 쓰는가 (§12-2).
+  //
+  //      O10은 `buildXParts()`가 사진을 올바로 싣는지를 잰다. 그런데 M6에서 파트 빌더는
+  //      기존 문자열 빌더를 **대체하지 않고 추가**됐다 — 즉 `user: [textPart(buildXUserMessage(input))]`
+  //      로 되돌려도 **컴파일되고, 타입도 맞고, O10도 그대로 PASS한다.** 사진만 조용히 안 나간다.
+  //      그 침묵이 이 점검이 존재하는 이유다.
+  //
+  //      되돌림이 반쪽만 일어나는 경우가 더 나쁘다: 호출 B만 파트 빌더면 **그림을 본 B와 못 본 C**가
+  //      갈리고, §5-3이 그 불일치를 held로 접는다 — 검산이 일하는 게 아니라 근거가 달라서 지는 것이다.
+  //      그래서 B·C·`explainProblem`의 C 입력 조립, **세 자리를 함께** 본다.
+  //
+  //      소스 텍스트를 읽는 이유: 회귀하는 대상이 "코드 한 줄"이고, 오프라인에서 이 배선을
+  //      행동으로 관찰할 이음매가 없다(`callWithSchema`가 네트워크 뒤에 있다). 주석은 떼고 본다 —
+  //      주석이 안티패턴을 인용할 수 있어야 하기 때문이다(실제로 인용하고 있다).
+  {
+    const PIPELINE_PATH = "lib/ai/math/pipeline.ts";
+    const rawSource = readFileSync(new URL(`../${PIPELINE_PATH}`, import.meta.url), "utf-8");
+    const code = stripComments(rawSource);
+    const bodyOf = (fnDecl: string): string => {
+      const start = code.indexOf(fnDecl);
+      if (start < 0) return "";
+      const rest = code.slice(start + fnDecl.length);
+      const nextFn = rest.search(/\nexport (async )?function |\nfunction /);
+      return nextFn < 0 ? rest : rest.slice(0, nextFn);
+    };
+
+    for (const [call, fnDecl, wanted, stale] of [
+      [
+        "B",
+        "export async function callExplain",
+        "user: buildExplainUserParts(input)",
+        "buildExplainUserMessage",
+      ],
+      [
+        "C",
+        "export async function callAnswerCheck",
+        "user: buildVerifyUserParts(input)",
+        "buildVerifyUserMessage",
+      ],
+    ] as const) {
+      const body = bodyOf(fnDecl);
+      const usesParts = body.includes(wanted);
+      const usesText = body.includes(`user: [textPart(${stale}`);
+      add(
+        "배선",
+        `O12. [M6] 호출 ${call} 실행부가 파트 빌더를 쓴다 (사진이 실제로 나간다)`,
+        usesParts && !usesText,
+        body === ""
+          ? `${PIPELINE_PATH}에서 ${fnDecl}를 찾지 못했다 — 점검이 무력해졌다`
+          : usesParts && !usesText
+            ? `${wanted}`
+            : usesText
+              ? `문자열 빌더로 되돌아갔다 — 사진이 조용히 빠진다(§12-2)`
+              : `${wanted}를 찾지 못했다 — 배선을 확인하라`,
+      );
+    }
+
+    // `explainProblem()`이 C 입력을 조립할 때 사진을 함께 넣는가.
+    // 이 한 줄이 빠지면 **B만 그림을 본다** — 호출 C는 파트 빌더를 쓰고도 넘길 사진이 없다.
+    const pipelineBody = code.slice(code.indexOf("export async function explainProblem"));
+    const problemLiteral = pipelineBody.slice(
+      pipelineBody.indexOf("const problem: VerifyUserMessageInput"),
+    );
+    const literal = problemLiteral.slice(0, problemLiteral.indexOf("};") + 2);
+    const forwardsPhoto = /imageDataUrl:\s*input\.imageDataUrl/.test(literal);
+    add(
+      "배선",
+      "O12. [M6] explainProblem이 C 입력에 사진을 실어 준다 (§12-2)",
+      forwardsPhoto,
+      forwardsPhoto
+        ? "imageDataUrl: input.imageDataUrl ?? null — B가 보는 사진을 C도 본다"
+        : "C 입력에 사진이 없다 — B만 그림을 보고, 그 불일치를 §5-3이 held로 접는다",
+    );
+
+    // 재시도(§5-3) 때도 **같은 사진이 다시 나가는가**(§12-2).
+    //
+    // 지금 이 성질은 코드가 아니라 **두 개의 재사용**이 떠받치고 있다: 호출 B는
+    // `callExplain({ ...input, retryNote })`의 스프레드가, 호출 C는 같은 `problem` 객체를
+    // 두 번 넘기는 것이 사진을 실어 나른다. 둘 중 하나만 풀려도 **두 번째 검산만 눈을 감고**,
+    // 그 불일치는 held로 나타나 마치 검산이 일한 것처럼 보인다 — 가장 읽기 어려운 실패다.
+    // 재시도는 오프라인에서 행동으로 재기 어려우므로(네트워크가 필요하다) 그 두 재사용을 이름으로 잡는다.
+    const explainBody = pipelineBody.slice(0, pipelineBody.indexOf("\n// ---"));
+    const retrySpreads = /callExplain\(\{\s*\.\.\.input,\s*retryNote\s*\}\)/.test(explainBody);
+    const recheckReuses = (explainBody.match(/safeAnswerCheck\(problem\)/g) ?? []).length === 2;
+    add(
+      "배선",
+      "O12. [M6] 재시도 때도 같은 사진이 다시 나간다 (§12-2)",
+      retrySpreads && recheckReuses,
+      retrySpreads && recheckReuses
+        ? "B는 `{ ...input, retryNote }` 스프레드로 · C는 같은 `problem` 객체 재사용으로 사진이 유지된다"
+        : !retrySpreads
+          ? "재시도 B가 입력을 스프레드로 넘기지 않는다 — 두 번째 설명만 그림을 못 본다"
+          : "두 번째 검산이 같은 `problem`을 쓰지 않는다 — 두 번째 검산만 눈을 감는다",
+    );
+
+    // 그 조립이 **스프레드가 아닌지**도 함께 본다. `{ ...input }`은 사진과 동시에
+    // childAnswer·childWork·retryNote까지 C에 흘려 §5-1 앵커링 방어를 무너뜨린다.
+    // O5가 결과를 감시하지만, 여기서 원인을 이름으로 잡아 두는 편이 고치기 쉽다.
+    const spreadsInput = /const problem: VerifyUserMessageInput = \{\s*\.\.\.input/.test(literal);
+    add(
+      "배선",
+      "O12. [M6] C 입력을 `{ ...input }`으로 조립하지 않는다 (앵커링)",
+      !spreadsInput,
+      spreadsInput
+        ? "스프레드로 조립한다 — childAnswer·childWork·retryNote가 심판에게 샌다(§5-1)"
+        : "필드를 하나씩 옮긴다 — 새 필드는 의식적으로만 C에 간다",
+    );
+  }
+
+  // O11. [M6] §12-5가 "프롬프트에 더할 절"로 적어 둔 문안이 프롬프트 안에 그대로 있는가.
+  //
+  //      O9는 프롬프트를 §3-1·§5-1 코드블록과 대조한다. M6에서 그 두 블록에 사진 절을 **직접**
+  //      써 넣었으므로, §12-5의 블록은 O9가 더 이상 건드리지 않는다 — §12-5만 고치면 스펙 안에서
+  //      두 절이 조용히 갈라진다. 이 점검이 그 구멍을 막는다(스펙 ↔ 스펙 대조).
+  {
+    const blocks = extractSpecBlocks(MATH_SPEC_URL);
+    const cases: { label: string; firstLine: string; prompt: string }[] = [
+      { label: "호출 B [문제 사진] 절", firstLine: "[문제 사진]", prompt: EXPLAIN_SYSTEM_PROMPT },
+      {
+        label: "호출 C 사진 두 줄",
+        firstLine: "사진이 함께 오면 그것을 보고 푼다. 그림 설명보다 사진이 우선이다.",
+        prompt: VERIFY_SYSTEM_PROMPT,
+      },
+    ];
+    for (const c of cases) {
+      const block = blocks.find((b) => b.lines[0] === c.firstLine);
+      const ok = block !== undefined && normalizeForCompare(c.prompt).includes(block.text);
+      add(
+        "프롬프트 ↔ 스펙",
+        `O11. [M6] §12-5 ${c.label}이 프롬프트에 원문 그대로`,
+        ok,
+        block === undefined
+          ? `§12-5에서 "${c.firstLine}"으로 시작하는 코드블록을 찾지 못했다`
+          : ok
+            ? `§12-5 (math.md:${block.fenceLine}) ${block.lines.length}줄 일치`
+            : `§12-5 (math.md:${block.fenceLine})와 프롬프트가 갈라졌다 — §3-1·§5-1도 함께 고쳐라`,
+      );
+    }
+  }
 
   // O9. 프롬프트 원문 ↔ 스펙 문서 대조 (아래 SPEC_SYNC_TARGETS 참고)
   results.push(...runSpecSyncChecks());

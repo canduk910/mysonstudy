@@ -28,15 +28,13 @@ import {
   WORKSHEET_EXTRACT_CALL_OPTIONS,
   WORKSHEET_EXTRACT_SYSTEM_PROMPT,
   WORKSHEET_EXTRACT_USER_TEXT,
+  assertImageDataUrl,
 } from "./prompts";
 import {
   WORKSHEET_EXTRACTION_JSON_SCHEMA,
   worksheetExtractionSchema,
   type WorksheetExtraction,
 } from "./schemas";
-
-/** 영어 `/api/extract` 라우트의 zod 검사와 같은 형식 — base64 data URL만 받는다 */
-const IMAGE_DATA_URL_PATTERN = /^data:image\/[a-z0-9.+-]+;base64,/i;
 
 /**
  * 호출 A — 문제집 페이지 사진 1장 → 문제 목록(+아이 필기·채점 표시).
@@ -57,11 +55,9 @@ const IMAGE_DATA_URL_PATTERN = /^data:image\/[a-z0-9.+-]+;base64,/i;
  */
 export async function callWorksheetExtract(imageDataUrl: string): Promise<WorksheetExtraction> {
   // vision 호출이라 이미지 토큰이 붙는다. 형식이 틀린 입력으로 호출을 태우지 않고 여기서 막는다.
-  if (!IMAGE_DATA_URL_PATTERN.test(imageDataUrl)) {
-    throw new Error(
-      `[ai:${WORKSHEET_EXTRACT_CALL_OPTIONS.call}] imageDataUrl은 "data:image/…;base64,…" 형식이어야 합니다.`,
-    );
-  }
+  // [M6] 판정처는 `prompts.ts`로 옮겼다 — 같은 사진이 이제 호출 B·C에도 가므로(§12-2)
+  // 형식 검사가 호출마다 따로 살면 "A는 통과, B는 400"처럼 갈라진다.
+  assertImageDataUrl(imageDataUrl, WORKSHEET_EXTRACT_CALL_OPTIONS.call);
 
   return callWithSchema<WorksheetExtraction>({
     call: WORKSHEET_EXTRACT_CALL_OPTIONS.call,

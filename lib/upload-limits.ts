@@ -36,3 +36,16 @@ export const JPEG_QUALITY = 0.85;
  * 두 라우트에 따로 적어 두면 한쪽만 고쳐 놓고 다른 쪽에서 "왜 여긴 거절되지?"를 만난다.
  */
 export const MAX_IMAGE_DATA_URL_CHARS = 8_000_000;
+
+/**
+ * base64 data URL **형식** 검사 — 길이 상한과 짝을 이루는 나머지 한 축.
+ *
+ * 왜 여기 있나(QA P3-1): M6에서 이 정규식은 `lib/ai/math/prompts.ts`에 살았는데, 그 모듈은
+ * 같은 커밋에서 `openai` SDK를 새로 import했다. 클라이언트가 업로드 전에 형식을 미리 보려는
+ * 순간 프롬프트 모듈이 딸려 오고 SDK가 번들에 실린다. 사진 검사 두 축(형식·길이)은
+ * 성격이 같으므로 **런타임 의존성이 없는 이 파일**에 함께 둔다.
+ *
+ * 원격 URL(`https://…`)을 막는 것이 요점이다 — vision 호출은 원격 이미지도 받아들이지만,
+ * 그러면 우리가 크기·형식을 통제하지 못하는 바이트가 모델에 들어간다.
+ */
+export const IMAGE_DATA_URL_PATTERN = /^data:image\/[a-z0-9.+-]+;base64,/i;
