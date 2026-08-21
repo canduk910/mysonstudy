@@ -78,7 +78,21 @@ function isKitMessage(data: unknown): data is KitMessage {
 const MIN_HEIGHT = 160;
 const MAX_HEIGHT = 2000;
 
-export default function MathScenePlayer({ sceneHtml }: { sceneHtml: string }) {
+/**
+ * `tier` — 이 HTML을 **누가 만들었는가**. 폴백 로그를 가르는 유일한 근거다.
+ *
+ * 둘은 완전히 다른 신호라 한 통에 섞이면 §8 집계를 못 쓴다:
+ *   'typed' → **우리 코드**(`buildContainersHtml`)가 만든 1단 그림. 폴백은 **우리 버그**다
+ *   'html'  → 호출 E가 만든 2단 그림. 폴백은 **AI 출력 품질** 문제이고,
+ *             그 유형이 반복되면 1단 전용 렌더러로 승격할 신호다(§8 [개정 4])
+ */
+export default function MathScenePlayer({
+  sceneHtml,
+  tier,
+}: {
+  sceneHtml: string;
+  tier: "typed" | "html";
+}) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
 
@@ -109,11 +123,13 @@ export default function MathScenePlayer({ sceneHtml }: { sceneHtml: string }) {
     console.warn(
       JSON.stringify({
         scope: "math-scene-player",
+        // 1단 폴백은 우리 버그, 2단 폴백은 AI 품질 — 섞으면 §8 집계가 오염된다
+        tier,
         fallback: reason,
         detail: detail ?? null,
       }),
     );
-  }, []);
+  }, [tier]);
 
   // ── 1. 화면에 들어왔는지 감시 ────────────────────────────────────────────
   useEffect(() => {

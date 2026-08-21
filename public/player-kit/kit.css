@@ -150,8 +150,16 @@ body {
 }
 .kit-pan small { display: block; font-size: 11px; color: var(--sub); font-weight: 600; }
 .kit-pan .kit-pan-num { font-size: 19px; }
-.kit-pan-l { left: calc(50% - 130px); transform: translate(-50%, -22px); }
-.kit-pan-r { left: calc(50% + 130px); transform: translate(-50%, 22px); }
+/*
+ * 접시 위치는 저울대 끝(±130px)이 기본이되, **좁은 폭에서는 그릇 안쪽으로 끌어당긴다.**
+ * 고정 오프셋만 쓰면 폭이 310px 아래로 내려갈 때 왼쪽 접시가 화면 밖으로 나가고
+ * 문서에 가로 스크롤이 생긴다(실측: iframe 폭 296px에서 left −7px, scrollWidth 303).
+ * 플레이어는 360px 모바일이 기준이고 iframe 안쪽 폭은 그보다 더 좁아지므로
+ * (부모 카드 여백 때문에 실측 296~311px) 이 구간이 정상 사용 범위다.
+ * max()/min()으로 접시 반 폭(54px = 108/2)만큼은 늘 안쪽에 남긴다.
+ */
+.kit-pan-l { left: max(50% - 130px, 54px); transform: translate(-50%, -22px); }
+.kit-pan-r { left: min(50% + 130px, 100% - 54px); transform: translate(-50%, 22px); }
 .kit-beam.kit-even .kit-pan-l, .kit-beam.kit-even .kit-pan-r { transform: translate(-50%, 0); }
 .kit-verdict { font-weight: 800; color: var(--ok); font-size: 15px; min-height: 22px; }
 
@@ -246,10 +254,18 @@ script[type="application/json"] { display: none; }
 @media (max-width: 380px) {
   body { padding: 12px 8px 20px; }
   .kit-vcr button { padding: 9px 9px; min-width: 50px; font-size: 13px; }
+  /*
+   * 좁은 폭에서 "◀ 이전"·"⟲ 처음"이 두 줄로 접히던 것을 막는다(실측 296px).
+   * 되감기 플레이어에서 가장 자주 누르는 버튼이라 글자가 접히면 조작감이 나빠진다.
+   * 자리는 점(kit-dots)에서 뺀다 — 점은 현재 위치를 알려줄 뿐 누르는 것이 아니다.
+   */
+  .kit-vcr button { white-space: nowrap; }
+  .kit-dots { gap: 4px; margin: 0 2px; min-width: 0; }
+  .kit-dots i { width: 7px; height: 7px; }
   .kit-beam-bar { width: 210px; }
   .kit-pan { width: 94px; }
-  .kit-pan-l { left: calc(50% - 108px); }
-  .kit-pan-r { left: calc(50% + 108px); }
+  .kit-pan-l { left: max(50% - 108px, 47px); }
+  .kit-pan-r { left: min(50% + 108px, 100% - 47px); }
 }
 
 /* 애니메이션을 줄이라고 한 사람에게는 즉시 전환만 보여준다.

@@ -36,6 +36,7 @@ import type { HeldReason } from "@/lib/ai/math/pipeline";
 import type { MathExplainSuccess } from "@/lib/math-explain-contract";
 // 채점 배지 문구는 목록 화면과 **한 정의처**를 공유한다 (lib/math-labels.ts)
 import { GRADE_BADGE } from "@/lib/math-labels";
+import { buildContainersHtml } from "@/lib/scene/containers-html";
 import type { SceneTier } from "@/lib/scene/types";
 import MathScenePlayer from "./math-scene-player";
 
@@ -74,14 +75,15 @@ const HELD_REASON_TEXT: Record<HeldReason, { emoji: string; ko: string; why: str
  * 그림 준비 상태 안내 — **그림을 실제로 못 그릴 때만** 쓴다.
  *
  * `html`(2단)은 이 표를 타지 않는다. 그림이 3막 아래에 실물로 뜨므로 "준비 중" 안내를
- * 함께 띄우면 같은 화면이 두 말을 하게 된다. `typed`(1단 전용 렌더러)는 대본은 있으나
- * **그것을 그리는 화면이 아직 없어** 안내가 남아 있고(로드맵 §11-2), `none`은 그림 자체가 없다.
+ * 함께 띄우면 같은 화면이 두 말을 하게 된다. `typed`(1단)도 `kind: 'containers'`면
+ * 이제 실물이 뜨므로 마찬가지다 — 남은 것은 **아직 렌더러가 없는 `bar`·`numberline`
+ * 대본**뿐이다(§11-2). `none`은 그림 자체가 없다.
  */
 const SCENE_TIER_TEXT: Record<Exclude<SceneTier, "html">, { ko: string; detail: string }> = {
   typed: {
     ko: "전용 그림(1단) 대본이 준비됐어요",
     detail:
-      "숫자 검산까지 통과한 그림 대본이 있어요. 이 대본을 그대로 그리는 전용 화면은 아직 준비 중이에요.",
+      "숫자 검산까지 통과한 그림 대본이 있어요. 이 종류(띠·수직선)를 그리는 전용 화면은 아직 준비 중이에요.",
   },
   none: {
     ko: "이번 문제는 그림 대본이 없어요",
@@ -289,7 +291,37 @@ export default function MathExplanationView({
    * 티어로 판정한 코드는 안내도 그림도 없는 **빈 자리**를 남긴다. 그런 기록은 그림이
    * 없는 것과 같이 다룬다. 티어 자체는 아래 칩에 원본 그대로 보여 준다.
    */
-  const sceneNote = result.sceneHtml
+  /*
+   * 화면에 실제로 뜰 플레이어 HTML. 두 갈래가 **같은 자리, 같은 컴포넌트**로 모인다:
+   *   1단(`content.scene`) → `buildContainersHtml()`이 우리 코드로 만든 HTML
+   *   2단(`result.sceneHtml`) → 호출 E가 AI로 만든 HTML
+   * 조립·sandbox·3초 폴백은 어느 쪽이든 `<MathScenePlayer>`가 똑같이 맡는다.
+   *
+   * **1단이 우선이다**(§3-1 "1단이 우선"). 파이프라인이 둘을 함께 채우지는 않지만
+   * (§5-3은 `!content.scene`일 때만 E를 부른다) 손상된 옛 기록이 둘 다 들고 올 수 있고,
+   * 그때는 검산을 통과한 1단 대본이 더 믿을 만하다.
+   *
+   * `buildContainersHtml`은 `kind !== 'containers'`면 **null**을 준다 — `bar`·`numberline`
+   * 대본은 아직 전용 렌더러가 없어 아래 "준비 중" 안내로 떨어진다(§11-2).
+   */
+  const typedHtml = content.scene
+    ? buildContainersHtml({
+        scene: content.scene,
+        answer: content.answer,
+        problemText,
+      })
+    : null;
+  const playerHtml = typedHtml ?? result.sceneHtml;
+
+  /*
+   * 2막에 남길 "그림 준비 중" 안내. **판정 기준은 `sceneTier`가 아니라 그림이 실제로
+   * 뜨는지(`playerHtml`)다.** 티어 문자열은 그림의 유무를 보증하지 않는다 —
+   * `sceneTier: 'html'`인데 `sceneHtml`이 없는 손상·옛 기록이 오면(둘은 다른 필드다)
+   * 티어로 판정한 코드는 안내도 그림도 없는 **빈 자리**를 남긴다. 같은 이유로
+   * `typed`인데 `kind`가 아직 못 그리는 종류(`bar`·`numberline`)여도 안내가 남아야 한다.
+   * 티어 자체는 아래 칩에 원본 그대로 보여 준다.
+   */
+  const sceneNote = playerHtml
     ? null
     : SCENE_TIER_TEXT[sceneTier === "html" ? "none" : sceneTier];
 
@@ -399,11 +431,11 @@ export default function MathExplanationView({
 
         {/*
          * ┌ 그림이 없을 때만 남는 안내 ─────────────────────────────────────────────┐
-         * │ 2단 HTML이 있으면 여기에 아무것도 그리지 않는다 — 실물 그림이              │
-         * │ 3막 아래 `<MathScenePlayer>`로 뜬다. "준비 중" 안내를 함께 띄우면 같은      │
-         * │ 화면이 두 말을 하게 된다. 플레이어가 3초 폴백으로 사라져도 이 블록과는       │
+         * │ 그림이 뜨면(1단 `containers` · 2단 HTML) 여기에 아무것도 그리지 않는다 —    │
+         * │ 실물이 3막 아래 `<MathScenePlayer>`로 뜬다. "준비 중" 안내를 함께 띄우면    │
+         * │ 같은 화면이 두 말을 하게 된다. 플레이어가 3초 폴백으로 사라져도 이 블록과는  │
          * │ 무관하다 — 폴백은 자기 자신만 걷어내고, 텍스트 3막이 이미 온전하다.         │
-         * │ `typed`(1단 전용 렌더러)는 아직 그리는 화면이 없어 안내가 남아 있다(M2).    │
+         * │ 남는 경우는 렌더러가 아직 없는 1단 `bar`·`numberline` 대본과 `none`이다.    │
          * │ iframe의 srcdoc 조립·sandbox·CSP는 player-builder 소관이다 — 배치만 여기.  │
          * └──────────────────────────────────────────────────────────────────────┘
          */}
@@ -467,7 +499,7 @@ export default function MathExplanationView({
       </section>
 
       {/*
-        ── 7. 되감기 플레이어 (2단, M2.5 §3-4) ────────────────────────────
+        ── 7. 되감기 플레이어 (1단 `containers` · 2단 HTML, §3-3 · §3-4) ─────────
         자리가 **3막 뒤**인 이유: 이 플레이어는 2막만이 아니라 1막(문제 상황) → 2막(되감기)
         → 3막(검사 장면)을 통째로 다시 보여준다(§3-4 "첫 단계는 문제 상황, 마지막 단계는
         답이 보이는 검사 장면"). 2막 안에 끼우면 이야기 중간에 이야기 전체가 들어가는 꼴이
@@ -477,10 +509,10 @@ export default function MathExplanationView({
         insight(💡 다른 방법도 있어요) **앞**인 이유: 그림은 정석 풀이의 일부이고,
         insight는 정석을 다 지난 뒤에 오는 보너스다.
 
-        `sceneHtml`이 있을 때만 그린다. iframe 조립·sandbox·3초 폴백은 전부 자식이 맡는다 —
-        여기서는 **자리만** 정한다.
+        1단과 2단이 **같은 자리, 같은 컴포넌트**를 쓴다(`playerHtml` 참고). iframe 조립·
+        sandbox·3초 폴백은 전부 자식이 맡는다 — 여기서는 **자리만** 정한다.
       */}
-      {result.sceneHtml && <MathScenePlayer sceneHtml={result.sceneHtml} />}
+      {playerHtml && <MathScenePlayer sceneHtml={playerHtml} tier={typedHtml ? "typed" : "html"} />}
 
       {/*
         ── 8. 두 번째 풀이(insight) — 접힌 카드 (M5 §10-4) ──────────────
