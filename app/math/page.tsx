@@ -117,8 +117,9 @@ export default function MathHomePage() {
       </section>
 
       <div className="mt-8">
+        {/* /english는 이제 허브(북카드+단어장 고르기) — 라벨도 과목 단위로 */}
         <Link href="/english" className="u-btn u-btn-secondary">
-          <span aria-hidden>📚</span> 영어 북카드 하러 가기
+          <span aria-hidden>📚</span> 영어 하러 가기
         </Link>
       </div>
     </main>

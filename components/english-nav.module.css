@@ -1,0 +1,204 @@
+/*
+ * english-nav.module.css — 영어 공통 셸(사이드바/버거 드로어)의 레이아웃 스타일.
+ *
+ * ── 왜 모듈 CSS인가 ─────────────────────────────────────────────────────────
+ * 셸에만 쓰는 레이아웃(고정 사이드바·sticky 상단바·드로어)이라 전역으로 셀 필요가 없다.
+ * 색·반경·크기는 전부 globals.css 토큰(var(--…))을 참조한다 — 하드코딩 색 없음, 다크/라이트
+ * 자동. 스크림만 예외적으로 ink 기반 반투명(rgba(15,23,42,α))을 쓰는데, 이는 globals.css의
+ * shadow-1과 같은 관용구다(새 팔레트 색이 아니라 어둠막).
+ *
+ * ── z-index 사다리 ──────────────────────────────────────────────────────────
+ * 콘텐츠(0) < 사이드바·상단바(10) < 드로어 백드롭(11) < 드로어 패널(12) < 단어장 카드
+ * 오버레이(20, vocabbook-view.module.css). 카드 모드는 몰입이므로 오버레이가 셸을 덮는 게
+ * 맞다(오버레이 안 "← 목록"으로 빠져나온다). 그래서 셸 전부를 20 아래에 둔다.
+ *
+ * ── 반응형 분기 ─────────────────────────────────────────────────────────────
+ * lg(1024px) 기준. lg↑: 좌측 고정 사이드바 + 콘텐츠를 사이드바 폭(15rem)만큼 민다. lg미만:
+ * 사이드바 숨김 + sticky 상단바(버거) + 드로어. 사이드바/상단바는 항상 둘 다 렌더하고 CSS로만
+ * 가려 JS 분기가 없다 → hydration mismatch 없음.
+ */
+
+.shell {
+  min-height: 100dvh;
+}
+
+/* 콘텐츠 영역 — lg↑에서 사이드바 폭만큼 민다(사이드바는 fixed라 흐름 밖) */
+.content {
+  min-width: 0;
+}
+@media (min-width: 1024px) {
+  .content {
+    padding-left: 15rem;
+  }
+}
+
+/* ── 데스크톱 좌측 사이드바 (lg↑) ─────────────────────────────────────────── */
+.sidebar {
+  display: none;
+}
+@media (min-width: 1024px) {
+  .sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 15rem;
+    z-index: 10;
+    box-sizing: border-box;
+    padding: 18px 14px;
+    background: var(--surface);
+    border-right: 1px solid var(--line);
+    overflow-y: auto;
+  }
+}
+
+/* ── 모바일 상단바 (<lg) ──────────────────────────────────────────────────── */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: 8px 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+@media (min-width: 1024px) {
+  .topbar {
+    display: none;
+  }
+}
+
+.burger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.burger:hover {
+  border-color: var(--line-strong);
+}
+
+/* ── 브랜드 (사이드바 상단 · 상단바 · 드로어 헤더 공용) ────────────────────── */
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  text-decoration: none;
+  font-size: var(--fs-list-title);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+}
+.brandRow {
+  margin-bottom: 10px;
+  padding: 6px 10px;
+}
+.brandIcon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+/* ── 메뉴 (사이드바·드로어 공용) ──────────────────────────────────────────── */
+.menu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border-radius: var(--radius-box);
+  color: var(--ink);
+  text-decoration: none;
+  font-size: var(--fs-list-title);
+  font-weight: var(--fw-medium);
+  line-height: 1.3;
+}
+.link:hover {
+  background: var(--surface-2);
+}
+.linkIcon {
+  flex: none;
+  width: 22px;
+  text-align: center;
+  font-size: 18px;
+  line-height: 1;
+}
+/* 현재 섹션 — accent-soft 배경 + accent-ink 글자 (다크/라이트 자동) */
+.linkActive,
+.linkActive:hover {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+/* "← 과목 선택" — 학습 메뉴와 구분선으로 가른다(다른 성격의 이동) */
+.subjectLink {
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-2);
+}
+
+/* ── 모바일 드로어 ────────────────────────────────────────────────────────── */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 11;
+  background: rgba(15, 23, 42, 0.4); /* ink 기반 어둠막 (shadow-1과 같은 관용구) */
+}
+.panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 12;
+  width: min(80vw, 18rem);
+  box-sizing: border-box;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+}
+.panelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.closeBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.closeBtn:hover {
+  border-color: var(--line-strong);
+}

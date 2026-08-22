@@ -390,8 +390,8 @@ export default function LibraryView({
         {visibleItems.length === 0 ? (
           <p className="t-caption rounded-[var(--radius-box)] border border-dashed border-line px-5 py-6 text-center">
             아직 만든 카드가 없어요.{" "}
-            {/* 카드 만들기는 영어 홈(`/english`)에 있다 — `/`는 과목 선택 갈림길 */}
-            <Link href="/english" className="font-medium text-accent underline">
+            {/* 카드 만들기는 북카드 홈(`/english/books`)에 있다 — `/english`는 허브 */}
+            <Link href="/english/books" className="font-medium text-accent underline">
               홈에서 첫 카드를 만들어 볼까요?
             </Link>
           </p>

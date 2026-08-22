@@ -106,11 +106,11 @@ export default async function LibraryPage() {
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
       <header className="mb-8">
         {/* 홈 ↔ 서재 내비게이션 — 홈·카드 화면과 같은 알약 버튼(.u-navbtn).
-            여기서 "홈"은 영어 홈(`/english`)이다 — `/`는 과목 선택 갈림길이라
-            서재에서 돌아올 때 과목을 다시 고르게 되면 흐름이 무거워진다.
+            여기서 "홈"은 북카드 홈(`/english/books`)이다 — `/english`는 허브(고르기),
+            `/`는 과목 선택 갈림길이라 서재에서 돌아올 때 고르기를 다시 지나면 흐름이 무거워진다.
             (이 서재는 아직 영어 전용이다. 수학 서재는 `/math/library`로 따로 만든다.) */}
         <div className="flex items-center justify-between gap-3">
-          <Link href="/english" className="u-navbtn">
+          <Link href="/english/books" className="u-navbtn">
             ← 홈으로
           </Link>
         </div>

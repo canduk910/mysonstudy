@@ -10,7 +10,6 @@
  */
 
 import type { Metadata } from "next";
-import Link from "next/link";
 import VocabLibraryView, { type VocabLibraryItem } from "@/components/vocab-library-view";
 import { isRenderableVocabBook } from "@/lib/vocabbook-record";
 import { getStore } from "@/lib/store";
@@ -44,13 +43,9 @@ export default async function VocabLibraryPage() {
 
   return (
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
+      {/* 상단 내비는 공통 셸(app/english/layout.tsx)이 담당 — 여기선 제목·리드만 (셸에 위임) */}
       <header className="mb-8">
-        <div className="flex items-center justify-between gap-3">
-          <Link href="/english" className="u-navbtn">
-            ← 영어 홈
-          </Link>
-        </div>
-        <h1 className="t-book-title mt-4">📓 단어장 정복</h1>
+        <h1 className="t-book-title">📓 단어장 정복</h1>
         <p className="t-lead mt-1">단어장을 찍어 표로 모아 두면, 언제든 다시 볼 수 있어요.</p>
       </header>
 
