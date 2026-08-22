@@ -45,7 +45,28 @@ export const VOCAB_EXTRACT_SYSTEM_PROMPT = `너는 초등학생용 영어 단어
 [금지]
 - 책에 없는 뜻·예문·발음을 지어내지 않는다. 안 보이면 null이나 빈 배열로 둔다.
 - 영영 정의나 이모지는 이 단계에서 만들지 않는다 (다른 단계에서 만든다).
-- 출력은 지정된 JSON 스키마로만. 스키마 밖 텍스트 금지.`;
+- 출력은 지정된 JSON 스키마로만. 스키마 밖 텍스트 금지.
+
+[판독 예시]
+사진 한 항목이 이렇게 인쇄돼 있으면:
+  0009 oven [ʌvən] 명 오븐
+  I baked some cookies in the oven. 나는 오븐에 쿠키를 좀 구웠다.
+아래처럼 examples를 반드시 채워 판독한다(예문을 절대 빠뜨리지 않는다):
+  { "no":"0009", "word":"oven", "ipa":"ʌvən", "pos":["명"],
+    "meanings":[{"no":null,"ko":"오븐","related":[]}],
+    "examples":[{"en":"I baked some cookies in the oven.","ko":"나는 오븐에 쿠키를 좀 구웠다."}],
+    "related":[], "partial":false, "confidence":"high" }
+뜻이 여러 개이고 뜻 옆에 유의어·파생어가 붙어 있으면:
+  0012 fix [fɪks] 동
+  1 수리하다, 고치다 (유의어 repair)  2 고정시키다
+  He fixed my bike. 그가 내 자전거를 고쳐 줬다.
+  [파생] fixture 설비
+뜻마다 no·ko를 나누고, 뜻 옆 유의어는 그 뜻의 related에, 단어 전체 파생어는 항목의 related에 담는다:
+  { "no":"0012", "word":"fix", "ipa":"fɪks", "pos":["동"],
+    "meanings":[{"no":1,"ko":"수리하다, 고치다","related":[{"kind":"synonym","word":"repair","glossKo":null}]},
+                {"no":2,"ko":"고정시키다","related":[]}],
+    "examples":[{"en":"He fixed my bike.","ko":"그가 내 자전거를 고쳐 줬다."}],
+    "related":[{"kind":"derivative","word":"fixture","glossKo":"설비"}], "partial":false, "confidence":"high" }`;
 
 /** 호출 C — 사용자 메시지의 텍스트 파트 (HARNESS §7-2) */
 export const VOCAB_EXTRACT_USER_TEXT = "이 페이지의 단어들을 판독해줘.";

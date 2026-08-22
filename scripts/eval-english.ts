@@ -983,6 +983,70 @@ function runVocabbookChecks(): CheckResult[] {
     );
   }
 
+  // --- few-shot: 프롬프트 [판독 예시]의 JSON 객체가 실제 스키마와 맞는지 (본문에 박힌 예시가
+  //   스키마 위반이면 모델에게 잘못된 shape을 가르친다 — 예문 누락의 근본 원인 대응이므로 특히
+  //   examples가 채워진 예시여야 한다). 프롬프트에서 최상위 {..} 객체를 떼어 각각 검증한다. ---
+  {
+    // 문자열 내부 중괄호는 무시하고 최상위 { ... } 블록만 떼어 낸다
+    const extractTopLevelJsonObjects = (text: string): string[] => {
+      const out: string[] = [];
+      let depth = 0;
+      let start = -1;
+      let inStr = false;
+      let esc = false;
+      for (let i = 0; i < text.length; i++) {
+        const c = text[i];
+        if (inStr) {
+          if (esc) esc = false;
+          else if (c === "\\") esc = true;
+          else if (c === '"') inStr = false;
+          continue;
+        }
+        if (c === '"') inStr = true;
+        else if (c === "{") {
+          if (depth === 0) start = i;
+          depth++;
+        } else if (c === "}") {
+          depth--;
+          if (depth === 0 && start >= 0) {
+            out.push(text.slice(start, i + 1));
+            start = -1;
+          }
+        }
+      }
+      return out;
+    };
+
+    const marker = "[판독 예시]";
+    const at = VOCAB_EXTRACT_SYSTEM_PROMPT.indexOf(marker);
+    const objs = at >= 0 ? extractTopLevelJsonObjects(VOCAB_EXTRACT_SYSTEM_PROMPT.slice(at)) : [];
+    let allValid = at >= 0 && objs.length >= 1;
+    let allHaveExamples = objs.length >= 1;
+    const failMsgs: string[] = [];
+    for (const raw of objs) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (e) {
+        allValid = false;
+        failMsgs.push(`JSON.parse 실패: ${(e as Error).message}`);
+        continue;
+      }
+      const res = vocabExtractionSchema.safeParse({ isVocabPage: true, dayLabel: null, entries: [parsed] });
+      if (!res.success) {
+        allValid = false;
+        failMsgs.push(issues(res.error));
+      }
+      const ex = (parsed as { examples?: unknown }).examples;
+      if (!Array.isArray(ex) || ex.length === 0) allHaveExamples = false;
+    }
+    add(
+      "few-shot. [판독 예시] JSON이 스키마 통과 + examples 채워짐",
+      allValid && allHaveExamples,
+      `예시=${objs.length}개 · 마커=${at >= 0 ? "있음" : "없음"} · 스키마=${allValid ? "통과" : `위반(${failMsgs.join(" / ")})`} · examples채움=${allHaveExamples}`,
+    );
+  }
+
   return results;
 }
 
