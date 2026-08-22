@@ -653,6 +653,8 @@ async function main() {
     // 수학 설명 기록(M4)은 시드가 만들지 않는다 — mergeDbForSeed가 id 기준 upsert라
     // 빈 배열을 넘겨도 기존 explanations는 그대로 남는다.
     explanations: [],
+    // 단어장(영어 V1)도 같은 이유로 빈 배열 — DbShape가 요구하는 키라 빠뜨리면 tsc가 막는다.
+    vocabBooks: [],
   };
 
   await mergeDbForSeed(db);
