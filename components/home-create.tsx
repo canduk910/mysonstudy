@@ -26,7 +26,8 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { BookExtraction, SceneDigestItem, SceneSourceKind } from "@/lib/ai/english/schemas";
 import type { IdentifyResult } from "@/lib/identify";
-import { COVER_MAX_IMAGES, JPEG_QUALITY, MAX_IMAGE_EDGE } from "@/lib/upload-limits";
+import { resizeToJpegDataUrl } from "@/lib/image-resize";
+import { COVER_MAX_IMAGES } from "@/lib/upload-limits";
 
 // ---------------------------------------------------------------------------
 // 타입·상수
@@ -85,41 +86,6 @@ const labelCls = "u-label";
 /** 입력 패널 상자 — 흰 배경 + line 경계 + 카드 모서리 (DESIGN §5) */
 const panelCls =
   "mt-6 rounded-[var(--radius-card)] border border-line bg-bg p-5 sm:p-6";
-
-// ---------------------------------------------------------------------------
-// 사진 리사이즈 (canvas — 긴 변 ~1500px, JPEG)
-// ---------------------------------------------------------------------------
-
-function loadImage(file: File): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve(img);
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("이미지를 불러오지 못했어요"));
-    };
-    img.src = url;
-  });
-}
-
-async function resizeToJpegDataUrl(file: File): Promise<string> {
-  const img = await loadImage(file);
-  const longEdge = Math.max(img.naturalWidth, img.naturalHeight);
-  const scale = Math.min(1, MAX_IMAGE_EDGE / Math.max(1, longEdge));
-  const w = Math.max(1, Math.round(img.naturalWidth * scale));
-  const h = Math.max(1, Math.round(img.naturalHeight * scale));
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("canvas 사용 불가");
-  ctx.drawImage(img, 0, 0, w, h);
-  return canvas.toDataURL("image/jpeg", JPEG_QUALITY);
-}
 
 // ---------------------------------------------------------------------------
 // 식별 결과 → 카드 입력 보조

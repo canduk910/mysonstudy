@@ -18,6 +18,8 @@ import {
   type SceneDigestItem,
   type StorySource,
 } from "@/lib/ai/english/schemas";
+// 발음 재생은 lib/speech.ts가 단일 정의처다 (lang·rate 다이얼이 화면마다 갈리지 않도록).
+import { speak } from "@/lib/speech";
 import type { BookRecord, CardRecord, ReadingRecord } from "@/lib/store";
 import s from "./card-view.module.css";
 
@@ -106,16 +108,6 @@ function ReadingGuide({ scenes }: { scenes: SceneDigestItem[] }) {
       </ol>
     </details>
   );
-}
-
-/** 단어 발음 재생 — Web Speech API (en-US, 외부 API·비용 없음) */
-function speak(text: string) {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = "en-US";
-  utterance.rate = 0.9;
-  window.speechSynthesis.speak(utterance);
 }
 
 /** 사용자 로컬 달력 기준 오늘 (YYYY-MM-DD) — 읽은 '날'의 기준은 브라우저 쪽이다 */
