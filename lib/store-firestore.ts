@@ -29,6 +29,7 @@ import {
   normalizeProblem,
   normalizeTitleAuthorKey,
   normalizeVocabEntry,
+  normalizeVocabQuizItem,
   type LegacyOrNewVocabEntry,
   type BookEvidencePatch,
   type BookRecord,
@@ -43,12 +44,17 @@ import {
   type NewExplanation,
   type NewReading,
   type NewVocabBook,
+  type NewVocabQuiz,
   type ReadingRecord,
   type StudyStore,
   type VocabBookRecord,
+  type VocabQuizItem,
+  type VocabQuizRecord,
 } from "./store";
 // 단어장 보강(V3) 저장이 받는 완성형 entry 타입 — store는 VocabEntry를 재수출하지 않는다.
 import type { VocabEntry } from "./ai/english/vocabbook-schemas";
+// 시험(V4) 모드 상수 — 읽기 방어에서 미지 모드를 안전 폴백하는 데 쓴다(순수 모듈, 값 import 안전).
+import { VOCAB_QUIZ_MODES } from "./vocab-quiz";
 // 설명 기록(M4)이 안는 타입 — 값 import는 `SCENE_TIERS` 하나뿐이다(읽기 방어용 상수).
 import type { ExplainVerifyReport } from "./ai/math/pipeline";
 import type { Explanation } from "./ai/math/schemas";
@@ -202,6 +208,33 @@ function byCreatedAtDesc(a: { createdAt: string }, b: { createdAt: string }): nu
   return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0;
 }
 
+/** 시험 세션 정렬 — startedAt 오름차순(오래된 순). 파일 백엔드와 같은 규약(V5 streak가 이 순서를 읽는다) */
+function byStartedAtAsc(a: { startedAt: string }, b: { startedAt: string }): number {
+  return a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : 0;
+}
+
+/**
+ * 시험 세션 읽기 방어 (V4). `items`는 쓰기 시 `normalizeVocabQuizItem`을 통과하지만, 이 필드가
+ * 없던 시절(혹은 손으로 넣은) 문서를 읽으면 undefined가 섞일 수 있어 한 번 더 조인다(toVocabBook과 같은 규약).
+ * `finishedAt`은 완료면 ISO, 부분 결과면 null이다 — toNullable로 undefined를 null로 떨군다.
+ */
+function toVocabQuiz(id: string, d: DocumentData): VocabQuizRecord {
+  const items = Array.isArray(d.items)
+    ? (d.items as Partial<VocabQuizItem>[]).map(normalizeVocabQuizItem)
+    : [];
+  return {
+    id,
+    bookId: String(d.bookId ?? ""),
+    // 지금은 모드가 하나 — 미지값(옛/손입력 문서)도 유일한 모드로 안전 폴백한다
+    mode: (VOCAB_QUIZ_MODES as readonly string[]).includes(d.mode as string)
+      ? (d.mode as VocabQuizRecord["mode"])
+      : "def-to-word",
+    startedAt: toIso(d.startedAt),
+    finishedAt: toNullable(d.finishedAt as string | null),
+    items,
+  };
+}
+
 /**
  * 한 배치에 담는 최대 작업 수. Firestore WriteBatch의 상한은 500 —
  * 가족용 규모(책당 카드 몇 장·기록 수십 건)에서는 넘칠 일이 없지만,
@@ -228,6 +261,9 @@ export class FirestoreStore implements StudyStore {
   }
   private vocabBooks(): CollectionReference {
     return getDb().collection("vocabBooks");
+  }
+  private vocabQuizzes(): CollectionReference {
+    return getDb().collection("vocabQuizzes");
   }
 
   async createBook(input: NewBook): Promise<BookRecord> {
@@ -465,11 +501,41 @@ export class FirestoreStore implements StudyStore {
   async deleteVocabBook(id: string): Promise<DeleteVocabBookResult> {
     // 개발 환경에서 실데이터를 지우는 것을 막는다 (2026-08-17 사고 — lib/prod-guard.ts)
     assertDestructiveAllowed("deleteVocabBook");
-    // V1은 연쇄 삭제 없음 — 퀴즈 세션(V4)이 생기면 batch로 함께 지운다. deleteCard와 같은 모양.
     const ref = this.vocabBooks().doc(id);
     const snap = await ref.get();
     if (!snap.exists) return { ok: false };
-    await ref.delete();
+
+    // 그 단어장의 시험 세션(V4)까지 함께 지운다 — deleteBook과 같은 규약(where 필터만 쿼리, batch 삭제).
+    // 단어장 문서를 **마지막에** 지워 중간 실패 시 "단어장 없는 유령 퀴즈"가 남지 않게 한다.
+    const quizSnap = await this.vocabQuizzes().where("bookId", "==", id).get();
+    const refs = [...quizSnap.docs.map((d) => d.ref), ref];
+    const db = getDb();
+    for (let i = 0; i < refs.length; i += BATCH_LIMIT) {
+      const batch = db.batch();
+      for (const r of refs.slice(i, i + BATCH_LIMIT)) batch.delete(r);
+      await batch.commit();
+    }
     return { ok: true };
+  }
+
+  // ---- vocabQuizzes (V4, 계획 §V4) ----
+
+  async addVocabQuiz(input: NewVocabQuiz): Promise<VocabQuizRecord> {
+    const ref = this.vocabQuizzes().doc();
+    const record: VocabQuizRecord = {
+      ...input,
+      // 저장 계층이 마지막 관문 — items의 undefined를 조인다(파일 백엔드와 같은 정규화, Firestore 거부 방어).
+      items: input.items.map(normalizeVocabQuizItem),
+      id: ref.id,
+    };
+    const { id: _id, ...data } = record; // 문서 ID가 곧 id — 본문에 중복 저장하지 않는다
+    await ref.set(data);
+    return record;
+  }
+
+  async listVocabQuizzes(bookId: string): Promise<VocabQuizRecord[]> {
+    // where + orderBy(다른 필드)는 복합 인덱스가 필요 — 필터만 쿼리, 정렬은 메모리(listCardsForBook과 같은 규약)
+    const snap = await this.vocabQuizzes().where("bookId", "==", bookId).get();
+    return snap.docs.map((d) => toVocabQuiz(d.id, d.data())).sort(byStartedAtAsc);
   }
 }

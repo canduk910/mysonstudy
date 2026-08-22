@@ -61,6 +61,8 @@ import {
   mergeVocabPages,
   type VocabPageForMerge,
 } from "../lib/ai/english/vocabbook-merge";
+// 시험(V4) 보기 생성 순수 함수 — 오프라인 eval이 불변을 잠근다(정답 포함·전부 상이·개수·오답 같은 DAY)
+import { buildChoices } from "../lib/vocab-quiz";
 // 호출 D(보강) 정의 불변 순수 함수 — 오프라인 eval이 잠근다(§8-5)
 import {
   buildEnrichRequestItems,
@@ -1308,6 +1310,52 @@ function runVocabbookChecks(): CheckResult[] {
       wrapperFound && schemaOk && showsEmoji && showsNull && allDefined,
       `래퍼=${wrapperFound ? "있음" : "없음"} · 스키마=${schemaOk ? "통과" : `위반(${failMsgs.join(" / ")})`} · 이모지시연=${showsEmoji} · null시연=${showsNull} · 정의전부=${allDefined}`,
     );
+  }
+
+  // --- 시험 보기 생성 buildChoices (V4) — 정답 포함·전부 상이·개수·오답 같은 DAY ---
+  // 셔플이 랜덤이라 여러 번(200회) 돌려 불변이 매번 성립하는지 본다(랜덤 없이 불변만 검증).
+  {
+    const dayWords = ["fix", "pack", "respect", "burden", "flock", "gather"];
+    const correct = "fix";
+    const daySet = new Set(dayWords);
+    let alwaysHasCorrect = true;
+    let alwaysDistinct = true;
+    let alwaysCount = true;
+    let distractorsInDay = true; // 오답이 전부 같은 DAY의 다른 단어인가
+    for (let i = 0; i < 200; i += 1) {
+      const choices = buildChoices(correct, dayWords, 5);
+      if (!choices.includes(correct)) alwaysHasCorrect = false;
+      if (new Set(choices).size !== choices.length) alwaysDistinct = false;
+      if (choices.length !== 5) alwaysCount = false;
+      for (const c of choices) {
+        if (c === correct) continue;
+        if (!daySet.has(c)) distractorsInDay = false; // DAY 밖 단어가 오답으로 새면 실패
+      }
+    }
+    add("buildChoices. 정답 항상 포함(200회)", alwaysHasCorrect, alwaysHasCorrect ? "매번 포함" : "누락 발생");
+    add("buildChoices. 보기 전부 상이·중복 0(200회)", alwaysDistinct, alwaysDistinct ? "중복 없음" : "중복 발생");
+    add("buildChoices. 정확히 5개(DAY 충분·200회)", alwaysCount, alwaysCount ? "매번 5개" : "개수 어긋남");
+    add(
+      "buildChoices. 오답은 같은 DAY의 다른 단어(200회)",
+      distractorsInDay,
+      distractorsInDay ? "DAY 밖 오답 없음" : "DAY 밖 단어가 오답으로 샘",
+    );
+  }
+  // --- buildChoices 경계: DAY 단어가 count 미만이면 가능한 만큼(중복 없이) ---
+  {
+    const small = buildChoices("fix", ["fix", "pack", "respect"], 5); // 정답1 + 오답 후보 2 = 최대 3
+    const ok = small.length === 3 && small.includes("fix") && new Set(small).size === 3;
+    add("buildChoices. DAY<count면 가능한 만큼(3개·중복0·정답포함)", ok, `길이=${small.length} 값=[${small.join(", ")}]`);
+  }
+  // --- buildChoices: dayWords에 정답·중복이 섞여도 오답에 정답이 안 들어가고 중복도 없다 ---
+  {
+    const noisy = buildChoices("fix", ["fix", "fix", "pack", "pack", "respect", "flock"], 5);
+    const distractors = noisy.filter((c) => c !== "fix");
+    const ok =
+      noisy.includes("fix") &&
+      new Set(noisy).size === noisy.length &&
+      !distractors.includes("fix");
+    add("buildChoices. dayWords 정답·중복 오염에도 정답 미중복·오답 유일", ok, `값=[${noisy.join(", ")}]`);
   }
 
   return results;

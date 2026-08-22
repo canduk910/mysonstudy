@@ -33,6 +33,8 @@ import type { Explanation } from "./ai/math/schemas";
 // 단어장 정복(V1) 완성형 항목 — **`import type`이다.** `vocabbook-schemas.ts`는 zod를
 // 값으로 끌고 오지만, 타입만 가져오면 빌드에서 지워져 저장 계층이 AI 모듈에 묶이지 않는다.
 import type { VocabEntry, VocabMeaning, VocabRelated } from "./ai/english/vocabbook-schemas";
+// 시험(V4) 모드 유니온 — 순수 모듈이라 값 import여도 저장 계층이 AI에 묶이지 않는다(타입만 쓴다).
+import type { VocabQuizMode } from "./vocab-quiz";
 import type { SceneTier } from "./scene/types";
 import { FirestoreStore } from "./store-firestore";
 
@@ -177,9 +179,53 @@ export interface VocabBookRecord {
   createdAt: string; // ISO 8601
 }
 
-/** 단어장 삭제 결과 — V1은 연쇄 삭제가 없어(퀴즈는 V4) `{ ok }` 하나면 충분하다 */
+/** 단어장 삭제 결과 — `{ ok }` 하나면 충분하다(연쇄로 지운 퀴즈 수는 안내에 쓰지 않는다) */
 export interface DeleteVocabBookResult {
   ok: boolean;
+}
+
+/**
+ * 시험 한 문항의 결과 (단어장 정복 V4, 계획 §V4).
+ *
+ * **전부 필수 nullable — 선택(?) 키 금지**(lib/store.ts:73 규약, Firestore undefined 거부).
+ * 시험은 **저장된 정의를 소비만** 하므로(정의 불변, 계획 §V3) 여기 담는 것은 "무엇을 물었고
+ * 맞혔는가"뿐이다. 단어는 인덱스가 아니라 `word` 문자열로 잇는다(전사본 entries를 건드리지 않음).
+ *
+ * 세 상태를 `answered`·`correct`로 나눠 담는다(V5 오답노트가 이걸 읽어 wrong·total·streak을 낸다):
+ * - 맞힘:   `answered:true,  correct:true`
+ * - 틀림:   `answered:true,  correct:false`
+ * - 미응답: `answered:null,  correct:false`  ← "그만하기"로 이 문항에 답하지 못함(세션에 포함은 됐다)
+ *
+ * `answered === true`인 항목만 "실제로 푼 문항"이다 — V5는 그것만 시도로 센다.
+ */
+export interface VocabQuizItem {
+  /** 문제의 정답 영단어(표제어). 전사본 entries와 word 문자열로 잇는다 */
+  word: string;
+  /** 맞혔으면 true. 틀렸거나 미응답이면 false */
+  correct: boolean;
+  /** 답을 골랐으면 true, 이 세션에서 답하지 못했으면(그만하기) null */
+  answered: boolean | null;
+}
+
+/**
+ * 시험 세션 한 판 = 문서 1개 (단어장 정복 V4).
+ *
+ * **전사본(VocabBookRecord)을 건드리지 않는 별도 컬렉션이다** — 시험 활동은 여기 append로만
+ * 쌓인다(수정·삭제 없음). 집계(정복률·오답 수)는 저장하지 않고 **읽을 때 계산**한다(V5).
+ * 그래서 append만 있는 이 레코드에는 prod-guard를 걸지 않는다(삭제가 아니다).
+ */
+export interface VocabQuizRecord {
+  id: string;
+  /** 어느 단어장(DAY)의 시험인가 — VocabBookRecord.id */
+  bookId: string;
+  /** 시험 방식(지금은 "def-to-word" 하나). 나중 모드가 생겨도 어느 판이었는지 남는다 */
+  mode: VocabQuizMode;
+  /** 세션 시작 시각 ISO 8601 — 목록 정렬·streak 계산의 시간 축 */
+  startedAt: string;
+  /** 끝까지 풀면 완료 시각 ISO, "그만하기"로 중단(부분 결과)이면 null */
+  finishedAt: string | null;
+  /** 세션의 문항별 결과 (셔플된 문제 순서 그대로) */
+  items: VocabQuizItem[];
 }
 
 export type NewBook = Omit<BookRecord, "id" | "createdAt">;
@@ -187,6 +233,8 @@ export type NewCard = Omit<CardRecord, "id" | "createdAt">;
 export type NewReading = Omit<ReadingRecord, "id">;
 export type NewExplanation = Omit<ExplanationRecord, "id" | "createdAt">;
 export type NewVocabBook = Omit<VocabBookRecord, "id" | "createdAt">;
+/** 시험 세션 저장 입력 — id는 스토어가 매긴다. startedAt/finishedAt은 클라이언트가 정한 값 그대로 */
+export type NewVocabQuiz = Omit<VocabQuizRecord, "id">;
 
 /** 책 삭제로 함께 지워진 개수 — 삭제 완료 안내에 그대로 쓴다 */
 export interface DeleteBookResult {
@@ -275,10 +323,20 @@ export interface StudyStore {
     enriched: boolean,
   ): Promise<VocabBookRecord | null>;
   /**
-   * 단어장 1개를 지운다 — **V1은 연쇄 삭제가 없다**(퀴즈 세션은 V4에 생긴다).
+   * 단어장 1개를 지운다 — 그 단어장의 **시험 세션(V4)까지 연쇄 삭제**한다(deleteBook과 같은 규약).
    * 지웠으면 `{ ok: true }`, 없는 id였으면 `{ ok: false }`. 존재 확인·404는 라우트의 몫.
    */
   deleteVocabBook(id: string): Promise<DeleteVocabBookResult>;
+
+  // ---- vocabQuizzes — 시험 세션 (V4, 계획 §V4) ----
+  // 전사본을 건드리지 않는 별도 컬렉션. append(add)와 조회(list)만 있다 — 수정·삭제 API가 없다.
+  /** 시험 세션 한 판을 저장한다(완료·부분 결과 모두). append 전용이라 prod-guard 없음 */
+  addVocabQuiz(input: NewVocabQuiz): Promise<VocabQuizRecord>;
+  /**
+   * 해당 단어장의 모든 시험 세션 — **오래된 순(startedAt 오름차순, 시간 순서)**.
+   * V5가 이 순서로 걸어 단어별 wrong·total·streak(연속 정답)을 계산한다(순서가 streak의 뜻이다).
+   */
+  listVocabQuizzes(bookId: string): Promise<VocabQuizRecord[]>;
 }
 
 /**
@@ -298,13 +356,14 @@ export interface DbShape {
   readings: ReadingRecord[];
   explanations: ExplanationRecord[];
   vocabBooks: VocabBookRecord[];
+  vocabQuizzes: VocabQuizRecord[];
 }
 
 const DB_DIR = path.join(process.cwd(), "data");
 const DB_PATH = path.join(DB_DIR, "db.json");
 
 function emptyDb(): DbShape {
-  return { books: [], cards: [], readings: [], explanations: [], vocabBooks: [] };
+  return { books: [], cards: [], readings: [], explanations: [], vocabBooks: [], vocabQuizzes: [] };
 }
 
 async function readDb(): Promise<DbShape> {
@@ -319,6 +378,8 @@ async function readDb(): Promise<DbShape> {
       explanations: parsed.explanations ?? [],
       // V1 이전 db.json에는 이 키가 없다 — 같은 하위호환(없으면 빈 배열)
       vocabBooks: parsed.vocabBooks ?? [],
+      // V4 이전 db.json에는 이 키가 없다 — 같은 하위호환(없으면 빈 배열)
+      vocabQuizzes: parsed.vocabQuizzes ?? [],
     };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyDb();
@@ -344,6 +405,11 @@ export function normalizeTitleAuthorKey(title: string, author: string): string {
 
 function byCreatedAtDesc(a: { createdAt: string }, b: { createdAt: string }): number {
   return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0;
+}
+
+/** 시험 세션 정렬 — startedAt 오름차순(오래된 순 = 시간 순서). V5 streak 계산이 이 순서를 읽는다 */
+function byStartedAtAsc(a: { startedAt: string }, b: { startedAt: string }): number {
+  return a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : 0;
 }
 
 /**
@@ -434,6 +500,21 @@ export function normalizeVocabEntry(entry: LegacyOrNewVocabEntry): VocabEntry {
     photoIndex: entry.photoIndex ?? 0,
     confidence: entry.confidence ?? "medium",
     partial: entry.partial ?? false,
+  };
+}
+
+/**
+ * 시험 문항 하나를 저장 직전 방어 정규화 — `undefined`를 정한 값으로 조인다(Firestore 거부 방어).
+ *
+ * **두 백엔드가 같은 것을 저장하도록 여기서만 정의한다**(normalizeVocabEntry와 같은 자리·이유).
+ * `answered`는 세 상태(true/false/null)를 유지하되, undefined만 null로 떨군다 — false와 null은
+ * 뜻이 다르다(false=답 골랐는데 자리 미정 없음, null=미응답). `correct`는 boolean으로 굳힌다.
+ */
+export function normalizeVocabQuizItem(item: Partial<VocabQuizItem>): VocabQuizItem {
+  return {
+    word: String(item.word ?? ""),
+    correct: item.correct === true,
+    answered: item.answered === true ? true : item.answered === false ? false : null,
   };
 }
 
@@ -650,12 +731,38 @@ class JsonFileStore implements BookCardStore {
   }
 
   async deleteVocabBook(id: string): Promise<DeleteVocabBookResult> {
-    // V1은 연쇄 삭제가 없다 — 퀴즈 세션(V4)이 생기면 여기에 연쇄를 더한다.
+    // 단어장과 그 시험 세션(V4)을 한 mutate 안에서 함께 지운다 — deleteBook이 카드·읽음 기록을
+    // 함께 지우는 것과 같은 규약. 단어장만 지워지고 유령 퀴즈가 남는 중간 상태를 파일에 남기지 않는다.
     return this.mutate((db) => {
       const before = db.vocabBooks.length;
       db.vocabBooks = db.vocabBooks.filter((v) => v.id !== id);
-      return { ok: db.vocabBooks.length < before };
+      const ok = db.vocabBooks.length < before;
+      if (ok) db.vocabQuizzes = db.vocabQuizzes.filter((q) => q.bookId !== id);
+      return { ok };
     });
+  }
+
+  // ---- vocabQuizzes (V4) ----
+
+  async addVocabQuiz(input: NewVocabQuiz): Promise<VocabQuizRecord> {
+    const record: VocabQuizRecord = {
+      ...input,
+      // Firestore 구현과 같은 정규화를 태운다 — 두 백엔드가 같은 것을 저장해야 한다
+      items: input.items.map(normalizeVocabQuizItem),
+      id: randomUUID(),
+    };
+    return this.mutate((db) => {
+      db.vocabQuizzes.push(record);
+      return record;
+    });
+  }
+
+  async listVocabQuizzes(bookId: string): Promise<VocabQuizRecord[]> {
+    const db = await readDb();
+    return db.vocabQuizzes
+      .filter((q) => q.bookId === bookId)
+      .map((q) => ({ ...q, items: (q.items ?? []).map(normalizeVocabQuizItem) }))
+      .sort(byStartedAtAsc);
   }
 }
 
@@ -728,5 +835,6 @@ export async function mergeDbForSeed(seed: DbShape): Promise<void> {
     readings: mergeById(cur.readings, seed.readings),
     explanations: mergeById(cur.explanations, seed.explanations),
     vocabBooks: mergeById(cur.vocabBooks, seed.vocabBooks),
+    vocabQuizzes: mergeById(cur.vocabQuizzes, seed.vocabQuizzes),
   });
 }

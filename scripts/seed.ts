@@ -655,6 +655,8 @@ async function main() {
     explanations: [],
     // 단어장(영어 V1)도 같은 이유로 빈 배열 — DbShape가 요구하는 키라 빠뜨리면 tsc가 막는다.
     vocabBooks: [],
+    // 시험 세션(영어 V4)도 같은 이유로 빈 배열 — 빠뜨리면 tsc가 막는다(과거 c301d7b 회귀 재발 방지).
+    vocabQuizzes: [],
   };
 
   await mergeDbForSeed(db);

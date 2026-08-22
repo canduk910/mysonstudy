@@ -14,6 +14,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import VocabbookView from "@/components/vocabbook-view";
+import { isVocabBookEnriched } from "@/lib/ai/english/vocabbook-enrich";
 import { isRenderableVocabBook } from "@/lib/vocabbook-record";
 import { getStore } from "@/lib/store";
 
@@ -38,6 +39,10 @@ export default async function VocabDetailPage({ params }: VocabDetailPageProps) 
   const record = await getStore().getVocabBook(id);
   // 없는 id도, 열 수 없는 레코드도 같은 404 — 목록이 "예전 형식이라 열지 못한 단어장" 안내를 띄운다
   if (!record || !isRenderableVocabBook(record)) notFound();
+
+  // 시험은 저장된 영영 정의에 의존한다(V4) — 보강 완료(enriched)일 때만 진입 버튼을 노출한다.
+  // (정의가 일부만 있어 부족하면 시험 페이지가 게이트로 정직하게 막는다.)
+  const canQuiz = isVocabBookEnriched(record.entries);
 
   return (
     <main className="mx-auto max-w-3xl px-4 pb-16 pt-6">
@@ -68,6 +73,11 @@ export default async function VocabDetailPage({ params }: VocabDetailPageProps) 
       />
 
       <div className="mt-8 flex flex-wrap gap-2">
+        {canQuiz ? (
+          <Link href={`/english/vocab/${record.id}/quiz`} className="u-btn u-btn-primary">
+            <span aria-hidden>📝</span> 시험 보기
+          </Link>
+        ) : null}
         <Link href="/english/vocab/new" className="u-btn u-btn-secondary">
           <span aria-hidden>📷</span> 새 단어장 만들기
         </Link>
