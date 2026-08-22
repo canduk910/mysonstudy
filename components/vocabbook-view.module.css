@@ -28,27 +28,96 @@
 .modeBtn {
   min-width: 76px;
 }
-.readAlongBtn {
-  margin-left: auto;
+/* ── 카드 모드 전면 오버레이 (100dvh flex 컬럼) ────────────────────────────── */
+
+/*
+ * 카드 모드는 서버 헤더가 큼직해 프레임을 화면 밖으로 밀어낸다. 그래서 전면 오버레이로 띄우고
+ * 컴팩트한 클라이언트 chrome으로 대체한다. 높이 기준은 dvh(svh 아님) — 모바일 브라우저 하단바가
+ * 접혔다 펴져도 프레임이 튀지 않게. inset 대신 top+height로 잡아 주소창 리사이즈 점프를 줄인다.
+ * 오버레이가 뜬 동안 컴포넌트가 body 스크롤을 잠그므로 문서 스크롤은 생기지 않는다.
+ */
+.cardOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100dvh;
+  z-index: 20;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+/* 넓은 화면에선 본문을 가운데 정렬 (서버 페이지 max-w-3xl과 같은 폭) */
+.cardInner {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 48rem;
+  margin: 0 auto;
+  flex: 1;
+  min-height: 0; /* flex 자식이 내용보다 작아질 수 있어야 내부 스크롤러가 산다 */
+  display: flex;
+  flex-direction: column;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
 }
 
-/* 카드 모드 안내 캡션 */
-.hint {
-  margin-bottom: 10px;
+/* 슬림한 chrome 띠 — 높이를 매직 px로 빼지 않는다(줄바꿈돼도 안 깨지게 flex가 흡수) */
+.cardChrome {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 8px;
+}
+.chromeRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.chromeRow2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.chromeTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0; /* 자식 말줄임이 먹게 */
+  flex: 1;
+}
+.backBtn {
+  flex: none;
+}
+.titleText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hintText {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
   color: var(--ink-3);
 }
 
-/* ── 카드 넘김 뷰 (세로 scroll-snap) ───────────────────────────────────────── */
+/* ── 카드 넘김 스크롤러 (세로 scroll-snap) ─────────────────────────────────── */
 
 /*
- * 스크롤러는 정해진 높이를 가진 "책장" 프레임이다. 페이지에 헤더가 있어 전체 문서를
- * snap 대상으로 삼으면 헤더가 밀려 불안정하다 — 대신 이 프레임 안에서만 한 카드씩 넘긴다.
- * height가 확정돼야 각 카드의 min-height:100%가 뷰포트 한 장으로 계산된다.
+ * 고정 높이가 아니라 chrome 아래 남는 공간을 flex로 정확히 채운다(flex:1 + min-height:0).
+ * 부모 사슬(오버레이 100dvh → inner flex → scroller flex:1)이 확정 높이를 만들어, 각 카드의
+ * min-height:100%가 "프레임 한 장"으로 계산된다 → 한 화면 = 카드 한 장.
  */
 .scroller {
+  flex: 1;
+  min-height: 0;
   scroll-snap-type: y mandatory;
   overflow-y: auto;
-  height: min(78svh, 640px);
   border: 1px solid var(--line);
   border-radius: var(--radius-box);
   background: var(--surface);

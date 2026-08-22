@@ -55,8 +55,12 @@ export default async function VocabDetailPage({ params }: VocabDetailPageProps) 
         </p>
       </header>
 
-      {/* 표/카드 토글·스피커·이어읽기가 붙는 본문 (클라이언트, V2) */}
-      <VocabbookView entries={record.entries} />
+      {/*
+       * 표/카드 토글·스피커·이어읽기가 붙는 본문 (클라이언트, V2).
+       * titleKo·dayLabel은 카드 모드 전면 오버레이의 컴팩트 chrome에서만 쓴다 —
+       * 표 모드는 위 서버 헤더가 그대로 보인다(회귀 0).
+       */}
+      <VocabbookView entries={record.entries} titleKo={record.titleKo} dayLabel={record.dayLabel} />
 
       <div className="mt-8 flex flex-wrap gap-2">
         <Link href="/english/vocab/new" className="u-btn u-btn-secondary">

@@ -3,22 +3,28 @@
 /**
  * 단어장 상세 렌더러 (단어장 정복 V2) — 클라이언트 컴포넌트.
  *
- * 서버(`app/english/vocab/[id]/page.tsx`)는 데이터 로딩·404 판정만 하고, **그리는 일은 여기**로
- * 내려온다. 표/카드 토글 상태·이어읽기 모드·TTS가 전부 클라이언트 상태라서다. AI 호출·비용은
- * 없다 — 전부 브라우저 안에서 끝난다.
+ * 서버(`app/english/vocab/[id]/page.tsx`)는 데이터 로딩·404 판정과 정적 헤더/푸터만 하고, 표/카드
+ * 토글·이어읽기·TTS가 붙는 본문은 여기서 그린다(전부 브라우저 상태). AI 호출·비용은 없다.
  *
- * ── 세 가지 (V2) ────────────────────────────────────────────────────────────
- * 1. 표/카드 토글. 표 모드는 V1 서버 표를 **그대로** 옮겨 회귀 0. 카드 모드는 세로 scroll-snap으로
- *    한 화면에 단어 하나. 고른 모드는 localStorage에 기억하되 **초기 렌더는 항상 표**로 그려
- *    hydration mismatch를 피하고, 마운트 후 useEffect가 저장값을 반영한다(lib/speech.ts 주석과 같은 규칙).
- * 2. 단어·예문 스피커. `lib/speech.ts`의 speak()를 재사용 — 지원 여부를 내부에서 가드하므로 버튼을
- *    항상 그려도 안전하다.
- * 3. 이어읽기(드래그 + 키보드). 예문을 토큰으로 쪼개 연속 구간을 드래그로 선택→놓으면 speakSequence로
- *    한 문장처럼 읽는다. **모드 토글이 필수** — ON일 때만 예문이 선택 표면이 되고(touch-action:none),
- *    OFF면 평범한 텍스트라 세로 스크롤·탭이 그대로 산다. 키보드 대체 경로: 토큰 클릭=한 단어,
- *    shift+클릭=직전 클릭 토큰부터 범위.
+ * ── 표 모드 vs 카드 모드 레이아웃 (V2-fit) ─────────────────────────────────
+ * - **표 모드**: 서버 페이지의 헤더/푸터가 정상 문서 흐름으로 그대로 보인다(회귀 0). 이 컴포넌트는
+ *   토글 툴바 + V1 표만 그린다.
+ * - **카드 모드**: `100dvh` 전면 오버레이(position:fixed)로 뜬다. 서버 헤더는 큼직해서 카드 프레임을
+ *   화면 밖으로 밀어내므로, 카드 모드에서는 **컴팩트한 클라이언트 chrome**(← 목록·제목·토글·힌트를
+ *   슬림한 띠로)로 대체하고 그 아래를 `flex:1; min-height:0` 스크롤러가 정확히 채운다 →
+ *   "한 화면 = 카드 한 장, 문서 스크롤 0". 오버레이가 뜬 동안 body 스크롤을 잠근다(모달과 같은 규약).
+ *   프레임 높이를 매직 px로 빼지 않으므로 헤더가 줄바꿈돼도 안 깨진다.
+ *
+ * ── 세 기능 (V2) ──────────────────────────────────────────────────────────
+ * 1. 표/카드 토글 — 고른 모드는 localStorage에 기억하되 **초기 렌더는 항상 표**(SSR=첫 클라 렌더 일치,
+ *    hydration mismatch 회피), useEffect 마운트 후 저장값 반영.
+ * 2. 단어·예문 스피커 — `lib/speech.ts`의 speak() 재사용(내부 지원 가드 → 항상 그려도 안전).
+ * 3. 이어읽기(드래그+키보드) — 예문을 토큰으로 쪼개 연속 구간을 드래그로 골라 speakSequence로 한 문장처럼.
+ *    **모드 토글 필수**: ON일 때만 예문이 선택 표면(touch-action:none)이 되고, OFF면 평범한 텍스트라
+ *    세로 스크롤·탭이 그대로 산다.
  */
 
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   PART_OF_SPEECH_LABELS_KO,
@@ -33,9 +39,13 @@ type ViewMode = "table" | "card";
 
 interface VocabbookViewProps {
   entries: VocabEntry[];
+  /** 카드 모드 컴팩트 chrome에 쓸 제목 (표 모드는 서버 헤더를 그대로 씀) */
+  titleKo: string;
+  /** 단원 표기(예: "DAY 01"). 제목과 다르면 컴팩트 chrome에 덧붙인다 */
+  dayLabel: string | null;
 }
 
-export default function VocabbookView({ entries }: VocabbookViewProps) {
+export default function VocabbookView({ entries, titleKo, dayLabel }: VocabbookViewProps) {
   // 초기 렌더는 항상 표 — SSR과 첫 클라이언트 렌더가 같아야 hydration mismatch가 안 난다
   const [viewMode, setViewMode] = useState<ViewMode>("table");
   const [readAlong, setReadAlong] = useState(false);
@@ -51,6 +61,16 @@ export default function VocabbookView({ entries }: VocabbookViewProps) {
       /* localStorage 접근 불가(프라이빗 모드 등) — 표로 둔다 */
     }
   }, []);
+
+  // 카드 모드는 전면 오버레이 — 뜬 동안 body 스크롤을 잠가 문서 스크롤이 안 생기게 한다
+  useEffect(() => {
+    if (viewMode !== "card") return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [viewMode]);
 
   // 카드 모드에서 지금 보이는 카드 번호 추적 (n / 전체 배지)
   useEffect(() => {
@@ -98,63 +118,84 @@ export default function VocabbookView({ entries }: VocabbookViewProps) {
     });
   }
 
-  return (
-    <>
-      <div className={s.toolbar}>
-        <div role="group" aria-label="보기 방식" className={s.modeGroup}>
-          <button
-            type="button"
-            onClick={() => chooseMode("table")}
-            aria-pressed={viewMode === "table"}
-            className={`u-btn ${s.modeBtn} ${viewMode === "table" ? "u-btn-primary" : "u-btn-secondary"}`}
-          >
-            표
-          </button>
-          <button
-            type="button"
-            onClick={() => chooseMode("card")}
-            aria-pressed={viewMode === "card"}
-            className={`u-btn ${s.modeBtn} ${viewMode === "card" ? "u-btn-primary" : "u-btn-secondary"}`}
-          >
-            카드
-          </button>
-        </div>
-        {viewMode === "card" && (
-          <button
-            type="button"
-            onClick={toggleReadAlong}
-            aria-pressed={readAlong}
-            className={`u-btn ${s.readAlongBtn} ${readAlong ? "u-btn-primary" : "u-btn-secondary"}`}
-          >
-            <span aria-hidden>👆</span> 이어읽기
-          </button>
-        )}
-      </div>
+  // 표/카드 토글 — 두 chrome(표 툴바·카드 오버레이)에서 같은 모양으로 쓴다
+  const modeToggle = (
+    <div role="group" aria-label="보기 방식" className={s.modeGroup}>
+      <button
+        type="button"
+        onClick={() => chooseMode("table")}
+        aria-pressed={viewMode === "table"}
+        className={`u-btn ${s.modeBtn} ${viewMode === "table" ? "u-btn-primary" : "u-btn-secondary"}`}
+      >
+        표
+      </button>
+      <button
+        type="button"
+        onClick={() => chooseMode("card")}
+        aria-pressed={viewMode === "card"}
+        className={`u-btn ${s.modeBtn} ${viewMode === "card" ? "u-btn-primary" : "u-btn-secondary"}`}
+      >
+        카드
+      </button>
+    </div>
+  );
 
-      {viewMode === "table" ? (
+  if (viewMode === "table") {
+    return (
+      <>
+        <div className={s.toolbar}>{modeToggle}</div>
         <TableView entries={entries} />
-      ) : (
-        <>
-          <p className={`t-caption ${s.hint}`} role="status">
-            {readAlong
-              ? "예문에서 단어를 누르면 하나씩, 쓸어서 여러 개를 고르면 이어서 읽어요."
-              : "↕ 위아래로 넘겨서 다음 단어를 봐요. 🔊 를 누르면 읽어 줘요."}
-          </p>
-          <div ref={scrollerRef} className={s.scroller} aria-label="단어 카드">
-            {entries.map((entry, i) => (
-              <VocabCard
-                key={i}
-                entry={entry}
-                index={i}
-                total={entries.length}
-                active={i === activeIndex}
-                readAlong={readAlong}
-              />
-            ))}
+      </>
+    );
+  }
+
+  // 카드 모드 — 100dvh 전면 오버레이 (chrome=auto + 스크롤러=flex:1/min-height:0)
+  const daySuffix = dayLabel && dayLabel !== titleKo ? ` · ${dayLabel}` : "";
+  return (
+    <div className={s.cardOverlay} role="dialog" aria-label="단어 카드 보기">
+      <div className={s.cardInner}>
+        <div className={s.cardChrome}>
+          <div className={s.chromeRow}>
+            <div className={s.chromeTitle}>
+              <Link href="/english/vocab" className={`u-navbtn ${s.backBtn}`}>
+                ← 목록
+              </Link>
+              <span className={`t-caption ${s.titleText}`}>
+                {titleKo}
+                {daySuffix} · {entries.length}개
+              </span>
+            </div>
+            {modeToggle}
           </div>
-        </>
-      )}
-    </>
+          <div className={s.chromeRow2}>
+            <button
+              type="button"
+              onClick={toggleReadAlong}
+              aria-pressed={readAlong}
+              className={`u-btn ${s.modeBtn} ${readAlong ? "u-btn-primary" : "u-btn-secondary"}`}
+            >
+              <span aria-hidden>👆</span> 이어읽기
+            </button>
+            <span className={`t-caption ${s.hintText}`} role="status">
+              {readAlong ? "단어를 누르면 하나씩, 쓸어서 이어 읽어요" : "↕ 넘겨서 다음 단어 · 🔊 눌러 듣기"}
+            </span>
+          </div>
+        </div>
+
+        <div ref={scrollerRef} className={s.scroller} aria-label="단어 카드">
+          {entries.map((entry, i) => (
+            <VocabCard
+              key={i}
+              entry={entry}
+              index={i}
+              total={entries.length}
+              active={i === activeIndex}
+              readAlong={readAlong}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 
