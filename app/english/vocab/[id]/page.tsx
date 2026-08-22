@@ -74,9 +74,15 @@ export default async function VocabDetailPage({ params }: VocabDetailPageProps) 
 
       <div className="mt-8 flex flex-wrap gap-2">
         {canQuiz ? (
-          <Link href={`/english/vocab/${record.id}/quiz`} className="u-btn u-btn-primary">
-            <span aria-hidden>📝</span> 시험 보기
-          </Link>
+          <>
+            <Link href={`/english/vocab/${record.id}/quiz`} className="u-btn u-btn-primary">
+              <span aria-hidden>📝</span> 시험 보기
+            </Link>
+            {/* 오답노트(V5 층1) — 시험을 본 적 없으면 빈 상태로 안내한다(같은 canQuiz 조건에 둔다) */}
+            <Link href={`/english/vocab/${record.id}/wrong`} className="u-btn u-btn-secondary">
+              <span aria-hidden>📕</span> 오답노트
+            </Link>
+          </>
         ) : null}
         <Link href="/english/vocab/new" className="u-btn u-btn-secondary">
           <span aria-hidden>📷</span> 새 단어장 만들기

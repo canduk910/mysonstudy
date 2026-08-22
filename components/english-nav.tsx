@@ -33,14 +33,31 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { href: "/english/books", icon: "🏠", label: "북카드", match: "/english/books" },
   { href: "/english/vocab", icon: "📓", label: "단어장", match: "/english/vocab" },
+  { href: "/english/vocab/wrong", icon: "📕", label: "오답노트", match: "/english/vocab/wrong" },
   { href: "/library", icon: "📚", label: "서재", match: null },
 ];
 
+/**
+ * 활성 항목 = 현재 경로에 매칭되는 접두사 중 **가장 긴 것**(most-specific wins). 단어장(`/english/vocab`)이
+ * 오답노트(`/english/vocab/wrong`)의 접두사라, 오답노트 페이지에서 둘 다 켜지는 것을 막는다.
+ * pathname의 순수 함수라 SSR/CSR이 같은 값을 줘 hydration mismatch가 없다(단일 match일 땐 종전과 동일).
+ */
+function activeHref(pathname: string): string | null {
+  let best: { href: string; len: number } | null = null;
+  for (const item of NAV_ITEMS) {
+    if (item.match != null && pathname.startsWith(item.match) && (!best || item.match.length > best.len)) {
+      best = { href: item.href, len: item.match.length };
+    }
+  }
+  return best?.href ?? null;
+}
+
 function NavMenu({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
+  const currentHref = activeHref(pathname);
   return (
     <nav className={s.menu} aria-label="영어 학습 메뉴">
       {NAV_ITEMS.map((item) => {
-        const active = item.match != null && pathname.startsWith(item.match);
+        const active = item.href === currentHref;
         return (
           <Link
             key={item.href}

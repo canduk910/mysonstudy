@@ -218,7 +218,7 @@ export interface VocabQuizRecord {
   id: string;
   /** 어느 단어장(DAY)의 시험인가 — VocabBookRecord.id */
   bookId: string;
-  /** 시험 방식(지금은 "def-to-word" 하나). 나중 모드가 생겨도 어느 판이었는지 남는다 */
+  /** 어떤 판이었나 — "def-to-word"(일반 시험) 또는 "wrong-review"(오답복습 재시험, V5). 집계는 모드 무관 */
   mode: VocabQuizMode;
   /** 세션 시작 시각 ISO 8601 — 목록 정렬·streak 계산의 시간 축 */
   startedAt: string;
@@ -337,6 +337,12 @@ export interface StudyStore {
    * V5가 이 순서로 걸어 단어별 wrong·total·streak(연속 정답)을 계산한다(순서가 streak의 뜻이다).
    */
   listVocabQuizzes(bookId: string): Promise<VocabQuizRecord[]>;
+  /**
+   * **모든 단어장의** 시험 세션 — 역시 **startedAt 오름차순**(bookId 무관 전역 시간순).
+   * DAY를 넘는 통합 오답노트(V5 층2)가 bookId별로 다시 갈라 aggregateWordStats에 넣는다.
+   * bookId별 상대 순서는 전역 정렬 안에서 보존된다(같은 규약: 순서가 streak의 뜻).
+   */
+  listAllVocabQuizzes(): Promise<VocabQuizRecord[]>;
 }
 
 /**
@@ -761,6 +767,14 @@ class JsonFileStore implements BookCardStore {
     const db = await readDb();
     return db.vocabQuizzes
       .filter((q) => q.bookId === bookId)
+      .map((q) => ({ ...q, items: (q.items ?? []).map(normalizeVocabQuizItem) }))
+      .sort(byStartedAtAsc);
+  }
+
+  async listAllVocabQuizzes(): Promise<VocabQuizRecord[]> {
+    // bookId 필터만 뺀 listVocabQuizzes — 전역 startedAt 오름차순(층2가 bookId별로 다시 가른다).
+    const db = await readDb();
+    return db.vocabQuizzes
       .map((q) => ({ ...q, items: (q.items ?? []).map(normalizeVocabQuizItem) }))
       .sort(byStartedAtAsc);
   }

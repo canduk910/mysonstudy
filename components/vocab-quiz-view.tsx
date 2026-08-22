@@ -35,9 +35,6 @@ import type { VocabQuizItem } from "@/lib/store";
 import type { VocabQuizSubmitRequest, VocabQuizSubmitResponse } from "@/lib/vocab-quiz-contract";
 import s from "./vocab-quiz-view.module.css";
 
-/** 지금은 모드가 하나 — 저장 레코드에 어느 방식이었는지 남긴다(계획 §V4). */
-const QUIZ_MODE: VocabQuizMode = "def-to-word";
-
 interface VocabQuizViewProps {
   /** 시험 결과를 저장할 단어장 id (POST URL) */
   id: string;
@@ -47,12 +44,25 @@ interface VocabQuizViewProps {
   pool: QuizPoolItem[];
   /** 오답 후보 = 같은 DAY의 모든 단어(정답·중복은 buildChoices가 걸러낸다) */
   dayWords: string[];
+  /**
+   * 저장 레코드에 남길 모드(계획 §V4·§V5). 일반 시험은 `"def-to-word"`(기본), 오답노트의 재시험은
+   * `"wrong-review"`. 진행·채점·보기 생성은 모드와 무관하게 같다 — 저장 태그와 안내 문구만 다르다.
+   */
+  mode?: VocabQuizMode;
 }
 
 /** 세션 결과 저장 상태 — 끝/중단 시 1회 POST의 진행을 화면에 표시한다 */
 type SaveState = "idle" | "saving" | "saved" | "error";
 
-export default function VocabQuizView({ id, titleKo, dayLabel, pool, dayWords }: VocabQuizViewProps) {
+export default function VocabQuizView({
+  id,
+  titleKo,
+  dayLabel,
+  pool,
+  dayWords,
+  mode = "def-to-word",
+}: VocabQuizViewProps) {
+  const isReview = mode === "wrong-review"; // 오답복습이면 문구를 "다시 풀기" 톤으로 바꾼다
   // 문제는 마운트 후 1회만 조립한다(hydration mismatch 회피). null = 아직 준비 중.
   const [questions, setQuestions] = useState<QuizQuestion[] | null>(null);
   const [startedAt, setStartedAt] = useState<string>("");
@@ -121,7 +131,7 @@ export default function VocabQuizView({ id, titleKo, dayLabel, pool, dayWords }:
       answered: answers[i] === null ? null : true,
     }));
     const body: VocabQuizSubmitRequest = {
-      mode: QUIZ_MODE,
+      mode,
       startedAt,
       finishedAt: complete ? new Date().toISOString() : null, // 완료면 시각, 중단이면 null
       items,
@@ -198,7 +208,9 @@ export default function VocabQuizView({ id, titleKo, dayLabel, pool, dayWords }:
     return (
       <div className={s.wrap}>
         <div className={s.results}>
-          <p className="t-caption">{completed ? "시험 끝!" : "여기까지 풀었어요"}</p>
+          <p className="t-caption">
+            {completed ? (isReview ? "복습 끝!" : "시험 끝!") : "여기까지 풀었어요"}
+          </p>
           <p className={s.scoreBig}>
             {correctCount} <span className={s.scoreSlash}>/</span> {answeredCount}
           </p>

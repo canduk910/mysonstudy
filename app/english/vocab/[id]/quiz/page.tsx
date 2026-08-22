@@ -1,14 +1,19 @@
 /**
- * 단어장 시험 `/english/vocab/[id]/quiz` (단어장 정복 V4) — 서버 컴포넌트.
+ * 단어장 시험 `/english/vocab/[id]/quiz` (단어장 정복 V4·V5) — 서버 컴포넌트.
  *
  * 저장된 DAY 하나를 읽어, **영영 정의가 있는 단어(definitionEn !== null)만** 문제 풀로 골라
  * 클라이언트 시험 화면(`components/vocab-quiz-view.tsx`)에 넘긴다. 진행·채점·저장은 전부
- * 클라이언트에서 돈다 — 이 서버 컴포넌트는 데이터 로딩·404 판정·**게이트**만 맡는다.
+ * 클라이언트에서 돈다 — 이 서버 컴포넌트는 데이터 로딩·404 판정·**게이트**·**풀 계산**만 맡는다.
  *
- * ── 게이트 (계획 §V4) ───────────────────────────────────────────────────────
- * 시험은 V3에서 만든 정의에 의존한다. 정의 있는 단어가 최소치(5, 5지선다라 정답1+오답4)에
- * 못 미치면 문제를 낼 수 없으므로, "먼저 정의를 만들어 주세요"로 막고 상세로 돌아가는 링크를 준다.
- * (진입 버튼은 상세에서 enriched일 때만 뜨지만, URL 직접 진입도 여기서 정직하게 막는다.)
+ * ── 두 가지 모드 ────────────────────────────────────────────────────────────
+ * - 기본(일반 시험, V4): 정의 있는 단어 **전체**가 문제 풀. 정의가 최소치(5, 5지선다라 정답1+오답4)에
+ *   못 미치면 "먼저 정의를 만들어 주세요"로 막는다(§V4 게이트).
+ * - `?mode=wrong`(오답복습, V5 층1): 그 DAY의 **틀린·미졸업 단어만** 문제 풀. 세션 집계
+ *   (`aggregateWordStats`)로 골라, {wrong>0 && 미졸업}인 단어를 다시 낸다. 남은 오답이 없으면
+ *   "모두 졸업" 축하 화면. 오답 4개는 **여전히 같은 DAY**에서 뽑는다(buildChoices 계약 — cross-DAY 금지).
+ *
+ * 저장은 두 모드가 같은 라우트(`POST …/quiz`)를 쓰되 `mode`로 구분한다(일반 시험 vs 오답복습).
+ * 집계는 모드를 가리지 않고 모든 시도를 세므로, 재시험이 streak를 밀어 올려 졸업이 성립한다(§V5).
  *
  * 존재·렌더 판정은 상세/보강과 **같은 함수**(lib/vocabbook-record.ts) — 갈리면 "목록엔 보이는데
  * 눌렀더니 500"이 된다.
@@ -18,7 +23,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import VocabQuizView from "@/components/vocab-quiz-view";
-import { MIN_QUIZ_WORDS } from "@/lib/vocab-quiz";
+import { MIN_QUIZ_WORDS, type QuizPoolItem } from "@/lib/vocab-quiz";
+import { aggregateWordStats, isStatMastered } from "@/lib/vocab-mastery";
 import { isRenderableVocabBook } from "@/lib/vocabbook-record";
 import { getStore } from "@/lib/store";
 
@@ -26,6 +32,7 @@ export const dynamic = "force-dynamic";
 
 interface QuizPageProps {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ mode?: string | string[] }>;
 }
 
 export async function generateMetadata({ params }: QuizPageProps): Promise<Metadata> {
@@ -37,30 +44,90 @@ export async function generateMetadata({ params }: QuizPageProps): Promise<Metad
   return { title: `${record.titleKo} 시험 — 은우 북카드` };
 }
 
-export default async function VocabQuizPage({ params }: QuizPageProps) {
+export default async function VocabQuizPage({ params, searchParams }: QuizPageProps) {
   const { id } = await params;
-  const record = await getStore().getVocabBook(id);
+  const sp = await searchParams;
+  const isWrong = (Array.isArray(sp.mode) ? sp.mode[0] : sp.mode) === "wrong";
+
+  const store = getStore();
+  const record = await store.getVocabBook(id);
   if (!record || !isRenderableVocabBook(record)) notFound();
 
-  // 문제 풀 = 영영 정의가 있는 단어만(정의가 곧 문제). 오답 후보는 DAY 전체 단어.
-  const pool = record.entries
+  // 오답 후보는 항상 DAY 전체 단어(buildChoices가 정답·중복을 걸러낸다). 두 모드가 공유한다.
+  const dayWords = record.entries.map((e) => e.word);
+  // 정의 있는 단어 = 시험에 낼 수 있는 단어(정의가 곧 문제).
+  const definedWords: QuizPoolItem[] = record.entries
     .filter((e) => e.definitionEn !== null)
     .map((e) => ({ word: e.word, definitionEn: e.definitionEn as string }));
-  const dayWords = record.entries.map((e) => e.word);
 
+  const backHeader = (
+    <header className="mb-4">
+      <div className="flex items-center justify-between gap-3">
+        <Link href={`/english/vocab/${id}`} className="u-navbtn">
+          ← 단어장으로
+        </Link>
+        <p className="t-caption flex-none">{isWrong ? "오답 다시 풀기" : "단어 시험"}</p>
+      </div>
+      <h1 className="t-book-title mt-4">{record.titleKo}</h1>
+    </header>
+  );
+
+  // ── 오답복습 모드 (V5 층1) ──────────────────────────────────────────────────
+  if (isWrong) {
+    const quizzes = await store.listVocabQuizzes(id);
+    const stats = aggregateWordStats(quizzes);
+    // 틀린 적 있고 아직 졸업 못 한 단어만(오답노트의 "틀린" 필터와 같은 규칙).
+    const wrongPool = definedWords.filter((w) => {
+      const st = stats[w.word];
+      return st != null && st.wrong > 0 && !isStatMastered(st);
+    });
+
+    if (wrongPool.length === 0) {
+      return (
+        <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
+          {backHeader}
+          <section className="u-card" style={{ padding: "2rem 1.25rem", textAlign: "center" }}>
+            <p style={{ fontSize: "2.5rem", margin: 0 }} aria-hidden>
+              🎓🎉
+            </p>
+            <h2 className="t-section-title mt-2">다시 풀 오답이 없어요</h2>
+            <p className="t-lead mt-2">
+              틀린 단어를 모두 졸업했거나, 아직 틀린 단어가 없어요. 정말 잘했어요!
+            </p>
+            <div className="mt-6 flex flex-wrap justify-center gap-2">
+              <Link href={`/english/vocab/${id}/wrong`} className="u-btn u-btn-primary">
+                <span aria-hidden>📕</span> 오답노트 보기
+              </Link>
+              <Link href={`/english/vocab/${id}/quiz`} className="u-btn u-btn-secondary">
+                <span aria-hidden>📝</span> 전체 시험 보기
+              </Link>
+            </div>
+          </section>
+        </main>
+      );
+    }
+
+    return (
+      <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
+        {backHeader}
+        <VocabQuizView
+          id={record.id}
+          titleKo={record.titleKo}
+          dayLabel={record.dayLabel}
+          pool={wrongPool}
+          dayWords={dayWords}
+          mode="wrong-review"
+        />
+      </main>
+    );
+  }
+
+  // ── 일반 시험 모드 (V4) ─────────────────────────────────────────────────────
   return (
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
-      <header className="mb-4">
-        <div className="flex items-center justify-between gap-3">
-          <Link href={`/english/vocab/${id}`} className="u-navbtn">
-            ← 단어장으로
-          </Link>
-          <p className="t-caption flex-none">단어 시험</p>
-        </div>
-        <h1 className="t-book-title mt-4">{record.titleKo}</h1>
-      </header>
+      {backHeader}
 
-      {pool.length < MIN_QUIZ_WORDS ? (
+      {definedWords.length < MIN_QUIZ_WORDS ? (
         // ── 게이트: 정의가 부족하면 시험을 낼 수 없다 ──────────────────────────
         <section className="u-card" style={{ padding: "2rem 1.25rem", textAlign: "center" }}>
           <p style={{ fontSize: "2.5rem", margin: 0 }} aria-hidden>
@@ -71,7 +138,7 @@ export default async function VocabQuizPage({ params }: QuizPageProps) {
             시험은 <b>영영 뜻</b>을 보고 단어를 맞히는 놀이예요. 그래서 뜻이 있는 단어가 최소{" "}
             {MIN_QUIZ_WORDS}개는 있어야 해요.
             <br />
-            지금은 {pool.length}개예요 — 단어장에서 “영영 뜻 만들기”를 눌러 채워 주세요.
+            지금은 {definedWords.length}개예요 — 단어장에서 “영영 뜻 만들기”를 눌러 채워 주세요.
           </p>
           <div className="mt-6 flex flex-wrap justify-center gap-2">
             <Link href={`/english/vocab/${id}`} className="u-btn u-btn-primary">
@@ -87,7 +154,7 @@ export default async function VocabQuizPage({ params }: QuizPageProps) {
           id={record.id}
           titleKo={record.titleKo}
           dayLabel={record.dayLabel}
-          pool={pool}
+          pool={definedWords}
           dayWords={dayWords}
         />
       )}

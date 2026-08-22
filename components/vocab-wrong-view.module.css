@@ -1,0 +1,170 @@
+/**
+ * 오답노트(DAY 안) 스타일 — 색·반경은 전부 globals 토큰(하드코딩 0). 초록 토큰이 없어
+ * 졸업 강조는 accent(파랑), 오답 강조는 danger를 쓴다(vocab-quiz-view와 같은 규약).
+ * 아이·부모가 함께 보는 화면이라 글자·터치 타깃을 큼직하게.
+ */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.summary {
+  border-radius: var(--radius-box);
+  border: 1px solid var(--accent-soft);
+  background: var(--accent-soft);
+  padding: 1rem 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.summaryLead {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.emph {
+  color: var(--accent-ink);
+  font-size: 1.2rem;
+}
+.rule {
+  color: var(--accent-ink);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.filterCount {
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+.reviewBtn {
+  width: 100%;
+  justify-content: center;
+  font-size: 1.05rem;
+  padding-top: 0.85rem;
+  padding-bottom: 0.85rem;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  padding: 0.85rem 1rem;
+}
+.rowMastered {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.rowMain {
+  min-width: 0;
+  flex: 1;
+}
+.wordLine {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.word {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--ink);
+  word-break: break-word;
+}
+.speaker {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0.15rem 0.25rem;
+  border-radius: 8px;
+}
+.speaker:hover {
+  background: var(--surface-2);
+}
+.def {
+  margin: 0.25rem 0 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+
+.rowSide {
+  flex: none;
+  text-align: right;
+}
+
+.badgeMastered {
+  display: inline-block;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--accent-ink);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+  white-space: nowrap;
+}
+.badgeUnseen {
+  display: inline-block;
+  font-size: 0.85rem;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.badgeProgress {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.15rem;
+}
+.dots {
+  display: inline-flex;
+  gap: 0.15rem;
+  font-size: 0.75rem;
+  line-height: 1;
+}
+.dotOn {
+  color: var(--accent);
+}
+.dotOff {
+  color: var(--line-strong);
+}
+.progressText {
+  font-size: 0.8rem;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.emptyList {
+  margin: 0;
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--ink-2);
+  background: var(--surface);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-box);
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}

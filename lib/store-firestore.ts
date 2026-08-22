@@ -225,7 +225,7 @@ function toVocabQuiz(id: string, d: DocumentData): VocabQuizRecord {
   return {
     id,
     bookId: String(d.bookId ?? ""),
-    // 지금은 모드가 하나 — 미지값(옛/손입력 문서)도 유일한 모드로 안전 폴백한다
+    // 미지값(옛/손입력 문서)은 기본 모드(def-to-word)로 안전 폴백한다
     mode: (VOCAB_QUIZ_MODES as readonly string[]).includes(d.mode as string)
       ? (d.mode as VocabQuizRecord["mode"])
       : "def-to-word",
@@ -536,6 +536,12 @@ export class FirestoreStore implements StudyStore {
   async listVocabQuizzes(bookId: string): Promise<VocabQuizRecord[]> {
     // where + orderBy(다른 필드)는 복합 인덱스가 필요 — 필터만 쿼리, 정렬은 메모리(listCardsForBook과 같은 규약)
     const snap = await this.vocabQuizzes().where("bookId", "==", bookId).get();
+    return snap.docs.map((d) => toVocabQuiz(d.id, d.data())).sort(byStartedAtAsc);
+  }
+  async listAllVocabQuizzes(): Promise<VocabQuizRecord[]> {
+    // 전역 조회(where 없음) — 정렬은 메모리에서 startedAt 오름차순(층2가 bookId별로 다시 가른다).
+    // 가족용 규모라 컬렉션 전체를 읽어도 문제 없다(listVocabBooks가 전체를 읽는 것과 같은 판단).
+    const snap = await this.vocabQuizzes().get();
     return snap.docs.map((d) => toVocabQuiz(d.id, d.data())).sort(byStartedAtAsc);
   }
 }

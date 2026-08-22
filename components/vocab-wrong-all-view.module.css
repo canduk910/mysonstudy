@@ -1,0 +1,186 @@
+/**
+ * 통합 오답노트(DAY 넘어) 스타일 — 색·반경은 전부 globals 토큰(하드코딩 0). 정복률 바·졸업 강조는
+ * accent(파랑), 오답 강조는 danger 계열을 쓴다(초록 토큰 없음). 아이·부모용으로 큼직하게.
+ */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+}
+
+.summary {
+  border-radius: var(--radius-box);
+  border: 1px solid var(--accent-soft);
+  background: var(--accent-soft);
+  padding: 1rem 1.15rem;
+}
+.summaryLead {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.emph {
+  color: var(--accent-ink);
+  font-size: 1.2rem;
+}
+.rule {
+  color: var(--accent-ink);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.group {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  padding: 1rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.groupHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.groupTitleBlock {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.groupTitle {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--ink);
+  text-decoration: none;
+}
+.groupTitle:hover {
+  color: var(--accent-ink);
+  text-decoration: underline;
+}
+.dayLabel {
+  font-size: 0.85rem;
+  color: var(--ink-3);
+}
+.groupCount {
+  flex: none;
+  font-size: 0.85rem;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.masteryRow {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.bar {
+  flex: 1;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.barFill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+.masteryText {
+  flex: none;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--accent-ink);
+  white-space: nowrap;
+}
+.masterySub {
+  font-weight: 400;
+  color: var(--ink-2);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface-2);
+  padding: 0.65rem 0.85rem;
+}
+.rowMain {
+  min-width: 0;
+  flex: 1;
+}
+.wordLine {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.word {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--ink);
+  word-break: break-word;
+}
+.speaker {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 1.05rem;
+  line-height: 1;
+  padding: 0.15rem 0.25rem;
+  border-radius: 8px;
+}
+.speaker:hover {
+  background: var(--surface);
+}
+.def {
+  margin: 0.2rem 0 0;
+  font-size: 0.88rem;
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+.progress {
+  flex: none;
+  font-size: 0.8rem;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.groupDone {
+  margin: 0;
+  padding: 0.5rem 0;
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.reviewBtn {
+  width: 100%;
+  justify-content: center;
+  font-size: 1rem;
+  padding-top: 0.75rem;
+  padding-bottom: 0.75rem;
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}

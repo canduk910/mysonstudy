@@ -27,10 +27,15 @@ export const DEFAULT_CHOICE_COUNT = 5;
 export const MIN_QUIZ_WORDS = 5;
 
 /**
- * 시험 모드 — 지금은 "영영 정의 → 영단어" 하나뿐이다(계획 §V4). 나중에 반대 방향(단어→정의)이
- * 생겨도 저장 레코드가 어느 모드였는지 남기도록 유니온으로 연다. 저장·요청·검증이 같은 상수를 본다.
+ * 시험 모드 — 저장 레코드가 **어떤 판이었는지** 남기는 태그다. 방향은 지금 "영영 정의 → 영단어"
+ * 하나뿐이라, 이 값은 사실상 **목적 축**을 구분한다(계획 §V4·§V5, V4 리포트가 예고한 용도):
+ * - `"def-to-word"`  : 일반 시험(단어장 상세의 "시험 보기"). DAY의 정의 있는 단어 전체가 대상.
+ * - `"wrong-review"` : 오답복습 재시험(오답노트의 "오답 다시 풀기"). 그 DAY의 틀린·미졸업 단어만 대상.
+ *
+ * 집계(aggregateWordStats)는 **모드를 가리지 않고** 모든 시도를 함께 센다 — 재시험이 streak를 밀어
+ * 올려 졸업하는 경로가 성립해야 하므로. 저장·요청 zod·읽기 폴백이 모두 이 상수 하나를 본다.
  */
-export const VOCAB_QUIZ_MODES = ["def-to-word"] as const;
+export const VOCAB_QUIZ_MODES = ["def-to-word", "wrong-review"] as const;
 export type VocabQuizMode = (typeof VOCAB_QUIZ_MODES)[number];
 
 /** 랜덤 주입 시그니처 — `Math.random`과 같은 [0,1) 실수 생성기. 테스트가 결정적 rng를 넣는다. */

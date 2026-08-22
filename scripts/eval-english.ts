@@ -63,6 +63,14 @@ import {
 } from "../lib/ai/english/vocabbook-merge";
 // 시험(V4) 보기 생성 순수 함수 — 오프라인 eval이 불변을 잠근다(정답 포함·전부 상이·개수·오답 같은 DAY)
 import { buildChoices } from "../lib/vocab-quiz";
+// 오답노트(V5) 집계·졸업 순수 함수 — 오프라인 eval이 불변을 잠근다(연속 2회 경계·streak 리셋·미시도·시간순)
+import {
+  MASTERY_STREAK,
+  aggregateWordStats,
+  isMastered,
+  isStatMastered,
+} from "../lib/vocab-mastery";
+import type { VocabQuizRecord } from "../lib/store";
 // 호출 D(보강) 정의 불변 순수 함수 — 오프라인 eval이 잠근다(§8-5)
 import {
   buildEnrichRequestItems,
@@ -1356,6 +1364,86 @@ function runVocabbookChecks(): CheckResult[] {
       new Set(noisy).size === noisy.length &&
       !distractors.includes("fix");
     add("buildChoices. dayWords 정답·중복 오염에도 정답 미중복·오답 유일", ok, `값=[${noisy.join(", ")}]`);
+  }
+
+  // --- 오답노트 집계·졸업 aggregateWordStats·isMastered (V5) ---
+  // streak는 startedAt 오름차순 입력의 **순서**에 의존한다 — 재정렬 없이 그대로 소비하는지,
+  // 연속 2회 경계·중간 틀림 리셋·미시도(answered!==true) 제외·여러 세션 시간순 합산을 잠근다.
+  {
+    // 세션 하나를 만드는 헬퍼(startedAt이 곧 시간 축). id/finishedAt은 집계에 안 쓰이나 타입을 채운다.
+    const quiz = (
+      startedAt: string,
+      items: { word: string; correct: boolean; answered: boolean | null }[],
+    ): VocabQuizRecord => ({ id: startedAt, bookId: "b1", mode: "def-to-word", startedAt, finishedAt: startedAt, items });
+
+    // (1) 여러 세션을 시간순으로 합산 + 중간 틀림 리셋 + 연속 2회 졸업.
+    //   fix: 맞→틀→맞→맞  ⇒ total 4, wrong 1, streak 2(마지막 2연속) ⇒ 졸업
+    const statsA = aggregateWordStats([
+      quiz("2026-08-20T01:00:00.000Z", [{ word: "fix", correct: true, answered: true }]),
+      quiz("2026-08-21T01:00:00.000Z", [{ word: "fix", correct: false, answered: true }]),
+      quiz("2026-08-22T01:00:00.000Z", [{ word: "fix", correct: true, answered: true }]),
+      quiz("2026-08-23T01:00:00.000Z", [{ word: "fix", correct: true, answered: true }]),
+    ]);
+    const a = statsA["fix"];
+    add(
+      "aggregate. 여러 세션 시간순 합산(total/wrong) + 연속 2회 졸업",
+      a != null && a.total === 4 && a.wrong === 1 && a.streak === 2 && isStatMastered(a),
+      `fix=${JSON.stringify(a)}`,
+    );
+
+    // (2) 마지막이 오답이면 streak=0(리셋) → 미졸업.  맞→맞→틀 ⇒ streak 0
+    const statsB = aggregateWordStats([
+      quiz("2026-08-20T01:00:00.000Z", [{ word: "gap", correct: true, answered: true }]),
+      quiz("2026-08-21T01:00:00.000Z", [{ word: "gap", correct: true, answered: true }]),
+      quiz("2026-08-22T01:00:00.000Z", [{ word: "gap", correct: false, answered: true }]),
+    ]);
+    const b = statsB["gap"];
+    add(
+      "aggregate. 마지막 오답이면 streak 리셋(0)·미졸업",
+      b != null && b.total === 3 && b.wrong === 1 && b.streak === 0 && !isStatMastered(b),
+      `gap=${JSON.stringify(b)}`,
+    );
+
+    // (3) 미응답(answered:null)·미시도는 세지 않는다. 한 번도 시도 안 된 단어는 키에 없다.
+    const statsC = aggregateWordStats([
+      quiz("2026-08-20T01:00:00.000Z", [
+        { word: "run", correct: true, answered: true },
+        { word: "skip", correct: false, answered: null }, // 그만하기 미응답 — 시도 아님
+        { word: "hold", correct: false, answered: false }, // 방어: answered:false도 시도 아님
+      ]),
+    ]);
+    add(
+      "aggregate. 미응답(null)·answered:false는 시도로 안 셈, 미시도 단어는 키 없음",
+      statsC["run"]?.total === 1 && statsC["skip"] === undefined && statsC["hold"] === undefined,
+      `run=${JSON.stringify(statsC["run"])} skip=${statsC["skip"]} hold=${statsC["hold"]}`,
+    );
+
+    // (4) 입력 순서가 곧 streak의 뜻 — 같은 두 세션을 순서만 바꾸면 streak가 달라진다(재정렬 금지 확인).
+    const older = quiz("2026-08-20T01:00:00.000Z", [{ word: "x", correct: false, answered: true }]);
+    const newer = quiz("2026-08-21T01:00:00.000Z", [{ word: "x", correct: true, answered: true }]);
+    const asc = aggregateWordStats([older, newer])["x"]; // 틀→맞: 마지막 맞 ⇒ streak 1
+    const desc = aggregateWordStats([newer, older])["x"]; // 맞→틀: 마지막 틀 ⇒ streak 0
+    add(
+      "aggregate. 입력 순서가 streak를 결정한다(재정렬하지 않는다)",
+      asc?.streak === 1 && desc?.streak === 0,
+      `asc.streak=${asc?.streak} desc.streak=${desc?.streak}`,
+    );
+
+    // (5) isMastered 이력 직접 검증 — 마지막 MASTERY_STREAK회가 모두 정답이어야 졸업.
+    const T = true;
+    const F = false;
+    const masteredOk =
+      isMastered([]) === false &&
+      isMastered([T]) === false &&
+      isMastered([T, T]) === true &&
+      isMastered([F, T, T]) === true &&
+      isMastered([T, T, F]) === false &&
+      isMastered([T, F, T]) === false; // 중간 리셋 후 꼬리 1연속뿐
+    add(
+      `isMastered. 마지막 ${MASTERY_STREAK}회 모두 정답일 때만 졸업(경계·리셋)`,
+      masteredOk,
+      masteredOk ? "6개 경계 케이스 통과" : "경계 케이스 실패",
+    );
   }
 
   return results;
