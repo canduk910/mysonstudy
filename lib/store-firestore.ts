@@ -29,6 +29,7 @@ import {
   normalizeProblem,
   normalizeTitleAuthorKey,
   normalizeVocabEntry,
+  type LegacyOrNewVocabEntry,
   type BookEvidencePatch,
   type BookRecord,
   type CardRecord,
@@ -46,7 +47,6 @@ import {
   type StudyStore,
   type VocabBookRecord,
 } from "./store";
-import type { VocabEntry } from "./ai/english/vocabbook-schemas";
 // 설명 기록(M4)이 안는 타입 — 값 import는 `SCENE_TIERS` 하나뿐이다(읽기 방어용 상수).
 import type { ExplainVerifyReport } from "./ai/math/pipeline";
 import type { Explanation } from "./ai/math/schemas";
@@ -181,7 +181,8 @@ function toReading(id: string, d: DocumentData): ReadingRecord {
  */
 function toVocabBook(id: string, d: DocumentData): VocabBookRecord {
   const entries = Array.isArray(d.entries)
-    ? (d.entries as VocabEntry[]).map(normalizeVocabEntry)
+    ? // 옛 문서는 meanings 대신 meaningsKo를 갖는다 — 느슨한 타입으로 받아 normalizeVocabEntry가 승격한다
+      (d.entries as LegacyOrNewVocabEntry[]).map(normalizeVocabEntry)
     : [];
   return {
     id,

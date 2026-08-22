@@ -5,9 +5,10 @@
  * 레코드도 같은 `notFound()`다(수학 `/math/problem/[id]`와 같은 규약) — 판정은 목록과
  * **같은 함수**(`lib/vocabbook-record.ts`). 두 벌이 되면 "목록엔 보이는데 눌렀더니 500"이 돌아온다.
  *
- * **표만 그린다.** 카드 모드·단어/예문 TTS는 V2다(계획). 디자인은 새 CSS 없이
- * `t-vocab-*` 전역 토큰 + `.u-table` + `overflow-x-auto`만 쓴다(DESIGN, 표는 좁은 화면에서
- * 표만 가로 스크롤하고 페이지는 밀리지 않는다 — 수학 서재 통계표와 같은 장치).
+ * **표만 그린다.** 카드 모드·단어/예문 TTS는 V2다(계획). 디자인은 `t-vocab-*` 전역 토큰 +
+ * `.u-table` + `overflow-x-auto`를 쓰고(표는 좁은 화면에서 표만 가로 스크롤하고 페이지는
+ * 밀리지 않는다 — 수학 서재 통계표와 같은 장치), 좁은 화면 글자 축소는 `.vocab-table` 스코프
+ * 하나로만 한다(globals.css — 전역 --fs-vocab-* 토큰은 카드 V2가 그대로 쓰도록 건드리지 않는다).
  */
 
 import type { Metadata } from "next";
@@ -65,7 +66,7 @@ export default async function VocabDetailPage({ params }: VocabDetailPageProps) 
        * 어절 단위 줄바꿈한다.
        */}
       <div className="overflow-x-auto">
-        <table className="u-table" style={{ minWidth: 600 }}>
+        <table className="u-table vocab-table" style={{ minWidth: 600 }}>
           <colgroup>
             <col style={{ width: 52 }} />
             <col style={{ width: 168 }} />
@@ -105,10 +106,28 @@ export default async function VocabDetailPage({ params }: VocabDetailPageProps) 
                   )}
                 </td>
                 <td className="t-vocab-meaning align-top" style={{ wordBreak: "keep-all" }}>
-                  {entry.meaningsKo.length > 0 ? (
-                    <ol className="list-inside list-decimal">
-                      {entry.meaningsKo.map((m, k) => (
-                        <li key={k}>{m}</li>
+                  {entry.meanings.length > 0 ? (
+                    <ol className="flex flex-col gap-1.5">
+                      {/* 교재의 `1 …/2 …/3 …` 번호 구조 재현 — 번호는 자동증가가 아니라 책의 no를 그대로 */}
+                      {entry.meanings.map((m, k) => (
+                        <li key={k} className="flex flex-col gap-1">
+                          <span>
+                            {m.no !== null && (
+                              <span className="mr-1 tabular-nums text-ink-3">{m.no}.</span>
+                            )}
+                            {m.ko}
+                          </span>
+                          {/* 이 뜻 옆에 붙은 유의어·반의어 — 뜻 아래 칩으로 (단어 전체 파생어는 단어 열) */}
+                          {m.related.length > 0 && (
+                            <span className="flex flex-wrap gap-1">
+                              {m.related.map((r, j) => (
+                                <span key={j} className="u-chip">
+                                  {RELATED_KIND_LABELS_KO[r.kind]} {r.word}
+                                </span>
+                              ))}
+                            </span>
+                          )}
+                        </li>
                       ))}
                     </ol>
                   ) : (

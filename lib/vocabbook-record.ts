@@ -41,7 +41,10 @@ export function isRenderableVocabBook(record: VocabBookRecord): boolean {
   for (const raw of r.entries) {
     const e = raw as Partial<VocabEntry>;
     if (!e || typeof e.word !== "string" || e.word.trim() === "") return false;
-    if (!isArray(e.pos) || !isArray(e.meaningsKo)) return false;
+    // 읽기 정규화(normalizeVocabEntry)가 옛 meaningsKo를 meanings로 승격하므로 여기선 meanings를 본다.
+    // 정규화를 못 거친 옛 레코드도 표(.map)가 터지지 않게, 둘 중 하나가 배열이면 통과시킨다.
+    const hasMeanings = isArray(e.meanings) || isArray((e as { meaningsKo?: unknown }).meaningsKo);
+    if (!isArray(e.pos) || !hasMeanings) return false;
     if (!isArray(e.examples) || !isArray(e.related)) return false;
   }
 

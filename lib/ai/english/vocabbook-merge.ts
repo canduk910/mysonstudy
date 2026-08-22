@@ -14,6 +14,7 @@ import type {
   VocabEntry,
   VocabExample,
   VocabExtractEntry,
+  VocabMeaning,
   VocabRelated,
 } from "./vocabbook-schemas";
 
@@ -91,8 +92,39 @@ function unionRelated(lists: readonly (readonly VocabRelated[])[]): VocabRelated
 }
 
 /**
+ * 뜻 합집합 (§7-5) — 뜻 번호(no)가 있으면 번호, 없으면 ko 소문자를 조인 키로 같은 뜻을 묶는다.
+ * 같은 뜻으로 묶이면 그 뜻에 붙은 related(유의어·반의어)도 합집합으로 접는다 — 그래야 겹쳐 찍기가
+ * "뜻 1의 유의어 repair"를 잃지 않는다. 등장 순서를 지켜 표의 뜻 순서가 안정적이게 한다.
+ * ko는 멤버 중 가장 긴 것(= 잘리지 않고 온전히 읽힌 쪽)을 대표로 쓴다.
+ */
+function unionMeanings(lists: readonly (readonly VocabMeaning[])[]): VocabMeaning[] {
+  const order: string[] = [];
+  const groups = new Map<string, VocabMeaning[]>();
+  for (const list of lists) {
+    for (const m of list) {
+      const key = m.no !== null ? `no:${m.no}` : `ko:${m.ko.trim().toLowerCase()}`;
+      const bucket = groups.get(key);
+      if (bucket) {
+        bucket.push(m);
+      } else {
+        groups.set(key, [m]);
+        order.push(key);
+      }
+    }
+  }
+  return order.map((key) => {
+    const members = groups.get(key)!;
+    // no: 첫 non-null(한쪽만 번호를 읽었을 수 있다). ko: 가장 긴 것. related: 멤버 합집합.
+    const no = members.map((m) => m.no).find((v) => v !== null) ?? null;
+    const ko = members.reduce((best, m) => (m.ko.trim().length > best.trim().length ? m.ko : best), members[0].ko);
+    const related = unionRelated(members.map((m) => m.related));
+    return { no, ko, related };
+  });
+}
+
+/**
  * 같은 단어의 판독본 여러 개를 하나로 합친다.
- * - 배열(pos·meaningsKo·examples·related)은 합집합.
+ * - 배열(pos·meanings·examples·related)은 합집합. meanings는 뜻 번호 기준으로 묶고 그 뜻의 related도 합친다.
  * - 스칼라(word·ipa·no)는 '내용이 더 많은 쪽'. 대표본(primary)을 하나 골라 그 값을 기준으로 쓴다.
  * - partial은 완전본(partial=false)이 하나라도 있으면 해제.
  * - confidence는 가장 높은 것(선명하게 읽힌 쪽).
@@ -105,8 +137,8 @@ function mergeGroup(members: readonly WithPhoto[]): VocabEntry {
     .slice()
     .sort((a, b) => {
       if (a.entry.partial !== b.entry.partial) return a.entry.partial ? 1 : -1;
-      const richA = a.entry.meaningsKo.length + a.entry.examples.length + a.entry.related.length;
-      const richB = b.entry.meaningsKo.length + b.entry.examples.length + b.entry.related.length;
+      const richA = a.entry.meanings.length + a.entry.examples.length + a.entry.related.length;
+      const richB = b.entry.meanings.length + b.entry.examples.length + b.entry.related.length;
       if (richA !== richB) return richB - richA;
       return a.photoIndex - b.photoIndex;
     })[0];
@@ -127,7 +159,7 @@ function mergeGroup(members: readonly WithPhoto[]): VocabEntry {
     word: primary.entry.word,
     ipa,
     pos: unionStrings(members.map((m) => m.entry.pos)) as VocabEntry["pos"],
-    meaningsKo: unionStrings(members.map((m) => m.entry.meaningsKo)),
+    meanings: unionMeanings(members.map((m) => m.entry.meanings)),
     examples: unionExamples(members.map((m) => m.entry.examples)),
     related: unionRelated(members.map((m) => m.entry.related)),
     // (B) AI 창작 — 판독(호출 C) 입력엔 없다. V1에서는 전부 null로 열어 두고 V3(호출 D)가 채운다.

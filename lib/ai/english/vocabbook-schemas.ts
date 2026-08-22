@@ -11,7 +11,9 @@
  *   책 원문 전사다. 두 타입을 섞지 말 것 — 그래서 파일을 따로 둔다.
  *
  * ## 세 덩이로 나눈 출처 (VocabEntry)
- * - (A) 책 전사: no·word·ipa·pos·meaningsKo·examples·related — 판독(호출 C)이 책 그대로 옮긴다. 창작 금지.
+ * - (A) 책 전사: no·word·ipa·pos·meanings·examples·related — 판독(호출 C)이 책 그대로 옮긴다. 창작 금지.
+ *   뜻은 `meanings[]`(뜻 번호·풀이·그 뜻에 붙은 유의어)로 담고, 예문은 단어 레벨(`examples`),
+ *   파생어 등 단어 전체에 붙는 관련어는 `related`로 나눈다 (2026-08-22 교재 실사용 진단 반영).
  * - (B) AI 창작: definitionEn·imageEmoji·imageSvg — 호출 D(V3)가 채운다. V1에서는 전부 null.
  * - (C) 앱 부착: photoIndex(앱이 사진 인덱스 부여) + confidence·partial(호출 C가 판독하며 매긴 판정).
  *   confidence·partial은 사진을 본 모델만 매길 수 있어 호출 C 출력에 담기지만, 최종적으로
@@ -76,8 +78,10 @@ export const VOCAB_WORD_MAX = 60;
 export const VOCAB_IPA_MAX = 120;
 /** 번호 최대 길이 — "0001" 수준 */
 export const VOCAB_NO_MAX = 12;
-/** 한글 뜻 한 개의 최대 길이 */
+/** 한글 뜻 한 개(meanings[].ko)의 최대 길이 */
 export const VOCAB_MEANING_KO_MAX = 200;
+/** 교재 뜻 번호(meanings[].no)의 상한 — 1·2·3… 뜻 번호는 작다. 벗어나면 오독으로 본다 */
+export const VOCAB_MEANING_NO_MAX = 99;
 /** 예문 영어/한글 각각의 최대 길이 */
 export const VOCAB_EXAMPLE_EN_MAX = 300;
 export const VOCAB_EXAMPLE_KO_MAX = 300;
@@ -109,11 +113,30 @@ export interface VocabExample {
   ko: string;
 }
 
-/** 책이 함께 실은 관련어 하나. */
+/**
+ * 책이 함께 실은 관련어 하나. 두 자리에서 재사용한다:
+ * - `VocabMeaning.related`: 특정 뜻 옆에 붙은 유의어·반의어 (교재의 ⑤repair = fix 뜻1의 유의어)
+ * - `VocabEntry.related`: 뜻이 아니라 단어 전체 아래에 딸린 관련어 (교재의 ⊞burial = bury의 파생어)
+ * 어느 자리든 shape은 같다 — kind·word·glossKo.
+ */
 export interface VocabRelated {
   kind: RelatedKind;
   word: string;
   glossKo: string | null;
+}
+
+/**
+ * 뜻 하나 (교재의 뜻 번호 · 한글 풀이 · 그 뜻에 붙은 유의어).
+ * 교재 실제: `1 수리하다, 고치다 ⑤repair / 2 고정시키다 / 3 정하다`처럼 뜻마다 번호가 붙고
+ * 유의어가 특정 뜻 옆에 온다. 이 구조를 살리려고 `meaningsKo: string[]`(평평)을 대체했다.
+ */
+export interface VocabMeaning {
+  /** 교재 뜻 번호(1·2·3). 번호가 없으면 null */
+  no: number | null;
+  /** 그 뜻의 한글 풀이 (예: "수리하다, 고치다") */
+  ko: string;
+  /** 이 뜻 옆에 붙은 유의어·반의어. 없으면 빈 배열 */
+  related: VocabRelated[];
 }
 
 /**
@@ -129,11 +152,11 @@ export interface VocabExtractEntry {
   ipa: string | null;
   /** 품사 한글 약자 (여러 개 가능) */
   pos: PartOfSpeech[];
-  /** 한글 뜻 (여러 개 가능) */
-  meaningsKo: string[];
-  /** 책 예문 */
+  /** 뜻 (번호·풀이·그 뜻에 붙은 유의어). 책 순서대로 */
+  meanings: VocabMeaning[];
+  /** 책 예문 (단어 레벨) */
   examples: VocabExample[];
-  /** 유의어·반의어·파생어 */
+  /** 단어 전체 아래에 딸린 관련어(파생어 등). 뜻 옆 유의어는 meanings[].related로 간다 */
   related: VocabRelated[];
   /** 사진 밖으로 잘려 일부만 보이면 true */
   partial: boolean;
@@ -160,7 +183,7 @@ export interface VocabEntry {
   word: string;
   ipa: string | null;
   pos: PartOfSpeech[];
-  meaningsKo: string[];
+  meanings: VocabMeaning[];
   examples: VocabExample[];
   related: VocabRelated[];
   // (B) AI 창작 — 호출 D(V3)가 채운다. V1에서는 전부 null. imageSvg는 지금 항상 null(마이그레이션 없이 SVG를 얹을 자리)
@@ -202,10 +225,31 @@ export const VOCAB_EXTRACTION_JSON_SCHEMA: StrictJsonSchema = {
               items: { type: "string", enum: [...PARTS_OF_SPEECH] },
               description: "품사 한글 약자 (여러 개 가능)",
             },
-            meaningsKo: {
+            meanings: {
               type: "array",
-              items: { type: "string" },
-              description: "한글 뜻 (책 순서대로, 여러 개 가능)",
+              description: "뜻 (번호·풀이·그 뜻에 붙은 유의어). 책 순서대로",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  no: { type: ["integer", "null"], description: "교재 뜻 번호(1·2·3). 없으면 null" },
+                  ko: { type: "string", description: "그 뜻의 한글 풀이" },
+                  related: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      additionalProperties: false,
+                      properties: {
+                        kind: { type: "string", enum: [...RELATED_KINDS] },
+                        word: { type: "string" },
+                        glossKo: { type: ["string", "null"] },
+                      },
+                      required: ["kind", "word", "glossKo"],
+                    },
+                  },
+                },
+                required: ["no", "ko", "related"],
+              },
             },
             examples: {
               type: "array",
@@ -236,7 +280,7 @@ export const VOCAB_EXTRACTION_JSON_SCHEMA: StrictJsonSchema = {
             confidence: { type: "string", enum: [...VOCAB_CONFIDENCE_LEVELS] },
           },
           required: [
-            "no", "word", "ipa", "pos", "meaningsKo", "examples", "related",
+            "no", "word", "ipa", "pos", "meanings", "examples", "related",
             "partial", "confidence",
           ],
         },
@@ -264,12 +308,20 @@ const vocabRelatedSchema = z.object({
   glossKo: z.string().trim().max(VOCAB_RELATED_GLOSS_MAX).nullable(),
 });
 
+// 뜻 하나 — no는 교재 뜻 번호(1·2·3) 정수 또는 null, ko는 필수, related는 그 뜻에 붙은 유의어.
+// no의 범위(1~99)를 벗어나면 뜻 번호가 아니라 오독으로 보고 거부한다(§7-4).
+const vocabMeaningSchema = z.object({
+  no: z.number().int().min(1).max(VOCAB_MEANING_NO_MAX).nullable(),
+  ko: z.string().trim().min(1).max(VOCAB_MEANING_KO_MAX),
+  related: z.array(vocabRelatedSchema).max(VOCAB_RELATED_MAX),
+});
+
 const vocabExtractEntrySchema = z.object({
   no: z.string().trim().min(1).max(VOCAB_NO_MAX).nullable(),
   word: z.string().trim().min(1).max(VOCAB_WORD_MAX),
   ipa: z.string().trim().min(1).max(VOCAB_IPA_MAX).nullable(),
   pos: z.array(z.enum(PARTS_OF_SPEECH)).max(VOCAB_POS_MAX),
-  meaningsKo: z.array(z.string().trim().min(1).max(VOCAB_MEANING_KO_MAX)).max(VOCAB_MEANINGS_MAX),
+  meanings: z.array(vocabMeaningSchema).max(VOCAB_MEANINGS_MAX),
   examples: z.array(vocabExampleSchema).max(VOCAB_EXAMPLES_MAX),
   related: z.array(vocabRelatedSchema).max(VOCAB_RELATED_MAX),
   partial: z.boolean(),

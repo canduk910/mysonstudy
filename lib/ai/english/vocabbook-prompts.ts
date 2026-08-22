@@ -27,9 +27,12 @@ export const VOCAB_EXTRACT_SYSTEM_PROMPT = `너는 초등학생용 영어 단어
 - word: 표제어(영단어) 하나.
 - ipa: 발음기호를 옮기되 대괄호 [ ]는 벗겨서 안쪽만 적는다 (예: [pʌk] → pʌk). 발음기호가 없으면 null.
 - pos: 품사를 한글 약자로 적는다. 명·대·동·형·부·전·접·감·관·수 중에서 고른다. 한 단어에 여러 품사면 모두 담는다.
-- meaningsKo: 한글 뜻을 책에 적힌 순서대로 배열로 담는다. 뜻이 여러 개면 모두 담는다.
+- meanings: 한글 뜻을 책에 적힌 순서대로 담는다. 뜻 하나는 no·ko·related로 나눈다.
+  · no: 뜻 앞에 번호(1·2·3)가 붙어 있으면 그 번호를 숫자로 적는다. 번호가 없으면 null.
+  · ko: 그 뜻의 한글 풀이. 한 뜻 안에 여러 표현이 함께 적혀 있으면 책 그대로 이어 적는다 (예: "수리하다, 고치다").
+  · related: 유의어·반의어가 그 뜻 옆에 붙어 있으면 이 뜻에 담는다. kind·word·glossKo는 아래 related와 같은 형식. 없으면 빈 배열.
 - examples: 책의 예문을 영어 문장과 그 한글 해석을 짝지어 담는다. 예문이 없으면 빈 배열.
-- related: 유의어·반의어·파생어가 보이면 담는다. kind는 synonym(유의어)·antonym(반의어)·derivative(파생어) 중 하나, word는 그 단어, glossKo는 뜻이 함께 적혀 있으면 그 뜻(없으면 null). 없으면 빈 배열.
+- related: 특정 뜻이 아니라 단어 전체 아래에 딸린 관련어(파생어 등)만 담는다. kind는 synonym(유의어)·antonym(반의어)·derivative(파생어) 중 하나, word는 그 단어, glossKo는 뜻이 함께 적혀 있으면 그 뜻(없으면 null). 없으면 빈 배열.
 
 [판독 표시]
 - partial: 단어 항목이 사진 밖으로 잘려 뜻·예문 일부가 안 보이면 true. 온전히 다 보이면 false.
@@ -48,12 +51,14 @@ export const VOCAB_EXTRACT_SYSTEM_PROMPT = `너는 초등학생용 영어 단어
 export const VOCAB_EXTRACT_USER_TEXT = "이 페이지의 단어들을 판독해줘.";
 
 /**
- * 호출 C 파라미터 (HARNESS §7-1 표 · §1 공통 규칙).
+ * 호출 C 파라미터 (HARNESS §1 표 · §1 공통 규칙).
  * 판독은 전사이므로 temperature 0 — 같은 사진은 같은 결과를 내야 한다.
- * 2단 밀집 지면의 20개 항목을 예문까지 담으려면 출력 한도가 표지 판독보다 넉넉해야 한다.
+ * maxOutputTokens 16,000: 2단 밀집 지면(단어 8~9개, 뜻 여러 개 + 예문까지)이면 6,000으로는
+ * 20단어 예문까지 못 담아 모델이 예문을 통째로 생략했다 — 단어 적은 사진만 예문이 나오던
+ * 실사용 사고(2026-08-22). 뜻 구조(meanings[])가 출력을 더 늘리므로 한도를 넉넉히 올린다.
  */
 export const VOCAB_EXTRACT_CALL_OPTIONS = {
   call: "vocab-extract",
   temperature: 0,
-  maxOutputTokens: 6_000,
+  maxOutputTokens: 16_000,
 } as const;

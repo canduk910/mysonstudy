@@ -575,6 +575,26 @@
     padding: 8px;
     vertical-align: top;
   }
+
+  /* 단어장 표(V1) — 좁은 화면 글자 축소 (english.md §7-6).
+   * 표는 4열(번호·단어·뜻·예문)이 한 줄에 들어가야 해서, 카드용 26px 단어(--fs-vocab-word)를
+   * 그대로 쓰면 360px 폭에서 뜻이 잘린다. 전역 --fs-vocab-* 토큰은 **바꾸지 않는다** — 그 크기는
+   * 한 화면에 단어 하나만 두는 카드(V2)의 것이다. 대신 표 스코프(.vocab-table)에서만 역할 토큰을
+   * 다시 불러(.theme-* · 인쇄 :root 재정의와 같은 방식) 표 안 글자만 줄인다. `screen and`로 묶어
+   * 인쇄(§9, 영단어 크기 유지 규약)에는 닿지 않게 한다. */
+  @media screen and (max-width: 480px) {
+    .vocab-table {
+      --fs-vocab-word: 20px; /* 26 → 20 (단어 열) */
+      --fs-vocab-meaning: 15px; /* 17 → 15 (뜻) */
+      --fs-vocab-pron: 13px; /* 15 → 13 (발음) */
+      --fs-vocab-example: 13px; /* 15 → 13 (예문) */
+    }
+    /* 셀 여백도 한 단계 좁혀 좁은 화면에서 열에 글자 폭을 벌어준다 */
+    .vocab-table th,
+    .vocab-table td {
+      padding: 6px;
+    }
+  }
 }
 
 /* -----------------------------------------------------------------------------

@@ -741,7 +741,7 @@ function runVocabbookChecks(): CheckResult[] {
     word: "pack",
     ipa: "pæk",
     pos: ["명"],
-    meaningsKo: ["무리, 떼"],
+    meanings: [{ no: null, ko: "무리, 떼", related: [] }],
     examples: [{ en: "A pack of wolves.", ko: "늑대 한 무리." }],
     related: [],
     partial: false,
@@ -754,13 +754,13 @@ function runVocabbookChecks(): CheckResult[] {
     const merged = mergeVocabPages([
       {
         photoIndex: 0,
-        entries: [entry({ meaningsKo: ["무리, 떼"], examples: [{ en: "A pack of wolves.", ko: "늑대 한 무리." }] })],
+        entries: [entry({ meanings: [{ no: null, ko: "무리, 떼", related: [] }], examples: [{ en: "A pack of wolves.", ko: "늑대 한 무리." }] })],
       },
       {
         photoIndex: 1,
         entries: [
           entry({
-            meaningsKo: ["꾸러미"],
+            meanings: [{ no: null, ko: "꾸러미", related: [] }],
             examples: [{ en: "Pack your bag.", ko: "가방을 싸라." }],
             related: [{ kind: "synonym", word: "bundle", glossKo: "묶음" }],
           }),
@@ -771,13 +771,13 @@ function runVocabbookChecks(): CheckResult[] {
     const ok =
       merged.entries.length === 1 &&
       merged.mergedCount === 1 &&
-      one.meaningsKo.length === 2 &&
+      one.meanings.length === 2 &&
       one.examples.length === 2 &&
       one.related.length === 1;
     add(
       "병합. 겹쳐 찍기 → 1항목·배열 합집합",
       ok,
-      `entries=${merged.entries.length} merged=${merged.mergedCount} 뜻=${one?.meaningsKo.length} 예문=${one?.examples.length} 관련=${one?.related.length}`,
+      `entries=${merged.entries.length} merged=${merged.mergedCount} 뜻=${one?.meanings.length} 예문=${one?.examples.length} 관련=${one?.related.length}`,
     );
   }
 
@@ -786,7 +786,7 @@ function runVocabbookChecks(): CheckResult[] {
     const merged = mergeVocabPages([
       {
         photoIndex: 0,
-        entries: [entry({ no: "0002", word: "howl", meaningsKo: [], examples: [], partial: true, confidence: "medium" })],
+        entries: [entry({ no: "0002", word: "howl", meanings: [], examples: [], partial: true, confidence: "medium" })],
       },
       {
         photoIndex: 1,
@@ -794,7 +794,7 @@ function runVocabbookChecks(): CheckResult[] {
           entry({
             no: "0002",
             word: "howl",
-            meaningsKo: ["울부짖다"],
+            meanings: [{ no: null, ko: "울부짖다", related: [] }],
             examples: [{ en: "Wolves howl at night.", ko: "늑대는 밤에 운다." }],
             partial: false,
             confidence: "high",
@@ -807,7 +807,7 @@ function runVocabbookChecks(): CheckResult[] {
       merged.entries.length === 1 &&
       one.partial === false &&
       one.confidence === "high" &&
-      one.meaningsKo.length === 1;
+      one.meanings.length === 1;
     add(
       "병합. 경계 걸침 partial → 완전본과 합쳐 partial 해제",
       ok,
@@ -844,14 +844,60 @@ function runVocabbookChecks(): CheckResult[] {
   // --- 병합 5: 번호가 없으면 word 소문자로 조인 (대소문자 무시) ---
   {
     const merged = mergeVocabPages([
-      { photoIndex: 0, entries: [entry({ no: null, word: "Fix", meaningsKo: ["고치다"], examples: [] })] },
-      { photoIndex: 1, entries: [entry({ no: null, word: "fix", meaningsKo: ["수리하다"], examples: [] })] },
+      { photoIndex: 0, entries: [entry({ no: null, word: "Fix", meanings: [{ no: null, ko: "고치다", related: [] }], examples: [] })] },
+      { photoIndex: 1, entries: [entry({ no: null, word: "fix", meanings: [{ no: null, ko: "수리하다", related: [] }], examples: [] })] },
     ]);
-    const ok = merged.entries.length === 1 && merged.entries[0].meaningsKo.length === 2;
+    const ok = merged.entries.length === 1 && merged.entries[0].meanings.length === 2;
     add(
       "병합. 번호 없으면 word 소문자로 조인",
       ok,
-      `entries=${merged.entries.length} 뜻=${merged.entries[0]?.meaningsKo.length}`,
+      `entries=${merged.entries.length} 뜻=${merged.entries[0]?.meanings.length}`,
+    );
+  }
+
+  // --- 병합 6: 뜻-유의어 관계 보존 — 뜻 옆 유의어는 그 뜻(meanings[].related)에, 단어 아래 파생어는 entry.related에 ---
+  //   교재 실사용 진단(2026-08-22)의 핵심: fix 뜻1의 유의어 repair가 병합 후에도 뜻1에 남아야 하고,
+  //   파생어(단어 전체)는 뜻이 아니라 entry.related에 따로 남아야 한다.
+  {
+    const merged = mergeVocabPages([
+      {
+        photoIndex: 0,
+        entries: [
+          entry({
+            word: "fix",
+            meanings: [
+              { no: 1, ko: "수리하다, 고치다", related: [{ kind: "synonym", word: "repair", glossKo: null }] },
+              { no: 2, ko: "고정시키다", related: [] },
+            ],
+            related: [{ kind: "derivative", word: "fixture", glossKo: "설비" }],
+          }),
+        ],
+      },
+      {
+        photoIndex: 1,
+        entries: [
+          entry({
+            word: "fix",
+            meanings: [{ no: 1, ko: "수리하다, 고치다", related: [{ kind: "antonym", word: "break", glossKo: null }] }],
+            related: [],
+          }),
+        ],
+      },
+    ]);
+    const one = merged.entries[0];
+    const m1 = one?.meanings.find((m) => m.no === 1);
+    const m2 = one?.meanings.find((m) => m.no === 2);
+    const ok =
+      merged.entries.length === 1 &&
+      one.meanings.length === 2 &&
+      m1?.related.length === 2 && // repair(뜻1 사진0) + break(뜻1 사진1) 합집합
+      m2?.related.length === 0 &&
+      one.related.length === 1 && // 단어 전체 파생어는 뜻과 섞이지 않고 따로 남는다
+      one.related[0].kind === "derivative";
+    add(
+      "병합. 뜻-유의어 관계 보존 (뜻 옆 유의어 합집합·단어 파생어 분리)",
+      ok,
+      `뜻=${one?.meanings.length} 뜻1유의어=${m1?.related.length} 뜻2유의어=${m2?.related.length} 단어related=${one?.related.length}`,
     );
   }
 
@@ -868,19 +914,25 @@ function runVocabbookChecks(): CheckResult[] {
       dayLabel: "DAY 01",
       entries: [
         {
-          no: "0001", word: "pack", ipa: "pæk", pos: ["명"],
-          meaningsKo: ["무리, 떼"], examples: [{ en: "A pack of wolves.", ko: "늑대 한 무리." }],
-          related: [], partial: false, confidence: "high",
+          no: "0001", word: "fix", ipa: "fɪks", pos: ["동"],
+          meanings: [
+            { no: 1, ko: "수리하다, 고치다", related: [{ kind: "synonym", word: "repair", glossKo: null }] },
+            { no: 2, ko: "고정시키다", related: [] },
+          ],
+          examples: [{ en: "Fix the car.", ko: "차를 고쳐라." }],
+          related: [{ kind: "derivative", word: "fixture", glossKo: "설비" }],
+          partial: false, confidence: "high",
         },
       ],
     });
-    add("zod. 정상 판독 통과", good.success, good.success ? "통과" : issues(good.error));
+    add("zod. 정상 판독 통과 (뜻 번호·뜻 옆 유의어·단어 파생어)", good.success, good.success ? "통과" : issues(good.error));
   }
 
   // --- zod 위반: 각각 거부되어야 한다 ---
   const validEntry = {
     no: "0001", word: "pack", ipa: "pæk", pos: ["명"],
-    meaningsKo: ["무리, 떼"], examples: [{ en: "A pack of wolves.", ko: "늑대 한 무리." }],
+    meanings: [{ no: null, ko: "무리, 떼", related: [] }],
+    examples: [{ en: "A pack of wolves.", ko: "늑대 한 무리." }],
     related: [], partial: false, confidence: "high",
   };
   const badCases: Array<{ name: string; input: unknown }> = [
@@ -895,6 +947,14 @@ function runVocabbookChecks(): CheckResult[] {
     {
       name: "같은 사진 번호 중복",
       input: { isVocabPage: true, dayLabel: null, entries: [validEntry, { ...validEntry, word: "flock" }] },
+    },
+    {
+      name: "meanings[].no 범위 초과(뜻 번호 아님)",
+      input: { isVocabPage: true, dayLabel: null, entries: [{ ...validEntry, meanings: [{ no: 200, ko: "무리", related: [] }] }] },
+    },
+    {
+      name: "meanings[].ko 비어 있음",
+      input: { isVocabPage: true, dayLabel: null, entries: [{ ...validEntry, meanings: [{ no: null, ko: "", related: [] }] }] },
     },
   ];
   for (const bad of badCases) {

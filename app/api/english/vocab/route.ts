@@ -22,6 +22,7 @@ import {
   PARTS_OF_SPEECH,
   RELATED_KINDS,
   VOCAB_CONFIDENCE_LEVELS,
+  VOCAB_MEANING_NO_MAX,
 } from "@/lib/ai/english/vocabbook-schemas";
 import { VOCAB_LIMITS, type VocabCreateResponse } from "@/lib/vocab-create-contract";
 import { getStore } from "@/lib/store";
@@ -37,12 +38,28 @@ export const runtime = "nodejs";
  * 잠깐 빈 줄을 남길 수 있다). 빈 값 정리는 화면이 보내기 전에 하고, 저장 계층의
  * `normalizeVocabEntry`가 undefined를 마지막으로 조인다.
  */
+/** 관련어 하나 — 뜻 옆 유의어(meanings[].related)와 단어 전체 파생어(related) 두 자리에서 같은 shape. */
+const relatedSchema = z.object({
+  kind: z.enum(RELATED_KINDS),
+  word: z.string().trim().max(VOCAB_LIMITS.relatedWord),
+  glossKo: z.string().trim().max(VOCAB_LIMITS.relatedGloss).nullable(),
+});
+
 const entrySchema = z.object({
   no: z.string().trim().max(VOCAB_LIMITS.no).nullable(),
   word: z.string().trim().min(1, "단어는 비울 수 없어요").max(VOCAB_LIMITS.word),
   ipa: z.string().trim().max(VOCAB_LIMITS.ipa).nullable(),
   pos: z.array(z.enum(PARTS_OF_SPEECH)).max(VOCAB_LIMITS.pos),
-  meaningsKo: z.array(z.string().trim().max(VOCAB_LIMITS.meaningKo)).max(VOCAB_LIMITS.meanings),
+  // 뜻 — 번호(no)·풀이(ko)·그 뜻 옆 유의어(related). 편집 관대 규약: ko에 min(1) 강제 안 함
+  meanings: z
+    .array(
+      z.object({
+        no: z.number().int().min(1).max(VOCAB_MEANING_NO_MAX).nullable(),
+        ko: z.string().trim().max(VOCAB_LIMITS.meaningKo),
+        related: z.array(relatedSchema).max(VOCAB_LIMITS.related),
+      }),
+    )
+    .max(VOCAB_LIMITS.meanings),
   examples: z
     .array(
       z.object({
@@ -51,15 +68,7 @@ const entrySchema = z.object({
       }),
     )
     .max(VOCAB_LIMITS.examples),
-  related: z
-    .array(
-      z.object({
-        kind: z.enum(RELATED_KINDS),
-        word: z.string().trim().max(VOCAB_LIMITS.relatedWord),
-        glossKo: z.string().trim().max(VOCAB_LIMITS.relatedGloss).nullable(),
-      }),
-    )
-    .max(VOCAB_LIMITS.related),
+  related: z.array(relatedSchema).max(VOCAB_LIMITS.related),
   // (B) AI 창작 — V1에서는 null로 온다. V3 호출 D가 채우기 전이라 값이 있어도 여기선 그대로 받아 둔다.
   definitionEn: z.string().trim().max(VOCAB_LIMITS.definitionEn).nullable(),
   imageEmoji: z.string().nullable(),

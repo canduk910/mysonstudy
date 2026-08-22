@@ -298,7 +298,10 @@ export default function VocabbookPhotoFlow() {
         ...e,
         word: e.word.trim(),
         ipa: e.ipa?.trim() ? e.ipa.trim() : null,
-        meaningsKo: e.meaningsKo.map((m) => m.trim()).filter((m) => m !== ""),
+        // 뜻마다 ko를 다듬고 빈 뜻은 뺀다. no·related는 그대로 살려 구조를 보존한다(§6 왕복)
+        meanings: e.meanings
+          .map((m) => ({ ...m, ko: m.ko.trim() }))
+          .filter((m) => m.ko !== ""),
       }));
 
     try {
@@ -638,9 +641,25 @@ function VocabReview({
                 </div>
               )}
 
-              {/* 뜻 */}
-              {!isEditing && entry.meaningsKo.length > 0 && (
-                <p className="t-vocab-meaning mt-2">{entry.meaningsKo.join("; ")}</p>
+              {/* 뜻 — 번호와 함께, 뜻마다 줄바꿈(세미콜론으로 뭉개지 않는다). 뜻 옆 유의어는 그 뜻 아래 칩으로 */}
+              {!isEditing && entry.meanings.length > 0 && (
+                <ol className="mt-2 flex flex-col gap-1">
+                  {entry.meanings.map((m, k) => (
+                    <li key={k} className="t-vocab-meaning">
+                      {m.no !== null && <span className="mr-1 tabular-nums text-ink-3">{m.no}.</span>}
+                      {m.ko}
+                      {m.related.length > 0 && (
+                        <span className="ml-2 inline-flex flex-wrap gap-1 align-middle">
+                          {m.related.map((r, j) => (
+                            <span key={j} className="u-chip">
+                              {RELATED_KIND_LABELS_KO[r.kind]} {r.word}
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ol>
               )}
 
               {/* 예문·관련어 — 읽기 전용(책 전사본, V1은 편집 밖). 뺀 항목엔 접는다 */}
@@ -687,18 +706,51 @@ function VocabReview({
                       className="mt-1 w-full rounded-[var(--radius-box)] border border-line bg-bg px-3 py-2 text-ink"
                     />
                   </label>
-                  <label className="block">
-                    <span className="t-meta-chip">뜻 (한 줄에 하나씩)</span>
-                    <textarea
-                      value={entry.meaningsKo.join("\n")}
-                      onChange={(e) => onUpdateEntry(i, { meaningsKo: e.target.value.split("\n") })}
-                      rows={Math.max(2, entry.meaningsKo.length)}
-                      className="mt-1 w-full rounded-[var(--radius-box)] border border-line bg-bg px-3 py-2 text-ink"
-                    />
-                    {entry.meaningsKo.map((m, k) => (
-                      <CharCount key={k} value={m} max={VOCAB_LIMITS.meaningKo} />
-                    ))}
-                  </label>
+                  {/*
+                   * 뜻 편집 — 뜻마다 한 줄씩 연다(번호·유의어는 그대로 보존). 옛 한 줄 textarea는
+                   * 뜻의 번호·유의어를 왕복 못 시켜 "3가지 의미 의도"가 사라졌다 → 뜻별 입력으로 바꿈.
+                   */}
+                  <div className="block">
+                    <span className="t-meta-chip">뜻 (뜻마다 한 줄)</span>
+                    {entry.meanings.length > 0 ? (
+                      <div className="mt-1 flex flex-col gap-2">
+                        {entry.meanings.map((m, k) => (
+                          <div key={k}>
+                            <div className="flex items-center gap-2">
+                              {m.no !== null && (
+                                <span className="t-meta-chip flex-none tabular-nums">{m.no}</span>
+                              )}
+                              <input
+                                type="text"
+                                value={m.ko}
+                                onChange={(e) =>
+                                  onUpdateEntry(i, {
+                                    meanings: entry.meanings.map((mm, mi) =>
+                                      mi === k ? { ...mm, ko: e.target.value } : mm,
+                                    ),
+                                  })
+                                }
+                                maxLength={VOCAB_LIMITS.meaningKo}
+                                className="w-full rounded-[var(--radius-box)] border border-line bg-bg px-3 py-2 text-ink"
+                              />
+                            </div>
+                            {m.related.length > 0 && (
+                              <span className="mt-1 flex flex-wrap gap-1">
+                                {m.related.map((r, j) => (
+                                  <span key={j} className="u-chip">
+                                    {RELATED_KIND_LABELS_KO[r.kind]} {r.word}
+                                  </span>
+                                ))}
+                              </span>
+                            )}
+                            <CharCount value={m.ko} max={VOCAB_LIMITS.meaningKo} />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="t-caption mt-1">읽어온 뜻이 없어요.</p>
+                    )}
+                  </div>
                 </div>
               )}
             </li>

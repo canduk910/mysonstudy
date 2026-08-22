@@ -32,7 +32,7 @@ import type { ExplainVerifyReport } from "./ai/math/pipeline";
 import type { Explanation } from "./ai/math/schemas";
 // 단어장 정복(V1) 완성형 항목 — **`import type`이다.** `vocabbook-schemas.ts`는 zod를
 // 값으로 끌고 오지만, 타입만 가져오면 빌드에서 지워져 저장 계층이 AI 모듈에 묶이지 않는다.
-import type { VocabEntry } from "./ai/english/vocabbook-schemas";
+import type { VocabEntry, VocabMeaning, VocabRelated } from "./ai/english/vocabbook-schemas";
 import type { SceneTier } from "./scene/types";
 import { FirestoreStore } from "./store-firestore";
 
@@ -359,27 +359,65 @@ export function normalizeProblem(problem: MathProblemInput): MathProblemInput {
  * 값을 **손보지 않는다** — 뜻·예문은 책 전사본이라 여기서 다듬으면 원문이 바뀐다. 오직
  * "없는 것을 없음으로 적는" 정규화만 한다(정렬·병합은 이미 mergeVocabPages가 끝냈다).
  */
-export function normalizeVocabEntry(entry: VocabEntry): VocabEntry {
+/**
+ * `normalizeVocabEntry`가 받는 느슨한 입력. 저장(쓰기)은 새 구조 `VocabEntry`를 넘기지만,
+ * **읽기 경로**(Firestore·파일 백엔드)에는 2026-08-22 이전에 저장된 옛 레코드가 섞여 있다 —
+ * 그 레코드는 `meanings` 대신 평평한 `meaningsKo: string[]`를 갖는다. 두 모양을 한 함수가
+ * 받아 새 구조로 흡수하려고 입력을 넓게 연다(옛 필드 `meaningsKo` 포함).
+ */
+export type LegacyOrNewVocabEntry = Partial<VocabEntry> & { meaningsKo?: unknown };
+
+/** 관련어 하나를 방어 정규화 — undefined를 null(또는 빈 문자열)로 조인다. */
+function normalizeVocabRelated(r: unknown): VocabRelated {
+  const o = (r ?? {}) as Partial<VocabRelated>;
+  return {
+    kind: o.kind as VocabRelated["kind"],
+    word: String(o.word ?? ""),
+    glossKo: o.glossKo ?? null,
+  };
+}
+
+/**
+ * 뜻 배열을 옛·새 두 구조 모두에서 새 구조 `VocabMeaning[]`로 흡수한다.
+ * - 새 구조(`meanings`): 각 뜻의 no·ko·related를 정규화.
+ * - 옛 구조(`meaningsKo: string[]`): 각 뜻을 `{ no:null, ko, related:[] }`로 승격.
+ * 옛 레코드가 500을 내지 않게 하는 핵심 자리다(§5-1 인계).
+ */
+function toVocabMeanings(e: LegacyOrNewVocabEntry): VocabMeaning[] {
+  if (Array.isArray(e.meanings)) {
+    return e.meanings.map((m) => {
+      const mm = (m ?? {}) as Partial<VocabMeaning>;
+      return {
+        no: typeof mm.no === "number" ? mm.no : null,
+        ko: String(mm.ko ?? ""),
+        related: Array.isArray(mm.related) ? mm.related.map(normalizeVocabRelated) : [],
+      };
+    });
+  }
+  if (Array.isArray(e.meaningsKo)) {
+    return (e.meaningsKo as unknown[]).map((ko) => ({ no: null, ko: String(ko), related: [] }));
+  }
+  return [];
+}
+
+export function normalizeVocabEntry(entry: LegacyOrNewVocabEntry): VocabEntry {
   return {
     // (A) 책 전사
     no: entry.no ?? null,
-    word: entry.word,
+    word: entry.word ?? "",
     ipa: entry.ipa ?? null,
     pos: entry.pos ?? [],
-    meaningsKo: entry.meaningsKo ?? [],
+    // 옛 meaningsKo(평평) → 새 meanings(뜻 번호·유의어)로 승격. 선택 키 금지 규약 유지(meaningsKo는 반환 안 함)
+    meanings: toVocabMeanings(entry),
     examples: (entry.examples ?? []).map((e) => ({ en: e.en, ko: e.ko ?? "" })),
-    related: (entry.related ?? []).map((r) => ({
-      kind: r.kind,
-      word: r.word,
-      glossKo: r.glossKo ?? null,
-    })),
+    related: (entry.related ?? []).map(normalizeVocabRelated),
     // (B) AI 창작 — V1에서는 전부 null. undefined로 새면 Firestore가 거부한다
     definitionEn: entry.definitionEn ?? null,
     imageEmoji: entry.imageEmoji ?? null,
     imageSvg: entry.imageSvg ?? null,
     // (C) 앱 부착
     photoIndex: entry.photoIndex ?? 0,
-    confidence: entry.confidence,
+    confidence: entry.confidence ?? "medium",
     partial: entry.partial ?? false,
   };
 }
@@ -567,13 +605,17 @@ class JsonFileStore implements BookCardStore {
 
   async getVocabBook(id: string): Promise<VocabBookRecord | null> {
     const db = await readDb();
-    return db.vocabBooks.find((v) => v.id === id) ?? null;
+    const found = db.vocabBooks.find((v) => v.id === id);
+    if (!found) return null;
+    // 읽기 정규화 — 옛 meaningsKo 레코드를 새 meanings로 승격(Firestore toVocabBook과 같은 방어)
+    return { ...found, entries: (found.entries ?? []).map(normalizeVocabEntry) };
   }
 
   async listVocabBooks(limit?: number): Promise<VocabBookRecord[]> {
     const db = await readDb();
     const sorted = [...db.vocabBooks].sort(byCreatedAtDesc);
-    return limit == null ? sorted : sorted.slice(0, limit);
+    const sliced = limit == null ? sorted : sorted.slice(0, limit);
+    return sliced.map((v) => ({ ...v, entries: (v.entries ?? []).map(normalizeVocabEntry) }));
   }
 
   async deleteVocabBook(id: string): Promise<DeleteVocabBookResult> {

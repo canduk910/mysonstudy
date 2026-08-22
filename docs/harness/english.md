@@ -19,7 +19,7 @@
 | **A. 표지 판독** | 표지·스티커 사진 → 책 메타데이터 + 뒤표지 블러브 | 정확성 우선 (보이는 것만) | 0 | ~2,000 토큰 |
 | **A′. 본문·목차 판독** | 본문/목차 사진 N장 → 장면별 요약 | 판독 정확성 + 질문 창작 | 0.3 | ~4,000 토큰 / 배치 |
 | **B. 카드 생성** | 메타데이터 + 근거 → 학습 카드 | 창작 품질 우선 | 0.7 | ~6,000 토큰 |
-| **C. 단어장 판독** | 단어장 페이지 사진 → 책 그대로 전사한 단어 목록 | 전사 정확성 (책 원문 보존, 창작 금지) | 0 | ~6,000 토큰 / 사진 |
+| **C. 단어장 판독** | 단어장 페이지 사진 → 책 그대로 전사한 단어 목록 | 전사 정확성 (책 원문 보존, 창작 금지) | 0 | ~16,000 토큰 / 사진 |
 
 호출 C는 **단어장 정복** 기능(§7)의 판독 호출로, A→A′→B 카드 파이프라인과는 별개의 경로입니다.
 사진 1장 = 판독 1회이고, DAY 하나가 사진 여러 장이면 병렬 호출 후 앱이 번호로 병합합니다(§7-5).
@@ -620,7 +620,8 @@ zod 추가 검증(스키마가 못 잡는 것):
 > 선을 지키므로, 여기서는 100% 전사한다(계획 §확정된 결정). 그래서 temperature 0.
 
 세 덩이로 나눈 출처(구현 `VocabEntry`):
-- **(A) 책 전사** — `no`·`word`·`ipa`·`pos`·`meaningsKo`·`examples`·`related`. 호출 C가 책 그대로 옮긴다.
+- **(A) 책 전사** — `no`·`word`·`ipa`·`pos`·`meanings`·`examples`·`related`. 호출 C가 책 그대로 옮긴다.
+  뜻은 `meanings[]`로 담고(뜻 번호·유의어 포함), 예문은 단어 레벨(`examples`)에 묶는다.
 - **(B) AI 창작** — `definitionEn`·`imageEmoji`·`imageSvg`. §8 호출 D가 채운다. V1에서는 전부 null.
   `imageSvg`는 지금 항상 null이다 — 마이그레이션 없이 나중에 SVG를 얹을 자리만 열어 둔다.
 - **(C) 앱 부착** — `photoIndex`(앱이 사진 인덱스 부여) + `confidence`·`partial`(호출 C가 판독하며 매긴 판정).
@@ -641,9 +642,12 @@ zod 추가 검증(스키마가 못 잡는 것):
 - word: 표제어(영단어) 하나.
 - ipa: 발음기호를 옮기되 대괄호 [ ]는 벗겨서 안쪽만 적는다 (예: [pʌk] → pʌk). 발음기호가 없으면 null.
 - pos: 품사를 한글 약자로 적는다. 명·대·동·형·부·전·접·감·관·수 중에서 고른다. 한 단어에 여러 품사면 모두 담는다.
-- meaningsKo: 한글 뜻을 책에 적힌 순서대로 배열로 담는다. 뜻이 여러 개면 모두 담는다.
+- meanings: 한글 뜻을 책에 적힌 순서대로 담는다. 뜻 하나는 no·ko·related로 나눈다.
+  · no: 뜻 앞에 번호(1·2·3)가 붙어 있으면 그 번호를 숫자로 적는다. 번호가 없으면 null.
+  · ko: 그 뜻의 한글 풀이. 한 뜻 안에 여러 표현이 함께 적혀 있으면 책 그대로 이어 적는다 (예: "수리하다, 고치다").
+  · related: 유의어·반의어가 그 뜻 옆에 붙어 있으면 이 뜻에 담는다. kind·word·glossKo는 아래 related와 같은 형식. 없으면 빈 배열.
 - examples: 책의 예문을 영어 문장과 그 한글 해석을 짝지어 담는다. 예문이 없으면 빈 배열.
-- related: 유의어·반의어·파생어가 보이면 담는다. kind는 synonym(유의어)·antonym(반의어)·derivative(파생어) 중 하나, word는 그 단어, glossKo는 뜻이 함께 적혀 있으면 그 뜻(없으면 null). 없으면 빈 배열.
+- related: 특정 뜻이 아니라 단어 전체 아래에 딸린 관련어(파생어 등)만 담는다. kind는 synonym(유의어)·antonym(반의어)·derivative(파생어) 중 하나, word는 그 단어, glossKo는 뜻이 함께 적혀 있으면 그 뜻(없으면 null). 없으면 빈 배열.
 
 [판독 표시]
 - partial: 단어 항목이 사진 밖으로 잘려 뜻·예문 일부가 안 보이면 true. 온전히 다 보이면 false.
@@ -690,7 +694,29 @@ zod 추가 검증(스키마가 못 잡는 것):
             "ipa":        { "type": ["string", "null"], "description": "발음기호 — 대괄호 벗겨 안쪽만. 없으면 null" },
             "pos":        { "type": "array", "items": { "type": "string",
                             "enum": ["명", "대", "동", "형", "부", "전", "접", "감", "관", "수"] } },
-            "meaningsKo": { "type": "array", "items": { "type": "string" } },
+            "meanings": {
+              "type": "array",
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                  "no":      { "type": ["integer", "null"], "description": "교재 뜻 번호(1·2·3). 없으면 null" },
+                  "ko":      { "type": "string", "description": "그 뜻의 한글 풀이" },
+                  "related": {
+                    "type": "array",
+                    "items": {
+                      "type": "object", "additionalProperties": false,
+                      "properties": {
+                        "kind":    { "type": "string", "enum": ["synonym", "antonym", "derivative"] },
+                        "word":    { "type": "string" },
+                        "glossKo": { "type": ["string", "null"] }
+                      },
+                      "required": ["kind", "word", "glossKo"]
+                    }
+                  }
+                },
+                "required": ["no", "ko", "related"]
+              }
+            },
             "examples": {
               "type": "array",
               "items": {
@@ -714,7 +740,7 @@ zod 추가 검증(스키마가 못 잡는 것):
             "partial":    { "type": "boolean", "description": "사진 밖으로 잘려 일부만 보이면 true" },
             "confidence": { "type": "string", "enum": ["high", "medium", "low"] }
           },
-          "required": ["no", "word", "ipa", "pos", "meaningsKo", "examples", "related",
+          "required": ["no", "word", "ipa", "pos", "meanings", "examples", "related",
                        "partial", "confidence"]
         }
       }
@@ -735,8 +761,11 @@ zod 추가 검증(스키마가 못 잡는 것):
 - 번호 중복 금지: 같은 사진에서 같은 no를 두 번 읽으면 병합 조인 키가 깨진다
 - 발음기호(ipa)에 대괄호 [ ]가 남아 있으면 거부 — §7-1의 "대괄호를 벗겨 저장" 지시를 강제한다
   (생산 시점에 걸어야 callWithSchema의 1회 재요청이 그 자리에서 교정한다)
-- 길이 상한(schemas 단일 정의처, 저장·검토 화면이 같은 값을 쓴다):
-  word 60 · ipa 120 · no 12 · 뜻 각 200 · 예문 en/ko 각 300 · 관련어 word 60·gloss 200 · dayLabel 60
+- meanings[].no는 정수(교재 뜻 번호 1·2·3) 또는 null. 1~VOCAB_MEANING_NO_MAX(99) 범위를 벗어나면 거부
+  (뜻 번호가 아니라 오독으로 본다). meanings[].ko는 필수(빈 뜻은 뜻이 아니다)
+- 길이·개수 상한(schemas 단일 정의처, 저장·검토 화면이 같은 값을 쓴다):
+  word 60 · ipa 120 · no 12 · 뜻 각(meanings[].ko) 200 · 예문 en/ko 각 300 · 관련어 word 60·gloss 200 · dayLabel 60
+  · 뜻 개수(meanings) 12 · 뜻 하나의 related 20 · 단어 전체 related 20
 - examples.en은 필수(빈 예문은 예문이 아니다). examples.ko는 빈 문자열 허용 —
   책에 한글 해석이 없을 수 있고, 없는 해석을 지어내게 하면 창작 금지 원칙에 어긋난다
 ```
@@ -748,7 +777,9 @@ zod 추가 검증(스키마가 못 잡는 것):
   한 사진이 실패하면 그 사진의 단어만 잃고, 나머지는 살려 병합한다
 - 병합(mergeVocabPages, 순수 함수)의 조인 키: 번호(no)가 있으면 번호, 없으면 word.toLowerCase().
   겹쳐 찍기(같은 단어가 두 사진에 잡힘)를 정상 처리한다:
-  · examples·meaningsKo·related → 합집합(중복 제거)
+  · examples → 합집합(중복 제거)
+  · meanings → 뜻 번호(no) 기준 합집합. 번호가 없으면 ko 소문자 기준. 같은 뜻으로 묶이면 그 뜻의 related도 합집합
+  · related(단어 전체) → 합집합(중복 제거)
   · 스칼라(word·ipa·no) → 내용이 더 많은 '대표본'의 값. 대표본은 완전본(partial=false) 우선,
     그다음 내용(뜻+예문+관련어) 많은 순, 그다음 사진 인덱스 낮은 순으로 고른다
   · partial → 완전본이 하나라도 있으면 해제(= 모든 멤버가 partial일 때만 partial)
