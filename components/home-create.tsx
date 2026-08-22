@@ -27,6 +27,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { BookExtraction, SceneDigestItem, SceneSourceKind } from "@/lib/ai/english/schemas";
 import type { IdentifyResult } from "@/lib/identify";
 import { resizeToJpegDataUrl } from "@/lib/image-resize";
+import ImageCropper from "@/components/image-cropper";
 import { COVER_MAX_IMAGES } from "@/lib/upload-limits";
 
 // ---------------------------------------------------------------------------
@@ -151,6 +152,10 @@ export default function HomeCreate({
   /** --- 본문·목차 촬영 (선택 경로) --- */
   const [coverFiles, setCoverFiles] = useState<File[]>([]);
   const [pageFiles, setPageFiles] = useState<File[]>([]);
+  /** 표지 미리보기 URL — coverFiles와 짝을 맞춰 유지한다(아래 useEffect가 관리) */
+  const [coverPreviews, setCoverPreviews] = useState<string[]>([]);
+  /** 자르기 모달에 올릴 표지의 인덱스. null이면 모달을 닫는다. (슬롯별로 한 장씩 자른다) */
+  const [coverCropIndex, setCoverCropIndex] = useState<number | null>(null);
   /** 본문 전체 촬영인지, 챕터북 목차 1~2장인지 (배지·프롬프트가 갈린다) */
   const [sceneKind, setSceneKind] = useState<SceneSourceKind>("pages");
   /** 본문 판독 결과 확인 단계 — 이 값이 있으면 카드 생성 전에 검토 패널을 띄운다 */
@@ -166,6 +171,11 @@ export default function HomeCreate({
   const retryAction = useRef<(() => void) | null>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
   const pageInputRef = useRef<HTMLInputElement>(null);
+  /**
+   * 표지 파일 → 미리보기 object URL 캐시. File 객체는 담을 때(덧붙이기)·자를 때(교체)
+   * 참조가 유지되므로, File 기준으로 URL을 재사용하면 매 렌더마다 URL을 새로 만들지 않는다.
+   */
+  const coverUrlCacheRef = useRef<Map<File, string>>(new Map());
   const panelRef = useRef<HTMLDivElement>(null);
   // 검토 패널은 본문 촬영 패널과 동시에 마운트된다(촬영 패널은 hidden). 같은 ref를
   // 나눠 쓰면 스크롤이 숨겨진 쪽으로 가므로 각자 ref를 쓴다.
@@ -201,6 +211,36 @@ export default function HomeCreate({
     return () => clearInterval(timer);
   }, [phase]);
 
+  // 표지 미리보기 URL을 coverFiles와 동기화 — 새 파일엔 URL을 만들고, 빠진 파일 URL은 해제한다.
+  useEffect(() => {
+    const cache = coverUrlCacheRef.current;
+    const urls = coverFiles.map((f) => {
+      let url = cache.get(f);
+      if (!url) {
+        url = URL.createObjectURL(f);
+        cache.set(f, url);
+      }
+      return url;
+    });
+    // 더 이상 목록에 없는 파일의 URL은 해제(자르기 교체·전체 지우기·언마운트 정리)
+    for (const [f, url] of cache) {
+      if (!coverFiles.includes(f)) {
+        URL.revokeObjectURL(url);
+        cache.delete(f);
+      }
+    }
+    setCoverPreviews(urls);
+  }, [coverFiles]);
+
+  // 언마운트 시 남은 표지 미리보기 URL 정리
+  useEffect(() => {
+    const cache = coverUrlCacheRef.current;
+    return () => {
+      for (const url of cache.values()) URL.revokeObjectURL(url);
+      cache.clear();
+    };
+  }, []);
+
   function clearStatus() {
     setErrorKo(null);
     setCanRetry(false);
@@ -213,6 +253,18 @@ export default function HomeCreate({
     setPhase(null);
     setErrorKo(messageKo);
     setCanRetry(retriable);
+  }
+
+  /**
+   * 표지 한 장을 자른 결과로 교체 — 미리보기 URL은 위 useEffect가 알아서 맞춘다.
+   * 표지가 바뀌면 판독 결과가 무효이므로(원래 "표지 사진 담기" onChange와 같은 처리),
+   * 다음 실행이 처음부터 다시 타게 한다.
+   */
+  function replaceCover(index: number, next: File) {
+    setCoverFiles((prev) => prev.map((f, i) => (i === index ? next : f)));
+    clearStatus();
+    pagesFlowReady.current = false;
+    setReview(null);
   }
 
   function scrollToPanel() {
@@ -1090,6 +1142,29 @@ export default function HomeCreate({
                 </button>
               </p>
             )}
+            {coverPreviews.length > 0 && (
+              <ul className="mt-3 grid grid-cols-3 gap-2">
+                {coverPreviews.map((url, i) => (
+                  <li key={url} className="relative">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- 로컬 object URL 미리보기 */}
+                    <img
+                      src={url}
+                      alt={`고른 표지 사진 ${i + 1}`}
+                      className="aspect-square w-full rounded-[var(--radius-box)] border border-line object-cover"
+                    />
+                    {/* 선택 사항 — 이 장만 잘라 배경·손가락을 빼면 판독이 더 정확해요 */}
+                    <button
+                      type="button"
+                      onClick={() => setCoverCropIndex(i)}
+                      aria-label={`표지 사진 ${i + 1} 자르기`}
+                      className="t-meta-chip absolute bottom-1 left-1 flex items-center gap-1 rounded-full border border-line bg-bg px-2 py-1 text-ink shadow-sm"
+                    >
+                      ✂️ 자르기
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
           {/* 2단계 — 본문 또는 목차 (선택) */}
@@ -1404,6 +1479,17 @@ export default function HomeCreate({
             </button>
           </form>
         </div>
+      )}
+
+      {coverCropIndex != null && coverFiles[coverCropIndex] && (
+        <ImageCropper
+          file={coverFiles[coverCropIndex]}
+          onDone={(result) => {
+            replaceCover(coverCropIndex, result); // 자른 결과(또는 "전체 사용" 원본)로 그 표지를 교체
+            setCoverCropIndex(null);
+          }}
+          onCancel={() => setCoverCropIndex(null)}
+        />
       )}
     </section>
   );

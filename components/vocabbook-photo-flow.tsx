@@ -36,6 +36,7 @@ import {
   RELATED_KIND_LABELS_KO,
 } from "@/lib/ai/english/vocabbook-schemas";
 import { resizeToJpegDataUrl } from "@/lib/image-resize";
+import ImageCropper from "./image-cropper";
 import { VOCAB_LIMITS, type VocabCreateResponse } from "@/lib/vocab-create-contract";
 import type { VocabEntry, VocabExtractResponse } from "@/lib/vocab-extract-contract";
 
@@ -83,6 +84,8 @@ export default function VocabbookPhotoFlow() {
   // 사진 누적 (판독 전) — 파일과 미리보기 URL을 나란히 든다
   const [files, setFiles] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
+  /** 자르기 모달에 올릴 사진의 인덱스. null이면 모달을 닫는다. (한 장씩 자른다) */
+  const [cropIndex, setCropIndex] = useState<number | null>(null);
 
   // 판독 결과 (검토 단계)
   const [entries, setEntries] = useState<VocabEntry[]>([]);
@@ -159,6 +162,17 @@ export default function VocabbookPhotoFlow() {
       return prev.filter((_, i) => i !== index);
     });
     setFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  /** 한 장을 자른 결과로 교체 — 파일과 미리보기 URL을 짝지어 바꾸고 옛 URL을 해제한다. */
+  function replaceFile(index: number, next: File) {
+    clearStatus();
+    setPreviews((prev) => {
+      const url = prev[index];
+      if (url) URL.revokeObjectURL(url);
+      return prev.map((u, i) => (i === index ? URL.createObjectURL(next) : u));
+    });
+    setFiles((prev) => prev.map((f, i) => (i === index ? next : f)));
   }
 
   function resetToPick() {
@@ -405,6 +419,15 @@ export default function VocabbookPhotoFlow() {
                 >
                   ✕
                 </button>
+                {/* 선택 사항 — 이 장만 잘라 배경·손가락을 빼면 더 잘 읽혀요 */}
+                <button
+                  type="button"
+                  onClick={() => setCropIndex(i)}
+                  aria-label={`사진 ${i + 1} 자르기`}
+                  className="t-meta-chip absolute bottom-1 left-1 flex items-center gap-1 rounded-full border border-line bg-bg px-2 py-1 text-ink shadow-sm"
+                >
+                  ✂️ 자르기
+                </button>
               </li>
             ))}
           </ul>
@@ -458,6 +481,17 @@ export default function VocabbookPhotoFlow() {
             </button>
           )}
         </div>
+      )}
+
+      {cropIndex != null && files[cropIndex] && (
+        <ImageCropper
+          file={files[cropIndex]}
+          onDone={(result) => {
+            replaceFile(cropIndex, result); // 자른 결과(또는 "전체 사용" 원본)로 그 장을 교체
+            setCropIndex(null);
+          }}
+          onCancel={() => setCropIndex(null)}
+        />
       )}
     </div>
   );
