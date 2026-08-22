@@ -36,6 +36,18 @@ import {
   buildPagesUserMessage,
   type CardUserMessageInput,
 } from "./english/prompts";
+import {
+  VOCAB_ENRICH_CALL_OPTIONS,
+  VOCAB_ENRICH_SYSTEM_PROMPT,
+  VOCAB_ENRICH_USER_TEXT,
+} from "./english/vocabbook-prompts";
+import {
+  VOCAB_ENRICHMENT_JSON_SCHEMA,
+  vocabEnrichmentSchema,
+  type VocabEnrichItem,
+  type VocabEntry,
+} from "./english/vocabbook-schemas";
+import { buildEnrichRequestItems } from "./english/vocabbook-enrich";
 
 /**
  * OPENAI_MODEL 미설정 시 기본 모델.
@@ -297,6 +309,27 @@ export async function generateCard(input: CardUserMessageInput): Promise<Learnin
     }),
     ...CARD_CALL_OPTIONS,
   });
+}
+
+/**
+ * 호출 D — 단어장 보강(영영 정의 + 이모지). 사진 없는 텍스트 호출이다(§8).
+ * `definitionEn === null`인 단어만 대상으로 삼고(entriesToEnrich), 대상이 없으면 호출 없이 [] 반환.
+ * 반환값은 모델의 보강 항목 배열(VocabEnrichItem[]) — 저장 병합(mergeEnrichment)은 라우트가 원본
+ * entries와 함께 수행한다(정의 불변 규칙은 vocabbook-enrich.ts 한 곳에).
+ */
+export async function enrichVocab(entries: readonly VocabEntry[]): Promise<VocabEnrichItem[]> {
+  const requestItems = buildEnrichRequestItems(entries);
+  if (requestItems.length === 0) return [];
+  const { items } = await callWithSchema({
+    call: VOCAB_ENRICH_CALL_OPTIONS.call,
+    system: VOCAB_ENRICH_SYSTEM_PROMPT,
+    user: [textPart(VOCAB_ENRICH_USER_TEXT), textPart(JSON.stringify(requestItems))],
+    jsonSchema: VOCAB_ENRICHMENT_JSON_SCHEMA,
+    zodSchema: vocabEnrichmentSchema,
+    temperature: VOCAB_ENRICH_CALL_OPTIONS.temperature,
+    maxOutputTokens: VOCAB_ENRICH_CALL_OPTIONS.maxOutputTokens,
+  });
+  return items;
 }
 
 // ---------------------------------------------------------------------------

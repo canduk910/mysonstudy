@@ -412,3 +412,179 @@ export function resolveVocabImage(entry: {
   const letter = (entry.word.trim()[0] ?? "?").toUpperCase();
   return { kind: "letter", letter };
 }
+
+// ===========================================================================
+// 호출 D — 단어장 보강 (영영 정의 + 이모지). docs/harness/english.md §8-3·§8-4.
+//
+// 판독(호출 C)이 (A) 책 전사를 만들면, 호출 D가 (B) AI 창작(definitionEn·imageEmoji)을 채운다.
+// 출력 shape은 단어별 { no·word 매칭키, definitionEn, imageEmoji } 배열이다(object 루트로 감싸
+// `items`에 담는다 — Responses API strict json_schema의 루트는 object여야 한다).
+// 저장 병합·정의 불변 규칙은 vocabbook-enrich.ts(순수 함수) 한 곳에 둔다.
+// ===========================================================================
+
+/** 이모지 문자열 최대 길이 — ZWJ 시퀀스(가족 이모지 등) 한 자소도 UTF-16으로는 여러 코드유닛이다.
+ *  실제 "1개" 제약은 아래 zod의 자소 수(grapheme) 검사가 담당하고, 이 값은 방어적 상한이다. */
+export const VOCAB_IMAGE_EMOJI_MAX = 32;
+
+/**
+ * 호출 D가 단어 하나에 대해 돌려주는 보강 결과.
+ * - no·word: 어느 단어의 것인지 잇는 매칭키(입력의 no·word를 그대로 되돌려 받는다).
+ * - definitionEn: 영어 한 문장 정의. 모델이 만들지 못한 단어는 null(부분 실패 허용, §8-4 스펙 공백 참고).
+ * - imageEmoji: 이모지 1개, 어울리는 게 없으면(추상어) null.
+ * 전부 required-nullable — 선택(?) 키 금지(store.ts:73 규약, VocabEntry와 같은 규칙).
+ */
+export interface VocabEnrichItem {
+  no: string | null;
+  word: string;
+  definitionEn: string | null;
+  imageEmoji: string | null;
+}
+
+/** 호출 D의 전체 출력 — 단어별 보강 항목 배열을 object 루트로 감싼다. */
+export interface VocabEnrichment {
+  items: VocabEnrichItem[];
+}
+
+// ---------------------------------------------------------------------------
+// 호출 D — vocab_enrichment JSON Schema (스펙 §8-3 원문)
+// 모든 필드 required + 모든 객체 additionalProperties:false (strict 모드 규약).
+// 개수·길이·문장·이모지 제약은 넣지 않는다 — 프롬프트 + zod가 담당한다(§1 공통 규칙).
+// ---------------------------------------------------------------------------
+
+export const VOCAB_ENRICHMENT_JSON_SCHEMA: StrictJsonSchema = {
+  name: "vocab_enrichment",
+  strict: true,
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      items: {
+        type: "array",
+        description: "받은 단어별 보강 결과",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            no: { type: ["string", "null"], description: '단어 번호(예: "0009"). 입력의 no를 그대로. 없으면 null' },
+            word: { type: "string", description: "표제어(영단어) — 입력의 word를 그대로" },
+            definitionEn: {
+              type: ["string", "null"],
+              description: "영어 한 문장 정의(표제어 미포함·한글 금지). 만들지 못하면 null",
+            },
+            imageEmoji: {
+              type: ["string", "null"],
+              description: "단어를 나타내는 이모지 1개. 어울리는 게 없으면 null",
+            },
+          },
+          required: ["no", "word", "definitionEn", "imageEmoji"],
+        },
+      },
+    },
+    required: ["items"],
+  },
+};
+
+// ---------------------------------------------------------------------------
+// 호출 D — zod 이중 검증 (스펙 §8-4)
+// JSON Schema가 못 잡는 것: 정의의 "영어 한 문장·표제어 미포함·한글 금지", 이모지 "자소 1개".
+// definitionEn이 null인 항목(부분 실패)은 규칙 검사를 건너뛴다 — 그 단어는 채우지 않고 넘긴다.
+// ---------------------------------------------------------------------------
+
+/** 정규식 메타문자 이스케이프 — 표제어를 단어 경계 패턴으로 안전하게 감싼다. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** 한글(음절·자모)이 한 글자라도 있으면 true. */
+function hasHangul(text: string): boolean {
+  return /[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(text);
+}
+
+/** 문장 종결부호(뒤에 공백 또는 문자열 끝) 개수 — 2개 이상이면 여러 문장으로 본다. */
+function sentenceTerminatorCount(text: string): number {
+  return (text.match(/[.!?]+(?=\s|$)/gu) ?? []).length;
+}
+
+/** 자소(grapheme) 개수 — 이모지 "1개" 판정용. Intl.Segmenter가 ZWJ 시퀀스를 1로 센다. */
+function graphemeCount(s: string): number {
+  try {
+    const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+    let n = 0;
+    for (const _ of seg.segment(s)) n++;
+    return n;
+  } catch {
+    return Array.from(s).length; // 폴백: 코드포인트 수
+  }
+}
+
+const vocabEnrichItemSchema = z.object({
+  no: z.string().trim().min(1).max(VOCAB_NO_MAX).nullable(),
+  word: z.string().trim().min(1).max(VOCAB_WORD_MAX),
+  definitionEn: z.string().trim().min(1).max(VOCAB_DEFINITION_EN_MAX).nullable(),
+  imageEmoji: z.string().trim().min(1).max(VOCAB_IMAGE_EMOJI_MAX).nullable(),
+});
+
+/**
+ * 호출 D 결과의 zod 스키마 (§8-4). JSON Schema와 필드·타입이 1:1이고, 그 위에 정의·이모지
+ * 품질 규칙을 superRefine으로 얹는다. 생산 시점(callWithSchema)에 걸어야 1회 재요청이 그 자리에서
+ * 교정한다 — 재교정도 실패하면 라우트가 그 호출을 비치명적으로 처리한다(정의·이모지 null 저장).
+ */
+export const vocabEnrichmentSchema = z
+  .object({
+    items: z.array(vocabEnrichItemSchema),
+  })
+  .superRefine((data, ctx) => {
+    data.items.forEach((it, i) => {
+      // --- 정의 규칙 (definitionEn이 null이 아닐 때만) ---
+      if (it.definitionEn !== null) {
+        const def = it.definitionEn;
+        // 한글 금지 — 영영 정의는 영어로만
+        if (hasHangul(def)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["items", i, "definitionEn"],
+            message: "영영 정의에 한글을 쓸 수 없습니다 (영어로만)",
+          });
+        }
+        // 표제어 미포함 — 대소문자 무시 + 단어 경계 (그 단어를 정의에 그대로 쓰면 아이가 못 짐작한다)
+        const headword = new RegExp(`\\b${escapeRegExp(it.word.trim())}\\b`, "iu");
+        if (headword.test(def)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["items", i, "definitionEn"],
+            message: `정의에 표제어(${it.word})를 그대로 쓸 수 없습니다`,
+          });
+        }
+        // 영어 한 문장 — 문장 종결부호가 2개 이상이면 여러 문장으로 보고 거부한다.
+        // (0개는 마침표를 빠뜨린 한 문장일 뿐이라 허용 — 좋은 정의를 재요청으로 잃지 않으려는 것)
+        if (sentenceTerminatorCount(def) > 1) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["items", i, "definitionEn"],
+            message: "영영 정의는 정확히 한 문장이어야 합니다",
+          });
+        }
+      }
+
+      // --- 이모지 규칙 (imageEmoji가 null이 아닐 때만) ---
+      if (it.imageEmoji !== null) {
+        const emoji = it.imageEmoji;
+        // 자소 1개 — 여러 이모지를 이어 붙이면 거부
+        if (graphemeCount(emoji) !== 1) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["items", i, "imageEmoji"],
+            message: "이모지는 정확히 1개여야 합니다 (여러 개 이어 붙이지 마세요)",
+          });
+        }
+        // 실제 이모지(그림문자)인지 — 글자를 이모지 자리에 넣지 않게
+        if (!/\p{Extended_Pictographic}/u.test(emoji)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["items", i, "imageEmoji"],
+            message: "imageEmoji는 이모지(그림문자)여야 합니다",
+          });
+        }
+      }
+    });
+  });

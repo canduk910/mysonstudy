@@ -12,7 +12,7 @@
  * 코드블록과 글자 단위로 같은지 파일을 읽어서 확인한다(`scripts/spec-sync.ts`).
  */
 
-import { generateCard } from "../lib/ai/client";
+import { enrichVocab, generateCard } from "../lib/ai/client";
 import {
   ENGLISH_RUN_LIMIT,
   MAX_SCENE_DIGEST_ITEMS,
@@ -43,12 +43,17 @@ import {
 } from "../lib/ai/english/prompts";
 // 단어장 정복 V1 (§7) — 오프라인 점검 대상: 판독 프롬프트↔스펙, 병합 순수 함수, zod 제약, 그림 우선순위
 import {
+  VOCAB_ENRICH_SYSTEM_PROMPT,
+  VOCAB_ENRICH_USER_TEXT,
   VOCAB_EXTRACT_SYSTEM_PROMPT,
   VOCAB_EXTRACT_USER_TEXT,
 } from "../lib/ai/english/vocabbook-prompts";
 import {
   resolveVocabImage,
+  vocabEnrichmentSchema,
   vocabExtractionSchema,
+  type VocabEnrichItem,
+  type VocabEntry,
   type VocabExtractEntry,
 } from "../lib/ai/english/vocabbook-schemas";
 import {
@@ -56,6 +61,13 @@ import {
   mergeVocabPages,
   type VocabPageForMerge,
 } from "../lib/ai/english/vocabbook-merge";
+// 호출 D(보강) 정의 불변 순수 함수 — 오프라인 eval이 잠근다(§8-5)
+import {
+  buildEnrichRequestItems,
+  entriesToEnrich,
+  isVocabBookEnriched,
+  mergeEnrichment,
+} from "../lib/ai/english/vocabbook-enrich";
 import {
   checkSpecSync,
   printSpecSyncDetails,
@@ -70,6 +82,19 @@ for (const envFile of [".env.local", ".env"]) {
   } catch {
     // 파일이 없으면 건너뛴다
   }
+}
+
+// 비용 게이트 — 2차 방어선(eval-math와 같은 관용구).
+// EVAL_OFFLINE_ONLY=1이면 main의 이른 return이 실호출을 막지만, 그 게이트가 뚫리더라도 돈이
+// 나가지 않도록 **네트워크 자체를 막는다.** (openai SDK는 전역 fetch를 쓴다 — 지연 생성이라
+// 이 시점엔 클라이언트가 아직 없다.) 오프라인 점검 앞에 실호출 코드가 새로 들어오면 여기서 던진다.
+if (process.env.EVAL_OFFLINE_ONLY === "1") {
+  const blocked = () => {
+    throw new Error(
+      "EVAL_OFFLINE_ONLY=1 — 네트워크 호출이 차단됐습니다. 오프라인 점검 앞에 실호출 코드가 들어왔습니다.",
+    );
+  };
+  globalThis.fetch = blocked as unknown as typeof fetch;
 }
 
 // ---------------------------------------------------------------------------
@@ -1047,6 +1072,244 @@ function runVocabbookChecks(): CheckResult[] {
     );
   }
 
+  // =========================================================================
+  // 호출 D(보강, §8) — 정의 불변 순수 함수. 실호출 0회.
+  // 시험(V4)이 저장된 정의에 매달려 **안정성이 정확성보다 우선**한다 — 이 규칙이 새면 은우가
+  // 외운 정의와 시험이 어긋난다. mergeEnrichment/entriesToEnrich를 고정 입력으로 잠근다(§8-5).
+  // =========================================================================
+
+  // 저장형 VocabEntry 픽스처 — 필요한 필드만 덮어쓴다
+  const ventry = (over: Partial<VocabEntry> = {}): VocabEntry => ({
+    no: "0001",
+    word: "apple",
+    ipa: "æpl",
+    pos: ["명"],
+    meanings: [{ no: null, ko: "사과", related: [] }],
+    examples: [],
+    related: [],
+    definitionEn: null,
+    imageEmoji: null,
+    imageSvg: null,
+    photoIndex: 0,
+    confidence: "high",
+    partial: false,
+    ...over,
+  });
+
+  // --- mergeEnrichment A: 정의 불변(덮어쓰기 0) + null 자리만 채움 + 부분 실패 + enriched 판정 ---
+  {
+    const entries: VocabEntry[] = [
+      ventry({ no: "0001", word: "apple", definitionEn: null, imageEmoji: null }), // 채울 대상
+      ventry({ no: "0002", word: "brave", definitionEn: "Not afraid of anything.", imageEmoji: "🦁" }), // 이미 채워짐 → 불변
+      ventry({ no: "0003", word: "fix", definitionEn: null, imageEmoji: null }), // 결과에 없음 → 부분 실패로 그대로
+    ];
+    const result: VocabEnrichItem[] = [
+      { no: "0001", word: "apple", definitionEn: "A round sweet fruit.", imageEmoji: "🍎" },
+      { no: "0002", word: "brave", definitionEn: "OVERWRITE ATTEMPT.", imageEmoji: "❌" }, // 덮어쓰기 시도 → 무시돼야
+    ];
+    const m = mergeEnrichment(entries, result);
+    const [apple, brave, fix] = m.entries;
+    const ok =
+      apple.definitionEn === "A round sweet fruit." &&
+      apple.imageEmoji === "🍎" &&
+      brave.definitionEn === "Not afraid of anything." && // 덮어쓰기 0
+      brave.imageEmoji === "🦁" &&
+      fix.definitionEn === null &&
+      fix.imageEmoji === null && // 결과에 없는 단어는 그대로
+      m.enriched === false; // fix가 null이라 미완
+    add(
+      "호출 D §8. mergeEnrichment: 정의 불변·null만 채움·부분 실패·enriched=false",
+      ok,
+      `apple=${JSON.stringify(apple.definitionEn)}/${apple.imageEmoji} · brave=${JSON.stringify(brave.definitionEn)}/${brave.imageEmoji} · fix=${fix.definitionEn}/${fix.imageEmoji} · enriched=${m.enriched}`,
+    );
+  }
+
+  // --- mergeEnrichment B: 이모지 독립(정의는 불변, 이모지만 채움) + 전부 채워지면 enriched=true ---
+  {
+    const entries: VocabEntry[] = [
+      ventry({ no: "0001", word: "apple", definitionEn: "A round fruit.", imageEmoji: null }), // 정의 O·이모지 X
+      ventry({ no: "0002", word: "run", definitionEn: null, imageEmoji: null }),
+    ];
+    const result: VocabEnrichItem[] = [
+      { no: "0001", word: "apple", definitionEn: "SHOULD NOT REPLACE.", imageEmoji: "🍎" }, // 정의 불변, 이모지만
+      { no: "0002", word: "run", definitionEn: "To move fast on your legs.", imageEmoji: "🏃" },
+    ];
+    const m = mergeEnrichment(entries, result);
+    const ok =
+      m.entries[0].definitionEn === "A round fruit." && // 정의 불변
+      m.entries[0].imageEmoji === "🍎" && // 이모지만 채움(독립)
+      m.entries[1].definitionEn === "To move fast on your legs." &&
+      m.entries[1].imageEmoji === "🏃" &&
+      m.enriched === true; // 모든 정의 non-null
+    add(
+      "호출 D §8. mergeEnrichment: 이모지 독립 채움·enriched=true",
+      ok,
+      `apple.def=${JSON.stringify(m.entries[0].definitionEn)} apple.emoji=${m.entries[0].imageEmoji} · enriched=${m.enriched}`,
+    );
+  }
+
+  // --- mergeEnrichment C: 번호 없는 단어는 word(대소문자 무시)로 매칭 ---
+  {
+    const entries: VocabEntry[] = [ventry({ no: null, word: "Fix", definitionEn: null })];
+    const result: VocabEnrichItem[] = [
+      { no: null, word: "fix", definitionEn: "To make something work again.", imageEmoji: null },
+    ];
+    const m = mergeEnrichment(entries, result);
+    add(
+      "호출 D §8. mergeEnrichment: no 없으면 word로 매칭",
+      m.entries[0].definitionEn === "To make something work again.",
+      `def=${JSON.stringify(m.entries[0].definitionEn)}`,
+    );
+  }
+
+  // --- entriesToEnrich: definitionEn === null인 단어만 추린다 ---
+  {
+    const entries: VocabEntry[] = [
+      ventry({ word: "a", definitionEn: null }),
+      ventry({ word: "b", definitionEn: "Already has a definition." }),
+      ventry({ word: "c", definitionEn: null }),
+    ];
+    const sub = entriesToEnrich(entries);
+    const ok = sub.length === 2 && sub.every((e) => e.definitionEn === null) && sub.map((e) => e.word).join(",") === "a,c";
+    add("호출 D §8. entriesToEnrich: null 정의만 추림", ok, `추린 단어=[${sub.map((e) => e.word).join(", ")}]`);
+  }
+
+  // --- buildEnrichRequestItems: 대상만·최소 shape(meaningsKo 풀이만) ---
+  {
+    const entries: VocabEntry[] = [
+      ventry({
+        no: "0001",
+        word: "apple",
+        pos: ["명"],
+        meanings: [
+          { no: null, ko: "사과", related: [] },
+          { no: null, ko: "사과나무", related: [] },
+        ],
+        definitionEn: null,
+      }),
+      ventry({ word: "b", definitionEn: "excluded" }), // 정의 있음 → 제외
+    ];
+    const req = buildEnrichRequestItems(entries);
+    const ok =
+      req.length === 1 &&
+      req[0].word === "apple" &&
+      req[0].no === "0001" &&
+      req[0].meaningsKo.join("|") === "사과|사과나무";
+    add("호출 D §8. buildEnrichRequestItems: 대상만·meaningsKo 풀이만", ok, `요청=${JSON.stringify(req)}`);
+  }
+
+  // --- isVocabBookEnriched: enriched 단일 정의처(빈 배열 false·정의 하나라도 null이면 false) ---
+  {
+    const ok =
+      isVocabBookEnriched([]) === false &&
+      isVocabBookEnriched([ventry({ definitionEn: "x" })]) === true &&
+      isVocabBookEnriched([ventry({ definitionEn: "x" }), ventry({ definitionEn: null })]) === false;
+    add("호출 D §8. isVocabBookEnriched: 빈배열=false·null 있으면 false", ok, "3케이스");
+  }
+
+  // --- 호출 D zod: 정의·이모지 품질 규칙이 실제로 거부하는지 ---
+  {
+    const goodEnrich = {
+      items: [
+        { no: "0001", word: "apple", definitionEn: "A round sweet fruit that grows on trees.", imageEmoji: "🍎" },
+        { no: "0002", word: "respect", definitionEn: "To treat someone in a kind and polite way.", imageEmoji: null },
+      ],
+    };
+    const goodParsed = vocabEnrichmentSchema.safeParse(goodEnrich);
+    add(
+      "호출 D §8. zod: 올바른 보강 → 통과",
+      goodParsed.success === true,
+      goodParsed.success ? "정상 통과" : issues(goodParsed.error),
+    );
+
+    const badEnrich: { name: string; items: unknown[] }[] = [
+      { name: "정의에 한글", items: [{ no: null, word: "apple", definitionEn: "둥근 과일이다.", imageEmoji: null }] },
+      { name: "정의에 표제어 포함", items: [{ no: null, word: "apple", definitionEn: "An apple is a red fruit.", imageEmoji: null }] },
+      { name: "정의 두 문장", items: [{ no: null, word: "apple", definitionEn: "It is a fruit. It is sweet.", imageEmoji: null }] },
+      { name: "이모지 2개", items: [{ no: null, word: "apple", definitionEn: null, imageEmoji: "🍎🍏" }] },
+      { name: "이모지 자리에 글자", items: [{ no: null, word: "apple", definitionEn: null, imageEmoji: "A" }] },
+    ];
+    for (const bad of badEnrich) {
+      const parsed = vocabEnrichmentSchema.safeParse(bad);
+      add(
+        `호출 D §8. zod. ${bad.name} → 거부`,
+        parsed.success === false,
+        parsed.success ? "잘못 통과함(거부되어야 함)" : "정상 거부",
+      );
+    }
+  }
+
+  // --- few-shot: 프롬프트 [예시]의 출력 객체가 실제 스키마와 맞는지 + 이모지 유/무 둘 다 보여주는지 ---
+  {
+    const extractTopLevelJsonObjects = (text: string): string[] => {
+      const out: string[] = [];
+      let depth = 0;
+      let start = -1;
+      let inStr = false;
+      let esc = false;
+      for (let i = 0; i < text.length; i++) {
+        const c = text[i];
+        if (inStr) {
+          if (esc) esc = false;
+          else if (c === "\\") esc = true;
+          else if (c === '"') inStr = false;
+          continue;
+        }
+        if (c === '"') inStr = true;
+        else if (c === "{") {
+          if (depth === 0) start = i;
+          depth++;
+        } else if (c === "}") {
+          depth--;
+          if (depth === 0 && start >= 0) {
+            out.push(text.slice(start, i + 1));
+            start = -1;
+          }
+        }
+      }
+      return out;
+    };
+
+    const marker = "[예시]";
+    const at = VOCAB_ENRICH_SYSTEM_PROMPT.indexOf(marker);
+    const objs = at >= 0 ? extractTopLevelJsonObjects(VOCAB_ENRICH_SYSTEM_PROMPT.slice(at)) : [];
+    // 출력 래퍼(=items 배열을 가진 객체)만 골라 검증한다 (입력 예시 객체는 다른 shape이라 제외)
+    let wrapperFound = false;
+    let schemaOk = true;
+    let showsEmoji = false;
+    let showsNull = false;
+    let allDefined = true;
+    const failMsgs: string[] = [];
+    for (const raw of objs) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        continue; // 부분 조각은 무시
+      }
+      if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as { items?: unknown }).items)) {
+        continue; // 입력 예시 등 래퍼가 아닌 객체는 건너뛴다
+      }
+      wrapperFound = true;
+      const res = vocabEnrichmentSchema.safeParse(parsed);
+      if (!res.success) {
+        schemaOk = false;
+        failMsgs.push(issues(res.error));
+        continue;
+      }
+      for (const it of res.data.items) {
+        if (it.imageEmoji !== null) showsEmoji = true;
+        else showsNull = true;
+        if (it.definitionEn === null) allDefined = false;
+      }
+    }
+    add(
+      "호출 D §8. few-shot: [예시] 출력이 스키마 통과 + 이모지 유/무 둘 다 시연",
+      wrapperFound && schemaOk && showsEmoji && showsNull && allDefined,
+      `래퍼=${wrapperFound ? "있음" : "없음"} · 스키마=${schemaOk ? "통과" : `위반(${failMsgs.join(" / ")})`} · 이모지시연=${showsEmoji} · null시연=${showsNull} · 정의전부=${allDefined}`,
+    );
+  }
+
   return results;
 }
 
@@ -1135,6 +1398,21 @@ const SPEC_SYNC_TARGETS: readonly SpecSyncTarget[] = [
     // 스펙에 코드블록이 아니라 인라인 코드 한 줄로 적혀 있다 — 본문 포함 여부로 본다
     mode: "inline",
   },
+  {
+    constName: "VOCAB_ENRICH_SYSTEM_PROMPT",
+    source: "lib/ai/english/vocabbook-prompts.ts",
+    specLabel: "§8-1 호출 D 시스템 프롬프트",
+    text: VOCAB_ENRICH_SYSTEM_PROMPT,
+    mode: "block",
+  },
+  {
+    constName: "VOCAB_ENRICH_USER_TEXT",
+    source: "lib/ai/english/vocabbook-prompts.ts",
+    specLabel: "§8-2 사용자 메시지",
+    text: VOCAB_ENRICH_USER_TEXT,
+    // 스펙에 코드블록이 아니라 인라인 코드 한 줄로 적혀 있다 — 본문 포함 여부로 본다
+    mode: "inline",
+  },
 ];
 
 /** 표 뒤에 상세 diff를 찍기 위해 남겨 둔다 (main이 읽는다) */
@@ -1188,6 +1466,79 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     console.log(`PASS — 오프라인 ${allResults.length}개 항목 통과 (실호출 미실행).`);
+    return;
+  }
+
+  // 호출 D(보강) 텍스트 점검 — **EVAL_VOCAB=1일 때만** 실호출 1회. (오프라인 게이트가 위에서 이미
+  // return하므로 EVAL_OFFLINE_ONLY=1에서는 절대 도달하지 않는다.) 정의가 한 문장인가·한글 안 섞였나·
+  // 표제어를 정의에 그대로 안 썼나·이모지 0~1개인가를 실제 모델 출력으로 눈으로 확인한다(§8-4·계획 V3).
+  // enrichVocab이 이미 zod로 이 규칙을 강제하므로, 여기서는 통과한 출력을 사람이 읽게 재확인·인쇄한다.
+  if (process.env.EVAL_VOCAB === "1") {
+    console.log("EVAL_VOCAB=1 — 호출 D(보강) 실호출 1회로 정의·이모지 텍스트를 점검합니다.");
+    const graphemeCount = (s: string): number => {
+      try {
+        let n = 0;
+        for (const _ of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(s)) n++;
+        return n;
+      } catch {
+        return Array.from(s).length;
+      }
+    };
+    const probeWord = (no: string, word: string, ko: string): VocabEntry => ({
+      no,
+      word,
+      ipa: null,
+      pos: ["명"],
+      meanings: [{ no: null, ko, related: [] }],
+      examples: [],
+      related: [],
+      definitionEn: null,
+      imageEmoji: null,
+      imageSvg: null,
+      photoIndex: 0,
+      confidence: "high",
+      partial: false,
+    });
+    const probeEntries: VocabEntry[] = [
+      probeWord("0001", "apple", "사과"),
+      probeWord("0002", "brave", "용감한"),
+      probeWord("0003", "respect", "존경하다"),
+      probeWord("0004", "moment", "순간"),
+    ];
+    const vocabResults: CheckResult[] = [];
+    try {
+      const items: VocabEnrichItem[] = await enrichVocab(probeEntries);
+      console.log("호출 D 출력:", JSON.stringify(items, null, 2));
+      vocabResults.push({
+        book: "호출 D 실호출",
+        check: "요청한 단어 수만큼 정의를 돌려줌",
+        pass: items.filter((it) => it.definitionEn !== null).length === probeEntries.length,
+        detail: `정의 있는 항목=${items.filter((it) => it.definitionEn !== null).length}/${probeEntries.length}`,
+      });
+      for (const it of items) {
+        const def = it.definitionEn;
+        const sentences = def ? (def.match(/[.!?]+(?=\s|$)/gu) ?? []).length : 0;
+        const koreanFree = def ? !/[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(def) : true;
+        const noHeadword = def ? !new RegExp(`\\b${it.word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "iu").test(def) : true;
+        const emojiOk = it.imageEmoji === null || graphemeCount(it.imageEmoji) === 1;
+        vocabResults.push({
+          book: "호출 D 실호출",
+          check: `${it.word}: 한 문장·한글 없음·표제어 미포함·이모지 0~1개`,
+          pass: def !== null && sentences <= 1 && koreanFree && noHeadword && emojiOk,
+          detail: `def=${JSON.stringify(def)} emoji=${it.imageEmoji} | 문장=${sentences} 한글없음=${koreanFree} 표제어미포함=${noHeadword} 이모지OK=${emojiOk}`,
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      vocabResults.push({ book: "호출 D 실호출", check: "호출 D (재요청 포함 2회 실패)", pass: false, detail: message });
+    }
+    printTable(vocabResults);
+    const vocabFailed = vocabResults.filter((r) => !r.pass);
+    if (vocabFailed.length > 0) {
+      console.error(`FAIL — 호출 D ${vocabFailed.length}개 항목 실패.`);
+      process.exit(1);
+    }
+    console.log(`PASS — 호출 D 실호출 점검 ${vocabResults.length}개 항목 통과.`);
     return;
   }
 

@@ -270,3 +270,109 @@
   background: var(--accent-soft);
   color: var(--accent-ink);
 }
+
+/* ── V3 보강(호출 D): 영영 뜻 + 그림 ─────────────────────────────────────────
+ * 색·반경·타이포는 전부 globals.css 토큰을 참조한다(하드코딩 색 0 — 라이트/다크 자동).
+ */
+
+/* 보강 버튼 — 표 툴바·카드 chrome 공용 */
+.enrichBtn {
+  min-width: 96px;
+}
+
+/* 정의 불변 안내 문구 (버튼 아래) */
+.enrichNote {
+  margin: -4px 0 8px;
+  color: var(--ink-3);
+}
+
+/* 보강 결과 배너 — 성공/부분성공 */
+.enrichMsg {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: var(--radius-box);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: var(--fs-meta-chip);
+  line-height: 1.5;
+}
+/* 실패 배너 — 비치명(재시도 유도). 색만 중립 표면으로 바꿔 오류를 과장하지 않는다 */
+.enrichMsgError {
+  background: var(--surface-2);
+  color: var(--ink-2);
+  border: 1px solid var(--line-strong);
+}
+
+/* ── 단어 그림 (이모지/첫 글자 배지) ──────────────────────────────────────── */
+.glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  border-radius: var(--radius-chip);
+  line-height: 1;
+  user-select: none;
+}
+/* 카드 모드 — 큼직하게 (아이·부모가 함께 보는 화면) */
+.glyphLg {
+  width: 44px;
+  height: 44px;
+  font-size: 30px;
+}
+/* 표 모드 — 단어 옆 작은 배지 */
+.glyphSm {
+  width: 26px;
+  height: 26px;
+  font-size: 18px;
+}
+/* 이모지는 배경 없이 글자만 크게 */
+.glyphEmoji {
+  background: transparent;
+}
+/* 첫 글자 배지(추상어 폴백) — 부드러운 강조 배경 */
+.glyphLetter {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+.glyphSm.glyphLetter {
+  font-size: 14px;
+}
+
+/* 표 모드 단어 셀 머리 — 그림 + 단어를 한 줄로 */
+.tableWordHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── 영영 뜻 블록 ─────────────────────────────────────────────────────────── */
+.defn {
+  margin: 8px 0 0;
+  padding: 6px 10px;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-2);
+  border-radius: var(--radius-chip);
+  color: var(--ink);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.5;
+}
+/* "영영" 라벨 — 앞에 작은 칩 */
+.defnLabel {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: var(--radius-chip);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+  vertical-align: middle;
+}
+/* 아직 정의가 없는 자리 — 흐릿하게 "만들기" 유도 */
+.defnEmpty {
+  margin: 8px 0 0;
+  color: var(--ink-3);
+  font-size: var(--fs-meta-chip);
+  font-style: italic;
+}

@@ -47,6 +47,8 @@ import {
   type StudyStore,
   type VocabBookRecord,
 } from "./store";
+// 단어장 보강(V3) 저장이 받는 완성형 entry 타입 — store는 VocabEntry를 재수출하지 않는다.
+import type { VocabEntry } from "./ai/english/vocabbook-schemas";
 // 설명 기록(M4)이 안는 타입 — 값 import는 `SCENE_TIERS` 하나뿐이다(읽기 방어용 상수).
 import type { ExplainVerifyReport } from "./ai/math/pipeline";
 import type { Explanation } from "./ai/math/schemas";
@@ -442,6 +444,22 @@ export class FirestoreStore implements StudyStore {
     const base = this.vocabBooks().orderBy("createdAt", "desc");
     const snap = await (limit == null ? base.get() : base.limit(limit).get());
     return snap.docs.map((d) => toVocabBook(d.id, d.data()));
+  }
+
+  async updateVocabBookEnrichment(
+    id: string,
+    entries: VocabEntry[],
+    enriched: boolean,
+  ): Promise<VocabBookRecord | null> {
+    // **삭제가 아니라 수정**이라 assertDestructiveAllowed를 걸지 않는다(updateBookEvidence와 같은 규약).
+    const ref = this.vocabBooks().doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return null;
+    // Firestore는 undefined를 거부한다 — normalizeVocabEntry로 조인 뒤 entries·enriched만 갈아끼운다.
+    // 정의 불변은 호출측 mergeEnrichment가 이미 지켰다(여기선 받은 값을 그대로 굳힌다).
+    await ref.update({ entries: entries.map(normalizeVocabEntry), enriched });
+    const updated = await ref.get();
+    return toVocabBook(updated.id, updated.data()!);
   }
 
   async deleteVocabBook(id: string): Promise<DeleteVocabBookResult> {

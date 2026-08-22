@@ -824,3 +824,146 @@ zod 추가 검증(스키마가 못 잡는 것):
 - `findMissingNumbers`가 구멍을 보고하면 "○○번 사진이 빠진 것 같아요"로 알린다 — 빠진 내용을
   상상해 채우지 않는다(호출 A′ `gapBefore`와 같은 원칙).
 - **원본 사진은 저장하지 않는다**(SPEC §5). 병합된 `VocabEntry[]`만 `VocabBookRecord`로 남긴다.
+
+
+## 8. 호출 D — 단어장 보강 (영영 정의 + 이모지, 단어장 정복 기능)
+
+단어장 판독(호출 C)이 만든 (A) 책 전사에, **AI 창작인 (B) definitionEn·imageEmoji**를 더하는
+호출입니다. 사진 없이 판독 결과(단어·뜻)만으로 도는 텍스트 호출이라, 사진 없이도 재생성됩니다.
+
+> **정의 불변(이 기능의 축):** 시험(V4)이 저장된 영영 정의에 매달린다. 재생성 때마다 문구가 바뀌면
+> 은우가 외운 정의와 시험이 어긋난다. 그래서 호출 D는 **definitionEn === null인 단어만** 채우고, 이미
+> 있는 정의는 어떤 경로로도 덮어쓰지 않는다(§8-5). 그래서 판독(temp 0)과 달리 temperature 0.7이다.
+
+세 덩이(§7)로 나눈 출처 중 이 호출이 채우는 것은 **(B) AI 창작**뿐이다:
+- **definitionEn** — 초등 저학년도 읽을 영어 한 문장. 표제어를 그대로 쓰지 않고, 한글을 섞지 않는다.
+- **imageEmoji** — 그 단어를 나타내는 이모지 1개. 추상어(fix·respect)라 어울리는 게 없으면 null.
+- **imageSvg**는 여기서 만들지 않는다(§7과 같이 항상 null — 나중에 SVG를 얹을 자리).
+
+### 8-1. 시스템 프롬프트 (원문 그대로 사용)
+
+```
+너는 초등학생용 영어 단어에 '영영 정의'와 '이모지'를 붙이는 조교다.
+받은 단어마다 쉬운 영어 뜻풀이 한 문장과, 그 단어를 나타내는 이모지 하나를 만든다.
+판독(다른 단계)이 책을 그대로 옮기는 일이라면, 이 단계는 아이가 뜻을 스스로 떠올리게 돕는 창작이다.
+
+[definitionEn — 영영 정의]
+- 정확히 영어 한 문장으로 쓴다. 마침표로 끝낸다. 두 문장으로 나누지 않는다.
+- 초등학교 저학년도 읽을 수 있는 아주 쉬운 낱말만 쓴다.
+- 표제어(word)를 정의 문장 안에 그대로 쓰지 않는다. 그 단어를 모르는 아이가 뜻을 짐작할 수 있게 풀어 쓴다.
+- 한글은 한 글자도 쓰지 않는다. 영어로만 쓴다.
+- 받은 뜻(meaningsKo)에 맞는 의미로 정의한다. 뜻이 여러 개면 가장 먼저 온 뜻을 기준으로 한 문장에 담는다.
+
+[imageEmoji — 이모지]
+- 그 단어를 가장 잘 나타내는 이모지 하나만 고른다. 이모지는 딱 1개다 — 여러 개를 이어 붙이지 않는다.
+- 눈에 보이는 사물·동작이면 어울리는 이모지를 고른다.
+- 눈에 안 보이는 추상적인 말(fix·respect처럼)이라 어울리는 이모지가 없으면 null로 둔다. 억지로 고르지 않는다.
+
+[매칭]
+- 받은 단어에 대해서만 만든다. 받지 않은 단어를 새로 지어내지 않는다.
+- 각 항목에 받은 no·word를 그대로 담아 어느 단어의 것인지 알 수 있게 한다.
+
+[금지]
+- 표제어를 정의에 그대로 쓰지 않는다. 정의에 한글을 쓰지 않는다. 이모지를 2개 이상 붙이지 않는다.
+- 출력은 지정된 JSON 스키마로만. 스키마 밖 텍스트 금지.
+
+[예시]
+받은 단어가 이렇게 오면:
+  [{"no":"0009","word":"apple","pos":["명"],"meaningsKo":["사과"]},
+   {"no":"0021","word":"respect","pos":["동","명"],"meaningsKo":["존경하다","존경"]}]
+이렇게 만든다(apple은 눈에 보이는 사물이라 이모지가 있고, respect는 추상적이라 이모지가 null이다):
+  {"items":[
+    {"no":"0009","word":"apple","definitionEn":"A round fruit that grows on a tree and is red, green, or yellow.","imageEmoji":"🍎"},
+    {"no":"0021","word":"respect","definitionEn":"To think that someone is important and to treat them in a kind way.","imageEmoji":null}
+  ]}
+```
+
+### 8-2. 사용자 메시지
+
+텍스트 `"다음 단어들에 영영 정의와 이모지를 만들어줘."` **뒤에** 보강 대상 단어 목록(JSON 배열)을
+붙인다. 이미지가 없는 텍스트 호출이다(판독의 이미지-먼저 순서와 다르다).
+
+목록의 각 단어는 정의에 필요한 최소 shape으로 내린다(`buildEnrichRequestItems`, §8-5):
+
+```json
+[{ "no": "0009", "word": "apple", "pos": ["명"], "meaningsKo": ["사과"] }]
+```
+
+- `meaningsKo`는 뜻 풀이 문자열만(뜻 번호·관련어는 정의에 불필요) — 어느 의미로 정의할지 가르는 단서.
+- **definitionEn이 null인 단어만** 목록에 들어간다(§8-5 entriesToEnrich). 이미 정의가 있으면 빠진다.
+
+### 8-3. 출력 JSON Schema — `vocab_enrichment` (strict)
+
+```json
+{
+  "name": "vocab_enrichment",
+  "strict": true,
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "items": {
+        "type": "array",
+        "description": "받은 단어별 보강 결과",
+        "items": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "no":           { "type": ["string", "null"], "description": "단어 번호(예: \"0009\"). 입력의 no를 그대로. 없으면 null" },
+            "word":         { "type": "string", "description": "표제어(영단어) — 입력의 word를 그대로" },
+            "definitionEn": { "type": ["string", "null"], "description": "영어 한 문장 정의(표제어 미포함·한글 금지). 만들지 못하면 null" },
+            "imageEmoji":   { "type": ["string", "null"], "description": "단어를 나타내는 이모지 1개. 어울리는 게 없으면 null" }
+          },
+          "required": ["no", "word", "definitionEn", "imageEmoji"]
+        }
+      }
+    },
+    "required": ["items"]
+  }
+}
+```
+
+출력은 object 루트로 감싼다(`items` 배열) — Responses API strict json_schema의 루트가 object여야
+하기 때문이다. 개수·길이·문장·이모지 제약은 스키마에 넣지 않는다(§1 공통 규칙, §7-3과 같은 규약).
+
+### 8-4. zod 추가 검증 (스키마가 못 잡는 것)
+
+```
+- definitionEn (null이 아닐 때만):
+  · 한글 금지 — 영영 정의는 영어로만 (한 글자라도 있으면 거부)
+  · 표제어 미포함 — 대소문자 무시 + 단어 경계(\b…\b). 그 단어를 정의에 그대로 쓰면 아이가 못 짐작한다
+  · 영어 한 문장 — 문장 종결부호(.!?)가 2개 이상이면 여러 문장으로 보고 거부. 0개(마침표 누락)는
+    한 문장일 뿐이라 허용한다(좋은 정의를 재요청으로 잃지 않으려는 것)
+  · definitionEn === null은 부분 실패로 본다 — 그 단어는 채우지 않고 넘긴다(규칙 검사 건너뜀)
+- imageEmoji (null이 아닐 때만):
+  · 자소(grapheme) 1개 — 여러 이모지를 이어 붙이면 거부(Intl.Segmenter로 센다)
+  · 실제 이모지(Extended_Pictographic)여야 한다 — 글자를 이모지 자리에 넣으면 거부
+- 길이 상한(schemas 단일 정의처): definitionEn VOCAB_DEFINITION_EN_MAX(300) ·
+  imageEmoji VOCAB_IMAGE_EMOJI_MAX(32) · word 60 · no 12 (§7-4와 같은 상수)
+```
+
+### 8-5. 정의 불변 규칙 · 병합 (`vocabbook-enrich.ts` 순수 함수)
+
+정의 불변(계획 V3)이 이 절의 핵심이다. 시험(V4)이 저장된 definitionEn에 매달리므로 **안정성이
+정확성보다 우선**한다 — 이 규칙이 새면 은우가 외운 정의와 시험이 어긋난다. 규칙은 한 곳에만 산다.
+
+```
+- entriesToEnrich(entries): definitionEn === null인 단어만 추린다. 이미 정의가 있으면 호출 D 입력에서 빠진다
+  (재실행 비용 절감 + 이미 있는 정의를 결과에서 아예 제외해 덮어쓸 여지를 없앤다).
+- buildEnrichRequestItems(entries): 보강 대상을 { no, word, pos, meaningsKo }로 내려 보낸다(§8-2 페이로드).
+- mergeEnrichment(entries, result) → { entries, enriched }:
+  · definitionEn === null인 자리에만, 결과 정의가 non-null일 때만 채운다. 이미 채워진 정의는 절대 덮어쓰지 않는다.
+  · imageEmoji도 독립적으로 같은 규칙 — 정의는 있고 이모지만 null이면 이모지만 채운다.
+  · result에 없는 단어는 그대로 둔다(부분 실패 허용). 매칭키: no 우선, 없으면 word 소문자.
+  · enriched = 모든 entry의 definitionEn !== null(빈 배열은 false). 이모지 null은 추상어라 정상이므로 판정에서 제외.
+- isVocabBookEnriched(entries): enriched의 단일 정의처 — mergeEnrichment도 이걸 쓴다.
+- 문구를 바꾸려면 오직 사람이 "고치기"로 수동 수정한다(자동 생성은 절대 손대지 않음).
+```
+
+### 8-6. 호출 옵션 · 후처리
+
+- **파라미터:** temperature 0.7(판독 temp 0과 분리 — 창작이라 정의 문장에 다양성이 필요),
+  max_output_tokens 6,000(DAY 20~40단어 × 항목당 ~100토큰 ≈ 4,000, 여유). 로그 라벨 `"vocab-enrich"`.
+- **비치명적 실패:** callWithSchema 1회 재요청까지 실패하면 라우트가 그 호출을 삼키고 정의·이모지를
+  null로 남긴다("다시 만들기" 버튼으로 재시도). 판독 결과(카드·표 보기)는 그대로 뜬다.
+- **재생성:** 사진 없는 텍스트 호출이라 "다시 만들기"가 판독 없이 된다. 대상은 늘 definitionEn === null 단어뿐.
+- imageEmoji가 null인 단어는 `resolveVocabImage`(§7)가 첫 글자 배지로 떨어뜨린다 — 빈자리를 안 만든다.

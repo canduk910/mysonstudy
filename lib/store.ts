@@ -260,6 +260,21 @@ export interface StudyStore {
   /** 최신순. limit 생략이면 전체 (가족용 규모) */
   listVocabBooks(limit?: number): Promise<VocabBookRecord[]>;
   /**
+   * 보강(호출 D, V3) 결과를 저장한다 — 기존 레코드의 `entries`·`enriched`만 갈아끼운다.
+   * **삭제가 아니라 수정**이라 prod-guard를 걸지 않는다(updateBookEvidence와 같은 규약).
+   *
+   * 정의 불변은 이 메서드가 지키는 게 아니라 **호출측이 `mergeEnrichment`로 만든 값**을 넘겨야
+   * 지켜진다(그 순수 함수가 null 자리만 채운다). 스토어는 받은 entries를 그대로 굳힐 뿐이다 —
+   * 저장 계층답게 `normalizeVocabEntry`로 undefined만 마지막으로 조인다(Firestore 거부 방어).
+   *
+   * 갱신된 레코드를 돌려준다. 없는 id면 null — 404 판단은 호출측 라우트의 몫.
+   */
+  updateVocabBookEnrichment(
+    id: string,
+    entries: VocabEntry[],
+    enriched: boolean,
+  ): Promise<VocabBookRecord | null>;
+  /**
    * 단어장 1개를 지운다 — **V1은 연쇄 삭제가 없다**(퀴즈 세션은 V4에 생긴다).
    * 지웠으면 `{ ok: true }`, 없는 id였으면 `{ ok: false }`. 존재 확인·404는 라우트의 몫.
    */
@@ -616,6 +631,22 @@ class JsonFileStore implements BookCardStore {
     const sorted = [...db.vocabBooks].sort(byCreatedAtDesc);
     const sliced = limit == null ? sorted : sorted.slice(0, limit);
     return sliced.map((v) => ({ ...v, entries: (v.entries ?? []).map(normalizeVocabEntry) }));
+  }
+
+  async updateVocabBookEnrichment(
+    id: string,
+    entries: VocabEntry[],
+    enriched: boolean,
+  ): Promise<VocabBookRecord | null> {
+    // 쓰기 정규화 — createVocabBook과 같은 관문(undefined를 조인다). 정의 불변은 호출측 mergeEnrichment의 몫.
+    const normalized = entries.map(normalizeVocabEntry);
+    return this.mutate((db) => {
+      const book = db.vocabBooks.find((v) => v.id === id);
+      if (!book) return null;
+      book.entries = normalized;
+      book.enriched = enriched;
+      return { ...book };
+    });
   }
 
   async deleteVocabBook(id: string): Promise<DeleteVocabBookResult> {
