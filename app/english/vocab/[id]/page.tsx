@@ -1,23 +1,19 @@
 /**
- * 단어장 표 보기 `/english/vocab/[id]` (단어장 정복 V1) — 서버 컴포넌트.
+ * 단어장 상세 `/english/vocab/[id]` (단어장 정복 V1·V2) — 서버 컴포넌트.
  *
- * 저장된 DAY 하나를 **표 모드**로 그린다. `getStore()`를 직접 읽고, 없는 id도 열 수 없는
- * 레코드도 같은 `notFound()`다(수학 `/math/problem/[id]`와 같은 규약) — 판정은 목록과
- * **같은 함수**(`lib/vocabbook-record.ts`). 두 벌이 되면 "목록엔 보이는데 눌렀더니 500"이 돌아온다.
+ * 저장된 DAY 하나를 읽어 온다. `getStore()`를 직접 읽고, 없는 id도 열 수 없는 레코드도 같은
+ * `notFound()`다(수학 `/math/problem/[id]`와 같은 규약) — 판정은 목록과 **같은 함수**
+ * (`lib/vocabbook-record.ts`). 두 벌이 되면 "목록엔 보이는데 눌렀더니 500"이 돌아온다.
  *
- * **표만 그린다.** 카드 모드·단어/예문 TTS는 V2다(계획). 디자인은 `t-vocab-*` 전역 토큰 +
- * `.u-table` + `overflow-x-auto`를 쓰고(표는 좁은 화면에서 표만 가로 스크롤하고 페이지는
- * 밀리지 않는다 — 수학 서재 통계표와 같은 장치), 좁은 화면 글자 축소는 `.vocab-table` 스코프
- * 하나로만 한다(globals.css — 전역 --fs-vocab-* 토큰은 카드 V2가 그대로 쓰도록 건드리지 않는다).
+ * **그리는 일은 클라이언트로 내려간다(V2).** 이 서버 컴포넌트는 데이터 로딩·404 판정과 정적
+ * 헤더·푸터(서버에서 그려도 되는 Link)만 맡고, 표/카드 토글·이어읽기·TTS가 붙는 본문은
+ * `components/vocabbook-view.tsx`(클라이언트)가 그린다 — 그쪽 상태가 전부 브라우저 것이라서다.
  */
 
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import {
-  PART_OF_SPEECH_LABELS_KO,
-  RELATED_KIND_LABELS_KO,
-} from "@/lib/ai/english/vocabbook-schemas";
+import VocabbookView from "@/components/vocabbook-view";
 import { isRenderableVocabBook } from "@/lib/vocabbook-record";
 import { getStore } from "@/lib/store";
 
@@ -59,100 +55,8 @@ export default async function VocabDetailPage({ params }: VocabDetailPageProps) 
         </p>
       </header>
 
-      {/*
-       * 표는 좁은 화면에서 표만 가로 스크롤 — 페이지는 밀리지 않는다(수학 서재 통계표와 같은 장치).
-       * min-width를 주지 않으면 4열이 360px에 눌려 한글 뜻이 글자 단위로 세로로 쪼개진다
-       * ("이 / 루 / 다"). 열마다 최소 폭을 박아 표가 스크롤되게 하고, 한글 칸은 keep-all로
-       * 어절 단위 줄바꿈한다.
-       */}
-      <div className="overflow-x-auto">
-        <table className="u-table vocab-table" style={{ minWidth: 600 }}>
-          <colgroup>
-            <col style={{ width: 52 }} />
-            <col style={{ width: 168 }} />
-            <col style={{ width: 168 }} />
-            <col style={{ width: 212 }} />
-          </colgroup>
-          <thead>
-            <tr>
-              <th scope="col" className="text-right">번호</th>
-              <th scope="col">단어</th>
-              <th scope="col">뜻</th>
-              <th scope="col">예문</th>
-            </tr>
-          </thead>
-          <tbody>
-            {record.entries.map((entry, i) => (
-              <tr key={i}>
-                <td className="t-meta-chip whitespace-nowrap text-right align-top">
-                  {entry.no ?? ""}
-                </td>
-                <td className="align-top">
-                  <span className="t-vocab-word block break-words">{entry.word}</span>
-                  {entry.ipa && <span className="t-vocab-pron block break-words">[{entry.ipa}]</span>}
-                  {entry.pos.length > 0 && (
-                    <span className="t-caption block">
-                      {entry.pos.map((p) => PART_OF_SPEECH_LABELS_KO[p]).join(" · ")}
-                    </span>
-                  )}
-                  {entry.related.length > 0 && (
-                    <span className="mt-1 flex flex-wrap gap-1">
-                      {entry.related.map((r, k) => (
-                        <span key={k} className="u-chip">
-                          {RELATED_KIND_LABELS_KO[r.kind]} {r.word}
-                        </span>
-                      ))}
-                    </span>
-                  )}
-                </td>
-                <td className="t-vocab-meaning align-top" style={{ wordBreak: "keep-all" }}>
-                  {entry.meanings.length > 0 ? (
-                    <ol className="flex flex-col gap-1.5">
-                      {/* 교재의 `1 …/2 …/3 …` 번호 구조 재현 — 번호는 자동증가가 아니라 책의 no를 그대로 */}
-                      {entry.meanings.map((m, k) => (
-                        <li key={k} className="flex flex-col gap-1">
-                          <span>
-                            {m.no !== null && (
-                              <span className="mr-1 tabular-nums text-ink-3">{m.no}.</span>
-                            )}
-                            {m.ko}
-                          </span>
-                          {/* 이 뜻 옆에 붙은 유의어·반의어 — 뜻 아래 칩으로 (단어 전체 파생어는 단어 열) */}
-                          {m.related.length > 0 && (
-                            <span className="flex flex-wrap gap-1">
-                              {m.related.map((r, j) => (
-                                <span key={j} className="u-chip">
-                                  {RELATED_KIND_LABELS_KO[r.kind]} {r.word}
-                                </span>
-                              ))}
-                            </span>
-                          )}
-                        </li>
-                      ))}
-                    </ol>
-                  ) : (
-                    <span className="t-caption">—</span>
-                  )}
-                </td>
-                <td className="align-top" style={{ wordBreak: "keep-all" }}>
-                  {entry.examples.length > 0 ? (
-                    <ul className="flex flex-col gap-1.5">
-                      {entry.examples.map((ex, k) => (
-                        <li key={k} className="t-vocab-example">
-                          {ex.en}
-                          {ex.ko ? <span className="mt-0.5 block text-ink-3">{ex.ko}</span> : null}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <span className="t-caption">—</span>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {/* 표/카드 토글·스피커·이어읽기가 붙는 본문 (클라이언트, V2) */}
+      <VocabbookView entries={record.entries} />
 
       <div className="mt-8 flex flex-wrap gap-2">
         <Link href="/english/vocab/new" className="u-btn u-btn-secondary">

@@ -1,0 +1,203 @@
+/*
+ * vocabbook-view.module.css — 단어장 정복 V2 카드 모드 전용 스타일.
+ *
+ * ── 왜 모듈 CSS인가 ─────────────────────────────────────────────────────────
+ * 카드 문맥에 묶인 스타일이라 전역으로 새면 안 된다(계획 재사용 표 주석). 표 모드는
+ * 기존 전역 `.u-table`·`.vocab-table`을 그대로 쓰고(회귀 0), 여기 클래스는 **카드 모드에서만**
+ * 붙는다. 색·반경·타이포는 전부 globals.css 토큰(var(--…))을 참조하므로 라이트/다크가
+ * 자동으로 따라온다 — 여기 하드코딩된 색은 없다.
+ *
+ * ── 크기 토큰 ───────────────────────────────────────────────────────────────
+ * 단어(t-vocab-word 26px)·발음(t-vocab-pron)·예문(t-vocab-example)은 전역 t-vocab-* 를
+ * 그대로 쓴다(카드는 한 화면에 단어 하나라 --fs-vocab-* 원래 크기가 맞는 자리다). 표 축소
+ * 스코프 `.vocab-table`은 여기서 건드리지 않는다.
+ */
+
+/* 상단 툴바 — 표/카드 토글 + 이어읽기 토글 */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.modeGroup {
+  display: flex;
+  gap: 8px;
+}
+.modeBtn {
+  min-width: 76px;
+}
+.readAlongBtn {
+  margin-left: auto;
+}
+
+/* 카드 모드 안내 캡션 */
+.hint {
+  margin-bottom: 10px;
+  color: var(--ink-3);
+}
+
+/* ── 카드 넘김 뷰 (세로 scroll-snap) ───────────────────────────────────────── */
+
+/*
+ * 스크롤러는 정해진 높이를 가진 "책장" 프레임이다. 페이지에 헤더가 있어 전체 문서를
+ * snap 대상으로 삼으면 헤더가 밀려 불안정하다 — 대신 이 프레임 안에서만 한 카드씩 넘긴다.
+ * height가 확정돼야 각 카드의 min-height:100%가 뷰포트 한 장으로 계산된다.
+ */
+.scroller {
+  scroll-snap-type: y mandatory;
+  overflow-y: auto;
+  height: min(78svh, 640px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  -webkit-overflow-scrolling: touch;
+}
+
+.card {
+  scroll-snap-align: start;
+  box-sizing: border-box;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 24px 20px 28px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  /* 뜻·예문이 많은 단어는 카드 안에서 스크롤 (프레임 넘김과 충돌하지 않게) */
+  overflow-y: auto;
+}
+.card:last-child {
+  border-bottom: none;
+}
+
+/* 카드 번호 배지 (n / 전체) */
+.cardIndex {
+  align-self: flex-start;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.wordRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pos {
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.meanings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 2px 0;
+  padding: 0;
+  list-style: none;
+}
+.meaning {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.meaningNo {
+  margin-right: 4px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.examples {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.example {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.exampleHead {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.exampleText {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  line-height: 1.5;
+}
+.exampleKo {
+  margin: 0 0 0 44px; /* 🔊 폭만큼 들여써 영어 문장과 왼쪽을 맞춘다 */
+  color: var(--ink-3);
+  font-size: var(--fs-vocab-example);
+}
+
+/* ── 스피커 버튼 (단어·예문) ─────────────────────────────────────────────── */
+.speak {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  color: var(--ink-2);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.speak:hover {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+}
+.speak:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── 이어읽기: 예문을 토큰(단어)으로 쪼갠 선택 표면 ───────────────────────── */
+/*
+ * 이 컨테이너는 이어읽기 모드 ON일 때만 렌더된다. touch-action:none을 걸어 드래그가
+ * 세로 스크롤로 새지 않게 한다 — 모드 OFF면 이 컴포넌트 자체가 안 그려지고 예문은
+ * 평범한 <span>이라 스크롤·탭이 그대로 산다(모바일 스크롤 충돌 회피의 핵심).
+ */
+.tokenSurface {
+  touch-action: none;
+}
+.token {
+  margin: 0;
+  padding: 1px 2px;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 4px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.token:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.tokenActive {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
