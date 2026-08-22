@@ -27,7 +27,7 @@ async function main() {
     Array<{ id: string }>
   >;
 
-  for (const col of ["books", "cards", "readings"] as const) {
+  for (const col of ["books", "cards", "readings", "explanations", "vocabBooks"] as const) {
     const rows = data[col] ?? [];
     for (const row of rows) {
       await db.collection(col).doc(row.id).set(row);

@@ -50,6 +50,20 @@ export default async function EnglishHomePage() {
 
       <HomeCreate pagesMaxImages={PAGES_MAX_IMAGES} pagesBatchSize={PAGES_BATCH_SIZE} />
 
+      {/* 단어장 정복 진입 — 표지 카드와 나란한 다른 학습 흐름(단어장 페이지 → 표) */}
+      <Link href="/english/vocab" className="u-item mt-6">
+        <span className="u-item-thumb" aria-hidden>
+          📓
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="t-list-title block">단어장 정복</span>
+          <span className="t-caption block">
+            단어장을 찍으면 단어·뜻·예문을 표로 모아 둬요.
+          </span>
+        </span>
+        <span className="u-chip flex-none">열기 →</span>
+      </Link>
+
       <section className="mt-10">
         <div className="mb-3 flex items-baseline justify-between gap-3">
           <h2 className="t-section-title">최근 만든 카드</h2>

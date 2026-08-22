@@ -28,20 +28,25 @@ import {
 import {
   normalizeProblem,
   normalizeTitleAuthorKey,
+  normalizeVocabEntry,
   type BookEvidencePatch,
   type BookRecord,
   type CardRecord,
   type CardWithBook,
   type DeleteBookResult,
+  type DeleteVocabBookResult,
   type ExplanationRecord,
   type MathProblemInput,
   type NewBook,
   type NewCard,
   type NewExplanation,
   type NewReading,
+  type NewVocabBook,
   type ReadingRecord,
   type StudyStore,
+  type VocabBookRecord,
 } from "./store";
+import type { VocabEntry } from "./ai/english/vocabbook-schemas";
 // 설명 기록(M4)이 안는 타입 — 값 import는 `SCENE_TIERS` 하나뿐이다(읽기 방어용 상수).
 import type { ExplainVerifyReport } from "./ai/math/pipeline";
 import type { Explanation } from "./ai/math/schemas";
@@ -168,6 +173,28 @@ function toReading(id: string, d: DocumentData): ReadingRecord {
   };
 }
 
+/**
+ * 단어장 읽기 방어 (V1). `entries`는 **쓰기 시 zod·정규화를 통과한 값만** 저장되므로
+ * `toCard`가 `content`를 다루듯 통째로 캐스팅하되, `normalizeVocabEntry`를 한 번 더 태운다 —
+ * 이 필드가 없던 시절(혹은 손으로 넣은) 문서를 읽으면 undefined가 섞여 있을 수 있고, 그대로
+ * 다시 쓰면 Firestore가 거부한다. 배열이 아니면 빈 배열로 내린다(표가 `.map`을 태우는 자리).
+ */
+function toVocabBook(id: string, d: DocumentData): VocabBookRecord {
+  const entries = Array.isArray(d.entries)
+    ? (d.entries as VocabEntry[]).map(normalizeVocabEntry)
+    : [];
+  return {
+    id,
+    titleKo: String(d.titleKo ?? ""),
+    dayLabel: toNullable(d.dayLabel as string | null),
+    entries,
+    photoCount: typeof d.photoCount === "number" ? d.photoCount : 0,
+    enriched: Boolean(d.enriched),
+    model: String(d.model ?? ""),
+    createdAt: toIso(d.createdAt),
+  };
+}
+
 function byCreatedAtDesc(a: { createdAt: string }, b: { createdAt: string }): number {
   return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0;
 }
@@ -195,6 +222,9 @@ export class FirestoreStore implements StudyStore {
   }
   private explanations(): CollectionReference {
     return getDb().collection("explanations");
+  }
+  private vocabBooks(): CollectionReference {
+    return getDb().collection("vocabBooks");
   }
 
   async createBook(input: NewBook): Promise<BookRecord> {
@@ -382,5 +412,45 @@ export class FirestoreStore implements StudyStore {
     if (!snap.exists) return false;
     await ref.delete();
     return true;
+  }
+
+  // ---- vocabBooks (V1, english.md §7-6) ----
+
+  async createVocabBook(input: NewVocabBook): Promise<VocabBookRecord> {
+    const ref = this.vocabBooks().doc();
+    const record: VocabBookRecord = {
+      ...input,
+      // 저장 계층이 마지막 관문 — 라우트도 통과시키지만 여기서 한 번 더 조인다(createBook 선례).
+      // (B) 창작 필드(V1에서 null)와 중첩 배열의 undefined가 새면 Firestore가 쓰기를 거부한다.
+      entries: input.entries.map(normalizeVocabEntry),
+      id: ref.id,
+      createdAt: new Date().toISOString(),
+    };
+    const { id: _id, ...data } = record; // 문서 ID가 곧 id — 본문에 중복 저장하지 않는다
+    await ref.set(data);
+    return record;
+  }
+
+  async getVocabBook(id: string): Promise<VocabBookRecord | null> {
+    const snap = await this.vocabBooks().doc(id).get();
+    return snap.exists ? toVocabBook(snap.id, snap.data()!) : null;
+  }
+
+  async listVocabBooks(limit?: number): Promise<VocabBookRecord[]> {
+    // createdAt은 ISO 문자열이라 사전순 = 시간순 — 단일 필드 정렬이라 복합 인덱스가 없다
+    const base = this.vocabBooks().orderBy("createdAt", "desc");
+    const snap = await (limit == null ? base.get() : base.limit(limit).get());
+    return snap.docs.map((d) => toVocabBook(d.id, d.data()));
+  }
+
+  async deleteVocabBook(id: string): Promise<DeleteVocabBookResult> {
+    // 개발 환경에서 실데이터를 지우는 것을 막는다 (2026-08-17 사고 — lib/prod-guard.ts)
+    assertDestructiveAllowed("deleteVocabBook");
+    // V1은 연쇄 삭제 없음 — 퀴즈 세션(V4)이 생기면 batch로 함께 지운다. deleteCard와 같은 모양.
+    const ref = this.vocabBooks().doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return { ok: false };
+    await ref.delete();
+    return { ok: true };
   }
 }

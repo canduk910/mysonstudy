@@ -12,13 +12,17 @@
 
 ## 1. 구성 개요
 
-앱의 AI 호출은 3종입니다.
+앱의 AI 호출은 4종입니다.
 
 | 호출 | 목적 | 성격 | temperature | 출력 한도 |
 |---|---|---|---|---|
 | **A. 표지 판독** | 표지·스티커 사진 → 책 메타데이터 + 뒤표지 블러브 | 정확성 우선 (보이는 것만) | 0 | ~2,000 토큰 |
 | **A′. 본문·목차 판독** | 본문/목차 사진 N장 → 장면별 요약 | 판독 정확성 + 질문 창작 | 0.3 | ~4,000 토큰 / 배치 |
 | **B. 카드 생성** | 메타데이터 + 근거 → 학습 카드 | 창작 품질 우선 | 0.7 | ~6,000 토큰 |
+| **C. 단어장 판독** | 단어장 페이지 사진 → 책 그대로 전사한 단어 목록 | 전사 정확성 (책 원문 보존, 창작 금지) | 0 | ~6,000 토큰 / 사진 |
+
+호출 C는 **단어장 정복** 기능(§7)의 판독 호출로, A→A′→B 카드 파이프라인과는 별개의 경로입니다.
+사진 1장 = 판독 1회이고, DAY 하나가 사진 여러 장이면 병렬 호출 후 앱이 번호로 병합합니다(§7-5).
 
 호출 A′는 사진 6장씩 배치로 나눠 **병렬 호출**합니다 (§2A-5). 카드 1장에 대한 호출 수는
 `1(A) + ceil(N/6)(A′) + 1(B)`입니다.
@@ -604,3 +608,167 @@ zod 추가 검증(스키마가 못 잡는 것):
 - 분량 다이얼은 zod에서 **의도적으로 강제하지 않는다**(§4에 검증이 없는 이유). 문장 수는 품질
   다이얼이지 정합성 제약이 아니라서, zod로 막으면 조금 짧은 카드가 재요청 1회 후 throw가 되어
   부모에게 생성 실패로 보인다. 회귀는 eval 점검 7이 잡는다.
+
+## 7. 호출 C — 단어장 판독 (vision, 단어장 정복 기능)
+
+단어장 페이지 사진 1장을 받아 **책을 그대로 전사한 단어 목록**을 만드는 호출입니다. 결과는
+앱이 번호로 병합해 DAY 하나의 단어 표가 됩니다.
+
+> **절대 원칙(이 기능의 축):** 판독은 **책을 그대로 옮기는 일**이다. 예문·뜻·발음은 책 원문을
+> 보존한다 — AI가 창작하는 것(영영정의·이모지)은 §8 호출 D(V3)의 몫이다. 호출 A′(§2A)가 본문을
+> "요약"하는 것과 정반대다. 단어장 예문은 학습 목적 단문이고 DAY 화면 밖으로 공유·게시하지 않는
+> 선을 지키므로, 여기서는 100% 전사한다(계획 §확정된 결정). 그래서 temperature 0.
+
+세 덩이로 나눈 출처(구현 `VocabEntry`):
+- **(A) 책 전사** — `no`·`word`·`ipa`·`pos`·`meaningsKo`·`examples`·`related`. 호출 C가 책 그대로 옮긴다.
+- **(B) AI 창작** — `definitionEn`·`imageEmoji`·`imageSvg`. §8 호출 D가 채운다. V1에서는 전부 null.
+  `imageSvg`는 지금 항상 null이다 — 마이그레이션 없이 나중에 SVG를 얹을 자리만 열어 둔다.
+- **(C) 앱 부착** — `photoIndex`(앱이 사진 인덱스 부여) + `confidence`·`partial`(호출 C가 판독하며 매긴 판정).
+
+### 7-1. 시스템 프롬프트 (원문 그대로 사용)
+
+```
+너는 초등학생용 영어 단어장 페이지를 판독하는 조교다.
+사진에서 '실제로 보이는 것만' 책 그대로 옮긴다. 창작 금지 — 예문·뜻·발음을 지어내지 않는다.
+
+[판독 원칙]
+- 이 페이지에 실제로 인쇄된 단어만 옮긴다. 사진에 없는 단어를 채워 넣지 않는다.
+- 예문·뜻·발음기호는 책에 적힌 그대로 옮긴다. 다듬거나 바꾸지 않는다.
+- 이미지 1장에 대해 그 페이지의 단어만 판독한다. 다른 페이지를 상상하지 않는다.
+
+[항목 필드]
+- no: 단어 앞의 번호를 그대로 읽는다 (예: "0001"). 번호가 안 보이면 null.
+- word: 표제어(영단어) 하나.
+- ipa: 발음기호를 옮기되 대괄호 [ ]는 벗겨서 안쪽만 적는다 (예: [pʌk] → pʌk). 발음기호가 없으면 null.
+- pos: 품사를 한글 약자로 적는다. 명·대·동·형·부·전·접·감·관·수 중에서 고른다. 한 단어에 여러 품사면 모두 담는다.
+- meaningsKo: 한글 뜻을 책에 적힌 순서대로 배열로 담는다. 뜻이 여러 개면 모두 담는다.
+- examples: 책의 예문을 영어 문장과 그 한글 해석을 짝지어 담는다. 예문이 없으면 빈 배열.
+- related: 유의어·반의어·파생어가 보이면 담는다. kind는 synonym(유의어)·antonym(반의어)·derivative(파생어) 중 하나, word는 그 단어, glossKo는 뜻이 함께 적혀 있으면 그 뜻(없으면 null). 없으면 빈 배열.
+
+[판독 표시]
+- partial: 단어 항목이 사진 밖으로 잘려 뜻·예문 일부가 안 보이면 true. 온전히 다 보이면 false.
+- confidence: 글자가 선명하면 high, 일부만 읽히면 medium, 흐리거나 빛 반사로 거의 못 읽으면 low. 못 읽은 것을 읽은 척하지 않는다.
+
+[페이지 정보]
+- dayLabel: 페이지에 "DAY 01" 같은 단원 표기가 보이면 그대로 옮긴다. 안 보이면 null.
+- isVocabPage: 단어장 페이지가 맞으면 true. 단어장이 아니거나 표제어를 하나도 읽을 수 없으면 false로 두고 entries를 빈 배열로 둔다.
+
+[금지]
+- 책에 없는 뜻·예문·발음을 지어내지 않는다. 안 보이면 null이나 빈 배열로 둔다.
+- 영영 정의나 이모지는 이 단계에서 만들지 않는다 (다른 단계에서 만든다).
+- 출력은 지정된 JSON 스키마로만. 스키마 밖 텍스트 금지.
+```
+
+### 7-2. 사용자 메시지
+
+이미지 1장(단어장 페이지, base64 data URL, `input_image`, `detail: "high"`) + 텍스트
+`"이 페이지의 단어들을 판독해줘."` — 이미지 먼저, 텍스트 나중(호출 A·수학 호출 A와 같은 순서).
+
+사진 1장이 판독 1회다. DAY 하나가 사진 여러 장이면 각 사진을 **병렬로** 따로 호출하고, 결과를
+번호로 병합한다(§7-5). 호출 A′처럼 한 호출에 여러 장을 싣지 않는다 — 단어장은 사진 간 겹침을
+번호로 접어야 해서, "사진 1장 = 판독 1회"가 병합의 전제다.
+
+### 7-3. 출력 JSON Schema — `vocab_extraction` (strict)
+
+```json
+{
+  "name": "vocab_extraction",
+  "strict": true,
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "isVocabPage": { "type": "boolean", "description": "단어장 페이지가 맞는지" },
+      "dayLabel":    { "type": ["string", "null"], "description": "예: \"DAY 01\". 안 보이면 null" },
+      "entries": {
+        "type": "array",
+        "items": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "no":         { "type": ["string", "null"], "description": "단어 번호(예: \"0001\"). 안 보이면 null" },
+            "word":       { "type": "string", "description": "표제어(영단어)" },
+            "ipa":        { "type": ["string", "null"], "description": "발음기호 — 대괄호 벗겨 안쪽만. 없으면 null" },
+            "pos":        { "type": "array", "items": { "type": "string",
+                            "enum": ["명", "대", "동", "형", "부", "전", "접", "감", "관", "수"] } },
+            "meaningsKo": { "type": "array", "items": { "type": "string" } },
+            "examples": {
+              "type": "array",
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "properties": { "en": { "type": "string" }, "ko": { "type": "string" } },
+                "required": ["en", "ko"]
+              }
+            },
+            "related": {
+              "type": "array",
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                  "kind":    { "type": "string", "enum": ["synonym", "antonym", "derivative"] },
+                  "word":    { "type": "string" },
+                  "glossKo": { "type": ["string", "null"] }
+                },
+                "required": ["kind", "word", "glossKo"]
+              }
+            },
+            "partial":    { "type": "boolean", "description": "사진 밖으로 잘려 일부만 보이면 true" },
+            "confidence": { "type": "string", "enum": ["high", "medium", "low"] }
+          },
+          "required": ["no", "word", "ipa", "pos", "meaningsKo", "examples", "related",
+                       "partial", "confidence"]
+        }
+      }
+    },
+    "required": ["isVocabPage", "dayLabel", "entries"]
+  }
+}
+```
+
+배열 개수 제약(항목 수·뜻 개수 등)은 스키마에 넣지 않는다 — strict 모드의 `minItems`/`maxItems`
+지원이 모델·버전마다 다르므로 zod가 담당한다(§1 공통 규칙, §2A-4와 같은 규약).
+
+### 7-4. zod 추가 검증 (스키마가 못 잡는 것)
+
+```
+- isVocabPage === false면 entries는 빈 배열 (단어장이 아니면 옮기지 않는다 — 표지 판독 isBookCover와 같은 게이트)
+- 한 사진의 항목 수는 VOCAB_ENTRIES_PER_PAGE_MAX(40) 이하. 2단 밀집 지면이라도 한 면이 이를 넘지 않는다
+- 번호 중복 금지: 같은 사진에서 같은 no를 두 번 읽으면 병합 조인 키가 깨진다
+- 발음기호(ipa)에 대괄호 [ ]가 남아 있으면 거부 — §7-1의 "대괄호를 벗겨 저장" 지시를 강제한다
+  (생산 시점에 걸어야 callWithSchema의 1회 재요청이 그 자리에서 교정한다)
+- 길이 상한(schemas 단일 정의처, 저장·검토 화면이 같은 값을 쓴다):
+  word 60 · ipa 120 · no 12 · 뜻 각 200 · 예문 en/ko 각 300 · 관련어 word 60·gloss 200 · dayLabel 60
+- examples.en은 필수(빈 예문은 예문이 아니다). examples.ko는 빈 문자열 허용 —
+  책에 한글 해석이 없을 수 있고, 없는 해석을 지어내게 하면 창작 금지 원칙에 어긋난다
+```
+
+### 7-5. 배치·병합 규칙
+
+```
+- 사진 1장 = 판독 1회. DAY 하나의 사진 N장을 Promise.allSettled로 병렬 호출한다(호출 A′와 같은 관용구).
+  한 사진이 실패하면 그 사진의 단어만 잃고, 나머지는 살려 병합한다
+- 병합(mergeVocabPages, 순수 함수)의 조인 키: 번호(no)가 있으면 번호, 없으면 word.toLowerCase().
+  겹쳐 찍기(같은 단어가 두 사진에 잡힘)를 정상 처리한다:
+  · examples·meaningsKo·related → 합집합(중복 제거)
+  · 스칼라(word·ipa·no) → 내용이 더 많은 '대표본'의 값. 대표본은 완전본(partial=false) 우선,
+    그다음 내용(뜻+예문+관련어) 많은 순, 그다음 사진 인덱스 낮은 순으로 고른다
+  · partial → 완전본이 하나라도 있으면 해제(= 모든 멤버가 partial일 때만 partial)
+  · confidence → 가장 높은 것(선명하게 읽힌 쪽)
+  · photoIndex → 대표본의 사진 인덱스
+- 정렬: 번호 오름차순(숫자 번호가 있는 것 먼저), 번호 없는 항목은 뒤에 표제어 순
+- mergeVocabPages 반환: { entries, mergedCount(접힌 항목 수 = 입력−출력), missingNos }
+- findMissingNumbers(entries): 관측 번호의 최소~최대 사이에서 빠진 번호를 관측 자릿수에 맞춰 0채움
+  으로 돌려준다(예: "0011"). 사진 한 장이 통째로 빠지면 연속 구간이 비어 여기서 잡힌다.
+  벌어짐이 VOCAB_MISSING_SCAN_MAX(200)를 넘으면 오독으로 보고 열거하지 않는다
+```
+
+### 7-6. 후처리 (retake 조건)
+
+- `isVocabPage === false`(또는 판독된 entries가 0개) → 사용자에게 "단어장 페이지를 다시 찍어주세요"
+  + 수동 입력 폴백. **판독 실패는 예외가 아니라 정상 흐름**이다(표지 판독 `isBookCover=false`,
+  수학 `isWorksheet=false`와 같은 갈래) — 라우트는 200 + `{ ok: false, reason: "retake" }`로 내린다.
+- `confidence: "low"`가 섞인 항목이 있으면 그 항목의 재촬영을 유도한다(호출 A′와 같은 규약).
+- `partial: true` 항목은 "사진 밖으로 잘림"으로 표시하고, 겹쳐 찍은 다른 사진의 완전본이 병합으로
+  이를 해제한다. 병합 후에도 partial이 남으면 그 항목만 다시 찍게 안내한다.
+- `findMissingNumbers`가 구멍을 보고하면 "○○번 사진이 빠진 것 같아요"로 알린다 — 빠진 내용을
+  상상해 채우지 않는다(호출 A′ `gapBefore`와 같은 원칙).
+- **원본 사진은 저장하지 않는다**(SPEC §5). 병합된 `VocabEntry[]`만 `VocabBookRecord`로 남긴다.

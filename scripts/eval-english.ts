@@ -41,6 +41,21 @@ import {
   buildCardUserMessage,
   type CardUserMessageInput,
 } from "../lib/ai/english/prompts";
+// 단어장 정복 V1 (§7) — 오프라인 점검 대상: 판독 프롬프트↔스펙, 병합 순수 함수, zod 제약, 그림 우선순위
+import {
+  VOCAB_EXTRACT_SYSTEM_PROMPT,
+  VOCAB_EXTRACT_USER_TEXT,
+} from "../lib/ai/english/vocabbook-prompts";
+import {
+  resolveVocabImage,
+  vocabExtractionSchema,
+  type VocabExtractEntry,
+} from "../lib/ai/english/vocabbook-schemas";
+import {
+  findMissingNumbers,
+  mergeVocabPages,
+  type VocabPageForMerge,
+} from "../lib/ai/english/vocabbook-merge";
 import {
   checkSpecSync,
   printSpecSyncDetails,
@@ -707,6 +722,211 @@ function runStoryLengthDialChecks(): CheckResult[] {
 }
 
 // ---------------------------------------------------------------------------
+// 오프라인 점검 — 단어장 정복 V1(§7). 실호출 0회.
+// 여기가 이 기능 eval 가치의 대부분이다: 실사진 판독은 사진이 있어야 재현되므로(§5·§7-6)
+// eval이 커버하지 않고, 대신 병합 순수 함수·zod 제약·그림 우선순위를 고정 입력으로 잠근다.
+// ---------------------------------------------------------------------------
+
+function runVocabbookChecks(): CheckResult[] {
+  const results: CheckResult[] = [];
+  const add = (check: string, pass: boolean, detail: string) =>
+    results.push({ book: "단어장 §7", check, pass, detail });
+
+  const issues = (e: { issues: { path: PropertyKey[]; message: string }[] }) =>
+    e.issues.map((i) => `${i.path.map(String).join(".")}: ${i.message}`).join("; ");
+
+  // 판독 항목 픽스처 — 필요한 필드만 덮어쓴다 (호출 A′ scene() 헬퍼와 같은 관용구)
+  const entry = (over: Partial<VocabExtractEntry> = {}): VocabExtractEntry => ({
+    no: "0001",
+    word: "pack",
+    ipa: "pæk",
+    pos: ["명"],
+    meaningsKo: ["무리, 떼"],
+    examples: [{ en: "A pack of wolves.", ko: "늑대 한 무리." }],
+    related: [],
+    partial: false,
+    confidence: "high",
+    ...over,
+  });
+
+  // --- 병합 1: 겹쳐 찍기(같은 번호가 두 사진에) → 한 항목·배열 합집합 ---
+  {
+    const merged = mergeVocabPages([
+      {
+        photoIndex: 0,
+        entries: [entry({ meaningsKo: ["무리, 떼"], examples: [{ en: "A pack of wolves.", ko: "늑대 한 무리." }] })],
+      },
+      {
+        photoIndex: 1,
+        entries: [
+          entry({
+            meaningsKo: ["꾸러미"],
+            examples: [{ en: "Pack your bag.", ko: "가방을 싸라." }],
+            related: [{ kind: "synonym", word: "bundle", glossKo: "묶음" }],
+          }),
+        ],
+      },
+    ]);
+    const one = merged.entries[0];
+    const ok =
+      merged.entries.length === 1 &&
+      merged.mergedCount === 1 &&
+      one.meaningsKo.length === 2 &&
+      one.examples.length === 2 &&
+      one.related.length === 1;
+    add(
+      "병합. 겹쳐 찍기 → 1항목·배열 합집합",
+      ok,
+      `entries=${merged.entries.length} merged=${merged.mergedCount} 뜻=${one?.meaningsKo.length} 예문=${one?.examples.length} 관련=${one?.related.length}`,
+    );
+  }
+
+  // --- 병합 2: 경계 걸침 — 한 사진에서 잘린 partial이 다른 사진 완전본과 합쳐지며 partial 해제 ---
+  {
+    const merged = mergeVocabPages([
+      {
+        photoIndex: 0,
+        entries: [entry({ no: "0002", word: "howl", meaningsKo: [], examples: [], partial: true, confidence: "medium" })],
+      },
+      {
+        photoIndex: 1,
+        entries: [
+          entry({
+            no: "0002",
+            word: "howl",
+            meaningsKo: ["울부짖다"],
+            examples: [{ en: "Wolves howl at night.", ko: "늑대는 밤에 운다." }],
+            partial: false,
+            confidence: "high",
+          }),
+        ],
+      },
+    ]);
+    const one = merged.entries[0];
+    const ok =
+      merged.entries.length === 1 &&
+      one.partial === false &&
+      one.confidence === "high" &&
+      one.meaningsKo.length === 1;
+    add(
+      "병합. 경계 걸침 partial → 완전본과 합쳐 partial 해제",
+      ok,
+      `entries=${merged.entries.length} partial=${one?.partial} confidence=${one?.confidence}`,
+    );
+  }
+
+  // --- 병합 3: 사진 한 장 통째 누락 → 번호 구멍 감지 (0003~0004 빠짐) ---
+  {
+    const merged = mergeVocabPages([
+      { photoIndex: 0, entries: [entry({ no: "0001", word: "alpha" }), entry({ no: "0002", word: "bravo" })] },
+      { photoIndex: 1, entries: [entry({ no: "0005", word: "echo" })] },
+    ]);
+    const ok = merged.entries.length === 3 && merged.missingNos.join(",") === "0003,0004";
+    add(
+      "병합. 번호 구멍(사진 누락) 감지",
+      ok,
+      `missingNos=[${merged.missingNos.join(", ")}] (기대 0003,0004)`,
+    );
+  }
+
+  // --- 병합 4: 번호 오름차순 정렬 ---
+  {
+    const merged = mergeVocabPages([
+      {
+        photoIndex: 0,
+        entries: [entry({ no: "0003", word: "c" }), entry({ no: "0001", word: "a" }), entry({ no: "0002", word: "b" })],
+      },
+    ]);
+    const order = merged.entries.map((e) => e.no).join(",");
+    add("병합. 번호 오름차순 정렬", order === "0001,0002,0003", `순서=${order}`);
+  }
+
+  // --- 병합 5: 번호가 없으면 word 소문자로 조인 (대소문자 무시) ---
+  {
+    const merged = mergeVocabPages([
+      { photoIndex: 0, entries: [entry({ no: null, word: "Fix", meaningsKo: ["고치다"], examples: [] })] },
+      { photoIndex: 1, entries: [entry({ no: null, word: "fix", meaningsKo: ["수리하다"], examples: [] })] },
+    ]);
+    const ok = merged.entries.length === 1 && merged.entries[0].meaningsKo.length === 2;
+    add(
+      "병합. 번호 없으면 word 소문자로 조인",
+      ok,
+      `entries=${merged.entries.length} 뜻=${merged.entries[0]?.meaningsKo.length}`,
+    );
+  }
+
+  // --- findMissingNumbers 단독: 번호가 2개 미만이면 빈 배열 ---
+  {
+    const out = findMissingNumbers([{ no: null }, { no: "0001" }]);
+    add("findMissingNumbers. 번호<2개면 빈 배열", out.length === 0, `결과=[${out.join(", ")}]`);
+  }
+
+  // --- zod: 정상 판독 통과 ---
+  {
+    const good = vocabExtractionSchema.safeParse({
+      isVocabPage: true,
+      dayLabel: "DAY 01",
+      entries: [
+        {
+          no: "0001", word: "pack", ipa: "pæk", pos: ["명"],
+          meaningsKo: ["무리, 떼"], examples: [{ en: "A pack of wolves.", ko: "늑대 한 무리." }],
+          related: [], partial: false, confidence: "high",
+        },
+      ],
+    });
+    add("zod. 정상 판독 통과", good.success, good.success ? "통과" : issues(good.error));
+  }
+
+  // --- zod 위반: 각각 거부되어야 한다 ---
+  const validEntry = {
+    no: "0001", word: "pack", ipa: "pæk", pos: ["명"],
+    meaningsKo: ["무리, 떼"], examples: [{ en: "A pack of wolves.", ko: "늑대 한 무리." }],
+    related: [], partial: false, confidence: "high",
+  };
+  const badCases: Array<{ name: string; input: unknown }> = [
+    {
+      name: "ipa 대괄호 잔존",
+      input: { isVocabPage: true, dayLabel: null, entries: [{ ...validEntry, ipa: "[pæk]" }] },
+    },
+    {
+      name: "isVocabPage=false인데 entries 있음",
+      input: { isVocabPage: false, dayLabel: null, entries: [validEntry] },
+    },
+    {
+      name: "같은 사진 번호 중복",
+      input: { isVocabPage: true, dayLabel: null, entries: [validEntry, { ...validEntry, word: "flock" }] },
+    },
+  ];
+  for (const bad of badCases) {
+    const parsed = vocabExtractionSchema.safeParse(bad.input);
+    add(
+      `zod. ${bad.name} → 거부`,
+      parsed.success === false,
+      parsed.success ? "잘못 통과함(거부되어야 함)" : "정상 거부",
+    );
+  }
+
+  // --- resolveVocabImage 우선순위: svg > emoji > 첫 글자 배지 ---
+  {
+    const svg = resolveVocabImage({ imageSvg: "<svg/>", imageEmoji: "🐺", word: "pack" });
+    const emoji = resolveVocabImage({ imageSvg: null, imageEmoji: "🐺", word: "pack" });
+    const letter = resolveVocabImage({ imageSvg: null, imageEmoji: null, word: "respect" });
+    const ok =
+      svg.kind === "svg" &&
+      emoji.kind === "emoji" &&
+      letter.kind === "letter" &&
+      letter.letter === "R";
+    add(
+      "resolveVocabImage. svg>emoji>첫글자 우선순위",
+      ok,
+      `svg=${svg.kind} emoji=${emoji.kind} letter=${letter.kind}${letter.kind === "letter" ? `/${letter.letter}` : ""}`,
+    );
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
 // 실행: 픽스처 2권으로 실제 카드 생성 → 점검 → 항목별 pass/fail 표 → 실패 시 exit 1
 // ---------------------------------------------------------------------------
 
@@ -776,6 +996,21 @@ const SPEC_SYNC_TARGETS: readonly SpecSyncTarget[] = [
     text: CARD_SYSTEM_PROMPT,
     mode: "block",
   },
+  {
+    constName: "VOCAB_EXTRACT_SYSTEM_PROMPT",
+    source: "lib/ai/english/vocabbook-prompts.ts",
+    specLabel: "§7-1 호출 C 시스템 프롬프트",
+    text: VOCAB_EXTRACT_SYSTEM_PROMPT,
+    mode: "block",
+  },
+  {
+    constName: "VOCAB_EXTRACT_USER_TEXT",
+    source: "lib/ai/english/vocabbook-prompts.ts",
+    specLabel: "§7-2 사용자 메시지",
+    text: VOCAB_EXTRACT_USER_TEXT,
+    // 스펙에 코드블록이 아니라 인라인 코드 한 줄로 적혀 있다 — 본문 포함 여부로 본다
+    mode: "inline",
+  },
 ];
 
 /** 표 뒤에 상세 diff를 찍기 위해 남겨 둔다 (main이 읽는다) */
@@ -812,6 +1047,8 @@ async function main(): Promise<void> {
   // 실호출 0회 — 호출 A′ 스키마·하위 호환 헬퍼·분량 다이얼부터 검사한다 (키 없이도 돈다)
   allResults.push(...runPageDigestChecks());
   allResults.push(...runStoryLengthDialChecks());
+  // 단어장 정복 V1(§7) — 병합 순수 함수·zod 제약·그림 우선순위 (실호출 0회)
+  allResults.push(...runVocabbookChecks());
   // 프롬프트 원문이 스펙 문서와 같은지 — 파일을 읽어서 대조한다 (실호출 0회)
   allResults.push(...runSpecSyncChecks());
 

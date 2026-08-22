@@ -30,6 +30,9 @@ import type { Card, SceneDigestItem, SceneSourceKind } from "./ai/english/schema
 // 하면 저장 계층이 AI 모듈에 묶인다. 타입만 가져오면 빌드에서 지워진다.
 import type { ExplainVerifyReport } from "./ai/math/pipeline";
 import type { Explanation } from "./ai/math/schemas";
+// 단어장 정복(V1) 완성형 항목 — **`import type`이다.** `vocabbook-schemas.ts`는 zod를
+// 값으로 끌고 오지만, 타입만 가져오면 빌드에서 지워져 저장 계층이 AI 모듈에 묶이지 않는다.
+import type { VocabEntry } from "./ai/english/vocabbook-schemas";
 import type { SceneTier } from "./scene/types";
 import { FirestoreStore } from "./store-firestore";
 
@@ -147,10 +150,43 @@ export interface ExplanationRecord {
   createdAt: string; // ISO 8601
 }
 
+/**
+ * 단어장 한 DAY = 문서 1개 (단어장 정복 V1, english.md §7-6).
+ *
+ * DAY 하나를 사진 2~4장으로 판독→병합한 결과를 `entries` 배열로 통째로 안는다 —
+ * `CardRecord.content`가 학습 카드를, `ExplanationRecord.content`가 3막 설명을 통째로
+ * 안는 것과 같은 규약이다. 단어 하나하나를 따로 문서로 쪼개지 않는다(목록·표가 DAY 단위).
+ *
+ * **원본 사진은 저장하지 않는다**(SPEC §5·§7-6). 병합된 `entries`만 남긴다.
+ * `photoCount`는 판독에 쓴 사진 수(사진 자체가 아니라 개수만) — "몇 장으로 만들었나" 표시용.
+ */
+export interface VocabBookRecord {
+  id: string;
+  /** 화면·목록에 뜨는 이름. 페이지 사진에 책 제목이 없을 수 있어 엄빠가 정하거나 dayLabel로 채운다 */
+  titleKo: string;
+  /** 판독된 단원 표기(예: "DAY 01"). 없으면 null */
+  dayLabel: string | null;
+  /** 병합·정렬된 단어 목록 (호출 C → mergeVocabPages 결과) */
+  entries: VocabEntry[];
+  /** 판독에 쓴 사진 수 */
+  photoCount: number;
+  /** 영영 정의·이모지(호출 D, V3)를 채웠는지. V1에서는 항상 false */
+  enriched: boolean;
+  /** 판독한 모델 ID */
+  model: string;
+  createdAt: string; // ISO 8601
+}
+
+/** 단어장 삭제 결과 — V1은 연쇄 삭제가 없어(퀴즈는 V4) `{ ok }` 하나면 충분하다 */
+export interface DeleteVocabBookResult {
+  ok: boolean;
+}
+
 export type NewBook = Omit<BookRecord, "id" | "createdAt">;
 export type NewCard = Omit<CardRecord, "id" | "createdAt">;
 export type NewReading = Omit<ReadingRecord, "id">;
 export type NewExplanation = Omit<ExplanationRecord, "id" | "createdAt">;
+export type NewVocabBook = Omit<VocabBookRecord, "id" | "createdAt">;
 
 /** 책 삭제로 함께 지워진 개수 — 삭제 완료 안내에 그대로 쓴다 */
 export interface DeleteBookResult {
@@ -216,6 +252,18 @@ export interface StudyStore {
   listExplanations(limit?: number): Promise<ExplanationRecord[]>;
   /** 지웠으면 true, 없는 id였으면 false — deleteCard와 같은 규약 */
   deleteExplanation(id: string): Promise<boolean>;
+
+  // ---- vocabBooks — 단어장 정복 (V1, english.md §7-6) ----
+  // explanations와 같은 규약: 백엔드가 하나라 인터페이스를 쪼개지 않고 네 개를 더한다.
+  createVocabBook(input: NewVocabBook): Promise<VocabBookRecord>;
+  getVocabBook(id: string): Promise<VocabBookRecord | null>;
+  /** 최신순. limit 생략이면 전체 (가족용 규모) */
+  listVocabBooks(limit?: number): Promise<VocabBookRecord[]>;
+  /**
+   * 단어장 1개를 지운다 — **V1은 연쇄 삭제가 없다**(퀴즈 세션은 V4에 생긴다).
+   * 지웠으면 `{ ok: true }`, 없는 id였으면 `{ ok: false }`. 존재 확인·404는 라우트의 몫.
+   */
+  deleteVocabBook(id: string): Promise<DeleteVocabBookResult>;
 }
 
 /**
@@ -234,13 +282,14 @@ export interface DbShape {
   cards: CardRecord[];
   readings: ReadingRecord[];
   explanations: ExplanationRecord[];
+  vocabBooks: VocabBookRecord[];
 }
 
 const DB_DIR = path.join(process.cwd(), "data");
 const DB_PATH = path.join(DB_DIR, "db.json");
 
 function emptyDb(): DbShape {
-  return { books: [], cards: [], readings: [], explanations: [] };
+  return { books: [], cards: [], readings: [], explanations: [], vocabBooks: [] };
 }
 
 async function readDb(): Promise<DbShape> {
@@ -253,6 +302,8 @@ async function readDb(): Promise<DbShape> {
       readings: parsed.readings ?? [],
       // M4 이전에 만들어진 db.json에는 이 키가 없다 — 마이그레이션 없이 그대로 열린다
       explanations: parsed.explanations ?? [],
+      // V1 이전 db.json에는 이 키가 없다 — 같은 하위호환(없으면 빈 배열)
+      vocabBooks: parsed.vocabBooks ?? [],
     };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyDb();
@@ -294,6 +345,42 @@ export function normalizeProblem(problem: MathProblemInput): MathProblemInput {
     givens:
       problem.givens?.map((g) => ({ label: g.label, value: g.value, unit: g.unit ?? null })) ??
       null,
+  };
+}
+
+/**
+ * 단어 항목 저장 직전 방어 변환 — `undefined`를 전부 `null`(또는 빈 배열/문자열)로 조인다.
+ *
+ * **두 백엔드가 같은 것을 저장하도록 여기서만 정의한다** — `normalizeProblem`과 같은 자리,
+ * 같은 이유다(예전에 Firestore 구현에만 정규화가 있어 파일 백엔드가 키를 잃었다). Firestore는
+ * `undefined`를 아예 거부하고, `VocabEntry`의 (B) 창작 필드(V1에서 항상 null)와 중첩 배열
+ * (`examples[].ko`·`related[].glossKo`)이 undefined로 새어 들면 저장이 통째로 실패한다.
+ *
+ * 값을 **손보지 않는다** — 뜻·예문은 책 전사본이라 여기서 다듬으면 원문이 바뀐다. 오직
+ * "없는 것을 없음으로 적는" 정규화만 한다(정렬·병합은 이미 mergeVocabPages가 끝냈다).
+ */
+export function normalizeVocabEntry(entry: VocabEntry): VocabEntry {
+  return {
+    // (A) 책 전사
+    no: entry.no ?? null,
+    word: entry.word,
+    ipa: entry.ipa ?? null,
+    pos: entry.pos ?? [],
+    meaningsKo: entry.meaningsKo ?? [],
+    examples: (entry.examples ?? []).map((e) => ({ en: e.en, ko: e.ko ?? "" })),
+    related: (entry.related ?? []).map((r) => ({
+      kind: r.kind,
+      word: r.word,
+      glossKo: r.glossKo ?? null,
+    })),
+    // (B) AI 창작 — V1에서는 전부 null. undefined로 새면 Firestore가 거부한다
+    definitionEn: entry.definitionEn ?? null,
+    imageEmoji: entry.imageEmoji ?? null,
+    imageSvg: entry.imageSvg ?? null,
+    // (C) 앱 부착
+    photoIndex: entry.photoIndex ?? 0,
+    confidence: entry.confidence,
+    partial: entry.partial ?? false,
   };
 }
 
@@ -461,6 +548,42 @@ class JsonFileStore implements BookCardStore {
       return db.explanations.length < before;
     });
   }
+
+  // ---- vocabBooks (V1) ----
+
+  async createVocabBook(input: NewVocabBook): Promise<VocabBookRecord> {
+    const record: VocabBookRecord = {
+      ...input,
+      // Firestore 구현과 같은 정규화를 태운다 — 두 백엔드가 같은 것을 저장해야 한다
+      entries: input.entries.map(normalizeVocabEntry),
+      id: randomUUID(),
+      createdAt: new Date().toISOString(),
+    };
+    return this.mutate((db) => {
+      db.vocabBooks.push(record);
+      return record;
+    });
+  }
+
+  async getVocabBook(id: string): Promise<VocabBookRecord | null> {
+    const db = await readDb();
+    return db.vocabBooks.find((v) => v.id === id) ?? null;
+  }
+
+  async listVocabBooks(limit?: number): Promise<VocabBookRecord[]> {
+    const db = await readDb();
+    const sorted = [...db.vocabBooks].sort(byCreatedAtDesc);
+    return limit == null ? sorted : sorted.slice(0, limit);
+  }
+
+  async deleteVocabBook(id: string): Promise<DeleteVocabBookResult> {
+    // V1은 연쇄 삭제가 없다 — 퀴즈 세션(V4)이 생기면 여기에 연쇄를 더한다.
+    return this.mutate((db) => {
+      const before = db.vocabBooks.length;
+      db.vocabBooks = db.vocabBooks.filter((v) => v.id !== id);
+      return { ok: db.vocabBooks.length < before };
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -531,5 +654,6 @@ export async function mergeDbForSeed(seed: DbShape): Promise<void> {
     cards: mergeById(cur.cards, seed.cards),
     readings: mergeById(cur.readings, seed.readings),
     explanations: mergeById(cur.explanations, seed.explanations),
+    vocabBooks: mergeById(cur.vocabBooks, seed.vocabBooks),
   });
 }
