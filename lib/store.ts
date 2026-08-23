@@ -346,6 +346,14 @@ export interface StudyStore {
    */
   appendVocabEntry(id: string, entry: VocabEntry): Promise<AppendVocabEntryResult>;
   /**
+   * 단어장의 **화면 이름(titleKo)만** 바꾼다 (상세 헤더 인라인 편집). **삭제가 아니라 수정**이라
+   * prod-guard를 걸지 않는다(updateVocabBookEnrichment와 같은 규약). entries·enriched·dayLabel·판독
+   * 결과는 손대지 않는다 — 오직 titleKo 한 필드만 갈아끼운다. 읽기 경로(normalizeVocabEntry)는
+   * 그대로 유지해 반환 레코드의 entries가 getVocabBook과 같은 모양이 되게 한다.
+   * 갱신된 레코드를 돌려준다. 없는 id면 null — 404 판단은 호출측 라우트의 몫.
+   */
+  updateVocabBookTitle(id: string, titleKo: string): Promise<VocabBookRecord | null>;
+  /**
    * 단어장 1개를 지운다 — 그 단어장의 **시험 세션(V4)까지 연쇄 삭제**한다(deleteBook과 같은 규약).
    * 지웠으면 `{ ok: true }`, 없는 id였으면 `{ ok: false }`. 존재 확인·404는 라우트의 몫.
    */
@@ -777,6 +785,17 @@ class JsonFileStore implements BookCardStore {
       // 뜻 null 단어가 붙으면 enriched가 false로 떨어진다 — 단일 정의처로 다시 계산(우회 금지).
       book.enriched = isVocabBookEnriched(book.entries);
       return { record: { ...book }, appended: true };
+    });
+  }
+
+  async updateVocabBookTitle(id: string, titleKo: string): Promise<VocabBookRecord | null> {
+    // **삭제가 아니라 수정**이라 prod-guard가 걸리지 않는다(updateVocabBookEnrichment와 같은 규약).
+    // titleKo 한 필드만 갈아끼우고 entries는 손대지 않는다 — 반환만 읽기 정규화(getVocabBook 규약)를 태운다.
+    return this.mutate((db) => {
+      const book = db.vocabBooks.find((v) => v.id === id);
+      if (!book) return null;
+      book.titleKo = titleKo;
+      return { ...book, entries: (book.entries ?? []).map(normalizeVocabEntry) };
     });
   }
 

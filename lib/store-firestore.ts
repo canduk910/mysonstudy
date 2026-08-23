@@ -520,6 +520,18 @@ export class FirestoreStore implements StudyStore {
     return { record: toVocabBook(updated.id, updated.data()!), appended: true };
   }
 
+  async updateVocabBookTitle(id: string, titleKo: string): Promise<VocabBookRecord | null> {
+    // **삭제가 아니라 수정**이라 assertDestructiveAllowed를 걸지 않는다(updateVocabBookEnrichment와 같은 규약).
+    // titleKo 한 필드만 update한다 — entries·enriched·dayLabel은 문서에 그대로 남는다.
+    const ref = this.vocabBooks().doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return null;
+    await ref.update({ titleKo });
+    const updated = await ref.get();
+    // 읽기 정규화(toVocabBook)로 entries는 getVocabBook과 같은 모양으로 돌려준다.
+    return toVocabBook(updated.id, updated.data()!);
+  }
+
   async deleteVocabBook(id: string): Promise<DeleteVocabBookResult> {
     // 개발 환경에서 실데이터를 지우는 것을 막는다 (2026-08-17 사고 — lib/prod-guard.ts)
     assertDestructiveAllowed("deleteVocabBook");

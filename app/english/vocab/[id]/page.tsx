@@ -14,6 +14,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import VocabbookView from "@/components/vocabbook-view";
+import VocabTitleEditor from "@/components/vocab-title-editor";
 import { MIN_QUIZ_WORDS } from "@/lib/vocab-quiz";
 import { isRenderableVocabBook } from "@/lib/vocabbook-record";
 import { getStore } from "@/lib/store";
@@ -54,7 +55,8 @@ export default async function VocabDetailPage({ params }: VocabDetailPageProps) 
           </Link>
           <p className="t-caption flex-none">{record.createdAt.slice(0, 10).replace(/-/g, ".")}</p>
         </div>
-        <h1 className="t-book-title mt-4">{record.titleKo}</h1>
+        {/* 이름 인라인 편집 (클라이언트) — 저장 시 router.refresh로 목록·헤더·카드 chrome 제목까지 갱신 */}
+        <VocabTitleEditor id={record.id} titleKo={record.titleKo} />
         <p className="t-lead mt-1">
           단어 {record.entries.length}개
           {record.dayLabel && record.dayLabel !== record.titleKo ? ` · ${record.dayLabel}` : ""}
