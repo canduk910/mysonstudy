@@ -143,10 +143,18 @@ export default function ImageCropper({ file, onDone, onCancel }: Props) {
     setWorkingFile(file);
   }, [file]);
 
-  // 회전이 걸리면 원본에서 그 각도로 회전한 파일을 만들어 크롭 대상으로 삼는다(rotation=0은 위 효과가 처리).
+  // 회전이 걸리면 원본에서 그 각도로 회전한 파일을 만들어 크롭 대상으로 삼는다.
   useEffect(() => {
-    if (rotation === 0) return;
     let cancelled = false;
+    // rotation=0 = 원본 그대로. 사이클이 0으로 돌아올 때(0→90→180→270→0) 직전 회전본이 남지 않게
+    // **반드시** 원본으로 되돌린다. 빠르게 눌러 이전 회전 async가 취소돼도 여기서 동기적으로 원본을
+    // 세팅하므로 "원본 차례에 엉뚱한 각도"가 남는 버그가 없다.
+    if (rotation === 0) {
+      setWorkingFile(file);
+      return () => {
+        cancelled = true;
+      };
+    }
     rotateImageFile(file, rotation)
       .then((wf) => {
         if (!cancelled) setWorkingFile(wf);
