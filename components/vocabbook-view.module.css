@@ -347,7 +347,15 @@
 }
 
 /* ── 영영 뜻 블록 ─────────────────────────────────────────────────────────── */
+/* 정의(EN) + 그 아래 우리말 해석(KO, V7)을 묶는 컨테이너 */
+.defnBlock {
+  margin: 0;
+}
+/* 정의 줄 — 텍스트(라벨+EN)가 남는 폭을 채우고 🔊는 오른쪽에 붙는다 */
 .defn {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   margin: 8px 0 0;
   padding: 6px 10px;
   border-left: 3px solid var(--accent);
@@ -356,6 +364,20 @@
   color: var(--ink);
   font-size: var(--fs-vocab-example);
   line-height: 1.5;
+}
+/* 라벨 칩 + 영영 정의 텍스트 묶음 — 남는 폭을 차지하고 줄바꿈된다(🔊 자리 확보) */
+.defnText {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* 우리말 해석(V7) — 정의 아래 보조 텍스트. 작은 회색, 정의 텍스트 왼쪽에 맞춰 들여쓴다.
+   EN이 문제/발음 대상이고 KO는 보조임이 크기·색으로 시각적으로 읽히게 한다. */
+.defnKo {
+  margin: 4px 0 0;
+  padding-left: 13px; /* .defn 왼쪽(3px border + 10px padding)에 맞춰 정렬 */
+  color: var(--ink-3);
+  font-size: var(--fs-meta-chip);
+  line-height: 1.45;
 }
 /* "영영" 라벨 — 앞에 작은 칩 */
 .defnLabel {

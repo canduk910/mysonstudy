@@ -85,19 +85,20 @@ export const VOCAB_EXTRACT_CALL_OPTIONS = {
 } as const;
 
 // ---------------------------------------------------------------------------
-// 호출 D — 단어장 보강 (영영 정의 + 이모지). docs/harness/english.md §8-1·§8-2.
+// 호출 D — 단어장 보강 (영영 정의 + 우리말 해석 + 이모지). docs/harness/english.md §8-1·§8-2.
 //
 // 판독(호출 C)이 책을 그대로 옮기는 일이라면, 호출 D는 **AI 창작**이다 — 아이가 뜻을 스스로
-// 떠올리게 돕는 영영 정의와, 단어를 나타내는 이모지 하나를 만든다. 그래서 판독(temp 0)과 달리
-// temperature 0.7로 분리한다(§8-6). 사진이 없는 텍스트 호출이라 재생성이 판독 없이도 된다.
+// 떠올리게 돕는 영영 정의와, 그 정의의 우리말 해석(V7)과, 단어를 나타내는 이모지 하나를 만든다.
+// 그래서 판독(temp 0)과 달리 temperature 0.7로 분리한다(§8-6). 사진이 없는 텍스트 호출이라
+// 재생성이 판독 없이도 된다. 정의(EN)는 불변이라, 입력에 EN이 있으면 모델은 그 문장을 번역만 한다.
 //
 // 이 시스템 프롬프트는 스펙 §8-1 원문 그대로다. `SPEC_SYNC_TARGETS`가 이 상수를 §8-1 코드블록과
 // **글자 단위로** 대조하므로(§7-1과 같은 규약) 줄 안쪽 공백·빈 줄 개수까지 스펙과 똑같이 유지한다.
 // ---------------------------------------------------------------------------
 
 /** 호출 D — 단어장 보강 시스템 프롬프트 (HARNESS §8-1 원문) */
-export const VOCAB_ENRICH_SYSTEM_PROMPT = `너는 초등학생용 영어 단어에 '영영 정의'와 '이모지'를 붙이는 조교다.
-받은 단어마다 쉬운 영어 뜻풀이 한 문장과, 그 단어를 나타내는 이모지 하나를 만든다.
+export const VOCAB_ENRICH_SYSTEM_PROMPT = `너는 초등학생용 영어 단어에 '영영 정의'와 '그 정의의 우리말 해석'과 '이모지'를 붙이는 조교다.
+받은 단어마다 쉬운 영어 뜻풀이 한 문장과, 그 뜻풀이를 우리말로 옮긴 해석 한 문장과, 그 단어를 나타내는 이모지 하나를 만든다.
 판독(다른 단계)이 책을 그대로 옮기는 일이라면, 이 단계는 아이가 뜻을 스스로 떠올리게 돕는 창작이다.
 
 [definitionEn — 영영 정의]
@@ -106,6 +107,12 @@ export const VOCAB_ENRICH_SYSTEM_PROMPT = `너는 초등학생용 영어 단어�
 - 표제어(word)를 정의 문장 안에 그대로 쓰지 않는다. 그 단어를 모르는 아이가 뜻을 짐작할 수 있게 풀어 쓴다.
 - 한글은 한 글자도 쓰지 않는다. 영어로만 쓴다.
 - 받은 뜻(meaningsKo)에 맞는 의미로 정의한다. 뜻이 여러 개면 가장 먼저 온 뜻을 기준으로 한 문장에 담는다.
+- 입력에 definitionEn이 이미 있으면 그 문장을 새로 짓지 말고 그대로 돌려준다. 없으면(null) 위 규칙대로 새로 만든다.
+
+[definitionKo — 영영 정의의 우리말 해석]
+- definitionEn 문장을 초등 저학년이 이해할 수 있게 우리말로 옮긴 해석 한 문장으로 쓴다.
+- 책의 한글 뜻이 아니라, 방금 만들었거나 받은 영영 정의(definitionEn) 문장을 우리말로 푸는 것이다.
+- 뜻이 definitionEn과 어긋나지 않게 한다. definitionEn이 null이면 definitionKo도 null로 둔다.
 
 [imageEmoji — 이모지]
 - 그 단어를 가장 잘 나타내는 이모지 하나만 고른다. 이모지는 딱 1개다 — 여러 개를 이어 붙이지 않는다.
@@ -118,29 +125,31 @@ export const VOCAB_ENRICH_SYSTEM_PROMPT = `너는 초등학생용 영어 단어�
 
 [금지]
 - 표제어를 정의에 그대로 쓰지 않는다. 정의에 한글을 쓰지 않는다. 이모지를 2개 이상 붙이지 않는다.
+- 입력에 있던 definitionEn을 바꾸지 않는다 — 해석(definitionKo)만 새로 붙인다.
 - 출력은 지정된 JSON 스키마로만. 스키마 밖 텍스트 금지.
 
 [예시]
-받은 단어가 이렇게 오면:
-  [{"no":"0009","word":"apple","pos":["명"],"meaningsKo":["사과"]},
-   {"no":"0021","word":"respect","pos":["동","명"],"meaningsKo":["존경하다","존경"]}]
-이렇게 만든다(apple은 눈에 보이는 사물이라 이모지가 있고, respect는 추상적이라 이모지가 null이다):
+받은 단어가 이렇게 오면(apple은 정의가 아직 없고, respect는 정의가 이미 있다):
+  [{"no":"0009","word":"apple","pos":["명"],"meaningsKo":["사과"],"definitionEn":null},
+   {"no":"0021","word":"respect","pos":["동","명"],"meaningsKo":["존경하다","존경"],"definitionEn":"To think that someone is important and to treat them in a kind way."}]
+이렇게 만든다(apple은 정의·해석·이모지를 새로 만들고, respect는 받은 정의를 그대로 두고 해석만 붙이며 추상적이라 이모지는 null이다):
   {"items":[
-    {"no":"0009","word":"apple","definitionEn":"A round fruit that grows on a tree and is red, green, or yellow.","imageEmoji":"🍎"},
-    {"no":"0021","word":"respect","definitionEn":"To think that someone is important and to treat them in a kind way.","imageEmoji":null}
+    {"no":"0009","word":"apple","definitionEn":"A round fruit that grows on a tree and is red, green, or yellow.","definitionKo":"나무에서 자라고 빨갛거나 초록이거나 노란 둥근 과일이에요.","imageEmoji":"🍎"},
+    {"no":"0021","word":"respect","definitionEn":"To think that someone is important and to treat them in a kind way.","definitionKo":"누군가를 소중하게 여기고 친절하게 대하는 거예요.","imageEmoji":null}
   ]}`;
 
 /** 호출 D — 사용자 메시지의 텍스트 파트 (HARNESS §8-2). 뒤에 대상 단어 목록(JSON)이 붙는다. */
-export const VOCAB_ENRICH_USER_TEXT = "다음 단어들에 영영 정의와 이모지를 만들어줘.";
+export const VOCAB_ENRICH_USER_TEXT = "다음 단어들에 영영 정의와 그 우리말 해석, 이모지를 만들어줘.";
 
 /**
  * 호출 D 파라미터 (HARNESS §8-6).
  * 판독(temp 0 전사)과 달리 창작이라 temperature 0.7 — 정의 문장에 다양성이 필요하다.
- * maxOutputTokens 6,000: DAY 하나(단어 20~40개)에 각 항목이 한 문장 정의 + 이모지 + no/word라
- * 넉넉하다(항목당 ~100토큰 × 40개 ≈ 4,000). 판독(16,000)보다 작다 — 예문·뜻을 다시 싣지 않으므로.
+ * maxOutputTokens 8,000: DAY 하나(단어 20~40개)에 각 항목이 정의(EN) + 해석(KO) + 이모지 + no/word다
+ * (항목당 ~150토큰 × 40개 ≈ 6,000). 해석 백필(EN을 그대로 되돌리며 KO를 붙이는 경우)이 40단어에
+ * 몰릴 수 있어 6,000에서 8,000으로 올려 truncation을 막는다(V7). 판독(16,000)보다는 작다.
  */
 export const VOCAB_ENRICH_CALL_OPTIONS = {
   call: "vocab-enrich",
   temperature: 0.7,
-  maxOutputTokens: 6_000,
+  maxOutputTokens: 8_000,
 } as const;

@@ -164,6 +164,7 @@ function mergeGroup(members: readonly WithPhoto[]): VocabEntry {
     related: unionRelated(members.map((m) => m.entry.related)),
     // (B) AI 창작 — 판독(호출 C) 입력엔 없다. V1에서는 전부 null로 열어 두고 V3(호출 D)가 채운다.
     definitionEn: null,
+    definitionKo: null,
     imageEmoji: null,
     imageSvg: null,
     // (C)

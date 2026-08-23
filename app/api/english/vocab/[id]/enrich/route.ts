@@ -1,8 +1,8 @@
 /**
  * POST /api/english/vocab/[id]/enrich — 단어장 보강 (호출 D, V3 · docs/harness/english.md §8)
  *
- * 저장된 DAY 하나를 읽어 **영영 뜻이 비어 있는(`definitionEn === null`) 단어만** 골라 호출 D로
- * 영영 정의·이모지를 만들고, `mergeEnrichment`로 병합해 다시 저장한다. 사진이 필요 없다 —
+ * 저장된 DAY 하나를 읽어 **영영 뜻(EN)이나 우리말 해석(KO)이 비어 있는 단어만**(V7 해석 백필 포함)
+ * 골라 호출 D로 정의·해석·이모지를 만들고, `mergeEnrichment`로 병합해 다시 저장한다. 사진이 필요 없다 —
  * 판독(호출 C)과 별개의 텍스트 호출이다("다시 만들기"도 이 라우트 하나로 처리한다).
  *
  * ── 정의 불변 (계획 §V3) ────────────────────────────────────────────────────
@@ -20,7 +20,7 @@
  *   기존 정의는 그대로 남아 화면이 깨지지 않는다(재시도 버튼).
  *
  * 응답 shape (단일 정의처는 `lib/vocab-enrich-contract.ts`):
- * - 200 { ok:true, id, filledDefinitions, filledEmojis, remainingDefinitions, enriched }
+ * - 200 { ok:true, id, filledDefinitions, filledKoGlosses, filledEmojis, remainingDefinitions, remainingGlosses, enriched }
  * - 404 { ok:false, error:"vocabbook_not_found", messageKo }
  * - 500 { ok:false, error:"enrich_failed", messageKo, retriable:true }
  * - 501 { ok:false, error:"no_api_key", messageKo }
@@ -60,12 +60,15 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   // 대상 = 영영 뜻이 비어 있는 단어만(정의 불변 1차 방어). 없으면 이미 완료 — **키 없이도** 조기 반환.
   const toEnrich = entriesToEnrich(record.entries);
   if (toEnrich.length === 0) {
+    // EN·KO 둘 다 완료 — 채울 것도 남은 것도 없다(entriesToEnrich=EN null || KO null이 0).
     return json({
       ok: true,
       id,
       filledDefinitions: 0,
+      filledKoGlosses: 0,
       filledEmojis: 0,
       remainingDefinitions: 0,
+      remainingGlosses: 0,
       enriched: isVocabBookEnriched(record.entries), // 렌더러블이면 entries.length>0이라 true
     });
   }
@@ -103,14 +106,19 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   }
 
   // 무엇이 새로 채워졌는지 개수만 센다(mergeEnrichment가 순서를 보존하므로 인덱스로 원본과 대조).
+  // EN·KO·이모지 각각 독립으로 집계한다(병합 규칙과 같은 독립성 — 백필은 KO만 오를 수 있다).
   let filledDefinitions = 0;
+  let filledKoGlosses = 0;
   let filledEmojis = 0;
   record.entries.forEach((orig, i) => {
     const next = merged.entries[i];
     if (orig.definitionEn === null && next.definitionEn !== null) filledDefinitions += 1;
+    if (orig.definitionKo === null && next.definitionKo !== null) filledKoGlosses += 1;
     if (orig.imageEmoji === null && next.imageEmoji !== null) filledEmojis += 1;
   });
-  const remainingDefinitions = entriesToEnrich(merged.entries).length;
+  // 남은 수는 EN·KO를 분리해 센다(entriesToEnrich는 둘의 합집합이라 UI 문구가 뭉개진다 — P2-1).
+  const remainingDefinitions = merged.entries.filter((e) => e.definitionEn === null).length;
+  const remainingGlosses = merged.entries.filter((e) => e.definitionKo === null).length;
 
   // 병합 결과 저장 — 수정이라 prod-guard가 걸리지 않는다(생성·수정은 그대로 통한다).
   try {
@@ -139,8 +147,10 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     ok: true,
     id,
     filledDefinitions,
+    filledKoGlosses,
     filledEmojis,
     remainingDefinitions,
+    remainingGlosses,
     enriched: merged.enriched,
   });
 }

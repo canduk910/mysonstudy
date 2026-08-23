@@ -500,6 +500,8 @@ export function normalizeVocabEntry(entry: LegacyOrNewVocabEntry): VocabEntry {
     related: (entry.related ?? []).map(normalizeVocabRelated),
     // (B) AI 창작 — V1에서는 전부 null. undefined로 새면 Firestore가 거부한다
     definitionEn: entry.definitionEn ?? null,
+    // 구 레코드(정의만 있고 KO 해석 없음, V7 이전) → null 폴백. 다음 보강에서 백필된다(§8-5)
+    definitionKo: entry.definitionKo ?? null,
     imageEmoji: entry.imageEmoji ?? null,
     imageSvg: entry.imageSvg ?? null,
     // (C) 앱 부착

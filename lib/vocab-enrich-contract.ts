@@ -26,13 +26,23 @@
 export interface VocabEnrichSuccess {
   ok: true;
   id: string;
-  /** 이번 요청에서 새로 **영영 뜻**을 채운 단어 수(원래 null이던 자리에 들어간 것만) */
+  /** 이번 요청에서 새로 **영영 뜻(definitionEn)**을 채운 단어 수(원래 null이던 자리에 들어간 것만) */
   filledDefinitions: number;
+  /**
+   * 이번 요청에서 새로 **우리말 해석(definitionKo)**을 채운 단어 수(V7). 정의(EN)와 독립 —
+   * EN은 이미 있고 KO만 비어 있던 단어를 백필하면 filledDefinitions=0인데 이 값만 오른다.
+   */
+  filledKoGlosses: number;
   /** 이번 요청에서 새로 **이모지**를 채운 단어 수(정의와 독립) */
   filledEmojis: number;
-  /** 아직 영영 뜻이 비어 있는 단어 수. 0이면 이 DAY 보강 완료 */
+  /** 아직 **영영 뜻(EN)**이 비어 있는 단어 수. 0이면 모든 단어에 정의가 있다(시험 게이트 관점) */
   remainingDefinitions: number;
-  /** 모든 단어에 영영 뜻이 찼는지 (`isVocabBookEnriched` 결과 = record.enriched) */
+  /**
+   * 아직 **우리말 해석(KO)**이 비어 있는 단어 수(V7). remainingDefinitions와 분리해,
+   * "정의는 있는데 해석만 남은" 경우를 UI가 정확히 안내하게 한다(EN·KO를 한 숫자로 뭉치지 않는다).
+   */
+  remainingGlosses: number;
+  /** 모든 단어에 영영 뜻(EN)이 찼는지 (`isVocabBookEnriched` 결과 = record.enriched, EN 기준·게이트 불변) */
   enriched: boolean;
 }
 

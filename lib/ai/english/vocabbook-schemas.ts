@@ -14,7 +14,8 @@
  * - (A) 책 전사: no·word·ipa·pos·meanings·examples·related — 판독(호출 C)이 책 그대로 옮긴다. 창작 금지.
  *   뜻은 `meanings[]`(뜻 번호·풀이·그 뜻에 붙은 유의어)로 담고, 예문은 단어 레벨(`examples`),
  *   파생어 등 단어 전체에 붙는 관련어는 `related`로 나눈다 (2026-08-22 교재 실사용 진단 반영).
- * - (B) AI 창작: definitionEn·imageEmoji·imageSvg — 호출 D(V3)가 채운다. V1에서는 전부 null.
+ * - (B) AI 창작: definitionEn·definitionKo·imageEmoji·imageSvg — 호출 D(V3)가 채운다. V1에서는 전부 null.
+ *   definitionKo는 definitionEn을 우리말로 옮긴 해석(V7) — 책의 한글 뜻(meanings)과 별개다.
  * - (C) 앱 부착: photoIndex(앱이 사진 인덱스 부여) + confidence·partial(호출 C가 판독하며 매긴 판정).
  *   confidence·partial은 사진을 본 모델만 매길 수 있어 호출 C 출력에 담기지만, 최종적으로
  *   VocabEntry의 (C) 덩이로 굳는다. 이 배치 근거는 build 리포트 "스펙 공백" 참고.
@@ -92,6 +93,8 @@ export const VOCAB_RELATED_GLOSS_MAX = 200;
 export const VOCAB_DAY_LABEL_MAX = 60;
 /** 영영 정의(V3 호출 D 산출물) 최대 길이 — 스키마 확장을 미리 열어 둔다 */
 export const VOCAB_DEFINITION_EN_MAX = 300;
+/** 영영 정의의 우리말 해석(V7 호출 D 산출물) 최대 길이 — 한 문장 번역이라 EN과 같은 넉넉한 상한 */
+export const VOCAB_DEFINITION_KO_MAX = 300;
 
 /** 한 항목의 배열 필드 상한 */
 export const VOCAB_POS_MAX = 6;
@@ -188,6 +191,9 @@ export interface VocabEntry {
   related: VocabRelated[];
   // (B) AI 창작 — 호출 D(V3)가 채운다. V1에서는 전부 null. imageSvg는 지금 항상 null(마이그레이션 없이 SVG를 얹을 자리)
   definitionEn: string | null;
+  // definitionKo(V7): definitionEn을 우리말로 옮긴 해석. EN이 불변(시험 앵커)이라 EN을 바꾸지 않고
+  // 그 문장만 번역해 채운다. 구 레코드(정의만 있고 KO 없음)는 store가 null로 폴백한다.
+  definitionKo: string | null;
   imageEmoji: string | null;
   imageSvg: string | null;
   // (C) 앱 부착
@@ -416,9 +422,9 @@ export function resolveVocabImage(entry: {
 // ===========================================================================
 // 호출 D — 단어장 보강 (영영 정의 + 이모지). docs/harness/english.md §8-3·§8-4.
 //
-// 판독(호출 C)이 (A) 책 전사를 만들면, 호출 D가 (B) AI 창작(definitionEn·imageEmoji)을 채운다.
-// 출력 shape은 단어별 { no·word 매칭키, definitionEn, imageEmoji } 배열이다(object 루트로 감싸
-// `items`에 담는다 — Responses API strict json_schema의 루트는 object여야 한다).
+// 판독(호출 C)이 (A) 책 전사를 만들면, 호출 D가 (B) AI 창작(definitionEn·definitionKo·imageEmoji)을 채운다.
+// 출력 shape은 단어별 { no·word 매칭키, definitionEn, definitionKo, imageEmoji } 배열이다(object 루트로
+// 감싸 `items`에 담는다 — Responses API strict json_schema의 루트는 object여야 한다).
 // 저장 병합·정의 불변 규칙은 vocabbook-enrich.ts(순수 함수) 한 곳에 둔다.
 // ===========================================================================
 
@@ -430,6 +436,8 @@ export const VOCAB_IMAGE_EMOJI_MAX = 32;
  * 호출 D가 단어 하나에 대해 돌려주는 보강 결과.
  * - no·word: 어느 단어의 것인지 잇는 매칭키(입력의 no·word를 그대로 되돌려 받는다).
  * - definitionEn: 영어 한 문장 정의. 모델이 만들지 못한 단어는 null(부분 실패 허용, §8-4 스펙 공백 참고).
+ *   입력에 definitionEn이 이미 있으면 그 문장을 그대로 되돌려준다(EN 재생성 금지, V7 정의 불변).
+ * - definitionKo: definitionEn을 우리말로 옮긴 해석 한 문장. definitionEn이 null이면 null.
  * - imageEmoji: 이모지 1개, 어울리는 게 없으면(추상어) null.
  * 전부 required-nullable — 선택(?) 키 금지(store.ts:73 규약, VocabEntry와 같은 규칙).
  */
@@ -437,6 +445,7 @@ export interface VocabEnrichItem {
   no: string | null;
   word: string;
   definitionEn: string | null;
+  definitionKo: string | null;
   imageEmoji: string | null;
 }
 
@@ -469,14 +478,18 @@ export const VOCAB_ENRICHMENT_JSON_SCHEMA: StrictJsonSchema = {
             word: { type: "string", description: "표제어(영단어) — 입력의 word를 그대로" },
             definitionEn: {
               type: ["string", "null"],
-              description: "영어 한 문장 정의(표제어 미포함·한글 금지). 만들지 못하면 null",
+              description: "영어 한 문장 정의(표제어 미포함·한글 금지). 입력에 있으면 그대로. 만들지 못하면 null",
+            },
+            definitionKo: {
+              type: ["string", "null"],
+              description: "definitionEn을 우리말로 옮긴 해석 한 문장. definitionEn이 null이면 null",
             },
             imageEmoji: {
               type: ["string", "null"],
               description: "단어를 나타내는 이모지 1개. 어울리는 게 없으면 null",
             },
           },
-          required: ["no", "word", "definitionEn", "imageEmoji"],
+          required: ["no", "word", "definitionEn", "definitionKo", "imageEmoji"],
         },
       },
     },
@@ -486,8 +499,9 @@ export const VOCAB_ENRICHMENT_JSON_SCHEMA: StrictJsonSchema = {
 
 // ---------------------------------------------------------------------------
 // 호출 D — zod 이중 검증 (스펙 §8-4)
-// JSON Schema가 못 잡는 것: 정의의 "영어 한 문장·표제어 미포함·한글 금지", 이모지 "자소 1개".
-// definitionEn이 null인 항목(부분 실패)은 규칙 검사를 건너뛴다 — 그 단어는 채우지 않고 넘긴다.
+// JSON Schema가 못 잡는 것: 정의의 "영어 한 문장·표제어 미포함·한글 금지", 해석의 "한국어",
+// 이모지 "자소 1개", 그리고 "정의가 null이면 해석도 null"(해석은 정의에 매달린다).
+// definitionEn이 null인 항목(부분 실패)은 EN 규칙 검사를 건너뛴다 — 그 단어는 채우지 않고 넘긴다.
 // ---------------------------------------------------------------------------
 
 /** 정규식 메타문자 이스케이프 — 표제어를 단어 경계 패턴으로 안전하게 감싼다. */
@@ -521,6 +535,7 @@ const vocabEnrichItemSchema = z.object({
   no: z.string().trim().min(1).max(VOCAB_NO_MAX).nullable(),
   word: z.string().trim().min(1).max(VOCAB_WORD_MAX),
   definitionEn: z.string().trim().min(1).max(VOCAB_DEFINITION_EN_MAX).nullable(),
+  definitionKo: z.string().trim().min(1).max(VOCAB_DEFINITION_KO_MAX).nullable(),
   imageEmoji: z.string().trim().min(1).max(VOCAB_IMAGE_EMOJI_MAX).nullable(),
 });
 
@@ -562,6 +577,28 @@ export const vocabEnrichmentSchema = z
             code: "custom",
             path: ["items", i, "definitionEn"],
             message: "영영 정의는 정확히 한 문장이어야 합니다",
+          });
+        }
+      }
+
+      // --- 해석 규칙 (definitionKo가 null이 아닐 때만) ---
+      if (it.definitionKo !== null) {
+        // 한국어 — 영영 정의의 '우리말' 해석이므로 한글이 한 글자도 없으면 해석이 아니다.
+        // (영어 단어가 섞이는 것은 막지 않는다 — 고유명사 등. 한글이 하나도 없을 때만 거부한다.)
+        if (!hasHangul(it.definitionKo)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["items", i, "definitionKo"],
+            message: "우리말 해석에는 한글이 있어야 합니다",
+          });
+        }
+        // 해석은 정의에 매달린다 — definitionEn이 null이면 해석도 null이어야 한다(고아 해석 금지).
+        // 정의를 못 만든 단어의 해석은 앵커할 EN이 없다. 이 규칙이 case4(EN null·KO 채움) 오출력을 잡는다.
+        if (it.definitionEn === null) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["items", i, "definitionKo"],
+            message: "definitionEn이 null이면 definitionKo도 null이어야 합니다",
           });
         }
       }

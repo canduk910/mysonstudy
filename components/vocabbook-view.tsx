@@ -27,7 +27,6 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { isVocabBookEnriched } from "@/lib/ai/english/vocabbook-enrich";
 import {
   PART_OF_SPEECH_LABELS_KO,
   RELATED_KIND_LABELS_KO,
@@ -71,8 +70,12 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz 
 
   // 정의 불변의 UI 측 단일 정의처는 저장된 entries다 — record.enriched를 믿지 않고 여기서 계산해
   // 서버 재조회(router.refresh) 뒤 자동으로 갱신되게 한다.
-  const remainingDefs = entries.filter((e) => e.definitionEn === null).length;
-  const enriched = isVocabBookEnriched(entries);
+  // 보강 대상 = EN 또는 KO가 빠진 단어(entriesToEnrich와 같은 규칙, V7 해석 백필 포함). 버튼 활성·라벨 N·
+  // 안내 문구의 단일 기준 — 정의는 있는데 해석만 없는 책도 이 값이 >0이라 "다시 만들기"가 활성된다.
+  const remainingToEnrich = entries.filter(
+    (e) => e.definitionEn === null || e.definitionKo === null,
+  ).length;
+  const fullyEnriched = remainingToEnrich === 0; // EN·KO 둘 다 완료 — 보강 버튼·안내 숨김 기준
   const hasAnyDefinition = entries.some((e) => e.definitionEn !== null);
 
   async function runEnrich() {
@@ -86,12 +89,25 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz 
         // 성공(부분 성공 포함) — 서버가 null 자리만 채웠다. 최신 entries를 다시 받아 그린다.
         const parts: string[] = [];
         if (data.filledDefinitions > 0) parts.push(`영영 뜻 ${data.filledDefinitions}개`);
+        if (data.filledKoGlosses > 0) parts.push(`우리말 해석 ${data.filledKoGlosses}개`);
         if (data.filledEmojis > 0) parts.push(`그림 ${data.filledEmojis}개`);
-        const made = parts.length > 0 ? parts.join(" · ") + "를 새로 붙였어요." : "새로 채운 건 없었어요.";
+        let made: string;
+        if (parts.length === 0) {
+          made = "새로 채운 건 없었어요.";
+        } else if (data.filledDefinitions === 0 && data.filledKoGlosses > 0) {
+          // 정의(EN)는 그대로 두고 해석만 백필한 경우 — 정의 불변을 문구로 드러낸다
+          made = `이미 만든 영영 뜻은 그대로 두고 ${parts.join(" · ")}를 채웠어요.`;
+        } else {
+          made = parts.join(" · ") + "를 새로 붙였어요.";
+        }
+        // 남은 것도 EN·KO를 분리해 안내한다(한 숫자로 뭉치지 않는다 — P2-1).
+        const remainParts: string[] = [];
+        if (data.remainingDefinitions > 0) remainParts.push(`영영 뜻 ${data.remainingDefinitions}개`);
+        if (data.remainingGlosses > 0) remainParts.push(`우리말 해석 ${data.remainingGlosses}개`);
         const tail =
-          data.remainingDefinitions > 0
-            ? ` 아직 ${data.remainingDefinitions}개가 남았어요 — 다시 만들기를 눌러 보세요.`
-            : " 이제 모든 단어에 영영 뜻이 있어요!";
+          remainParts.length > 0
+            ? ` 아직 ${remainParts.join(" · ")}가 남았어요 — 다시 만들기를 눌러 보세요.`
+            : " 이제 모든 단어에 영영 뜻과 해석이 있어요!";
         setEnrichMessage(made + tail);
         setEnrichPhase("done");
         router.refresh(); // 서버 컴포넌트를 다시 그려 새 entries를 받는다(클라 상태는 유지)
@@ -210,9 +226,9 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz 
 
   // 보강 버튼 — 표 툴바(전체)와 카드 chrome(컴팩트)에서 같은 handler를 쓴다. enriched면 숨긴다.
   const enrichLabel = hasAnyDefinition
-    ? `영영 뜻 다시 만들기${remainingDefs > 0 ? ` (${remainingDefs})` : ""}`
+    ? `영영 뜻·해석 다시 만들기${remainingToEnrich > 0 ? ` (${remainingToEnrich})` : ""}`
     : "영영 뜻 만들기";
-  const enrichButton = enriched ? null : (
+  const enrichButton = fullyEnriched ? null : (
     <button
       type="button"
       onClick={runEnrich}
@@ -245,11 +261,11 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz 
           {enrichButton}
         </div>
         {/* 정의 불변을 문구로도 드러낸다 — "다시 만들기"가 이미 있는 정의를 안 건드림을 안내 */}
-        {enriched ? null : (
+        {fullyEnriched ? null : (
           <p className={`t-caption ${s.enrichNote}`}>
             {hasAnyDefinition
-              ? "이미 만든 영영 뜻은 그대로 둬요 — 비어 있는 단어만 채워요."
-              : "영영 뜻과 그림을 붙이면 카드·시험에 쓸 수 있어요. 이모지가 없으면 첫 글자로 표시돼요."}
+              ? "이미 만든 영영 뜻은 그대로 두고, 비어 있는 뜻과 우리말 해석만 채워요."
+              : "영영 뜻과 우리말 해석·그림을 붙이면 카드·시험에 쓸 수 있어요. 이모지가 없으면 첫 글자로 표시돼요."}
           </p>
         )}
         {enrichBanner}
@@ -353,8 +369,8 @@ function VocabCard({
         <p className={s.pos}>{entry.pos.map((p) => PART_OF_SPEECH_LABELS_KO[p]).join(" · ")}</p>
       )}
 
-      {/* 영영 뜻(호출 D) — 없으면 자리만 두고 "정의 만들기"를 유도한다 */}
-      <VocabDefinition definitionEn={entry.definitionEn} />
+      {/* 영영 뜻(호출 D) — 없으면 자리만 두고 "정의 만들기"를 유도한다. 아래 우리말 해석(V7) 포함 */}
+      <VocabDefinition definitionEn={entry.definitionEn} definitionKo={entry.definitionKo} />
 
       {/* 단어 전체에 딸린 관련어(파생어 등) — 뜻 옆 유의어는 각 뜻 아래로 간다 */}
       {entry.related.length > 0 && (
@@ -570,18 +586,45 @@ function VocabGlyph({ entry, size }: { entry: VocabEntry; size: "lg" | "sm" }) {
 // 영영 뜻 (호출 D) — 있으면 라벨과 함께, 없으면 "아직 없어요" 자리(정의 만들기 유도).
 // ---------------------------------------------------------------------------
 
-function VocabDefinition({ definitionEn }: { definitionEn: string | null }) {
-  if (definitionEn) {
-    return (
-      <p className={s.defn} lang="en">
-        <span className={s.defnLabel} lang="ko" aria-hidden>
-          영영
-        </span>
-        {definitionEn}
-      </p>
-    );
+function VocabDefinition({
+  definitionEn,
+  definitionKo,
+}: {
+  definitionEn: string | null;
+  definitionKo: string | null;
+}) {
+  if (!definitionEn) {
+    return <p className={s.defnEmpty}>영영 뜻은 아직 없어요</p>;
   }
-  return <p className={s.defnEmpty}>영영 뜻은 아직 없어요</p>;
+  return (
+    <div className={s.defnBlock}>
+      {/* 영영 정의 — 문제/발음 대상. 🔊는 단어·예문 스피커와 같은 관용구(lib/speech, en-US) */}
+      <p className={s.defn} lang="en">
+        <span className={s.defnText}>
+          <span className={s.defnLabel} lang="ko" aria-hidden>
+            영영
+          </span>
+          {definitionEn}
+        </span>
+        <button
+          type="button"
+          className={s.speak}
+          aria-label="영영 뜻 발음 듣기"
+          title="영영 뜻 듣기"
+          onClick={() => speak(definitionEn)}
+        >
+          🔊
+        </button>
+      </p>
+      {/* 우리말 해석(V7) — 정의 아래 보조 텍스트(작은 회색). 없으면 자리 강제 없이 생략.
+          KO는 en-US TTS에 부적합해 🔊를 두지 않는다(EN이 발음 대상, KO는 보조 해석). */}
+      {definitionKo ? (
+        <p className={s.defnKo} lang="ko">
+          {definitionKo}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -661,8 +704,8 @@ function TableView({ entries }: { entries: VocabEntry[] }) {
                 ) : (
                   <span className="t-caption">—</span>
                 )}
-                {/* 영영 뜻(호출 D) — 한글 뜻 아래에 영어 정의 자리. 없으면 자리만 둔다 */}
-                <VocabDefinition definitionEn={entry.definitionEn} />
+                {/* 영영 뜻(호출 D) — 한글 뜻 아래에 영어 정의 자리(+우리말 해석 V7). 없으면 자리만 둔다 */}
+                <VocabDefinition definitionEn={entry.definitionEn} definitionKo={entry.definitionKo} />
               </td>
               <td className="align-top" style={{ wordBreak: "keep-all" }}>
                 {entry.examples.length > 0 ? (

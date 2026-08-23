@@ -71,6 +71,8 @@ const entrySchema = z.object({
   related: z.array(relatedSchema).max(VOCAB_LIMITS.related),
   // (B) AI 창작 — V1에서는 null로 온다. V3 호출 D가 채우기 전이라 값이 있어도 여기선 그대로 받아 둔다.
   definitionEn: z.string().trim().max(VOCAB_LIMITS.definitionEn).nullable(),
+  // definitionKo(V7): 영영 정의의 우리말 해석. 편집 왕복(이미 보강된 책 재저장)에서 보존되게 받아 둔다.
+  definitionKo: z.string().trim().max(VOCAB_LIMITS.definitionKo).nullable(),
   imageEmoji: z.string().nullable(),
   imageSvg: z.string().nullable(),
   // (C) 앱 부착

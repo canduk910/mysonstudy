@@ -122,6 +122,23 @@ export default function VocabQuizView({
   // 화면을 떠나거나 다음으로 넘어갈 때 재생 중인 발음을 멈춘다.
   useEffect(() => () => stopSpeaking(), []);
 
+  // 새 문항이 뜰 때마다 문제(영영 정의 definitionEn)를 자동 낭독한다(계획 §Part C).
+  // - 문항 전환마다 정확히 1회: current(문항 인덱스) 변화에만 반응한다. 답을 골라 selected/answers가
+  //   바뀌어도 deps에 없어 재낭독하지 않는다(정답 단어 발음은 choose가 따로 한다).
+  // - 겹침 방지: 이 effect의 cleanup(문항 전환 직전·언마운트)이 stopSpeaking으로 이전 낭독을 끊는다.
+  //   speak()도 내부에서 cancel하므로, 답한 뒤 정답 단어 발음(choose의 speak)이 이 낭독을 덮어써
+  //   순서가 어긋나지 않는다(문제=정의 먼저 → 답하면 정답 단어).
+  // - phase가 results면(결과 화면) 낭독하지 않는다. questions가 새로 조립되면(다시 풀기) 첫 문항을 읽는다.
+  // - 복습 문항도 정의 제시 방식이 같아 동일하게 낭독된다. 모바일 autoplay가 막으면 조용히 무음
+  //   (아래 🔊 "다시 듣기" 버튼이 대체 경로).
+  useEffect(() => {
+    if (phase !== "quiz" || !questions) return;
+    const q = questions[current];
+    if (!q) return;
+    speak(q.definitionEn);
+    return () => stopSpeaking();
+  }, [current, phase, questions]);
+
   // 아직 문제 조립 전 — 짧은 준비 화면(hydration 일치용: 서버·첫 클라 렌더가 모두 이 화면)
   if (!questions) {
     return (
@@ -292,13 +309,25 @@ export default function VocabQuizView({
         <div className={s.progressFill} style={{ width: `${progress}%` }} />
       </div>
 
-      {/* 문제 = 영영 정의 */}
+      {/* 문제 = 영영 정의. 새 문항마다 자동 낭독(위 useEffect)되며, 🔊로 언제든 다시 들을 수 있다
+          (모바일 autoplay가 자동 낭독을 막았을 때의 대체 경로) */}
       <div className={s.prompt}>
         <p className={s.promptLabel}>
           {q.isReview ? <span className={s.reviewBadge}>복습</span> : null}
           이 뜻에 맞는 단어는?
         </p>
-        <p className={s.promptText}>{q.definitionEn}</p>
+        <div className={s.promptBody}>
+          <p className={s.promptText}>{q.definitionEn}</p>
+          <button
+            type="button"
+            className={s.speaker}
+            onClick={() => speak(q.definitionEn)}
+            aria-label="문제 다시 듣기"
+            title="다시 듣기"
+          >
+            🔊
+          </button>
+        </div>
       </div>
 
       {/* 5지선다 */}
