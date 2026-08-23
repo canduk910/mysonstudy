@@ -49,6 +49,11 @@ export interface QuizQuestion {
   definitionEn: string;
   /** 5지선다(정답 포함, 셔플됨). DAY 단어가 부족하면 5개 미만일 수 있다 */
   choices: string[];
+  /**
+   * 복습 리마인드(V6)로 다른 DAY에서 끼워 넣은 문항이면 true — 화면이 "복습" 배지를 붙인다.
+   * 일반 시험 문항(buildQuizQuestions)은 이 필드를 두지 않는다(falsy). 채점·저장은 동일하다.
+   */
+  isReview?: boolean;
 }
 
 /** 시험 대상 단어 하나 — 정의가 있는(definitionEn !== null) 단어만 문제가 된다. */

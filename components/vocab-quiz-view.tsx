@@ -24,12 +24,14 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import {
+  buildChoices,
   buildQuizQuestions,
   DEFAULT_CHOICE_COUNT,
   type QuizPoolItem,
   type QuizQuestion,
   type VocabQuizMode,
 } from "@/lib/vocab-quiz";
+import type { ReviewQuestion } from "@/lib/vocab-review";
 import { speak, stopSpeaking } from "@/lib/speech";
 import type { VocabQuizItem } from "@/lib/store";
 import type { VocabQuizSubmitRequest, VocabQuizSubmitResponse } from "@/lib/vocab-quiz-contract";
@@ -49,6 +51,13 @@ interface VocabQuizViewProps {
    * `"wrong-review"`. 진행·채점·보기 생성은 모드와 무관하게 같다 — 저장 태그와 안내 문구만 다르다.
    */
   mode?: VocabQuizMode;
+  /**
+   * 복습 리마인드(V6) — 다른 DAY에서 끼워 넣을 복습 문제들(서버가 가중 선택해 넘긴다, ≤5).
+   * 이 문제들은 **이 DAY 문제 앞에** 배치되고, 보기는 각자의 source DAY 단어로 만든다(같은-DAY 계약).
+   * 저장은 현재 DAY의 레코드에 함께 담기고, 문항 word로 전역 집계(mastery·복습 후보)가 반영한다.
+   * 비었으면(콜드 스타트·후보 0) 기존 DAY 시험 그대로다(회귀 0). 오답복습 모드에는 넘기지 않는다.
+   */
+  reviewQuestions?: ReviewQuestion[];
 }
 
 /** 세션 결과 저장 상태 — 끝/중단 시 1회 POST의 진행을 화면에 표시한다 */
@@ -61,6 +70,7 @@ export default function VocabQuizView({
   pool,
   dayWords,
   mode = "def-to-word",
+  reviewQuestions,
 }: VocabQuizViewProps) {
   const isReview = mode === "wrong-review"; // 오답복습이면 문구를 "다시 풀기" 톤으로 바꾼다
   // 문제는 마운트 후 1회만 조립한다(hydration mismatch 회피). null = 아직 준비 중.
@@ -81,7 +91,16 @@ export default function VocabQuizView({
 
   // 세션 시작(또는 "다시 풀기") — 문제를 새로 섞고 상태를 초기화한다.
   function startSession() {
-    const built = buildQuizQuestions(pool, dayWords, DEFAULT_CHOICE_COUNT);
+    // V6 복습 문항: 다른 DAY에서 온 단어라 보기는 **각자의 source DAY 단어**로 만든다(같은-DAY 계약).
+    // 마운트 후(useEffect)에서 buildChoices의 Math.random을 쓰므로 hydration mismatch가 없다.
+    const reviewBuilt: QuizQuestion[] = (reviewQuestions ?? []).map((r) => ({
+      word: r.word,
+      definitionEn: r.definitionEn,
+      choices: buildChoices(r.word, r.sourceDayWords, DEFAULT_CHOICE_COUNT),
+      isReview: true,
+    }));
+    // 복습 먼저, 그다음 이 DAY의 새 단어(계획 §V6).
+    const built = [...reviewBuilt, ...buildQuizQuestions(pool, dayWords, DEFAULT_CHOICE_COUNT)];
     setQuestions(built);
     setAnswers(new Array(built.length).fill(null));
     setStartedAt(new Date().toISOString());
@@ -275,7 +294,10 @@ export default function VocabQuizView({
 
       {/* 문제 = 영영 정의 */}
       <div className={s.prompt}>
-        <p className={s.promptLabel}>이 뜻에 맞는 단어는?</p>
+        <p className={s.promptLabel}>
+          {q.isReview ? <span className={s.reviewBadge}>복습</span> : null}
+          이 뜻에 맞는 단어는?
+        </p>
         <p className={s.promptText}>{q.definitionEn}</p>
       </div>
 

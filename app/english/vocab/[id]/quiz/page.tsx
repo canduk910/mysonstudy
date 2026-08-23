@@ -25,8 +25,16 @@ import { notFound } from "next/navigation";
 import VocabQuizView from "@/components/vocab-quiz-view";
 import { MIN_QUIZ_WORDS, type QuizPoolItem } from "@/lib/vocab-quiz";
 import { aggregateWordStats, isStatMastered } from "@/lib/vocab-mastery";
+import {
+  buildReviewCandidates,
+  selectReviewSet,
+  type ReviewWordSource,
+} from "@/lib/vocab-review";
 import { isRenderableVocabBook } from "@/lib/vocabbook-record";
 import { getStore } from "@/lib/store";
+
+/** 가족용 소규모 앱 — 전 DAY를 훑기에 충분한 상한(층2와 같은 값) */
+const REVIEW_BOOK_LIMIT = 500;
 
 export const dynamic = "force-dynamic";
 
@@ -122,13 +130,11 @@ export default async function VocabQuizPage({ params, searchParams }: QuizPagePr
     );
   }
 
-  // ── 일반 시험 모드 (V4) ─────────────────────────────────────────────────────
-  return (
-    <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
-      {backHeader}
-
-      {definedWords.length < MIN_QUIZ_WORDS ? (
-        // ── 게이트: 정의가 부족하면 시험을 낼 수 없다 ──────────────────────────
+  // ── 일반 시험 모드 (V4) — 게이트: 정의가 부족하면 시험을 낼 수 없다 ─────────────
+  if (definedWords.length < MIN_QUIZ_WORDS) {
+    return (
+      <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
+        {backHeader}
         <section className="u-card" style={{ padding: "2rem 1.25rem", textAlign: "center" }}>
           <p style={{ fontSize: "2.5rem", margin: 0 }} aria-hidden>
             📖✨
@@ -149,15 +155,52 @@ export default async function VocabQuizPage({ params, searchParams }: QuizPagePr
             </Link>
           </div>
         </section>
-      ) : (
-        <VocabQuizView
-          id={record.id}
-          titleKo={record.titleKo}
-          dayLabel={record.dayLabel}
-          pool={definedWords}
-          dayWords={dayWords}
-        />
-      )}
+      </main>
+    );
+  }
+
+  // ── V6 복습 리마인드 — 다른 DAY의 (틀린 4 + 잘한 1)을 이번 시험 앞에 끼운다 ────────
+  // 복습 범위 = 모든 DAY 누적(사용자 확정). 후보가 0이면 selectReviewSet이 []를 주고 기존 시험 그대로다.
+  const [allBooks, allQuizzes] = await Promise.all([
+    store.listVocabBooks(REVIEW_BOOK_LIMIT),
+    store.listAllVocabQuizzes(),
+  ]);
+  const candidates = buildReviewCandidates(allQuizzes);
+  // 복습 출처 = **다른 DAY**의 단어 중, 정의가 있고, 그 DAY에 정의 있는 단어가 ≥ MIN_QUIZ_WORDS(5지선다
+  // 보기를 온전히 만들 수 있는 DAY)인 것. 같은 단어가 여러 DAY에 있으면 먼저 만난 DAY를 출처로(결정적).
+  const sources = new Map<string, ReviewWordSource>();
+  for (const book of allBooks) {
+    if (book.id === id) continue; // 현재 DAY는 복습 출처에서 제외(이번 시험에서 새로 낸다)
+    if (!isRenderableVocabBook(book)) continue;
+    const bookDefined = book.entries.filter((e) => e.definitionEn !== null);
+    if (bookDefined.length < MIN_QUIZ_WORDS) continue; // 보기 5개를 못 만드는 DAY는 출처 불가
+    const bookDayWords = book.entries.map((e) => e.word);
+    for (const e of bookDefined) {
+      if (sources.has(e.word)) continue;
+      sources.set(e.word, {
+        definitionEn: e.definitionEn as string,
+        sourceBookId: book.id,
+        sourceDayWords: bookDayWords,
+      });
+    }
+  }
+  const reviewQuestions = selectReviewSet(candidates, {
+    totalSessions: allQuizzes.length,
+    currentDayWords: dayWords, // 이번 DAY의 단어는 복습에서 제외(중복 방지)
+    sources,
+  });
+
+  return (
+    <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
+      {backHeader}
+      <VocabQuizView
+        id={record.id}
+        titleKo={record.titleKo}
+        dayLabel={record.dayLabel}
+        pool={definedWords}
+        dayWords={dayWords}
+        reviewQuestions={reviewQuestions}
+      />
     </main>
   );
 }

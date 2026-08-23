@@ -21,6 +21,7 @@ import { z } from "zod";
 import { VOCAB_LIMITS } from "@/lib/vocab-create-contract";
 import type { VocabQuizSubmitResponse } from "@/lib/vocab-quiz-contract";
 import { VOCAB_QUIZ_MODES } from "@/lib/vocab-quiz";
+import { REVIEW_MAX } from "@/lib/vocab-review";
 import { isRenderableVocabBook } from "@/lib/vocabbook-record";
 import { getStore } from "@/lib/store";
 
@@ -46,7 +47,8 @@ const bodySchema = z.object({
   items: z
     .array(itemSchema)
     .min(1, "저장할 문항이 없어요")
-    .max(VOCAB_LIMITS.entriesPerBook, "문항 수가 너무 많아요"),
+    // 세션 = DAY 정의단어 전체 + 복습(≤REVIEW_MAX). 상한도 그 합이라야 극단적으로 큰 DAY에서 저장이 안 막힌다.
+    .max(VOCAB_LIMITS.entriesPerBook + REVIEW_MAX, "문항 수가 너무 많아요"),
 });
 
 function json(body: VocabQuizSubmitResponse, status = 200) {

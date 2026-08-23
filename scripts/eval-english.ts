@@ -70,6 +70,15 @@ import {
   isMastered,
   isStatMastered,
 } from "../lib/vocab-mastery";
+// 복습 리마인드(V6) 선택 순수 함수 — 오프라인 eval이 불변을 잠근다(단조·4+1·중복0·현재DAY제외·필터·콜드스타트)
+import {
+  buildReviewCandidates,
+  rankReviewPools,
+  selectReviewSet,
+  type ReviewCandidate,
+  type ReviewContext,
+  type ReviewWordSource,
+} from "../lib/vocab-review";
 import type { VocabQuizRecord } from "../lib/store";
 // 호출 D(보강) 정의 불변 순수 함수 — 오프라인 eval이 잠근다(§8-5)
 import {
@@ -1444,6 +1453,171 @@ function runVocabbookChecks(): CheckResult[] {
       masteredOk,
       masteredOk ? "6개 경계 케이스 통과" : "경계 케이스 실패",
     );
+  }
+
+  // --- 복습 리마인드 선택 buildReviewCandidates·selectReviewSet·rankReviewPools (V6) ---
+  // 가중 로직은 lib/vocab-review.ts 한 곳에만 산다. 여기서는 그 **불변**만 잠근다:
+  // 단조(오답률·최근·시도적음), 4+1 구성, 중복0, 현재 DAY 제외, 정의·보기수 필터, 콜드스타트 graceful.
+  {
+    // 후보 하나를 만드는 헬퍼(직접 필드 주입 — 단조성을 통제 변수로 검증하기 위함).
+    const cand = (over: Partial<ReviewCandidate> & { word: string }): ReviewCandidate => ({
+      total: 4,
+      wrong: 2,
+      streak: 0,
+      mastered: false,
+      lastWrongOrder: 5,
+      lastSeenOrder: 5,
+      ...over,
+    });
+    // 모든 후보를 자격 통과시키는 ctx(출처는 더미 — 정의·보기≥5는 시험 페이지가 보장하는 계약).
+    const src = (word: string): ReviewWordSource => ({
+      definitionEn: `def of ${word}`,
+      sourceBookId: "src",
+      sourceDayWords: [word, "a", "b", "c", "d"], // 보기 5개 확보
+    });
+    const ctxFor = (words: string[], over: Partial<ReviewContext> = {}): ReviewContext => ({
+      totalSessions: 10,
+      currentDayWords: [],
+      sources: new Map(words.map((w) => [w, src(w)])),
+      ...over,
+    });
+    // 두 후보의 틀린 풀 점수를 비교하는 헬퍼(rankReviewPools로 가중 로직을 직접 관찰).
+    const scoreOf = (c: ReviewCandidate): number => {
+      const ranked = rankReviewPools([c], ctxFor([c.word]));
+      return ranked.wrong[0]?.score ?? -1;
+    };
+
+    // (1) 오답률 높을수록 점수↑ (같은 total, wrong만 큼).
+    const lowRate = cand({ word: "lo", total: 4, wrong: 1 });
+    const highRate = cand({ word: "hi", total: 4, wrong: 3 });
+    add(
+      "review. 오답률 높을수록 점수↑(단조)",
+      scoreOf(highRate) > scoreOf(lowRate),
+      `hi=${scoreOf(highRate).toFixed(4)} > lo=${scoreOf(lowRate).toFixed(4)}`,
+    );
+
+    // (2) 최근에 틀릴수록 점수↑ (lastWrongOrder만 큼).
+    const older = cand({ word: "old", lastWrongOrder: 2 });
+    const newer = cand({ word: "new", lastWrongOrder: 8 });
+    add(
+      "review. 최근에 틀릴수록 점수↑(단조)",
+      scoreOf(newer) > scoreOf(older),
+      `new=${scoreOf(newer).toFixed(4)} > old=${scoreOf(older).toFixed(4)}`,
+    );
+
+    // (3) 시도가 적을수록 점수↑ (같은 wrong, total만 작음).
+    const fewTries = cand({ word: "few", total: 2, wrong: 2 });
+    const manyTries = cand({ word: "many", total: 6, wrong: 2 });
+    add(
+      "review. 시도 적을수록 점수↑(단조)",
+      scoreOf(fewTries) > scoreOf(manyTries),
+      `few=${scoreOf(fewTries).toFixed(4)} > many=${scoreOf(manyTries).toFixed(4)}`,
+    );
+
+    // (4) 4+1 구성 + 중복 0 — 틀린 풀 6개·잘한 풀 3개면 정확히 4+1=5, 서로 다른 단어.
+    {
+      const wrongs = ["w1", "w2", "w3", "w4", "w5", "w6"].map((w, i) =>
+        cand({ word: w, total: 4, wrong: i + 1, streak: 0 }),
+      );
+      const goods = ["g1", "g2", "g3"].map((w, i) =>
+        cand({ word: w, total: 3, wrong: 0, streak: 1, lastSeenOrder: i + 1 }),
+      );
+      const all = [...wrongs, ...goods];
+      const picked = selectReviewSet(all, ctxFor(all.map((c) => c.word)));
+      const words = picked.map((p) => p.word);
+      const goodPicked = words.filter((w) => w.startsWith("g")).length;
+      const wrongPicked = words.filter((w) => w.startsWith("w")).length;
+      const distinct = new Set(words).size === words.length;
+      add(
+        "review. 틀린 4 + 잘한 1 = 5, 중복 0",
+        picked.length === 5 && wrongPicked === 4 && goodPicked === 1 && distinct,
+        `n=${picked.length} wrong=${wrongPicked} good=${goodPicked} words=[${words.join(",")}]`,
+      );
+    }
+
+    // (5) 현재 DAY의 단어는 복습에서 제외(중복 방지) — 점수가 높아도 안 뽑힌다.
+    {
+      const hot = cand({ word: "hot", total: 2, wrong: 2, streak: 0, lastWrongOrder: 10 });
+      const cool = cand({ word: "cool", total: 5, wrong: 1, streak: 0, lastWrongOrder: 3 });
+      const picked = selectReviewSet(
+        [hot, cool],
+        ctxFor(["hot", "cool"], { currentDayWords: ["hot"] }),
+      );
+      const words = picked.map((p) => p.word);
+      add(
+        "review. 현재 DAY 단어는 제외(중복 방지)",
+        !words.includes("hot") && words.includes("cool"),
+        `words=[${words.join(",")}]`,
+      );
+    }
+
+    // (6) 정의·보기 필터 — sources에 없는 단어(정의 없음/보기 부족 DAY)는 점수가 높아도 탈락.
+    {
+      const eligible = cand({ word: "ok", total: 3, wrong: 1, streak: 0, lastWrongOrder: 4 });
+      const ineligible = cand({ word: "nope", total: 2, wrong: 2, streak: 0, lastWrongOrder: 9 });
+      // sources에 "ok"만 넣는다("nope"는 출처 없음 → 탈락해야 함).
+      const picked = selectReviewSet([ineligible, eligible], ctxFor(["ok"]));
+      const words = picked.map((p) => p.word);
+      add(
+        "review. 출처 없는 단어(정의·보기 필터)는 탈락",
+        words.includes("ok") && !words.includes("nope"),
+        `words=[${words.join(",")}]`,
+      );
+    }
+
+    // (7) 콜드스타트 graceful — 후보 0이면 [], 틀린 풀만 있으면 잘한 1 없이 그만큼만.
+    {
+      const empty = selectReviewSet([], ctxFor([]));
+      const onlyWrong = [
+        cand({ word: "a", wrong: 2, streak: 0 }),
+        cand({ word: "b", wrong: 1, streak: 0 }),
+      ];
+      const pickedOnlyWrong = selectReviewSet(onlyWrong, ctxFor(["a", "b"]));
+      add(
+        "review. 콜드스타트 graceful(후보0→[], 틀린 풀만→잘한1 없이 그만큼)",
+        empty.length === 0 &&
+          pickedOnlyWrong.length === 2 &&
+          pickedOnlyWrong.every((p) => p.word === "a" || p.word === "b"),
+        `empty=${empty.length} onlyWrong=${pickedOnlyWrong.length}`,
+      );
+    }
+
+    // (8) buildReviewCandidates — total/wrong/streak는 aggregate 재사용, recency는 세션 순번.
+    {
+      const q = (
+        startedAt: string,
+        items: { word: string; correct: boolean; answered: boolean | null }[],
+      ): VocabQuizRecord => ({
+        id: startedAt,
+        bookId: "b1",
+        mode: "def-to-word",
+        startedAt,
+        finishedAt: startedAt,
+        items,
+      });
+      // fix: 세션1 틀림, 세션3 맞음 → total2, wrong1, streak1, lastWrong=1, lastSeen=3.
+      const cands = buildReviewCandidates([
+        q("2026-08-20T01:00:00.000Z", [{ word: "fix", correct: false, answered: true }]),
+        q("2026-08-21T01:00:00.000Z", [{ word: "gap", correct: true, answered: true }]),
+        q("2026-08-22T01:00:00.000Z", [{ word: "fix", correct: true, answered: true }]),
+      ]);
+      const fix = cands.find((c) => c.word === "fix");
+      const agg = aggregateWordStats([
+        q("2026-08-20T01:00:00.000Z", [{ word: "fix", correct: false, answered: true }]),
+        q("2026-08-21T01:00:00.000Z", [{ word: "gap", correct: true, answered: true }]),
+        q("2026-08-22T01:00:00.000Z", [{ word: "fix", correct: true, answered: true }]),
+      ])["fix"];
+      add(
+        "review. buildReviewCandidates — total/wrong/streak 재사용 + recency(세션 순번)",
+        fix != null &&
+          fix.total === agg.total &&
+          fix.wrong === agg.wrong &&
+          fix.streak === agg.streak &&
+          fix.lastWrongOrder === 1 &&
+          fix.lastSeenOrder === 3,
+        `fix=${JSON.stringify(fix)}`,
+      );
+    }
   }
 
   return results;

@@ -57,6 +57,19 @@
   font-weight: 600;
 }
 
+/* 복습(V6) 배지 — 다른 DAY에서 온 복습 문항임을 아이가 알아보게. 팔레트 토큰만 사용 */
+.reviewBadge {
+  display: inline-block;
+  margin-right: 0.5rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  vertical-align: middle;
+}
+
 .promptText {
   margin: 0;
   color: var(--ink);
