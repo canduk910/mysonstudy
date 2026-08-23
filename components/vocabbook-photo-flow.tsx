@@ -44,7 +44,7 @@ import type { VocabEntry, VocabExtractResponse } from "@/lib/vocab-extract-contr
 // 상태
 // ---------------------------------------------------------------------------
 
-type Phase = "pick" | "reading" | "review" | "saving";
+type Phase = "pick" | "reading" | "review" | "saving" | "enriching";
 
 /** 1,234 — 자릿수가 큰 글자 수는 쉼표가 있어야 한눈에 읽힌다 */
 function fmtCount(n: number): string {
@@ -111,7 +111,7 @@ export default function VocabbookPhotoFlow() {
   /** 판독·저장 재진입 가드 — 버튼 disabled는 리렌더 뒤에야 걸려, 같은 tick 이중 클릭을 못 막는다 */
   const runningRef = useRef(false);
 
-  const busy = phase === "reading" || phase === "saving";
+  const busy = phase === "reading" || phase === "saving" || phase === "enriching";
 
   // 경과 시간 — 판독은 사진 여러 장 병렬이라 10~20초. 숫자가 올라가면 "멈췄나?"가 크게 준다
   useEffect(() => {
@@ -329,7 +329,16 @@ export default function VocabbookPhotoFlow() {
       const data = (await res.json().catch(() => null)) as VocabCreateResponse | null;
 
       if (res.ok && data?.ok) {
-        // 저장 성공 → 표 화면으로. 뒤로가기로 이 화면에 다시 오지 않게 replace가 아니라 push(다시 만들 수 있게)
+        // 저장 성공 → 판독 직후 **바로 영영 정의를 만든다**(호출 D). 예전엔 상세에서 버튼을 눌러야 했지만
+        // 이제 자동으로 채운다. 실패해도 비치명 — 정의 없이 표로 가고 상세의 "다시 만들기"로 채울 수 있다.
+        // (정의 불변 규칙은 라우트가 지킨다 — null 자리만 채우므로 재호출도 안전.)
+        setPhase("enriching");
+        try {
+          await fetch(`/api/english/vocab/${data.id}/enrich`, { method: "POST" });
+        } catch {
+          /* 보강 실패는 무시 — 상세에서 다시 만들 수 있다 */
+        }
+        // 뒤로가기로 이 화면에 다시 오지 않게 replace가 아니라 push(다시 만들 수 있게)
         router.push(`/english/vocab/${data.id}`);
         return;
       }
@@ -353,16 +362,22 @@ export default function VocabbookPhotoFlow() {
   // 렌더
   // -------------------------------------------------------------------------
 
-  if (phase === "reading" || phase === "saving") {
+  if (phase === "reading" || phase === "saving" || phase === "enriching") {
     return (
       <div className="u-box text-center" role="status" aria-live="polite">
         <p className="t-section-title">
-          {phase === "reading" ? "📖 단어를 읽고 있어요…" : "💾 저장하고 있어요…"}
+          {phase === "reading"
+            ? "📖 단어를 읽고 있어요…"
+            : phase === "saving"
+              ? "💾 저장하고 있어요…"
+              : "✨ 영영 뜻을 만들고 있어요…"}
         </p>
         <p className="t-caption mt-2">
           {phase === "reading"
             ? `사진 ${files.length}장을 한 번에 읽는 중이에요. 잠깐만 기다려 주세요.`
-            : "곧 단어 표로 데려다 드릴게요."}
+            : phase === "saving"
+              ? "곧 단어 표로 데려다 드릴게요."
+              : "각 단어의 영영 뜻·우리말 해석·그림을 만드는 중이에요. 잠깐만요."}
           {elapsedSec >= 3 ? ` (${elapsedSec}초)` : ""}
         </p>
       </div>
