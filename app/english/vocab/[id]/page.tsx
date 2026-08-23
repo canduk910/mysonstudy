@@ -14,7 +14,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import VocabbookView from "@/components/vocabbook-view";
-import { isVocabBookEnriched } from "@/lib/ai/english/vocabbook-enrich";
+import { MIN_QUIZ_WORDS } from "@/lib/vocab-quiz";
 import { isRenderableVocabBook } from "@/lib/vocabbook-record";
 import { getStore } from "@/lib/store";
 
@@ -41,8 +41,9 @@ export default async function VocabDetailPage({ params }: VocabDetailPageProps) 
   if (!record || !isRenderableVocabBook(record)) notFound();
 
   // 시험은 저장된 영영 정의에 의존한다(V4) — 보강 완료(enriched)일 때만 진입 버튼을 노출한다.
-  // (정의가 일부만 있어 부족하면 시험 페이지가 게이트로 정직하게 막는다.)
-  const canQuiz = isVocabBookEnriched(record.entries);
+  // 시험 페이지(`/quiz`)와 **같은 게이트** — 정의 있는 단어가 5지선다를 만들 수 있는 5개(MIN_QUIZ_WORDS)
+  // 이상이면 시험 가능. 버튼과 시험 페이지 기준을 하나로 둬 "버튼은 막혔는데 URL로는 되는" 어긋남을 막는다.
+  const canQuiz = record.entries.filter((e) => e.definitionEn !== null).length >= MIN_QUIZ_WORDS;
 
   return (
     <main className="mx-auto max-w-3xl px-4 pb-16 pt-6">
@@ -65,32 +66,18 @@ export default async function VocabDetailPage({ params }: VocabDetailPageProps) 
        * titleKo·dayLabel은 카드 모드 전면 오버레이의 컴팩트 chrome에서만 쓴다 —
        * 표 모드는 위 서버 헤더가 그대로 보인다(회귀 0).
        */}
+      {/*
+       * 시험 보기는 이제 본문 툴바(표/카드 토글과 한 줄)에서 canQuiz로 게이트한다.
+       * per-DAY 오답노트·새 단어장·단어장 목록은 "단어장 정복" 랜딩(`/english/vocab`)으로 올렸다 —
+       * 하단 액션행/푸터를 두지 않는다. 목록으로 돌아가는 길은 헤더의 "← 단어장 목록" 백링크.
+       */}
       <VocabbookView
         id={record.id}
         entries={record.entries}
         titleKo={record.titleKo}
         dayLabel={record.dayLabel}
+        canQuiz={canQuiz}
       />
-
-      <div className="mt-8 flex flex-wrap gap-2">
-        {canQuiz ? (
-          <>
-            <Link href={`/english/vocab/${record.id}/quiz`} className="u-btn u-btn-primary">
-              <span aria-hidden>📝</span> 시험 보기
-            </Link>
-            {/* 오답노트(V5 층1) — 시험을 본 적 없으면 빈 상태로 안내한다(같은 canQuiz 조건에 둔다) */}
-            <Link href={`/english/vocab/${record.id}/wrong`} className="u-btn u-btn-secondary">
-              <span aria-hidden>📕</span> 오답노트
-            </Link>
-          </>
-        ) : null}
-        <Link href="/english/vocab/new" className="u-btn u-btn-secondary">
-          <span aria-hidden>📷</span> 새 단어장 만들기
-        </Link>
-        <Link href="/english/vocab" className="u-btn u-btn-secondary">
-          <span aria-hidden>📓</span> 단어장 목록
-        </Link>
-      </div>
     </main>
   );
 }

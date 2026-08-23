@@ -100,10 +100,19 @@ export default function VocabLibraryView({
         </p>
       )}
 
-      {/* 새로 만들기 — 이 화면의 주요 행동 */}
-      <Link href="/english/vocab/new" className="u-btn u-btn-primary w-full">
-        <span aria-hidden>📷</span> 사진으로 단어장 만들기
-      </Link>
+      {/*
+       * 단어장 정복 랜딩의 액션행 — 새 단어장 만들기(주요 행동)와 전체 오답노트를 한 줄로.
+       * 오답노트는 DAY를 넘어 통합된 전체 오답(`/english/vocab/wrong`)이라 이 자리(단어장 정복 바로 밑)가
+       * 맞다 — 셸 최상단 메뉴에서 내려왔다. 아래 "내 단어장" 목록과 함께 정복 > {오답노트·새단어장·목록}.
+       */}
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <Link href="/english/vocab/new" className="u-btn u-btn-primary flex-1">
+          <span aria-hidden>📷</span> 사진으로 단어장 만들기
+        </Link>
+        <Link href="/english/vocab/wrong" className="u-btn u-btn-secondary sm:flex-none">
+          <span aria-hidden>📕</span> 오답노트
+        </Link>
+      </div>
 
       <section aria-label="단어장 목록" className="mt-8">
         <div className="mb-3 flex items-baseline justify-between gap-3">

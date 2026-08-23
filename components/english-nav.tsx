@@ -34,23 +34,20 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { href: "/english/books", icon: "🏠", label: "북카드", match: "/english/books" },
   { href: "/english/vocab", icon: "📓", label: "단어장", match: "/english/vocab" },
-  { href: "/english/vocab/wrong", icon: "📕", label: "오답노트", match: "/english/vocab/wrong" },
   { href: "/library", icon: "📚", label: "서재", match: null },
 ];
 
 /**
- * 활성 항목 = 현재 경로에 매칭되는 접두사 중 **가장 긴 것**(most-specific wins). 단어장(`/english/vocab`)이
- * 오답노트(`/english/vocab/wrong`)의 접두사라, 오답노트 페이지에서 둘 다 켜지는 것을 막는다.
- * pathname의 순수 함수라 SSR/CSR이 같은 값을 줘 hydration mismatch가 없다(단일 match일 땐 종전과 동일).
+ * 활성 항목 = 현재 경로가 그 항목 match로 시작하는 첫 항목. 셸 메뉴(북카드·단어장)는 서로 접두사가
+ * 아니라 한 경로가 둘을 켜는 일이 없다(오답노트를 단어장 정복 랜딩으로 내리며 접두사 충돌도 사라졌다 —
+ * `/english/vocab/wrong`도 이제 "단어장"으로 켜진다). pathname의 순수 함수라 SSR/CSR이 같은 값을 줘
+ * hydration mismatch가 없다.
  */
 function activeHref(pathname: string): string | null {
-  let best: { href: string; len: number } | null = null;
   for (const item of NAV_ITEMS) {
-    if (item.match != null && pathname.startsWith(item.match) && (!best || item.match.length > best.len)) {
-      best = { href: item.href, len: item.match.length };
-    }
+    if (item.match != null && pathname.startsWith(item.match)) return item.href;
   }
-  return best?.href ?? null;
+  return null;
 }
 
 function NavMenu({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {

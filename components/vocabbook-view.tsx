@@ -43,19 +43,21 @@ const VIEW_MODE_KEY = "vocab-view-mode";
 type ViewMode = "table" | "card";
 
 interface VocabbookViewProps {
-  /** 보강(호출 D) 라우트를 부를 대상 레코드 id */
+  /** 보강(호출 D) 라우트·시험 보기 링크가 부를 대상 레코드 id */
   id: string;
   entries: VocabEntry[];
   /** 카드 모드 컴팩트 chrome에 쓸 제목 (표 모드는 서버 헤더를 그대로 씀) */
   titleKo: string;
   /** 단원 표기(예: "DAY 01"). 제목과 다르면 컴팩트 chrome에 덧붙인다 */
   dayLabel: string | null;
+  /** 시험 게이트 — 서버가 계산해 전달(정의 있는 단어 ≥ 최소치). false면 시험 보기를 비활성으로 안내한다 */
+  canQuiz: boolean;
 }
 
 /** 보강 버튼 상태 — 로딩 중엔 재클릭을 막고, 끝나면 안내 배너를 남긴다 */
 type EnrichPhase = "idle" | "loading" | "done" | "error";
 
-export default function VocabbookView({ id, entries, titleKo, dayLabel }: VocabbookViewProps) {
+export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz }: VocabbookViewProps) {
   const router = useRouter();
   // 초기 렌더는 항상 표 — SSR과 첫 클라이언트 렌더가 같아야 hydration mismatch가 안 난다
   const [viewMode, setViewMode] = useState<ViewMode>("table");
@@ -188,6 +190,24 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel }: Vocabb
     </div>
   );
 
+  // 시험 보기 — 표 툴바에서 표/카드 토글과 한 줄 동급. 게이트(canQuiz)가 false면 비활성 + 사유를
+  // 곁들여, "영영 뜻을 먼저 만들면 시험을 볼 수 있다"는 흐름을 바로 옆 보강 버튼과 함께 읽히게 한다.
+  const quizButton = canQuiz ? (
+    <Link href={`/english/vocab/${id}/quiz`} className={`u-btn u-btn-primary ${s.modeBtn}`}>
+      <span aria-hidden>📝</span> 시험 보기
+    </Link>
+  ) : (
+    <button
+      type="button"
+      disabled
+      aria-disabled="true"
+      title="영영 뜻을 먼저 만들면 시험을 볼 수 있어요"
+      className={`u-btn u-btn-secondary ${s.modeBtn}`}
+    >
+      <span aria-hidden>📝</span> 시험 보기
+    </button>
+  );
+
   // 보강 버튼 — 표 툴바(전체)와 카드 chrome(컴팩트)에서 같은 handler를 쓴다. enriched면 숨긴다.
   const enrichLabel = hasAnyDefinition
     ? `영영 뜻 다시 만들기${remainingDefs > 0 ? ` (${remainingDefs})` : ""}`
@@ -221,6 +241,7 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel }: Vocabb
       <>
         <div className={s.toolbar}>
           {modeToggle}
+          {quizButton}
           {enrichButton}
         </div>
         {/* 정의 불변을 문구로도 드러낸다 — "다시 만들기"가 이미 있는 정의를 안 건드림을 안내 */}
