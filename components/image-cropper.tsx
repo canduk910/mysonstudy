@@ -487,44 +487,47 @@ export default function ImageCropper({ file, onDone, onCancel }: Props) {
           )}
         </div>
 
-        {/* 회전 — 세로 페이지를 가로로 찍었을 때 똑바로 세운 뒤 자른다. 누를 때마다 시계방향 90°. */}
-        <div className="mt-4 flex justify-center">
+        {/*
+         * 하단 버튼 — 좁은 폰 폭에서 emoji+한글이 한 줄에 안 들어가 깨지지 않게, 한 줄에 3개를
+         * 밀어 넣지 않는다. 이미지 조정(회전)·주요 확인(이 영역만)은 각각 전체폭, 대안 2개(전체
+         * 사용·취소)만 나란히. 모든 버튼은 `whitespace-nowrap`으로 글자가 줄바꿈되지 않게 한다.
+         */}
+        <div className="mt-4 flex flex-col gap-2">
           <button
             type="button"
-            className="u-btn u-btn-secondary"
+            className="u-btn u-btn-secondary whitespace-nowrap"
             disabled={cropping}
             onClick={() => setRotation((r) => (r + 90) % 360)}
             aria-label="사진 90도 회전"
           >
             ↻ 90° 회전
           </button>
-        </div>
-
-        <div className="mt-3 flex flex-wrap gap-2">
           <button
             type="button"
-            className="u-btn u-btn-primary flex-1"
+            className="u-btn u-btn-primary whitespace-nowrap"
             disabled={!ready || !isCroppable(sel) || cropping}
             onClick={() => void handleCrop()}
           >
-            {cropping ? "자르는 중이에요…" : "✂️ 이 영역만"}
+            {cropping ? "자르는 중이에요…" : "✂️ 이 영역만 남기기"}
           </button>
-          <button
-            type="button"
-            className="u-btn u-btn-secondary flex-1"
-            disabled={cropping}
-            onClick={() => onDone(workingFile)}
-          >
-            🖼️ 전체 사용
-          </button>
-          <button
-            type="button"
-            className="u-btn u-btn-secondary"
-            disabled={cropping}
-            onClick={onCancel}
-          >
-            취소
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="u-btn u-btn-secondary flex-1 whitespace-nowrap"
+              disabled={cropping}
+              onClick={() => onDone(workingFile)}
+            >
+              🖼️ 전체 사용
+            </button>
+            <button
+              type="button"
+              className="u-btn u-btn-secondary flex-1 whitespace-nowrap"
+              disabled={cropping}
+              onClick={onCancel}
+            >
+              취소
+            </button>
+          </div>
         </div>
       </div>
     </div>
