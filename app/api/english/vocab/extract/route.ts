@@ -111,15 +111,6 @@ export async function POST(req: Request) {
 
   const images = parsed.data.images;
 
-  // 진단용 계측 (카메라 사진 유실 버그) — 클라 전송 장수 ↔ 서버 수신 장수를 Cloud Run 로그로 대조.
-  // 이미지 본문은 절대 찍지 않는다(§7-6·SPEC §5) — 개수와 대략 크기(문자 길이)만.
-  console.log(
-    "[vocab-extract] received images=" +
-      images.length +
-      " sizes=" +
-      images.map((s) => s.length).join("|"),
-  );
-
   // 사진 1장 = 판독 1회. **각 장을 병렬로** 따로 호출한다(§7-5, 호출 A′ 관용구).
   // 한 장이 실패해도 그 장의 단어만 잃고 나머지는 살린다.
   const settled = await Promise.allSettled(
@@ -162,38 +153,6 @@ export async function POST(req: Request) {
     }
   });
 
-  // [vocab-extract] 진단: 사진별 원본 판독(번호·단어·예문 수) — 병합 유실 vs vision 누락을 가른다.
-  // 이미지 본문은 안 찍는다(§7-6). 원본에 예문이 있는데 merged에서 사라지면 병합 collapse, 원본부터 0이면 판독 누락.
-  for (const p of pagesForMerge) {
-    console.log(
-      `[vocab-extract] photo#${p.photoIndex} entries=${p.entries.length} ` +
-        p.entries
-          .map((e) => `{no:${e.no ?? "-"},w:${e.word},ex:${e.examples.length},mn:${e.meanings.length}}`)
-          .join(" "),
-    );
-  }
-  // collapse 탐지: joinKey(no, 없으면 word 소문자)에 2개 이상 사진의 entry가 묶이면 병합에서 하나로 collapse된다.
-  {
-    const byKey = new Map<string, { photo: number; word: string; ex: number }[]>();
-    for (const p of pagesForMerge) {
-      for (const e of p.entries) {
-        const key = e.no && e.no.trim() ? `no:${e.no.trim()}` : `word:${e.word.trim().toLowerCase()}`;
-        const bucket = byKey.get(key) ?? [];
-        bucket.push({ photo: p.photoIndex, word: e.word, ex: e.examples.length });
-        byKey.set(key, bucket);
-      }
-    }
-    for (const [key, members] of byKey) {
-      const photos = new Set(members.map((m) => m.photo));
-      if (photos.size >= 2) {
-        console.log(
-          `[vocab-extract] COLLAPSE key=${key} photos=${[...photos].join(",")} members=` +
-            members.map((m) => `p${m.photo}:${m.word}(ex${m.ex})`).join(" "),
-        );
-      }
-    }
-  }
-
   const failedPhotoCount = pages.filter((p) => !p.ok).length;
 
   // **모든** 사진이 throw했다 = AI가 전부 죽었다. 이때만 500(재시도 버튼).
@@ -210,13 +169,6 @@ export async function POST(req: Request) {
   }
 
   const merged = mergeVocabPages(pagesForMerge);
-
-  // [vocab-extract] 진단: 병합 결과(번호·단어·예문 수) — 위 photo# 원본과 대조해 예문 유실을 포착한다.
-  console.log(
-    `[vocab-extract] merged entries=${merged.entries.length} mergedCount=${merged.mergedCount} ` +
-      `missingNos=[${merged.missingNos.join(",")}] ` +
-      merged.entries.map((e) => `{no:${e.no ?? "-"},w:${e.word},ex:${e.examples.length}}`).join(" "),
-  );
 
   // §7-6 폴백 — 한 단어도 못 읽었다(단어장이 아니거나 흐림). 오류가 아니라 정상 갈래다.
   if (merged.entries.length === 0) {

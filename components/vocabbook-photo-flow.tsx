@@ -46,13 +46,6 @@ import type { VocabEntry, VocabExtractResponse } from "@/lib/vocab-extract-contr
 
 type Phase = "pick" | "reading" | "review" | "saving";
 
-// ---------------------------------------------------------------------------
-// 진단용 계측 (카메라 사진 유실 버그 — 재현 후 제거 예정)
-// ---------------------------------------------------------------------------
-// 왜 sessionStorage: 모바일 카메라가 페이지를 재생성(리마운트)하면 React state는 날아가지만
-// sessionStorage는 남아 **리마운트 자체를 증거로 포착**한다. 로그는 로직에 관여하지 않는다.
-const DEBUG_LOG_KEY = "vocab-photo-debug";
-
 /** 1,234 — 자릿수가 큰 글자 수는 쉼표가 있어야 한눈에 읽힌다 */
 function fmtCount(n: number): string {
   return n.toLocaleString("ko-KR");
@@ -118,66 +111,6 @@ export default function VocabbookPhotoFlow() {
   /** 판독·저장 재진입 가드 — 버튼 disabled는 리렌더 뒤에야 걸려, 같은 tick 이중 클릭을 못 막는다 */
   const runningRef = useRef(false);
 
-  // 진단용 디버그 로그 state (버그 재현 후 제거 예정)
-  const [debugLog, setDebugLog] = useState<string[]>([]);
-  const [debugOpen, setDebugOpen] = useState(true);
-
-  /**
-   * 영속 로그 — `${시각} msg`를 sessionStorage 배열에 append + 화면 state에 반영.
-   * sessionStorage를 진실 원천으로 삼아(리마운트에도 생존), 매 호출마다 새로 읽어 이어붙인다.
-   */
-  function dlog(msg: string) {
-    const line = `${new Date().toISOString().slice(11, 23)} ${msg}`;
-    try {
-      const prev = JSON.parse(sessionStorage.getItem(DEBUG_LOG_KEY) ?? "[]") as string[];
-      const next = [...prev, line];
-      sessionStorage.setItem(DEBUG_LOG_KEY, JSON.stringify(next));
-      setDebugLog(next);
-    } catch {
-      setDebugLog((p) => [...p, line]);
-    }
-  }
-
-  function copyDebugLog() {
-    navigator.clipboard?.writeText(debugLog.join("\n")).catch(() => {});
-  }
-
-  function clearDebugLog() {
-    try {
-      sessionStorage.removeItem(DEBUG_LOG_KEY);
-    } catch {
-      /* noop */
-    }
-    setDebugLog([]);
-  }
-
-  // 마운트/언마운트 — id는 마운트마다 다른 값. 카메라 촬영마다 리마운트가 일어나는지 이게 증명한다.
-  // 마운트 시 기존 sessionStorage 로그를 먼저 읽어 이어붙인다(리마운트 누적).
-  useEffect(() => {
-    try {
-      const prev = JSON.parse(sessionStorage.getItem(DEBUG_LOG_KEY) ?? "[]") as string[];
-      if (prev.length > 0) setDebugLog(prev);
-    } catch {
-      /* noop */
-    }
-    const id = Math.random().toString(36).slice(2, 7);
-    dlog("[vocab-photo] MOUNT #" + id);
-    return () => dlog("[vocab-photo] UNMOUNT #" + id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // files 변화 추적 — 누적이 실제로 쌓이는지(리마운트로 리셋되는지) 이게 보여준다.
-  useEffect(() => {
-    dlog("[vocab-photo] files -> " + files.length + " [" + files.map((f) => f.name).join(", ") + "]");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [files]);
-
-  // cropQueue 길이 전이 추적 — enqueue 결과·crop done/cancel 슬라이스가 모두 여기로 잡힌다.
-  useEffect(() => {
-    dlog("[vocab-photo] cropQueue -> " + cropQueue.length);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cropQueue]);
-
   const busy = phase === "reading" || phase === "saving";
 
   // 경과 시간 — 판독은 사진 여러 장 병렬이라 10~20초. 숫자가 올라가면 "멈췄나?"가 크게 준다
@@ -216,16 +149,6 @@ export default function VocabbookPhotoFlow() {
    */
   function enqueueForCrop(list: FileList | null) {
     const added = Array.from(list ?? []);
-    dlog(
-      "[vocab-photo] enqueueForCrop added=" +
-        added.length +
-        " files=" +
-        files.length +
-        " queue=" +
-        cropQueue.length +
-        " remaining=" +
-        Math.max(0, VOCAB_LIMITS.photos - files.length - cropQueue.length),
-    );
     if (added.length === 0) return;
     clearStatus();
     const remaining = Math.max(0, VOCAB_LIMITS.photos - files.length - cropQueue.length);
@@ -235,7 +158,6 @@ export default function VocabbookPhotoFlow() {
 
   /** 자른(또는 "전체 사용" 원본) 한 장을 목록 끝에 추가 — 파일·미리보기 URL을 짝지어 넣는다. */
   function appendCroppedFile(next: File) {
-    dlog("[vocab-photo] appendCroppedFile name=" + next.name + " size=" + next.size);
     clearStatus();
     const url = URL.createObjectURL(next); // 순수 updater 유지 위해 밖에서 생성
     setFiles((prev) => [...prev, next]);
@@ -289,15 +211,7 @@ export default function VocabbookPhotoFlow() {
     setPhase("reading");
 
     try {
-      dlog(
-        "[vocab-photo] readAll sending files=" +
-          files.length +
-          " [" +
-          files.map((f) => f.name).join(", ") +
-          "]",
-      );
       const images = await Promise.all(files.map((f) => resizeToJpegDataUrl(f)));
-      dlog("[vocab-photo] readAll resized lens=" + images.map((s) => s.length).join("|"));
       const res = await fetch("/api/english/vocab/extract", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -439,84 +353,40 @@ export default function VocabbookPhotoFlow() {
   // 렌더
   // -------------------------------------------------------------------------
 
-  // 진단용 디버그 패널 — 모든 phase 하단에 붙여 어느 화면에서도 폰으로 읽고 복사할 수 있게.
-  // (개발용이지만 재현 전까지 항상 보이게 둔다. 재현 후 제거 예정.)
-  const debugPanel = (
-    <div className="mt-6 rounded-[var(--radius-box)] border border-line">
-      <button
-        type="button"
-        onClick={() => setDebugOpen((v) => !v)}
-        className="t-meta-chip flex w-full items-center justify-between px-3 py-2 text-left"
-      >
-        <span>🐞 디버그 로그 ({debugLog.length})</span>
-        <span aria-hidden>{debugOpen ? "▲" : "▼"}</span>
-      </button>
-      {debugOpen && (
-        <div className="border-t border-line px-3 py-2">
-          <div className="mb-2 flex gap-2">
-            <button
-              type="button"
-              onClick={copyDebugLog}
-              className="u-btn u-btn-secondary px-3 py-1 text-meta-chip"
-            >
-              📋 복사
-            </button>
-            <button
-              type="button"
-              onClick={clearDebugLog}
-              className="u-btn u-btn-secondary px-3 py-1 text-meta-chip"
-            >
-              🧹 지우기
-            </button>
-          </div>
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-tight text-ink-3">
-            {debugLog.length > 0 ? debugLog.join("\n") : "아직 로그가 없어요."}
-          </pre>
-        </div>
-      )}
-    </div>
-  );
-
   if (phase === "reading" || phase === "saving") {
     return (
-      <>
-        <div className="u-box text-center" role="status" aria-live="polite">
-          <p className="t-section-title">
-            {phase === "reading" ? "📖 단어를 읽고 있어요…" : "💾 저장하고 있어요…"}
-          </p>
-          <p className="t-caption mt-2">
-            {phase === "reading"
-              ? `사진 ${files.length}장을 한 번에 읽는 중이에요. 잠깐만 기다려 주세요.`
-              : "곧 단어 표로 데려다 드릴게요."}
-            {elapsedSec >= 3 ? ` (${elapsedSec}초)` : ""}
-          </p>
-        </div>
-        {debugPanel}
-      </>
+      <div className="u-box text-center" role="status" aria-live="polite">
+        <p className="t-section-title">
+          {phase === "reading" ? "📖 단어를 읽고 있어요…" : "💾 저장하고 있어요…"}
+        </p>
+        <p className="t-caption mt-2">
+          {phase === "reading"
+            ? `사진 ${files.length}장을 한 번에 읽는 중이에요. 잠깐만 기다려 주세요.`
+            : "곧 단어 표로 데려다 드릴게요."}
+          {elapsedSec >= 3 ? ` (${elapsedSec}초)` : ""}
+        </p>
+      </div>
     );
   }
 
   if (phase === "review") {
     return (
-      <>
-        <VocabReview
-          entries={entries}
-          excluded={excluded}
-          editing={editing}
-          titleKo={titleKo}
-          meta={meta}
-          keptCount={keptCount}
-          errorKo={errorKo}
-          issues={issues}
-          onTitleChange={setTitleKo}
-          onToggleExclude={toggleExclude}
-          onToggleEdit={toggleEdit}
-          onUpdateEntry={updateEntry}
-          onSave={save}
-          onBack={resetToPick}
-        />
-        {debugPanel}
-      </>
+      <VocabReview
+        entries={entries}
+        excluded={excluded}
+        editing={editing}
+        titleKo={titleKo}
+        meta={meta}
+        keptCount={keptCount}
+        errorKo={errorKo}
+        issues={issues}
+        onTitleChange={setTitleKo}
+        onToggleExclude={toggleExclude}
+        onToggleEdit={toggleEdit}
+        onUpdateEntry={updateEntry}
+        onSave={save}
+        onBack={resetToPick}
+      />
     );
   }
 
@@ -533,17 +403,6 @@ export default function VocabbookPhotoFlow() {
         tabIndex={-1}
         aria-hidden
         onChange={(e) => {
-          const picked = Array.from(e.target.files ?? []);
-          dlog(
-            "[vocab-photo] input.onChange n=" +
-              picked.length +
-              " names=" +
-              picked.map((f) => f.name).join("|") +
-              " sizes=" +
-              picked.map((f) => f.size).join("|") +
-              " types=" +
-              picked.map((f) => f.type).join("|"),
-          );
           enqueueForCrop(e.target.files); // 목록에 넣기 전에 자르기 큐로 — 한 장씩 자동 오픈
           e.target.value = ""; // 같은 사진을 다시 골라도 change가 발생하게
         }}
@@ -649,23 +508,10 @@ export default function VocabbookPhotoFlow() {
         <ImageCropper
           file={cropQueue[0]}
           onDone={(result) => {
-            dlog(
-              "[vocab-photo] crop done queue " +
-                cropQueue.length +
-                "->" +
-                (cropQueue.length - 1) +
-                " result=" +
-                result.name +
-                " size=" +
-                result.size,
-            );
             appendCroppedFile(result);
             setCropQueue((q) => q.slice(1));
           }}
-          onCancel={() => {
-            dlog("[vocab-photo] crop cancel queue " + cropQueue.length + "->" + (cropQueue.length - 1));
-            setCropQueue((q) => q.slice(1));
-          }}
+          onCancel={() => setCropQueue((q) => q.slice(1))}
         />
       ) : cropIndex != null && files[cropIndex] ? (
         <ImageCropper
@@ -677,8 +523,6 @@ export default function VocabbookPhotoFlow() {
           onCancel={() => setCropIndex(null)}
         />
       ) : null}
-
-      {debugPanel}
     </div>
   );
 }
