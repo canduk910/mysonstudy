@@ -26,7 +26,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   PART_OF_SPEECH_LABELS_KO,
   RELATED_KIND_LABELS_KO,
@@ -35,11 +35,31 @@ import {
 } from "@/lib/ai/english/vocabbook-schemas";
 import { lockBodyScroll } from "@/lib/scroll-lock";
 import { speak, speakSequence, stopSpeaking } from "@/lib/speech";
+import type { VocabAddWordResponse } from "@/lib/vocab-add-word-contract";
 import type { VocabEnrichResponse } from "@/lib/vocab-enrich-contract";
 import s from "./vocabbook-view.module.css";
 
 const VIEW_MODE_KEY = "vocab-view-mode";
 type ViewMode = "table" | "card";
+
+/** 더블탭으로 인정하는 두 번째 탭까지의 최대 간격(ms). PC dblclick·모바일 연속 탭 모두 이 창 안. */
+const DOUBLE_TAP_MS = 300;
+
+/**
+ * 더블탭한 단어를 "이 단어장에 담기" 팝업으로 올리는 콜백을 자식(정의·예문 토큰)에게 내려보내는
+ * 컨텍스트 (V8). prop drilling(VocabbookView→TableView→행→VocabDefinition) 대신 컨텍스트로 잇는다.
+ * null이면(제공 안 됨) DoubleTapText가 평범한 텍스트로 폴백한다 — 담기 대상이 아닌 화면에서 안전.
+ */
+const AddWordContext = createContext<((word: string) => void) | null>(null);
+
+/**
+ * 토큰에서 앞뒤 구두점을 벗겨 담을 단어만 남긴다. 내부 아포스트로피·하이픈은 지킨다(don't · well-known).
+ * 곡선 아포스트로피(’)는 직선(')으로 정규화 — 서버 WORD_PATTERN이 직선만 받는다. 벗기고 나서 빈
+ * 문자열이면(순수 구두점·숫자) 담기를 열지 않는다.
+ */
+function cleanWord(tok: string): string {
+  return tok.replace(/’/g, "'").replace(/^[^A-Za-z]+|[^A-Za-z]+$/g, "");
+}
 
 interface VocabbookViewProps {
   /** 보강(호출 D) 라우트·시험 보기 링크가 부를 대상 레코드 id */
@@ -67,6 +87,9 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz 
   // 보강 상태 — 모드 토글을 넘어 유지되도록 최상위에 둔다(성공 배너가 표↔카드 전환에도 남는다).
   const [enrichPhase, setEnrichPhase] = useState<EnrichPhase>("idle");
   const [enrichMessage, setEnrichMessage] = useState<string | null>(null);
+
+  // 더블탭 담기 팝업(V8) — 지금 팝업에 올라온 단어(null=닫힘). 표·카드 두 모드 공용이라 최상위에 둔다.
+  const [pickWord, setPickWord] = useState<string | null>(null);
 
   // 정의 불변의 UI 측 단일 정의처는 저장된 entries다 — record.enriched를 믿지 않고 여기서 계산해
   // 서버 재조회(router.refresh) 뒤 자동으로 갱신되게 한다.
@@ -252,8 +275,7 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz 
     </p>
   ) : null;
 
-  if (viewMode === "table") {
-    return (
+  const tableBody = (
       <>
         <div className={s.toolbar}>
           {modeToggle}
@@ -271,12 +293,11 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz 
         {enrichBanner}
         <TableView entries={entries} />
       </>
-    );
-  }
+  );
 
   // 카드 모드 — 100dvh 전면 오버레이 (chrome=auto + 스크롤러=flex:1/min-height:0)
   const daySuffix = dayLabel && dayLabel !== titleKo ? ` · ${dayLabel}` : "";
-  return (
+  const cardBody = (
     <div className={s.cardOverlay} role="dialog" aria-label="단어 카드 보기">
       <div className={s.cardInner}>
         <div className={s.cardChrome}>
@@ -323,6 +344,26 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz 
         </div>
       </div>
     </div>
+  );
+
+  // 팝업이 뜬 순간의 중복 여부를 저장 entries로 즉시 판정한다(대소문자 무시) — 서버 왕복 없이
+  // "이미 있어요"를 바로 안내(라우트도 최종 확인하지만 UX는 즉답). 담기 콜백을 컨텍스트로 내려보낸다.
+  const alreadyExists =
+    pickWord !== null &&
+    entries.some((e) => e.word.trim().toLowerCase() === pickWord.trim().toLowerCase());
+
+  return (
+    <AddWordContext.Provider value={setPickWord}>
+      {viewMode === "table" ? tableBody : cardBody}
+      {pickWord !== null && (
+        <AddWordSheet
+          bookId={id}
+          word={pickWord}
+          alreadyExists={alreadyExists}
+          onClose={() => setPickWord(null)}
+        />
+      )}
+    </AddWordContext.Provider>
   );
 }
 
@@ -423,7 +464,8 @@ function VocabCard({
                 {readAlong ? (
                   <ExampleReadAlong en={ex.en} />
                 ) : (
-                  <span className={`t-vocab-example ${s.exampleText}`}>{ex.en}</span>
+                  // 이어읽기 OFF면 예문 단어를 더블탭 담기 표면으로(드래그와 동시 존재하지 않음 — 드래그 우선)
+                  <DoubleTapText text={ex.en} className={`t-vocab-example ${s.exampleText}`} />
                 )}
               </div>
               {ex.ko ? <p className={s.exampleKo}>{ex.ko}</p> : null}
@@ -559,6 +601,196 @@ function ExampleReadAlong({ en }: { en: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// 더블탭 담기 (V8) — 정의·예문 텍스트를 단어 토큰으로 쪼개, 더블탭한 단어를 팝업으로 올린다.
+// ---------------------------------------------------------------------------
+
+/**
+ * 영어 텍스트(정의·예문)를 단어 토큰으로 쪼개, 각 토큰의 **더블탭**(PC dblclick / 모바일 300ms 내 2탭)을
+ * 감지해 그 단어를 "이 단어장에 담기" 팝업으로 올린다 (V8). V2 이어읽기의 공백 토큰화를 재사용하되,
+ * 이건 별개 제스처(더블탭)라 이어읽기 상태와 독립이다.
+ *
+ * ── 기존 제스처와 충돌 방지 ────────────────────────────────────────────────
+ * - **단일탭**은 아무 일도 안 한다(두 번째 탭을 기다리는 arming만) — 예문·단어의 🔊 발음 버튼은
+ *   별개 <button>이라 그대로 산다. 더블탭만 담기.
+ * - **이어읽기(드래그)**: 예문이 이어읽기 모드 ON이면 호출부가 이 컴포넌트 대신 ExampleReadAlong을
+ *   그린다 — 즉 드래그 표면과 더블탭 표면은 동시에 존재하지 않는다("드래그 우선").
+ * - 각 토큰은 <button> + touch-action:manipulation(모바일 더블탭 확대 억제) + user-select:none
+ *   (기본 텍스트 선택 억제). 감지는 onClick 하나로 PC·모바일 통일(둘 다 두 번째 click을 낸다).
+ *
+ * onPick 컨텍스트가 없으면(담기 대상이 아닌 화면) 평범한 텍스트로 폴백한다(시험 화면 안전).
+ */
+function DoubleTapText({
+  text,
+  className,
+  lang = "en",
+}: {
+  text: string;
+  className?: string;
+  lang?: string;
+}) {
+  const onPick = useContext(AddWordContext);
+  const tokens = useMemo(() => text.split(/\s+/).filter(Boolean), [text]);
+  // 마지막으로 탭한 토큰 인덱스·시각 — 같은 토큰을 DOUBLE_TAP_MS 내 다시 탭하면 더블탭(담기).
+  const lastTap = useRef<{ i: number; t: number } | null>(null);
+
+  if (!onPick) {
+    return (
+      <span className={className} lang={lang}>
+        {text}
+      </span>
+    );
+  }
+
+  function onTap(i: number, tok: string) {
+    const now = Date.now();
+    const prev = lastTap.current;
+    if (prev && prev.i === i && now - prev.t < DOUBLE_TAP_MS) {
+      lastTap.current = null; // 소비 — 세 번째 탭이 또 담기로 새지 않게
+      const w = cleanWord(tok);
+      if (w) onPick?.(w);
+    } else {
+      lastTap.current = { i, t: now }; // 첫 탭 — 두 번째를 기다린다(단일탭은 무동작)
+    }
+  }
+
+  return (
+    <span className={className} lang={lang}>
+      {tokens.map((tok, i) => (
+        <span key={i}>
+          {i > 0 ? " " : null}
+          <button type="button" className={s.pickToken} onClick={() => onTap(i, tok)}>
+            {tok}
+          </button>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/**
+ * 더블탭한 단어를 현재 DAY에 담는 팝업(화면 하단 시트) (V8). 열린 순간의 중복 여부(alreadyExists)를
+ * 부모가 저장 entries로 즉시 판정해 넘긴다 — 이미 있으면 추가 버튼 없이 "이미 있어요"만 보인다.
+ * 추가는 `POST /api/english/vocab/[id]/add-word` 한 번. 성공(담김)이면 router.refresh로 새 항목 반영.
+ * 키 없음(501·added:true)도 단어는 저장됐으므로 refresh하고 "뜻은 나중에"를 안내한다(단어 유실 0).
+ */
+function AddWordSheet({
+  bookId,
+  word,
+  alreadyExists,
+  onClose,
+}: {
+  bookId: string;
+  word: string;
+  alreadyExists: boolean;
+  onClose: () => void;
+}) {
+  const router = useRouter();
+  const [phase, setPhase] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [message, setMessage] = useState<string | null>(null);
+
+  // 시트가 뜬 동안 body 스크롤 잠금(카드 오버레이·크롭 모달과 같은 공용 ref-count 락).
+  useEffect(() => lockBodyScroll(), []);
+  // Esc로 닫기(데스크톱) — 배경 탭·닫기 버튼과 함께 세 경로.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  async function add() {
+    if (phase === "loading") return; // 중복 클릭 방어
+    setPhase("loading");
+    setMessage(null);
+    try {
+      const res = await fetch(`/api/english/vocab/${bookId}/add-word`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ word }),
+      });
+      const data = (await res.json()) as VocabAddWordResponse;
+      if (data.ok) {
+        if (!data.added) {
+          // 서버가 최종 확인한 중복(1차 통과 뒤 경합 포함) — 담지 않았음을 안내.
+          setMessage("이미 이 단어장에 있어요.");
+          setPhase("done");
+        } else {
+          setMessage(
+            data.enrichSkipped
+              ? "담았어요! 뜻은 잠시 후 '다시 만들기'로 채울 수 있어요."
+              : "담았어요! 뜻도 만들었어요.",
+          );
+          setPhase("done");
+          router.refresh(); // 서버 컴포넌트를 다시 그려 새 항목을 표·카드에 반영
+        }
+      } else if (data.error === "no_api_key" && data.added) {
+        // 키는 없지만 단어는 저장됐다(뜻 null) — refresh로 반영하고 뜻은 나중에.
+        setMessage("담았어요! API 키가 준비되면 '다시 만들기'로 뜻을 채워요.");
+        setPhase("done");
+        router.refresh();
+      } else {
+        setMessage(data.messageKo);
+        setPhase("error");
+      }
+    } catch {
+      setMessage("연결이 끊겼어요. 잠시 후 다시 시도해 주세요.");
+      setPhase("error");
+    }
+  }
+
+  const showAddButton = !alreadyExists && phase !== "done";
+  const bodyText = alreadyExists
+    ? "이미 이 단어장에 있어요."
+    : phase === "done" || phase === "error"
+      ? message
+      : "이 단어를 이 단어장에 담을까요?";
+
+  return (
+    <div
+      className={s.sheetBackdrop}
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${word} 단어 담기`}
+      onClick={onClose}
+    >
+      {/* 시트 안쪽 클릭은 닫힘으로 전파되지 않게 막는다 */}
+      <div className={s.sheet} onClick={(e) => e.stopPropagation()}>
+        <p className={s.sheetWord} lang="en">
+          {word}
+        </p>
+        <p className={`${s.sheetHint} ${phase === "error" ? s.sheetError : ""}`} role="status">
+          {bodyText}
+        </p>
+        <div className={s.sheetBtns}>
+          {showAddButton ? (
+            <button
+              type="button"
+              className={`u-btn u-btn-primary ${s.sheetBtn}`}
+              onClick={add}
+              disabled={phase === "loading"}
+            >
+              {phase === "loading" ? (
+                <>
+                  <span aria-hidden>⏳</span> 담는 중…
+                </>
+              ) : (
+                <>
+                  <span aria-hidden>➕</span> 이 단어장에 추가
+                </>
+              )}
+            </button>
+          ) : null}
+          <button type="button" className={`u-btn u-btn-secondary ${s.sheetBtn}`} onClick={onClose}>
+            닫기
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 단어 그림 (호출 D) — 우선순위는 resolveVocabImage 한 곳에서 판정한다(svg>emoji>첫 글자).
 // V3는 이모지 우선이라 svg 자리는 지금 항상 비어 letter/emoji로만 떨어진다. 미래 SVG(V3.1)까지
 // dangerouslySetInnerHTML를 열지 않으려고, svg kind는 첫 글자 배지로 안전 폴백한다(XSS 표면 0).
@@ -604,7 +836,8 @@ function VocabDefinition({
           <span className={s.defnLabel} lang="ko" aria-hidden>
             영영
           </span>
-          {definitionEn}
+          {/* 정의 텍스트를 단어 토큰으로 — 모르는 단어 더블탭 담기(V8). 담기 대상이 아니면 평범한 텍스트 */}
+          <DoubleTapText text={definitionEn} />
         </span>
         <button
           type="button"
@@ -712,7 +945,8 @@ function TableView({ entries }: { entries: VocabEntry[] }) {
                   <ul className="flex flex-col gap-1.5">
                     {entry.examples.map((ex, k) => (
                       <li key={k} className="t-vocab-example">
-                        {ex.en}
+                        {/* 예문 단어 더블탭 담기(V8) — 표 모드에서도 정의·예문에서 담을 수 있다 */}
+                        <DoubleTapText text={ex.en} />
                         {ex.ko ? <span className="mt-0.5 block text-ink-3">{ex.ko}</span> : null}
                       </li>
                     ))}

@@ -33,6 +33,9 @@ import type { Explanation } from "./ai/math/schemas";
 // 단어장 정복(V1) 완성형 항목 — **`import type`이다.** `vocabbook-schemas.ts`는 zod를
 // 값으로 끌고 오지만, 타입만 가져오면 빌드에서 지워져 저장 계층이 AI 모듈에 묶이지 않는다.
 import type { VocabEntry, VocabMeaning, VocabRelated } from "./ai/english/vocabbook-schemas";
+// enriched 재계산의 단일 정의처(V8). 순수 함수라(타입만 import) 값으로 끌어와도 저장 계층이
+// openai/client에 묶이지 않는다 — appendVocabEntry가 새 단어를 붙일 때 enriched를 다시 굳힌다.
+import { isVocabBookEnriched } from "./ai/english/vocabbook-enrich";
 // 시험(V4) 모드 유니온 — 순수 모듈이라 값 import여도 저장 계층이 AI에 묶이지 않는다(타입만 쓴다).
 import type { VocabQuizMode } from "./vocab-quiz";
 import type { SceneTier } from "./scene/types";
@@ -185,6 +188,18 @@ export interface DeleteVocabBookResult {
 }
 
 /**
+ * 단어 1개 추가 결과 (V8 더블탭 담기). "성공 = 그 단어가 이제 이 단어장에 있다"로 읽는다.
+ * - `record: null`  → 없는 단어장(404). 담을 곳이 없다.
+ * - `appended:true` → 새로 붙였다(record는 갱신본).
+ * - `appended:false`(record는 non-null) → **이미 있어(대소문자 무시 word) 붙이지 않았다**(중복).
+ *   record는 손대지 않은 현재 레코드 그대로다.
+ */
+export interface AppendVocabEntryResult {
+  record: VocabBookRecord | null;
+  appended: boolean;
+}
+
+/**
  * 시험 한 문항의 결과 (단어장 정복 V4, 계획 §V4).
  *
  * **전부 필수 nullable — 선택(?) 키 금지**(lib/store.ts:73 규약, Firestore undefined 거부).
@@ -322,6 +337,14 @@ export interface StudyStore {
     entries: VocabEntry[],
     enriched: boolean,
   ): Promise<VocabBookRecord | null>;
+  /**
+   * 단어 1개를 기존 DAY에 덧붙인다 (V8 더블탭 담기). **삭제가 아니라 수정**이라 prod-guard를 걸지
+   * 않는다(updateVocabBookEnrichment와 같은 규약). **대소문자 무시 word 비교로 중복이면 붙이지
+   * 않는다**(중복은 결과의 `appended:false`로 알린다 — 라우트가 "이미 있어요"로 안내). 새 단어를
+   * 붙이면 `enriched`를 `isVocabBookEnriched`로 다시 계산한다(뜻 null 단어가 붙으면 false로 떨어져
+   * "다시 만들기"가 열린다). 없는 id면 `{ record:null, appended:false }` — 404 판단은 라우트의 몫.
+   */
+  appendVocabEntry(id: string, entry: VocabEntry): Promise<AppendVocabEntryResult>;
   /**
    * 단어장 1개를 지운다 — 그 단어장의 **시험 세션(V4)까지 연쇄 삭제**한다(deleteBook과 같은 규약).
    * 지웠으면 `{ ok: true }`, 없는 id였으면 `{ ok: false }`. 존재 확인·404는 라우트의 몫.
@@ -735,6 +758,25 @@ class JsonFileStore implements BookCardStore {
       book.entries = normalized;
       book.enriched = enriched;
       return { ...book };
+    });
+  }
+
+  async appendVocabEntry(id: string, entry: VocabEntry): Promise<AppendVocabEntryResult> {
+    const incoming = normalizeVocabEntry(entry);
+    const key = incoming.word.trim().toLowerCase();
+    return this.mutate((db) => {
+      const book = db.vocabBooks.find((v) => v.id === id);
+      if (!book) return { record: null, appended: false };
+      // 저장된 옛 레코드도 표(.map)가 안 터지게 읽기와 같은 정규화를 태운다(getVocabBook 규약).
+      const existing = (book.entries ?? []).map(normalizeVocabEntry);
+      // 중복(대소문자 무시 word) — 이미 있으면 붙이지 않고 현재 레코드를 그대로 돌려준다.
+      if (existing.some((e) => e.word.trim().toLowerCase() === key)) {
+        return { record: { ...book, entries: existing }, appended: false };
+      }
+      book.entries = [...existing, incoming];
+      // 뜻 null 단어가 붙으면 enriched가 false로 떨어진다 — 단일 정의처로 다시 계산(우회 금지).
+      book.enriched = isVocabBookEnriched(book.entries);
+      return { record: { ...book }, appended: true };
     });
   }
 

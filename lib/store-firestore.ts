@@ -31,6 +31,7 @@ import {
   normalizeVocabEntry,
   normalizeVocabQuizItem,
   type LegacyOrNewVocabEntry,
+  type AppendVocabEntryResult,
   type BookEvidencePatch,
   type BookRecord,
   type CardRecord,
@@ -53,6 +54,8 @@ import {
 } from "./store";
 // 단어장 보강(V3) 저장이 받는 완성형 entry 타입 — store는 VocabEntry를 재수출하지 않는다.
 import type { VocabEntry } from "./ai/english/vocabbook-schemas";
+// enriched 재계산의 단일 정의처(V8) — file 백엔드(store.ts)와 같은 함수로 두 백엔드가 안 갈린다.
+import { isVocabBookEnriched } from "./ai/english/vocabbook-enrich";
 // 시험(V4) 모드 상수 — 읽기 방어에서 미지 모드를 안전 폴백하는 데 쓴다(순수 모듈, 값 import 안전).
 import { VOCAB_QUIZ_MODES } from "./vocab-quiz";
 // 설명 기록(M4)이 안는 타입 — 값 import는 `SCENE_TIERS` 하나뿐이다(읽기 방어용 상수).
@@ -496,6 +499,25 @@ export class FirestoreStore implements StudyStore {
     await ref.update({ entries: entries.map(normalizeVocabEntry), enriched });
     const updated = await ref.get();
     return toVocabBook(updated.id, updated.data()!);
+  }
+
+  async appendVocabEntry(id: string, entry: VocabEntry): Promise<AppendVocabEntryResult> {
+    // **삭제가 아니라 수정**이라 assertDestructiveAllowed를 걸지 않는다(updateVocabBookEnrichment와 같은 규약).
+    const ref = this.vocabBooks().doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return { record: null, appended: false };
+    // 읽기 정규화(toVocabBook)로 옛 문서도 안전하게 다룬다 — 이 위에서 중복 검사·append를 한다.
+    const current = toVocabBook(snap.id, snap.data()!);
+    const key = entry.word.trim().toLowerCase();
+    if (current.entries.some((e) => e.word.trim().toLowerCase() === key)) {
+      return { record: current, appended: false };
+    }
+    // undefined는 Firestore가 거부한다 — 붙이는 단어까지 normalizeVocabEntry로 마지막에 조인다.
+    const nextEntries = [...current.entries, entry].map(normalizeVocabEntry);
+    const enriched = isVocabBookEnriched(nextEntries);
+    await ref.update({ entries: nextEntries, enriched });
+    const updated = await ref.get();
+    return { record: toVocabBook(updated.id, updated.data()!), appended: true };
   }
 
   async deleteVocabBook(id: string): Promise<DeleteVocabBookResult> {
