@@ -34,6 +34,7 @@ import {
   resolveVocabImage,
   type VocabEntry,
 } from "@/lib/ai/english/vocabbook-schemas";
+import { lockBodyScroll } from "@/lib/scroll-lock";
 import { speak, speakSequence, stopSpeaking } from "@/lib/speech";
 import type { VocabEnrichResponse } from "@/lib/vocab-enrich-contract";
 import s from "./vocabbook-view.module.css";
@@ -112,14 +113,11 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel }: Vocabb
     }
   }, []);
 
-  // 카드 모드는 전면 오버레이 — 뜬 동안 body 스크롤을 잠가 문서 스크롤이 안 생기게 한다
+  // 카드 모드는 전면 오버레이 — 뜬 동안 body 스크롤을 잠가 문서 스크롤이 안 생기게 한다.
+  // 공용 ref-count 락을 쓴다(드로어·크롭 모달과 중첩돼도 락이 안 샌다 — lib/scroll-lock.ts)
   useEffect(() => {
     if (viewMode !== "card") return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = prev;
-    };
+    return lockBodyScroll();
   }, [viewMode]);
 
   // 카드 모드에서 지금 보이는 카드 번호 추적 (n / 전체 배지)

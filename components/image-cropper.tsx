@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { loadImage } from "@/lib/image-resize";
 import { clampRect, cropImageFile, toSourceRect, type CropRect, type Size } from "@/lib/image-crop";
+import { lockBodyScroll } from "@/lib/scroll-lock";
 
 interface Props {
   file: File;
@@ -182,8 +183,7 @@ export default function ImageCropper({ file, onDone, onCancel }: Props) {
   // 6) ESC 취소 + 포커스 트랩 + 바디 스크롤 잠금.
   useEffect(() => {
     const prevActive = document.activeElement as HTMLElement | null;
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
+    const unlock = lockBodyScroll(); // 공용 ref-count 락 — 드로어 등과 중첩돼도 안 샌다
     dialogRef.current?.focus();
 
     function onKeyDown(e: KeyboardEvent) {
@@ -213,7 +213,7 @@ export default function ImageCropper({ file, onDone, onCancel }: Props) {
     document.addEventListener("keydown", onKeyDown);
     return () => {
       document.removeEventListener("keydown", onKeyDown);
-      document.body.style.overflow = prevOverflow;
+      unlock();
       prevActive?.focus?.();
     };
   }, [onCancel]);

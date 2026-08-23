@@ -20,6 +20,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+import { lockBodyScroll } from "@/lib/scroll-lock";
 import s from "./english-nav.module.css";
 
 interface NavItem {
@@ -94,11 +95,10 @@ export default function EnglishNav() {
       if (e.key === "Escape") setOpen(false);
     }
     document.addEventListener("keydown", onKey);
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
+    const unlock = lockBodyScroll(); // 공용 ref-count 락 — 카드/크롭 오버레이와 중첩돼도 안 샌다
     return () => {
       document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prev;
+      unlock();
     };
   }, [open]);
 
