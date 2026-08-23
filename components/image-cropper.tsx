@@ -77,7 +77,7 @@ function fitDisplay(nat: Size): Size {
   const vw = typeof window !== "undefined" ? window.innerWidth : 400;
   const vh = typeof window !== "undefined" ? window.innerHeight : 700;
   const maxW = Math.min(vw - 48, 560);
-  const maxH = Math.min(vh * 0.6, 640);
+  const maxH = Math.min(vh * 0.5, 560);
   const ratio = nat.height / Math.max(1, nat.width);
   let w = Math.max(1, maxW);
   let h = w * ratio;
@@ -358,9 +358,7 @@ export default function ImageCropper({ file, onDone, onCancel }: Props) {
       >
         <p className="t-section-title">✂️ 필요한 부분만 남겨요</p>
         <p className="t-caption mt-1">
-          네 <strong>구석</strong>과 <strong>모서리</strong>를 끌어 박스를 줄이고, 박스 안쪽을 끌어
-          옮겨요. 배경·손가락·옆 페이지를 빼면 더 잘 읽혀요. 통째로 쓰려면 <strong>전체 사용</strong>을
-          눌러도 돼요.
+          <strong>구석·모서리</strong>를 끌어 남길 영역을 정해요. 통째로 쓰려면 <strong>전체</strong>.
         </p>
 
         <div className="mt-4 flex items-center justify-center">
@@ -488,46 +486,48 @@ export default function ImageCropper({ file, onDone, onCancel }: Props) {
         </div>
 
         {/*
-         * 하단 버튼 — 좁은 폰 폭에서 emoji+한글이 한 줄에 안 들어가 깨지지 않게, 한 줄에 3개를
-         * 밀어 넣지 않는다. 이미지 조정(회전)·주요 확인(이 영역만)은 각각 전체폭, 대안 2개(전체
-         * 사용·취소)만 나란히. 모든 버튼은 `whitespace-nowrap`으로 글자가 줄바꿈되지 않게 한다.
+         * 하단 버튼 — 스크롤이 안 생기게 **한 줄에 작은 버튼 4개**로 압축한다. u-btn 기본 여백이
+         * 크므로 인라인으로 padding·글자 크기를 줄이고(flex-1·nowrap·minWidth:0), 짧은 라벨을 쓴다.
+         * 주요(자르기)만 색을 준다.
          */}
-        <div className="mt-4 flex flex-col gap-2">
+        <div className="mt-3 flex gap-1.5">
           <button
             type="button"
-            className="u-btn u-btn-secondary whitespace-nowrap"
+            className="u-btn u-btn-secondary flex-1 whitespace-nowrap"
+            style={{ padding: "9px 4px", fontSize: "13px", minWidth: 0 }}
             disabled={cropping}
             onClick={() => setRotation((r) => (r + 90) % 360)}
             aria-label="사진 90도 회전"
           >
-            ↻ 90° 회전
+            ↻ 회전
           </button>
           <button
             type="button"
-            className="u-btn u-btn-primary whitespace-nowrap"
+            className="u-btn u-btn-primary flex-1 whitespace-nowrap"
+            style={{ padding: "9px 4px", fontSize: "13px", minWidth: 0 }}
             disabled={!ready || !isCroppable(sel) || cropping}
             onClick={() => void handleCrop()}
           >
-            {cropping ? "자르는 중이에요…" : "✂️ 이 영역만 남기기"}
+            {cropping ? "자르는 중…" : "✂️ 자르기"}
           </button>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              className="u-btn u-btn-secondary flex-1 whitespace-nowrap"
-              disabled={cropping}
-              onClick={() => onDone(workingFile)}
-            >
-              🖼️ 전체 사용
-            </button>
-            <button
-              type="button"
-              className="u-btn u-btn-secondary flex-1 whitespace-nowrap"
-              disabled={cropping}
-              onClick={onCancel}
-            >
-              취소
-            </button>
-          </div>
+          <button
+            type="button"
+            className="u-btn u-btn-secondary flex-1 whitespace-nowrap"
+            style={{ padding: "9px 4px", fontSize: "13px", minWidth: 0 }}
+            disabled={cropping}
+            onClick={() => onDone(workingFile)}
+          >
+            🖼️ 전체
+          </button>
+          <button
+            type="button"
+            className="u-btn u-btn-secondary flex-1 whitespace-nowrap"
+            style={{ padding: "9px 4px", fontSize: "13px", minWidth: 0 }}
+            disabled={cropping}
+            onClick={onCancel}
+          >
+            취소
+          </button>
         </div>
       </div>
     </div>
