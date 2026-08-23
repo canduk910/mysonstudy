@@ -72,6 +72,45 @@ export function toSourceRect(
   return clampRect(scaled, sourceSize);
 }
 
+/**
+ * 이미지를 90°의 배수로 회전한 새 `File`을 만든다(0이면 원본 그대로 반환 — 재인코딩 없음).
+ *
+ * 세로 페이지를 가로로 찍은 사진을 크롭 전에 똑바로 세우는 용도. 항상 **원본에서** 누적 각도로
+ * 한 번만 회전하므로(각도별로 원본을 다시 회전) 여러 번 눌러도 화질이 누적으로 상하지 않는다.
+ * 결과는 회전된 픽셀을 담은 JPEG `File`이라, 이후 크롭(`cropImageFile`)·리사이즈가 그대로 이어진다.
+ * canvas만 쓴다(순수 계산 + 브라우저 canvas).
+ */
+export async function rotateImageFile(file: File, degrees: number): Promise<File> {
+  const rot = ((Math.round(degrees / 90) * 90) % 360 + 360) % 360;
+  if (rot === 0) return file;
+  const img = await loadImage(file);
+  const nw = img.naturalWidth;
+  const nh = img.naturalHeight;
+  const quarter = rot === 90 || rot === 270;
+  const canvas = document.createElement("canvas");
+  canvas.width = quarter ? nh : nw;
+  canvas.height = quarter ? nw : nh;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("canvas 사용 불가");
+  // 회전 원점을 옮긴 뒤 회전하고 원본을 (0,0)에 그린다 — 표준 90°/180°/270° 레시피.
+  if (rot === 90) {
+    ctx.translate(canvas.width, 0);
+    ctx.rotate(Math.PI / 2);
+  } else if (rot === 180) {
+    ctx.translate(canvas.width, canvas.height);
+    ctx.rotate(Math.PI);
+  } else {
+    ctx.translate(0, canvas.height);
+    ctx.rotate(-Math.PI / 2);
+  }
+  ctx.drawImage(img, 0, 0);
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, "image/jpeg", JPEG_QUALITY),
+  );
+  if (!blob) throw new Error("이미지를 회전하지 못했어요");
+  return new File([blob], file.name, { type: "image/jpeg" });
+}
+
 /** `foo.jpg` → `foo-cropped.jpg`. 출력이 JPEG이므로 확장자를 `.jpg`로 맞춘다. */
 function croppedName(name: string): string {
   const trimmed = name.trim() || "photo";

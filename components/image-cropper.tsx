@@ -27,7 +27,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { loadImage } from "@/lib/image-resize";
-import { clampRect, cropImageFile, toSourceRect, type CropRect, type Size } from "@/lib/image-crop";
+import {
+  clampRect,
+  cropImageFile,
+  rotateImageFile,
+  toSourceRect,
+  type CropRect,
+  type Size,
+} from "@/lib/image-crop";
 import { lockBodyScroll } from "@/lib/scroll-lock";
 
 interface Props {
@@ -125,21 +132,47 @@ export default function ImageCropper({ file, onDone, onCancel }: Props) {
   const [sel, setSel] = useState<CropRect | null>(null); // 표시 캔버스 좌표
   const [cropping, setCropping] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  // 크롭 전 90° 회전 — 세로 페이지를 가로로 찍은 사진을 똑바로 세운다. 0/90/180/270.
+  const [rotation, setRotation] = useState(0);
+  // 회전이 반영된 **실제 크롭 대상**. rotation=0이면 원본 file 그대로(재인코딩 없음 → "전체 사용" 바이트 동등).
+  const [workingFile, setWorkingFile] = useState(file);
 
-  // 1) 이미지 로딩 (loadImage 재사용) — 원본 픽셀 크기를 잡는다.
+  // 새 파일(큐의 다음 장·다시 자르기)로 바뀌면 회전을 0으로 리셋하고 대상도 원본으로 되돌린다.
+  useEffect(() => {
+    setRotation(0);
+    setWorkingFile(file);
+  }, [file]);
+
+  // 회전이 걸리면 원본에서 그 각도로 회전한 파일을 만들어 크롭 대상으로 삼는다(rotation=0은 위 효과가 처리).
+  useEffect(() => {
+    if (rotation === 0) return;
+    let cancelled = false;
+    rotateImageFile(file, rotation)
+      .then((wf) => {
+        if (!cancelled) setWorkingFile(wf);
+      })
+      .catch(() => {
+        if (!cancelled) setLoadError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [file, rotation]);
+
+  // 1) 이미지 로딩 (loadImage 재사용) — **workingFile**(회전 반영)의 픽셀 크기를 잡는다.
   useEffect(() => {
     let cancelled = false;
-    // 새 파일로 바뀌면(큐의 다음 장·다시 자르기) 이전 장의 조작 상태를 전부 초기화한다.
+    // workingFile이 바뀌면(새 파일·회전) 이전 조작 상태를 전부 초기화한다.
     // handleCrop 성공 시 cropping을 내리지 않으므로, 큐(단어장·표지 여러 장)가 같은 cropper
     // 인스턴스에 file prop만 바꿔 다음 장으로 이어질 때 cropping=true가 남으면 버튼이 잠기고
     // 오버레이가 사라져 다음 장을 못 자른다. sel·displaySize·nat도 비워 이전 박스가 새 사진
-    // 위에 잠깐 얹히는 것을 막는다(새 이미지 로드까지 "불러오는 중").
+    // 위에 잠깐 얹히는 것을 막는다(새 이미지 로드까지 "불러오는 중"). 회전 후에도 박스는 전체로 리셋된다.
     setCropping(false);
     setLoadError(false);
     setSel(null);
     setDisplaySize(null);
     setNat(null);
-    loadImage(file)
+    loadImage(workingFile)
       .then((img) => {
         if (cancelled) return;
         imgRef.current = img;
@@ -151,7 +184,7 @@ export default function ImageCropper({ file, onDone, onCancel }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [file]);
+  }, [workingFile]);
 
   // 2) 표시 크기 계산 + 초기 선택 = 사진 전체. 로딩 후 + 화면 회전/리사이즈마다.
   useEffect(() => {
@@ -247,7 +280,7 @@ export default function ImageCropper({ file, onDone, onCancel }: Props) {
     setCropping(true);
     try {
       const sourceRect = toSourceRect(sel, displaySize, nat);
-      const result = await cropImageFile(file, sourceRect);
+      const result = await cropImageFile(workingFile, sourceRect);
       onDone(result);
     } catch {
       setCropping(false);
@@ -446,7 +479,20 @@ export default function ImageCropper({ file, onDone, onCancel }: Props) {
           )}
         </div>
 
-        <div className="mt-5 flex flex-wrap gap-2">
+        {/* 회전 — 세로 페이지를 가로로 찍었을 때 똑바로 세운 뒤 자른다. 누를 때마다 시계방향 90°. */}
+        <div className="mt-4 flex justify-center">
+          <button
+            type="button"
+            className="u-btn u-btn-secondary"
+            disabled={cropping}
+            onClick={() => setRotation((r) => (r + 90) % 360)}
+            aria-label="사진 90도 회전"
+          >
+            ↻ 90° 회전
+          </button>
+        </div>
+
+        <div className="mt-3 flex flex-wrap gap-2">
           <button
             type="button"
             className="u-btn u-btn-primary flex-1"
@@ -459,7 +505,7 @@ export default function ImageCropper({ file, onDone, onCancel }: Props) {
             type="button"
             className="u-btn u-btn-secondary flex-1"
             disabled={cropping}
-            onClick={() => onDone(file)}
+            onClick={() => onDone(workingFile)}
           >
             🖼️ 전체 사용
           </button>
