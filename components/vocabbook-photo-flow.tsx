@@ -84,8 +84,14 @@ export default function VocabbookPhotoFlow() {
   // 사진 누적 (판독 전) — 파일과 미리보기 URL을 나란히 든다
   const [files, setFiles] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
-  /** 자르기 모달에 올릴 사진의 인덱스. null이면 모달을 닫는다. (한 장씩 자른다) */
+  /** 자르기 모달에 올릴 사진의 인덱스. null이면 모달을 닫는다. (담긴 뒤 "다시 자르기") */
   const [cropIndex, setCropIndex] = useState<number | null>(null);
+  /**
+   * 자르기 대기 큐 — 새로 고른 사진들은 목록에 넣기 전에 여기 쌓여, 맨 앞부터 한 장씩
+   * 자동으로 자르기 모달이 열린다. onDone이면 결과를 목록에 넣고, 취소면 그 장만 버린 뒤
+   * 둘 다 큐를 한 칸 당긴다(다음 장 자동 오픈). 여러 장을 한 번에 골라도 순차로 자른다.
+   */
+  const [cropQueue, setCropQueue] = useState<File[]>([]);
 
   // 판독 결과 (검토 단계)
   const [entries, setEntries] = useState<VocabEntry[]>([]);
@@ -136,22 +142,26 @@ export default function VocabbookPhotoFlow() {
   // 1) 사진 누적 (판독 전)
   // -------------------------------------------------------------------------
 
-  function onPickFiles(list: FileList | null) {
+  /**
+   * 새로 고른 사진을 **자르기 큐**에 넣는다 — 목록에 바로 넣지 않는다. 맨 앞부터 자동으로
+   * 자르기 모달이 열리고(아래 큐 cropper), onDone이 결과를 `appendCroppedFile`로 목록에
+   * 넣는다. 상한을 넘길 만큼은 애초에 큐에 담지 않는다(이미 담긴 것 + 큐 대기분 제외).
+   */
+  function enqueueForCrop(list: FileList | null) {
     const added = Array.from(list ?? []);
     if (added.length === 0) return;
     clearStatus();
-    setFiles((prev) => {
-      const merged = [...prev, ...added].slice(0, VOCAB_LIMITS.photos);
-      // 미리보기도 같은 슬라이스로 맞춘다 (덧붙이기 — 카메라는 한 번에 한 장만 돌려준다)
-      setPreviews((prevUrls) => {
-        const addedUrls = added.map((f) => URL.createObjectURL(f));
-        const nextUrls = [...prevUrls, ...addedUrls];
-        // 상한을 넘겨 잘린 뒤쪽 URL은 해제한다
-        nextUrls.slice(VOCAB_LIMITS.photos).forEach((u) => URL.revokeObjectURL(u));
-        return nextUrls.slice(0, VOCAB_LIMITS.photos);
-      });
-      return merged;
-    });
+    const remaining = Math.max(0, VOCAB_LIMITS.photos - files.length - cropQueue.length);
+    if (remaining === 0) return;
+    setCropQueue((q) => [...q, ...added.slice(0, remaining)]);
+  }
+
+  /** 자른(또는 "전체 사용" 원본) 한 장을 목록 끝에 추가 — 파일·미리보기 URL을 짝지어 넣는다. */
+  function appendCroppedFile(next: File) {
+    clearStatus();
+    const url = URL.createObjectURL(next); // 순수 updater 유지 위해 밖에서 생성
+    setFiles((prev) => [...prev, next]);
+    setPreviews((prev) => [...prev, url]);
   }
 
   function removeFile(index: number) {
@@ -179,6 +189,7 @@ export default function VocabbookPhotoFlow() {
     previews.forEach((url) => URL.revokeObjectURL(url));
     setPreviews([]);
     setFiles([]);
+    setCropQueue([]); // 대기 중 자르기도 함께 비운다(잔여 방지)
     setEntries([]);
     setExcluded(new Set());
     setEditing(new Set());
@@ -392,7 +403,7 @@ export default function VocabbookPhotoFlow() {
         tabIndex={-1}
         aria-hidden
         onChange={(e) => {
-          onPickFiles(e.target.files);
+          enqueueForCrop(e.target.files); // 목록에 넣기 전에 자르기 큐로 — 한 장씩 자동 오픈
           e.target.value = ""; // 같은 사진을 다시 골라도 change가 발생하게
         }}
       />
@@ -486,7 +497,23 @@ export default function VocabbookPhotoFlow() {
         </div>
       )}
 
-      {cropIndex != null && files[cropIndex] && (
+      {/*
+       * 자르기 모달 — 두 진입.
+       * (1) **큐**: 새로 고른 사진. 목록에 넣기 전에 한 장씩 자동으로 연다.
+       *     onDone → 결과를 목록에 추가 + 큐 한 칸 당김. 취소 → 그 장만 버리고 큐 당김.
+       * (2) **다시 자르기**: 이미 담긴 사진의 썸네일 "✂️ 자르기". replaceFile로 교체.
+       * 큐가 우선한다(새 사진을 다 처리한 뒤에야 다시 자르기 모달이 뜬다).
+       */}
+      {cropQueue[0] ? (
+        <ImageCropper
+          file={cropQueue[0]}
+          onDone={(result) => {
+            appendCroppedFile(result);
+            setCropQueue((q) => q.slice(1));
+          }}
+          onCancel={() => setCropQueue((q) => q.slice(1))}
+        />
+      ) : cropIndex != null && files[cropIndex] ? (
         <ImageCropper
           file={files[cropIndex]}
           onDone={(result) => {
@@ -495,7 +522,7 @@ export default function VocabbookPhotoFlow() {
           }}
           onCancel={() => setCropIndex(null)}
         />
-      )}
+      ) : null}
     </div>
   );
 }

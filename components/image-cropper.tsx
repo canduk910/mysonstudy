@@ -4,16 +4,25 @@
  * components/image-cropper.tsx — 사진 자르기 모달 (클라이언트 전용, 공유 컴포넌트)
  *
  * 영어 표지·수학 문제집·영어 단어장 세 화면이 **같은 이 모달**을 쓴다. 파일 하나를 받아
- * 캔버스에 축소해 그리고, pointer 드래그로 사각형 1개를 골라 잘라낸 `File`을 돌려준다.
+ * 캔버스에 축소해 그리고, **사진 위에 조절 가능한 박스**를 얹어 네 구석·네 모서리 손잡이로
+ * 크기를 줄이거나 박스 안쪽을 끌어 옮긴 뒤, 그 영역만 잘라낸 `File`을 돌려준다.
  * 좌표 변환·자르기는 `lib/image-crop.ts`의 순수 함수에 있고, 이 파일은 그 함수를 캔버스·
  * pointer 이벤트에 배선한다. 라이브러리 0(브라우저 canvas·pointer만).
  *
- * 자르기 목적: 배경·손가락·옆 페이지를 잘라내 판독 정확도를 높인다. 그래서 자유 사각형 1개면
- * 충분하다(회전·비율 고정 없음). 드래그를 못 하는 경우에도 "전체 사용"이 항상 있으므로
- * 기능이 막히지 않는다 — 그 위에 `role="dialog"`·ESC·포커스 트랩 정도만 얹는다.
+ * 표준 크롭 조작(사진마다 자동으로 열리고, 처음엔 박스가 사진 전체 → 안으로 당겨 줄임):
+ * - 초기 선택 = 사진 전체(실수로 너무 작게 자르는 사고를 막는다).
+ * - 손잡이 8개 — 구석(4)은 양축, 모서리 중점(4)은 한 축, 박스 안쪽 드래그는 이동.
+ *   전부 `clampRect`로 캔버스 경계 안에 가둔다. 종횡비 고정 없음(자유 비율).
+ * - 모바일: 손잡이 히트 영역을 넉넉히(44px), `setPointerCapture`로 드래그 안정화,
+ *   `touch-action:none`으로 페이지 스크롤 가로채임 방지.
+ * - 선택 밖은 딤(마스크)으로 어둡게 — 남길 영역이 한눈에 보인다.
+ *
+ * 자르기 목적: 배경·손가락·옆 페이지를 잘라내 판독 정확도를 높인다. "전체 사용"은 원본 File을
+ * 그대로 돌려주므로(재인코딩 없음) 무크롭 경로와 바이트 동일하다 — 자르기를 안 써도 기능이
+ * 막히지 않는다. 그 위에 `role="dialog"`·ESC·포커스 트랩 정도만 얹는다.
  *
  * `lib/ai/*`는 import하지 않는다(번들 오염). 새 CSS 파일 없이 `u-*`·`t-*` 토큰과 Tailwind
- * 유틸만 쓰고, 캔버스·스크림 오버레이만 인라인 스타일을 최소로 쓴다. 보호자 호칭은 "엄빠".
+ * 유틸만 쓰고, 캔버스·딤·손잡이만 인라인 스타일을 최소로 쓴다. 보호자 호칭은 "엄빠".
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -27,6 +36,33 @@ interface Props {
   onDone: (result: File) => void;
   onCancel: () => void;
 }
+
+/** 손잡이 id — 네 구석 + 네 모서리 중점. 문자에 든 방위가 곧 움직이는 변이다. */
+type HandleId = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
+
+/** 손잡이 터치 히트 영역(px) — 시각 크기는 작아도 손가락으로 잡기 쉽게 넉넉히 둔다. */
+const HIT = 44;
+/** 손잡이 보이는 점 크기(px). */
+const DOT = 16;
+/**
+ * 드래그로 줄일 수 있는 박스의 최소 표시 크기(px). 이 값이 곧 "너무 작게" 가드다 —
+ * 손잡이가 반대 변을 넘어가거나 박스가 퇴화(0)되는 것을 리사이즈 단계에서 원천 차단한다.
+ */
+const MIN_GAP = 24;
+/** 선택 밖을 덮는 딤 색 — Canvas 스크림처럼 고정값이 강제된다(테마 토큰 대상 아님). */
+const MASK = "rgba(0,0,0,0.45)";
+
+/** 손잡이 메타 — 모서리(edge)를 먼저, 구석(corner)을 뒤에 둬 겹칠 때 구석이 위로 온다. */
+const HANDLES: { id: HandleId; cursor: string; cx: (s: CropRect) => number; cy: (s: CropRect) => number }[] = [
+  { id: "n", cursor: "ns-resize", cx: (s) => s.x + s.width / 2, cy: (s) => s.y },
+  { id: "e", cursor: "ew-resize", cx: (s) => s.x + s.width, cy: (s) => s.y + s.height / 2 },
+  { id: "s", cursor: "ns-resize", cx: (s) => s.x + s.width / 2, cy: (s) => s.y + s.height },
+  { id: "w", cursor: "ew-resize", cx: (s) => s.x, cy: (s) => s.y + s.height / 2 },
+  { id: "nw", cursor: "nwse-resize", cx: (s) => s.x, cy: (s) => s.y },
+  { id: "ne", cursor: "nesw-resize", cx: (s) => s.x + s.width, cy: (s) => s.y },
+  { id: "se", cursor: "nwse-resize", cx: (s) => s.x + s.width, cy: (s) => s.y + s.height },
+  { id: "sw", cursor: "nesw-resize", cx: (s) => s.x, cy: (s) => s.y + s.height },
+];
 
 /** 표시 캔버스 크기 계산 — 긴 변을 화면 폭에 맞추되 세로도 화면 높이를 넘지 않게 축소. */
 function fitDisplay(nat: Size): Size {
@@ -45,27 +81,64 @@ function fitDisplay(nat: Size): Size {
   return { width: Math.round(w), height: Math.round(h) };
 }
 
-/** 선택이 자를 만큼 큰가 — 너무 작은 드래그는 탭으로 보고 자르기를 막는다. */
+/** 선택이 자를 만큼 큰가 — MIN_GAP 드래그 바닥이 있어 보통 항상 참이지만, 활성 가드로 남긴다. */
 function isCroppable(sel: CropRect | null): boolean {
   return sel != null && sel.width >= 8 && sel.height >= 8;
+}
+
+function clampNum(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+/**
+ * 손잡이 리사이즈 — 잡은 손잡이가 담당하는 변만 pointer 위치로 옮기고, 반대 변과
+ * MIN_GAP 이상 벌어지도록·경계 안에 있도록 가둔다(인버전·퇴화 차단). 마지막에 순수
+ * 함수 `clampRect`로 한 번 더 경계에 맞춘다(재사용).
+ */
+function resizeSel(base: CropRect, id: HandleId, px: number, py: number, bounds: Size): CropRect {
+  let left = base.x;
+  let top = base.y;
+  let right = base.x + base.width;
+  let bottom = base.y + base.height;
+  if (id.includes("w")) left = clampNum(px, 0, right - MIN_GAP);
+  if (id.includes("e")) right = clampNum(px, left + MIN_GAP, bounds.width);
+  if (id.includes("n")) top = clampNum(py, 0, bottom - MIN_GAP);
+  if (id.includes("s")) bottom = clampNum(py, top + MIN_GAP, bounds.height);
+  return clampRect({ x: left, y: top, width: right - left, height: bottom - top }, bounds);
 }
 
 export default function ImageCropper({ file, onDone, onCancel }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
-  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  /** 진행 중인 드래그 — mode(이동/손잡이)·pointerId·시작 시점 박스·이동 오프셋. */
+  const dragRef = useRef<{
+    mode: "move" | HandleId;
+    pointerId: number;
+    base: CropRect;
+    offsetX: number;
+    offsetY: number;
+  } | null>(null);
 
   const [nat, setNat] = useState<Size | null>(null);
   const [displaySize, setDisplaySize] = useState<Size | null>(null);
   const [sel, setSel] = useState<CropRect | null>(null); // 표시 캔버스 좌표
-  const [dragging, setDragging] = useState(false);
   const [cropping, setCropping] = useState(false);
   const [loadError, setLoadError] = useState(false);
 
   // 1) 이미지 로딩 (loadImage 재사용) — 원본 픽셀 크기를 잡는다.
   useEffect(() => {
     let cancelled = false;
+    // 새 파일로 바뀌면(큐의 다음 장·다시 자르기) 이전 장의 조작 상태를 전부 초기화한다.
+    // handleCrop 성공 시 cropping을 내리지 않으므로, 큐(단어장·표지 여러 장)가 같은 cropper
+    // 인스턴스에 file prop만 바꿔 다음 장으로 이어질 때 cropping=true가 남으면 버튼이 잠기고
+    // 오버레이가 사라져 다음 장을 못 자른다. sel·displaySize·nat도 비워 이전 박스가 새 사진
+    // 위에 잠깐 얹히는 것을 막는다(새 이미지 로드까지 "불러오는 중").
+    setCropping(false);
+    setLoadError(false);
+    setSel(null);
+    setDisplaySize(null);
+    setNat(null);
     loadImage(file)
       .then((img) => {
         if (cancelled) return;
@@ -80,19 +153,23 @@ export default function ImageCropper({ file, onDone, onCancel }: Props) {
     };
   }, [file]);
 
-  // 2) 표시 크기 계산 — 로딩 후 + 화면 회전/리사이즈마다.
+  // 2) 표시 크기 계산 + 초기 선택 = 사진 전체. 로딩 후 + 화면 회전/리사이즈마다.
   useEffect(() => {
     if (!nat) return;
     const compute = () => {
-      setDisplaySize(fitDisplay(nat));
-      setSel(null); // 크기가 바뀌면 이전 선택 좌표가 무의미하다 — 리셋
+      const ds = fitDisplay(nat);
+      setDisplaySize(ds);
+      // 초기 박스는 사진 전체 — 사용자가 구석을 안으로 당겨 줄인다(실수 크롭 방지).
+      // 화면이 바뀌면 이전 좌표가 무의미하므로 다시 전체로 리셋한다.
+      setSel({ x: 0, y: 0, width: ds.width, height: ds.height });
     };
     compute();
     window.addEventListener("resize", compute);
     return () => window.removeEventListener("resize", compute);
   }, [nat]);
 
-  // 3) 캔버스에 이미지 + 선택 오버레이 그리기.
+  // 3) 캔버스에 이미지만 그린다 — 딤·테두리·손잡이는 오버레이 div가 맡는다(sel 변경에
+  //    캔버스를 다시 그리지 않아 드래그가 가볍다). DPR로 선명하게.
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     const img = imgRef.current;
@@ -108,65 +185,63 @@ export default function ImageCropper({ file, onDone, onCancel }: Props) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
     ctx.drawImage(img, 0, 0, w, h);
-
-    if (sel && sel.width > 0 && sel.height > 0) {
-      // 선택 밖을 어둡게 — 네 밴드로 덮는다(선택 영역은 그대로 밝게 남는다).
-      ctx.fillStyle = "rgba(0,0,0,0.5)";
-      ctx.fillRect(0, 0, w, sel.y); // 위
-      ctx.fillRect(0, sel.y + sel.height, w, h - (sel.y + sel.height)); // 아래
-      ctx.fillRect(0, sel.y, sel.x, sel.height); // 왼쪽
-      ctx.fillRect(sel.x + sel.width, sel.y, w - (sel.x + sel.width), sel.height); // 오른쪽
-      // 테두리
-      ctx.strokeStyle = "#ffffff";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(sel.x + 1, sel.y + 1, Math.max(0, sel.width - 2), Math.max(0, sel.height - 2));
-    }
-  }, [displaySize, sel]);
+  }, [displaySize]);
 
   useEffect(() => {
     draw();
   }, [draw]);
 
-  // 4) pointer 드래그 → 선택 사각형(표시 좌표).
-  function pointFromEvent(e: React.PointerEvent<HTMLCanvasElement>): { x: number; y: number } {
-    const rect = e.currentTarget.getBoundingClientRect();
+  // 4) pointer 드래그 — 좌표는 캔버스(테두리 없는 콘텐츠 박스) 기준으로 재는 게 정확하다.
+  function pointFromEvent(e: React.PointerEvent): { x: number; y: number } {
+    const c = canvasRef.current;
+    if (!c) return { x: 0, y: 0 };
+    const rect = c.getBoundingClientRect();
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   }
 
-  function onPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
-    if (!displaySize || cropping) return;
-    e.currentTarget.setPointerCapture(e.pointerId);
+  function startDrag(e: React.PointerEvent, mode: "move" | HandleId) {
+    if (!displaySize || !sel || cropping) return;
+    e.preventDefault();
+    e.stopPropagation();
+    // 잡은 손잡이(또는 이동면)에 pointer를 붙들어 캔버스 밖으로 나가도 드래그가 이어진다.
+    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
     const p = pointFromEvent(e);
-    dragStartRef.current = p;
-    setDragging(true);
-    setSel({ x: p.x, y: p.y, width: 0, height: 0 });
-  }
-
-  function onPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
-    if (!dragging || !displaySize) return;
-    const start = dragStartRef.current;
-    if (!start) return;
-    const p = pointFromEvent(e);
-    // 시작점↔현재점을 정규화(위/왼쪽으로 드래그해도 폭·높이 ≥ 0), 표시 경계로 클램프.
-    const raw: CropRect = {
-      x: Math.min(start.x, p.x),
-      y: Math.min(start.y, p.y),
-      width: Math.abs(p.x - start.x),
-      height: Math.abs(p.y - start.y),
+    dragRef.current = {
+      mode,
+      pointerId: e.pointerId,
+      base: sel,
+      offsetX: p.x - sel.x,
+      offsetY: p.y - sel.y,
     };
-    setSel(clampRect(raw, displaySize));
   }
 
-  function onPointerUp(e: React.PointerEvent<HTMLCanvasElement>) {
-    if (!dragging) return;
-    e.currentTarget.releasePointerCapture?.(e.pointerId);
-    setDragging(false);
-    dragStartRef.current = null;
-    // 너무 작은 드래그(탭)는 선택 없음으로 되돌린다 — 실수로 1px 자르기를 막는다.
-    setSel((prev) => (isCroppable(prev) ? prev : null));
+  function onDragMove(e: React.PointerEvent) {
+    const d = dragRef.current;
+    if (!d || !displaySize || e.pointerId !== d.pointerId) return;
+    const p = pointFromEvent(e);
+    if (d.mode === "move") {
+      // 박스 크기는 유지하고 위치만 옮긴다 — 경계 안에 완전히 들어오게 가둔다.
+      const w = d.base.width;
+      const h = d.base.height;
+      setSel({
+        x: clampNum(p.x - d.offsetX, 0, displaySize.width - w),
+        y: clampNum(p.y - d.offsetY, 0, displaySize.height - h),
+        width: w,
+        height: h,
+      });
+    } else {
+      setSel(resizeSel(d.base, d.mode, p.x, p.y, displaySize));
+    }
   }
 
-  // 5) 자르기 실행.
+  function onDragEnd(e: React.PointerEvent) {
+    const d = dragRef.current;
+    if (!d || e.pointerId !== d.pointerId) return;
+    (e.target as Element).releasePointerCapture?.(e.pointerId);
+    dragRef.current = null;
+  }
+
+  // 5) 자르기 실행 — 표시 좌표 sel을 원본 픽셀로 옮겨(toSourceRect) cropImageFile에 넘긴다.
   async function handleCrop() {
     if (!displaySize || !nat || !isCroppable(sel) || !sel) return;
     setCropping(true);
@@ -219,6 +294,9 @@ export default function ImageCropper({ file, onDone, onCancel }: Props) {
   }, [onCancel]);
 
   const ready = !!displaySize && !loadError;
+  const w = displaySize?.width ?? 0;
+  const h = displaySize?.height ?? 0;
+  const showOverlay = ready && !!sel && !cropping;
 
   return (
     <div
@@ -239,8 +317,9 @@ export default function ImageCropper({ file, onDone, onCancel }: Props) {
       >
         <p className="t-section-title">✂️ 필요한 부분만 남겨요</p>
         <p className="t-caption mt-1">
-          손가락으로 드래그해서 남길 부분을 감싸 주세요. 배경·손가락·옆 페이지를 잘라내면 더 잘
-          읽혀요. 자르기 어려우면 <strong>전체 사용</strong>을 눌러도 돼요.
+          네 <strong>구석</strong>과 <strong>모서리</strong>를 끌어 박스를 줄이고, 박스 안쪽을 끌어
+          옮겨요. 배경·손가락·옆 페이지를 빼면 더 잘 읽혀요. 통째로 쓰려면 <strong>전체 사용</strong>을
+          눌러도 돼요.
         </p>
 
         <div className="mt-4 flex items-center justify-center">
@@ -249,16 +328,121 @@ export default function ImageCropper({ file, onDone, onCancel }: Props) {
           ) : !ready ? (
             <p className="t-caption">사진을 불러오는 중이에요…</p>
           ) : (
-            <canvas
-              ref={canvasRef}
-              onPointerDown={onPointerDown}
-              onPointerMove={onPointerMove}
-              onPointerUp={onPointerUp}
-              onPointerCancel={onPointerUp}
-              className="max-w-full rounded-[var(--radius-box)] border border-line"
-              style={{ touchAction: "none", cursor: "crosshair" }}
-              aria-label="자를 영역을 드래그로 선택하는 미리보기"
-            />
+            // 좌표 프레임 — 캔버스가 크기를 정하고(inline-block로 shrink-wrap), 오버레이는
+            // absolute inset-0로 캔버스에 정확히 겹친다. overflow는 두지 않는다(손잡이가
+            // 가장자리에서 잘리지 않게). touch-action:none으로 페이지 스크롤을 막는다.
+            <div
+              className="relative inline-block"
+              style={{ touchAction: "none" }}
+              onPointerMove={onDragMove}
+              onPointerUp={onDragEnd}
+              onPointerCancel={onDragEnd}
+            >
+              <canvas
+                ref={canvasRef}
+                className="block rounded-[var(--radius-box)] border border-line"
+                style={{ width: w, height: h }}
+                aria-label="자를 영역을 손잡이로 조절하는 미리보기"
+              />
+
+              {showOverlay && sel && (
+                <>
+                  {/* 딤 레이어 — 선택 밖을 어둡게. 둥근 모서리로 클립, pointer 통과. */}
+                  <div
+                    className="pointer-events-none absolute inset-0 overflow-hidden rounded-[var(--radius-box)]"
+                    aria-hidden
+                  >
+                    <div style={{ position: "absolute", left: 0, top: 0, width: "100%", height: sel.y, background: MASK }} />
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: 0,
+                        top: sel.y + sel.height,
+                        width: "100%",
+                        height: Math.max(0, h - (sel.y + sel.height)),
+                        background: MASK,
+                      }}
+                    />
+                    <div style={{ position: "absolute", left: 0, top: sel.y, width: sel.x, height: sel.height, background: MASK }} />
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: sel.x + sel.width,
+                        top: sel.y,
+                        width: Math.max(0, w - (sel.x + sel.width)),
+                        height: sel.height,
+                        background: MASK,
+                      }}
+                    />
+                    {/* 선택 테두리 */}
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: sel.x,
+                        top: sel.y,
+                        width: sel.width,
+                        height: sel.height,
+                        boxSizing: "border-box",
+                        border: "2px solid #fff",
+                        boxShadow: "0 0 0 1px rgba(0,0,0,0.35)",
+                      }}
+                    />
+                  </div>
+
+                  {/* 조작 레이어 — 손잡이가 가장자리에서 잘리지 않게 클립하지 않는다. */}
+                  <div className="absolute inset-0">
+                    {/* 박스 안쪽 = 이동면 (손잡이보다 아래에 둔다) */}
+                    <div
+                      onPointerDown={(e) => startDrag(e, "move")}
+                      style={{
+                        position: "absolute",
+                        left: sel.x,
+                        top: sel.y,
+                        width: sel.width,
+                        height: sel.height,
+                        cursor: "move",
+                        touchAction: "none",
+                      }}
+                      aria-hidden
+                    />
+                    {HANDLES.map((hd) => {
+                      const cx = hd.cx(sel);
+                      const cy = hd.cy(sel);
+                      return (
+                        <div
+                          key={hd.id}
+                          onPointerDown={(e) => startDrag(e, hd.id)}
+                          style={{
+                            position: "absolute",
+                            left: cx - HIT / 2,
+                            top: cy - HIT / 2,
+                            width: HIT,
+                            height: HIT,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            cursor: hd.cursor,
+                            touchAction: "none",
+                          }}
+                          aria-hidden
+                        >
+                          <span
+                            style={{
+                              width: DOT,
+                              height: DOT,
+                              background: "#fff",
+                              border: "1px solid rgba(0,0,0,0.45)",
+                              borderRadius: 4,
+                              boxShadow: "0 1px 2px rgba(0,0,0,0.4)",
+                            }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
           )}
         </div>
 
@@ -269,7 +453,7 @@ export default function ImageCropper({ file, onDone, onCancel }: Props) {
             disabled={!ready || !isCroppable(sel) || cropping}
             onClick={() => void handleCrop()}
           >
-            {cropping ? "자르는 중이에요…" : "✂️ 이대로 자르기"}
+            {cropping ? "자르는 중이에요…" : "✂️ 이 영역만"}
           </button>
           <button
             type="button"

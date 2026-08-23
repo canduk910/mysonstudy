@@ -154,8 +154,14 @@ export default function HomeCreate({
   const [pageFiles, setPageFiles] = useState<File[]>([]);
   /** 표지 미리보기 URL — coverFiles와 짝을 맞춰 유지한다(아래 useEffect가 관리) */
   const [coverPreviews, setCoverPreviews] = useState<string[]>([]);
-  /** 자르기 모달에 올릴 표지의 인덱스. null이면 모달을 닫는다. (슬롯별로 한 장씩 자른다) */
+  /** 자르기 모달에 올릴 표지의 인덱스. null이면 모달을 닫는다. (담긴 뒤 "다시 자르기") */
   const [coverCropIndex, setCoverCropIndex] = useState<number | null>(null);
+  /**
+   * 자르기 대기 큐 — 새로 고른 표지들은 목록에 넣기 전에 여기 쌓여, 맨 앞부터 한 장씩
+   * 자동으로 자르기 모달이 열린다. onDone이면 결과를 목록에 넣고, 취소면 그 장만 버린 뒤
+   * 둘 다 큐를 한 칸 당긴다(다음 장 자동 오픈). 여러 장을 한 번에 골라도 순차로 자른다.
+   */
+  const [coverQueue, setCoverQueue] = useState<File[]>([]);
   /** 본문 전체 촬영인지, 챕터북 목차 1~2장인지 (배지·프롬프트가 갈린다) */
   const [sceneKind, setSceneKind] = useState<SceneSourceKind>("pages");
   /** 본문 판독 결과 확인 단계 — 이 값이 있으면 카드 생성 전에 검토 패널을 띄운다 */
@@ -811,15 +817,17 @@ export default function HomeCreate({
           // **덧붙이기**로 담는다. 카메라로 "바로 찍기"를 고르면 OS가 한 번에 한 장만
           // 돌려주므로(multiple을 줘도 그렇다 — 카메라 세션이 1장으로 끝난다), 교체로
           // 두면 표지 3장을 영영 못 채운다. 찍기를 세 번 눌러 쌓을 수 있어야 한다.
+          //
+          // 새로 고른 사진은 목록에 바로 넣지 않고 **자르기 큐**에 쌓는다 — 맨 앞부터
+          // 자동으로 자르기 모달이 열리고, onDone이 결과를 목록에 넣는다(아래 큐 cropper).
+          // 상한을 넘길 만큼은 애초에 큐에 담지 않는다(이미 담긴 것 + 큐 대기분 제외).
           const added = Array.from(e.target.files ?? []);
           e.target.value = ""; // 같은 사진을 다시 골라도 change가 발생하게
           if (added.length === 0) return;
-          setCoverFiles((prev) => [...prev, ...added].slice(0, COVER_MAX_IMAGES));
+          const remaining = Math.max(0, COVER_MAX_IMAGES - coverFiles.length - coverQueue.length);
+          if (remaining === 0) return;
           clearStatus();
-          // 표지가 바뀌면 판독 결과가 무효다 — 다음 실행은 처음부터 다시 탄다
-          pagesFlowReady.current = false;
-          setReview(null);
-          scrollToPanel();
+          setCoverQueue((q) => [...q, ...added.slice(0, remaining)]);
         }}
       />
       <input
@@ -1132,6 +1140,7 @@ export default function HomeCreate({
                   type="button"
                   onClick={() => {
                     setCoverFiles([]);
+                    setCoverQueue([]); // 대기 중 자르기도 함께 비운다(잔여 방지)
                     clearStatus();
                     pagesFlowReady.current = false;
                     setReview(null);
@@ -1481,7 +1490,28 @@ export default function HomeCreate({
         </div>
       )}
 
-      {coverCropIndex != null && coverFiles[coverCropIndex] && (
+      {/*
+       * 자르기 모달 — 두 진입.
+       * (1) **큐**: 새로 고른 표지. 목록에 넣기 전에 한 장씩 자동으로 연다.
+       *     onDone → 결과를 목록에 추가(상한 슬라이스) + 판독 무효화 + 큐 한 칸 당김.
+       *     취소 → 그 장만 버리고 큐 한 칸 당김(파일 유실 OK — 다시 고르면 된다).
+       * (2) **다시 자르기**: 이미 담긴 표지의 썸네일 "✂️ 자르기". replaceCover로 교체.
+       * 큐가 우선한다(새 사진을 다 처리한 뒤에야 다시 자르기 모달이 뜬다).
+       */}
+      {coverQueue[0] ? (
+        <ImageCropper
+          file={coverQueue[0]}
+          onDone={(result) => {
+            setCoverFiles((prev) => [...prev, result].slice(0, COVER_MAX_IMAGES));
+            // 표지가 늘면 판독 결과가 무효다 — 원래 "표지 담기"와 같은 무효화(§ replaceCover와 동일)
+            pagesFlowReady.current = false;
+            setReview(null);
+            setCoverQueue((q) => q.slice(1));
+            scrollToPanel();
+          }}
+          onCancel={() => setCoverQueue((q) => q.slice(1))}
+        />
+      ) : coverCropIndex != null && coverFiles[coverCropIndex] ? (
         <ImageCropper
           file={coverFiles[coverCropIndex]}
           onDone={(result) => {
@@ -1490,7 +1520,7 @@ export default function HomeCreate({
           }}
           onCancel={() => setCoverCropIndex(null)}
         />
-      )}
+      ) : null}
     </section>
   );
 }

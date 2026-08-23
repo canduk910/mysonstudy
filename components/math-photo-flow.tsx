@@ -205,16 +205,15 @@ export default function MathPhotoFlow() {
   const [retakeKo, setRetakeKo] = useState<string | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
 
-  /** 자르기 모달에 올릴 파일. null이면 모달을 닫는다. (crop은 선택 사항 — 자르기 버튼을 누른 사람만) */
+  /**
+   * 자르기 모달에 올릴 파일. null이면 모달을 닫는다.
+   * 사진을 고르면 **항상** 먼저 이 모달이 자동으로 열린다(구석·모서리로 박스 조절 →
+   * "이 영역만" 또는 "전체 사용"). "전체 사용"은 원본 File을 그대로 돌려주므로 읽기 경로가
+   * 예전 무크롭과 byte 동일하다(회귀 0). 취소하면 아무것도 읽지 않는다(다시 고르면 된다).
+   */
   const [cropFile, setCropFile] = useState<File | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  /**
-   * 방금 고른 파일을 자르기 모달로 보낼지(true) 곧바로 읽을지(false)를 가르는 플래그.
-   * "자르고 읽기" 버튼이 `.click()` 직전에 true로 세운다 — 기본 "사진 고르기"는 건드리지 않아
-   * 자르기를 안 쓰는 흐름은 byte 단위로 예전과 같은 경로를 탄다(회귀 0).
-   */
-  const cropNextRef = useRef(false);
   const topRef = useRef<HTMLDivElement>(null);
   /** 마지막으로 보낸 사진 — "다시 읽기"가 사진을 또 고르게 만들지 않도록 붙들어 둔다 */
   const lastDataUrl = useRef<string | null>(null);
@@ -527,12 +526,9 @@ export default function MathPhotoFlow() {
         const file = e.target.files?.[0];
         e.target.value = ""; // 같은 사진을 다시 골라도 change가 나게
         if (!file) return;
-        if (cropNextRef.current) {
-          cropNextRef.current = false;
-          setCropFile(file); // 자르기 모달로 — 결과는 onDone이 onPickFile로 넘긴다
-        } else {
-          void onPickFile(file); // 기존 즉시 읽기 경로 — 그대로
-        }
+        // 사진마다 자동으로 자르기 모달을 연다 — 결과(자른 파일 또는 "전체 사용" 원본)를
+        // onDone이 onPickFile로 넘겨 읽는다. 취소하면 읽지 않는다.
+        setCropFile(file);
       }}
     />
   );
@@ -1058,13 +1054,7 @@ export default function MathPhotoFlow() {
       <button
         type="button"
         disabled={busy}
-        onClick={() => {
-          // 즉시읽기 진입 — crop 의도를 명시적으로 끈다. 앞서 "자르기"를 눌렀다가
-          // 파일 대화상자를 취소하면 cropNextRef가 true로 남아, 그다음 이 버튼으로
-          // 고른 사진이 즉시읽기 대신 crop 모달로 새 버린다(QA P3-1).
-          cropNextRef.current = false;
-          fileInputRef.current?.click();
-        }}
+        onClick={() => fileInputRef.current?.click()}
         className="u-entry u-entry-primary"
       >
         <span className="u-entry-icon" aria-hidden>
@@ -1074,21 +1064,8 @@ export default function MathPhotoFlow() {
           {busy ? "읽는 중이에요…" : "문제집 사진 고르기"}
         </span>
         <span className="u-entry-desc">
-          한 번에 한 페이지씩. 찍어 둔 사진을 고르거나 지금 바로 찍어도 돼요.
+          한 번에 한 페이지씩. 사진을 고르면 필요한 부분만 자를 수 있어요.
         </span>
-      </button>
-
-      {/* 선택 사항 — 배경·손가락이 많이 찍혔으면 자르고 읽으면 더 잘 읽혀요. */}
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => {
-          cropNextRef.current = true;
-          fileInputRef.current?.click();
-        }}
-        className="u-btn u-btn-secondary mt-3 w-full"
-      >
-        <span aria-hidden>✂️</span> 사진을 잘라서 읽을래요
       </button>
 
       <section className="mt-8">
