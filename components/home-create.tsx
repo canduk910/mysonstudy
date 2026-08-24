@@ -35,7 +35,7 @@ import { COVER_MAX_IMAGES } from "@/lib/upload-limits";
 // 타입·상수
 // ---------------------------------------------------------------------------
 
-type StepId = "extract" | "identify" | "pages" | "card";
+type StepId = "extract" | "identify" | "pages" | "card" | "chapterize";
 
 /** 진행 UI 문구 (SPEC §3) — 단계 id가 곧 실제 API 호출이다 */
 const STEP_LABEL: Record<StepId, string> = {
@@ -43,6 +43,9 @@ const STEP_LABEL: Record<StepId, string> = {
   identify: "책 확인 중",
   pages: "본문 읽는 중",
   card: "카드 만드는 중",
+  // 카드 생성 성공 후, 자막이 있으면 클라이언트가 이어서 부르는 실제 호출(POST /api/chapterize).
+  // "단계 id = 실제 API 호출" 원칙을 지킨다 — 자막이 없으면 이 단계는 목록에 추가되지 않는다.
+  chapterize: "📖 챕터 읽기 만드는 중",
 };
 
 interface DuplicateInfo {
@@ -337,6 +340,25 @@ export default function HomeCreate({
   // (3) 생성 — /api/card (모든 흐름의 마지막 단계)
   // -------------------------------------------------------------------------
 
+  /**
+   * (3′) 챕터 리더 자동 채움 — 카드 생성 후 자막이 있을 때만 이어서 부른다(POST /api/chapterize).
+   *
+   * **best-effort**다: 성공하면 상세 화면에 챕터 리더가 처음부터 채워지고, 실패하면 조용히
+   * 넘어가 상세의 "챕터로 읽기 만들기" CTA가 폴백이 된다. 그래서 응답을 검사하지 않고 throw도
+   * 삼킨다 — 카드는 이미 만들어졌으므로 이 단계의 실패가 카드 흐름을 막아선 안 된다(비치명).
+   */
+  async function runChapterizeBestEffort(bookId: string): Promise<void> {
+    try {
+      await fetch("/api/chapterize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bookId }),
+      });
+    } catch {
+      // 무시 — 상세 화면의 "챕터로 읽기 만들기" CTA로 다시 시도할 수 있다.
+    }
+  }
+
   async function runCard(
     payload: Record<string, unknown>,
     opts?: {
@@ -388,6 +410,16 @@ export default function HomeCreate({
         if (data.transcriptNotice) {
           setTranscriptNotice({ messageKo: data.transcriptNotice, cardId: data.cardId });
           return;
+        }
+        // 자막이 반영됐으면(youtubeUrl 제출 + notice 없음 = fetch 성공) 챕터 리더를 **자동으로** 채운다.
+        // /api/card는 그대로 두고(회귀 0), vocab 저장 후 enrich 자동 호출과 같은 패턴으로 클라이언트가
+        // 이어서 POST /api/chapterize를 부른다. best-effort — 실패해도 카드는 그대로 열고, 상세 화면의
+        // "챕터로 읽기 만들기" CTA가 폴백이 된다. 이동 직전 상세에 리더가 미리 채워진다(탭 불필요).
+        if (payload.youtubeUrl && data.bookId) {
+          // "단계 id = 실제 API 호출" — 실제로 부를 때만 목록에 붙인다(자막 실패 경로엔 안 붙는다).
+          setSteps((prev) => (prev.includes("chapterize") ? prev : [...prev, "chapterize"]));
+          setPhase("chapterize");
+          await runChapterizeBestEffort(data.bookId);
         }
         navigating = true;
         router.push(`/card/${data.cardId}`);
@@ -1082,6 +1114,12 @@ export default function HomeCreate({
             // card 단계에 "자막도 함께 가져와 반영 중"임을 사실대로 덧붙인다.
             <p className="t-caption mt-3">
               🎧 유튜브 낭독 자막을 가져와 카드에 반영하고 있어요 · 자막이 길면 조금 더 걸릴 수 있어요
+            </p>
+          ) : phase === "chapterize" ? (
+            // 카드 생성 후 자동으로 자막을 챕터별 영어 원문·우리말로 나누는 중(best-effort).
+            <p className="t-caption mt-3">
+              📖 낭독 자막을 영어 원문과 우리말 해석으로 나누고 있어요 · 곧 카드에서 챕터별로 읽을 수
+              있어요
             </p>
           ) : (
             <p className="t-caption mt-3">보통 20~40초 정도 걸려요. 조금만 기다려 주세요!</p>

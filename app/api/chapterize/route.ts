@@ -1,21 +1,21 @@
 /**
  * POST /api/chapterize — 챕터 리더 만들기 (호출 F, docs/harness/english.md §9)
  *
- * 목차(sceneKind='toc')로 읽은 챕터 제목 + 유튜브 낭독 자막(transcript)이 둘 다 있는 책을
- * 챕터별 영어 원문(en)/우리말 해석(ko) 문장으로 나눠 book.chapters에 저장한다.
- * 이 결과는 챕터 리더 UI(components/chapter-reader.tsx)의 근거가 된다.
+ * **유튜브 낭독 자막(transcript)이 있는 책**을 챕터별 영어 원문(en)/우리말 해석(ko) 문장으로
+ * 나눠 book.chapters에 저장한다. 목차(sceneKind='toc')가 있으면 챕터별로, 없으면 자막 전체를
+ * "전체" 단일 챕터로 만든다(자막 필수, 목차 선택 — §9). 이 결과는 챕터 리더 UI의 근거가 된다.
  *
  * 카드 생성(/api/card)과 **별개 경로**다 — 카드·책은 그대로 두고 챕터만 얹는다(재나누기 가능).
- * 그래서 챕터화 실패는 **비치명**이다: book/card는 손대지 않고 실패만 알린다. 챕터 제목·자막은
+ * 그래서 챕터화 실패는 **비치명**이다: book/card는 손대지 않고 실패만 알린다. 자막·목차는
  * 이미 book에 저장돼 있으므로, 재나누기에 사진·영상을 다시 넣을 필요가 없다.
  *
- * 챕터 제목의 출처: 호출 A′(toc 모드)가 목차 사진을 읽어 만든 sceneDigest의 각 항목 labelKo다
- * (§2A-2 "챕터 제목은 labelKo에 그대로"). book.sceneDigest.map(s => s.labelKo)를 chapterTitles로 넘긴다.
+ * 챕터 제목의 출처(목차 있을 때): 호출 A′(toc 모드)가 목차 사진을 읽어 만든 sceneDigest의 각
+ * 항목 labelKo다(§2A-2 "챕터 제목은 labelKo에 그대로"). 목차가 없으면 빈 배열([])을 넘긴다.
  *
  * 응답 shape (qa-inspector 교차 검증용 — 빌드 리포트에도 명시):
  * - 200 { ok: true, bookId, chapterCount, matchedCount, truncated, droppedSentenceCount }
  * - 400 { ok: false, error: "invalid_input", messageKo, issues: {path, message}[] }   ← 본문 JSON 오류
- * - 400 { ok: false, error: "not_chapterizable", messageKo }                          ← 목차/자막이 아직 없음(먼저 준비해야 함)
+ * - 400 { ok: false, error: "not_chapterizable", messageKo }                          ← 낭독 자막이 아직 없음(먼저 준비해야 함)
  * - 404 { ok: false, error: "book_not_found", messageKo }
  * - 501 { ok: false, error: "no_api_key", messageKo }
  * - 500 { ok: false, error: "ai_failed", messageKo, retriable: true }                 ← 챕터화 재시도 소진(throw)
@@ -61,43 +61,28 @@ function aiFailed() {
 }
 
 /**
- * 챕터화 가능 조건 판정 — 목차 챕터 제목과 낭독 자막이 둘 다 있어야 한다.
- * 챕터 제목은 sceneKind='toc'인 sceneDigest의 labelKo에 들어 있다(§2A-2).
- * 조건이 안 맞으면 어떤 안내를 할지까지 정해 돌려준다(버튼은 가려져 있어야 정상이지만, 방어적으로).
+ * 챕터 리더 입력 조립 — **낭독 자막(필수)** + 목차 챕터 제목(선택)을 모은다.
+ * 목차(sceneKind='toc')가 있으면 각 장면 labelKo가 영어 챕터 제목이다(§2A-2). 없으면 빈 배열을
+ * 돌려주고, chapterizeTranscript가 자막 전체를 "전체" 단일 챕터로 만든다(§9).
+ *
+ * 버튼 노출(서버 페이지)과 **같은 정의**(canChapterizeBook = 자막 존재)로 가른다.
  */
 function collectChapterTitles(book: BookRecord):
   | { ok: true; titles: string[]; transcript: string }
   | { ok: false; messageKo: string } {
-  // 버튼 노출(서버 페이지)과 **같은 정의**로 가른다 — 여기서만 세부 안내 문구를 고른다.
   if (!canChapterizeBook(book)) {
-    const hasToc = book.sceneKind === "toc" && (book.sceneDigest?.length ?? 0) > 0;
-    const hasTranscript = (book.transcript?.trim() ?? "") !== "";
-    if (!hasToc && !hasTranscript) {
-      return {
-        ok: false,
-        messageKo:
-          "챕터로 나누려면 목차 사진과 유튜브 낭독 영상이 둘 다 필요해요. 목차를 찍어 읽고, 낭독 영상 주소를 넣어 카드를 만든 뒤 다시 눌러 주세요.",
-      };
-    }
-    if (!hasToc) {
-      return {
-        ok: false,
-        messageKo: "목차 사진을 먼저 읽어야 챕터로 나눌 수 있어요. 목차를 찍어 '목차로 읽기'로 등록해 주세요.",
-      };
-    }
     return {
       ok: false,
-      messageKo: "유튜브 낭독 영상 자막이 있어야 챕터로 나눌 수 있어요. 낭독 영상 주소를 넣어 카드를 다시 만들어 주세요.",
+      messageKo:
+        "낭독 자막이 있어야 챕터로 읽을 수 있어요. 유튜브 낭독 영상 주소를 넣어 카드를 만든 뒤 다시 눌러 주세요.",
     };
   }
-  // canChapterizeBook 통과 → transcript·sceneDigest는 있다. 각 장면 labelKo가 영어 챕터 제목(§2A-2).
   const transcript = book.transcript!.trim();
-  const titles = (book.sceneDigest ?? [])
-    .map((scene) => scene.labelKo.trim())
-    .filter((t) => t !== "");
-  if (titles.length === 0) {
-    return { ok: false, messageKo: "목차에서 챕터 제목을 읽지 못했어요. 목차 사진을 다시 찍어 읽어 주세요." };
-  }
+  // 목차가 있으면 챕터 제목 배열, 없으면 빈 배열([]) → 자막 전체가 "전체" 단일 챕터로 나뉜다.
+  const titles =
+    book.sceneKind === "toc"
+      ? (book.sceneDigest ?? []).map((scene) => scene.labelKo.trim()).filter((t) => t !== "")
+      : [];
   return { ok: true, titles, transcript };
 }
 
@@ -136,7 +121,7 @@ export async function POST(req: Request) {
 
   const collected = collectChapterTitles(book);
   if (!collected.ok) {
-    // 목차·자막이 아직 없다 — 재시도한다고 달라지지 않는 준비 부족이므로 not_chapterizable(400)로 갈라 보낸다.
+    // 낭독 자막이 아직 없다 — 재시도한다고 달라지지 않는 준비 부족이므로 not_chapterizable(400)로 갈라 보낸다.
     return NextResponse.json(
       { ok: false, error: "not_chapterizable", messageKo: collected.messageKo },
       { status: 400 },
@@ -149,7 +134,7 @@ export async function POST(req: Request) {
   try {
     result = await chapterizeTranscript(collected.titles, collected.transcript);
   } catch (err) {
-    // 목차·자막이 비었으면 chapterizeTranscript가 ChapterizeError("invalid_input")를 던진다.
+    // 자막이 비었으면 chapterizeTranscript가 ChapterizeError("invalid_input")를 던진다(목차 없음은 정상 — "전체" 단일 챕터).
     // 위 collectChapterTitles가 먼저 걸러 주지만, 뚫린 경우 여기가 마지막 관문이다(§9-6 계약).
     if (isChapterizeError(err) && err.code === "invalid_input") {
       console.error("[/api/chapterize] 입력 오류:", err.message);
@@ -157,7 +142,7 @@ export async function POST(req: Request) {
         {
           ok: false,
           error: "not_chapterizable",
-          messageKo: "챕터로 나눌 목차·자막을 찾지 못했어요. 목차와 낭독 영상을 확인해 주세요.",
+          messageKo: "챕터로 읽을 낭독 자막을 찾지 못했어요. 낭독 영상을 확인해 주세요.",
         },
         { status: 400 },
       );

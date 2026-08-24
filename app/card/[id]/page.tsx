@@ -60,7 +60,7 @@ export default async function CardPage({ params }: CardPageProps) {
     sceneCount: c.content.sceneDigest?.length ?? 0,
   }));
 
-  // 챕터 리더(호출 F) 진입 조건 — 목차(toc) 챕터 제목 + 낭독 자막이 둘 다 있는가.
+  // 챕터 리더(호출 F) 진입 조건 — 낭독 자막이 있는가(목차는 선택, 없으면 "전체" 단일 챕터).
   // book.transcript(자막 전문)를 클라이언트가 다시 판정하지 않도록 여기서 boolean만 넘긴다.
   const canChapterize = canChapterizeBook(book);
 

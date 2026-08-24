@@ -56,6 +56,8 @@ import {
 import type { VocabEntry } from "./ai/english/vocabbook-schemas";
 // enriched 재계산의 단일 정의처(V8) — file 백엔드(store.ts)와 같은 함수로 두 백엔드가 안 갈린다.
 import { isVocabBookEnriched } from "./ai/english/vocabbook-enrich";
+// "모은 단어" 수집 단어장 마커(dayLabel)·초기 이름(M2) — file 백엔드와 같은 상수로 두 백엔드가 안 갈린다.
+import { COLLECTED_VOCAB_DAY_LABEL, COLLECTED_VOCAB_TITLE_KO } from "./collected-vocab-contract";
 // 시험(V4) 모드 상수 — 읽기 방어에서 미지 모드를 안전 폴백하는 데 쓴다(순수 모듈, 값 import 안전).
 import { VOCAB_QUIZ_MODES } from "./vocab-quiz";
 // 설명 기록(M4)이 안는 타입 — 값 import는 `SCENE_TIERS` 하나뿐이다(읽기 방어용 상수).
@@ -512,6 +514,26 @@ export class FirestoreStore implements StudyStore {
   async getVocabBook(id: string): Promise<VocabBookRecord | null> {
     const snap = await this.vocabBooks().doc(id).get();
     return snap.exists ? toVocabBook(snap.id, snap.data()!) : null;
+  }
+
+  async getOrCreateCollectedVocabBook(): Promise<VocabBookRecord> {
+    // 단일 필드 등가 쿼리라 복합 인덱스가 필요 없다(Firestore 자동 단일 필드 인덱스). 정렬은 메모리에서.
+    const snap = await this.vocabBooks().where("dayLabel", "==", COLLECTED_VOCAB_DAY_LABEL).get();
+    if (!snap.empty) {
+      // 첫 담기 경합으로 둘이 만들어졌어도 "가장 먼저 만든 것"으로 수렴시킨다(file 백엔드와 같은 규칙).
+      const books = snap.docs.map((d) => toVocabBook(d.id, d.data()));
+      let picked = books[0];
+      for (const b of books) if (b.createdAt < picked.createdAt) picked = b;
+      return picked;
+    }
+    return this.createVocabBook({
+      titleKo: COLLECTED_VOCAB_TITLE_KO,
+      dayLabel: COLLECTED_VOCAB_DAY_LABEL,
+      entries: [],
+      photoCount: 0,
+      enriched: false,
+      model: "",
+    });
   }
 
   async listVocabBooks(limit?: number): Promise<VocabBookRecord[]> {

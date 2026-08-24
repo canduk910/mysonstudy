@@ -38,6 +38,9 @@ import type { VocabEntry, VocabMeaning, VocabRelated } from "./ai/english/vocabb
 import { isVocabBookEnriched } from "./ai/english/vocabbook-enrich";
 // 시험(V4) 모드 유니온 — 순수 모듈이라 값 import여도 저장 계층이 AI에 묶이지 않는다(타입만 쓴다).
 import type { VocabQuizMode } from "./vocab-quiz";
+// "모은 단어" 수집 단어장의 안정 마커(dayLabel)·초기 이름. 타입 없는 상수 모듈이라 값으로 끌어와도
+// 저장 계층이 AI에 묶이지 않는다(M2 챕터 리더 더블탭 담기).
+import { COLLECTED_VOCAB_DAY_LABEL, COLLECTED_VOCAB_TITLE_KO } from "./collected-vocab-contract";
 import type { SceneTier } from "./scene/types";
 import { FirestoreStore } from "./store-firestore";
 
@@ -104,7 +107,8 @@ export interface BookRecord {
   /**
    * --- 챕터 리더 (호출 F · 챕터화, docs/harness/english.md §9) ---
    *
-   * 목차(sceneKind='toc') 챕터 제목 + 낭독 자막(transcript)이 둘 다 있을 때만 채워진다.
+   * 낭독 자막(transcript)이 있을 때 채워진다(목차는 선택). 목차(sceneKind='toc') 챕터 제목이
+   * 있으면 챕터별로, 없으면 자막 전체를 "전체" 단일 챕터로 나눈다.
    * `chapterizeTranscript()`가 자막을 챕터별 영어 원문(en)/우리말 해석(ko) 문장으로 나눈 결과다.
    *
    * **이 필드에 한해 영어 원문을 그대로 저장·표시한다** — 가족 전용 챕터 리더로, §9 서두가
@@ -133,16 +137,15 @@ export interface BookEvidencePatch {
 }
 
 /**
- * 챕터로 나눌 수 있는 책인가 — 목차(sceneKind='toc') 챕터 제목과 낭독 자막(transcript)이
- * 둘 다 있어야 한다(docs/harness/english.md §9). 챕터 리더 버튼 노출(서버 페이지)과
- * /api/chapterize의 전제조건이 **같은 정의**를 봐야 서로 어긋나지 않는다(QA F12식 드리프트 방지).
+ * 챕터 리더를 열 수 있는 책인가 — **낭독 자막(transcript)이 있으면** 된다(docs/harness/english.md §9).
+ * 목차(sceneKind='toc')는 선택이다: 있으면 챕터별로 나누고, 없으면 자막 전체를 "전체" 단일 챕터로
+ * 만든다(chapterizeTranscript에 빈 배열을 넘기면 됨). 자막이 이 리더의 유일한 필수 입력이다.
+ *
+ * 챕터 리더 노출(서버 페이지)과 /api/chapterize의 전제조건이 **같은 정의**를 봐야 서로
+ * 어긋나지 않는다(QA F12식 드리프트 방지). 자막 없으면 false → 리더 미노출(회귀 0).
  */
-export function canChapterizeBook(
-  book: Pick<BookRecord, "sceneKind" | "sceneDigest" | "transcript">,
-): boolean {
-  const hasToc = book.sceneKind === "toc" && (book.sceneDigest?.length ?? 0) > 0;
-  const hasTranscript = (book.transcript?.trim() ?? "") !== "";
-  return hasToc && hasTranscript;
+export function canChapterizeBook(book: Pick<BookRecord, "transcript">): boolean {
+  return (book.transcript?.trim() ?? "") !== "";
 }
 
 export interface CardRecord {
@@ -368,6 +371,15 @@ export interface StudyStore {
   /** 최신순. limit 생략이면 전체 (가족용 규모) */
   listVocabBooks(limit?: number): Promise<VocabBookRecord[]>;
   /**
+   * "모은 단어" 수집 단어장을 얻거나(없으면) 만든다 (M2 챕터 리더 더블탭 담기).
+   * `dayLabel === COLLECTED_VOCAB_DAY_LABEL`로 식별되는 **단일** 단어장이다(titleKo는 rename으로
+   * 바뀔 수 있어 마커로 안 쓴다 — collected-vocab-contract 참고). 정본이 이미 있으면 그것을,
+   * 없으면 빈 단어장을 만들어 돌려준다. 이후 호출측이 `appendVocabEntry`로 단어를 붙인다.
+   * **생성**이라 prod-guard가 걸리지 않는다(삭제가 아니다). 중복 생성 경합은 "가장 먼저 만든 것"을
+   * 정본으로 골라 최소화한다(가족용 규모라 실질 위험 무시 가능).
+   */
+  getOrCreateCollectedVocabBook(): Promise<VocabBookRecord>;
+  /**
    * 보강(호출 D, V3) 결과를 저장한다 — 기존 레코드의 `entries`·`enriched`만 갈아끼운다.
    * **삭제가 아니라 수정**이라 prod-guard를 걸지 않는다(updateBookEvidence와 같은 규약).
    *
@@ -509,6 +521,20 @@ function byCreatedAtDesc(a: { createdAt: string }, b: { createdAt: string }): nu
 /** 시험 세션 정렬 — startedAt 오름차순(오래된 순 = 시간 순서). V5 streak 계산이 이 순서를 읽는다 */
 function byStartedAtAsc(a: { startedAt: string }, b: { startedAt: string }): number {
   return a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : 0;
+}
+
+/**
+ * "모은 단어" 수집 단어장의 정본을 고른다 (M2). dayLabel 마커가 같은 것 중 **가장 먼저 만든 것**을
+ * 정본으로 삼는다 — 첫 담기 경합으로 둘이 만들어져도 이후 담기가 같은 하나로 수렴한다. 없으면 null.
+ * file·firestore 두 백엔드가 같은 규칙을 쓰도록 여기 한 곳에 둔다.
+ */
+function pickCollectedVocabBook(books: readonly VocabBookRecord[]): VocabBookRecord | null {
+  let picked: VocabBookRecord | null = null;
+  for (const b of books) {
+    if (b.dayLabel !== COLLECTED_VOCAB_DAY_LABEL) continue;
+    if (!picked || b.createdAt < picked.createdAt) picked = b;
+  }
+  return picked;
 }
 
 /**
@@ -809,6 +835,32 @@ class JsonFileStore implements BookCardStore {
     if (!found) return null;
     // 읽기 정규화 — 옛 meaningsKo 레코드를 새 meanings로 승격(Firestore toVocabBook과 같은 방어)
     return { ...found, entries: (found.entries ?? []).map(normalizeVocabEntry) };
+  }
+
+  async getOrCreateCollectedVocabBook(): Promise<VocabBookRecord> {
+    // 흔한 경로(이미 있음)는 파일을 다시 쓰지 않게 먼저 읽어 확인한다 — 없을 때만 mutate로 만든다.
+    const db0 = await readDb();
+    const existing = pickCollectedVocabBook(db0.vocabBooks);
+    if (existing) {
+      return { ...existing, entries: (existing.entries ?? []).map(normalizeVocabEntry) };
+    }
+    return this.mutate((db) => {
+      // 경합 재확인 — read~mutate 사이에 다른 담기가 정본을 이미 만들었을 수 있다.
+      const again = pickCollectedVocabBook(db.vocabBooks);
+      if (again) return { ...again, entries: (again.entries ?? []).map(normalizeVocabEntry) };
+      const record: VocabBookRecord = {
+        titleKo: COLLECTED_VOCAB_TITLE_KO,
+        dayLabel: COLLECTED_VOCAB_DAY_LABEL,
+        entries: [],
+        photoCount: 0,
+        enriched: false,
+        model: "",
+        id: randomUUID(),
+        createdAt: new Date().toISOString(),
+      };
+      db.vocabBooks.push(record);
+      return record;
+    });
   }
 
   async listVocabBooks(limit?: number): Promise<VocabBookRecord[]> {

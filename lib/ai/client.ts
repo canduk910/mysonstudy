@@ -18,19 +18,23 @@ import {
   LEARNING_CARD_JSON_SCHEMA,
   MAX_SCENE_DIGEST_ITEMS,
   PAGE_DIGEST_JSON_SCHEMA,
+  WORD_MEANING_JSON_SCHEMA,
   bookExtractionSchema,
   groundChapters,
   makeChapterizationSchema,
   makeLearningCardSchema,
   makePageDigestSchema,
   resolveAllowedStorySource,
+  resolveChapterTitles,
   truncateTranscriptForChapterize,
+  wordMeaningSchema,
   type BookExtraction,
   type Chapter,
   type LearningCard,
   type SceneDigestItem,
   type SceneSourceKind,
   type StrictJsonSchema,
+  type WordMeaning,
 } from "./english/schemas";
 import {
   CARD_SYSTEM_PROMPT,
@@ -38,9 +42,12 @@ import {
   EXTRACT_SYSTEM_PROMPT,
   EXTRACT_USER_TEXT,
   PAGES_SYSTEM_PROMPT,
+  WORD_MEANING_CALL_OPTIONS,
+  WORD_MEANING_SYSTEM_PROMPT,
   buildCardUserMessage,
   buildChapterizeUserMessage,
   buildPagesUserMessage,
+  buildWordMeaningUserMessage,
   type CardUserMessageInput,
 } from "./english/prompts";
 import {
@@ -581,25 +588,26 @@ export interface ChapterizeResult {
 /**
  * 호출 F — 목차 챕터 제목 + 자막 전문을 받아 챕터별 EN/KO 문장을 만든다.
  *
- * 흐름: 자막 앞부분 우선 truncate → 단일 호출(callWithSchema, temp 0) → groundChapters로
- * 자막에 없는 en 문장 제거. 저장되는 en은 전부 자막 부분문자열임이 보장된다(§9).
+ * **자막은 필수, 목차는 선택이다.** 목차(chapterTitles)가 비면 자막 전체를 단일 "전체" 챕터
+ * 하나로 만든다(`resolveChapterTitles` → `WHOLE_TRANSCRIPT_TITLE`). 목차가 있으면 챕터별로 나눈다.
+ *
+ * 흐름: 자막 앞부분 우선 truncate → (목차 없으면 "전체" 한 챕터로 치환) → 단일 호출(temp 0) →
+ * groundChapters로 자막에 없는 en 문장 제거. 저장되는 en은 전부 자막 부분문자열임이 보장된다(§9).
  *
  * 실패 구분(라우트가 상태코드를 고른다):
- * - ChapterizeError("invalid_input") → 400. 목차·자막이 비었다 (사용자가 목차를 먼저 읽어야 함)
+ * - ChapterizeError("invalid_input") → 400. **자막이 비었다** (낭독 원문+번역이 이 기능의 필수 입력)
  * - callWithSchema throw(재요청 2회 실패) → 500. 재시도 가치가 있다
  */
 export async function chapterizeTranscript(
   chapterTitles: string[],
   transcript: string,
 ): Promise<ChapterizeResult> {
-  const titles = chapterTitles.map((t) => t.trim()).filter((t) => t !== "");
-  if (titles.length === 0) {
-    throw new ChapterizeError("invalid_input", "[ai:chapterize] 목차 챕터 제목이 없습니다.");
-  }
   const { text, truncated } = truncateTranscriptForChapterize(transcript);
   if (text === "") {
     throw new ChapterizeError("invalid_input", "[ai:chapterize] 낭독 자막이 비어 있습니다.");
   }
+  // 목차 없음은 정상 갈래다 — 빈 배열이면 단일 "전체" 챕터 제목으로 치환한다(§9).
+  const titles = resolveChapterTitles(chapterTitles);
 
   const raw = await callWithSchema({
     call: "chapterize",
@@ -617,4 +625,42 @@ export async function chapterizeTranscript(
     );
   }
   return { chapters, truncated, droppedSentenceCount };
+}
+
+// ---------------------------------------------------------------------------
+// 호출 G — 단어 뜻 조회 (HARNESS §10)
+// 영어 단어 + 그 단어가 속한 문장 → 그 문맥에서의 우리말 뜻 하나(짧게, 초등 저학년 눈높이).
+// 챕터 리더 더블탭 팝업이 쓴다(팝업·단어장 추가 UI는 app-builder/M2). 텍스트 단일 호출.
+// ---------------------------------------------------------------------------
+
+/**
+ * 호출 G — 문맥 기반 단어 뜻 조회.
+ *
+ * @param word     뜻을 알고 싶은 영어 단어
+ * @param sentence 그 단어가 속한 영어 문장(맥락). 다의어를 이 문맥의 뜻으로 좁힌다.
+ * @returns `{ meaningKo }` — 그 문맥에서의 우리말 뜻(한 낱말~짧은 구, 한글만).
+ *
+ * 실패는 전부 throw다(라우트가 상태코드를 고른다):
+ * - 단어/문장이 비면 throw → 라우트 500(입력 오류지만 별도 에러 타입을 두지 않는 작은 호출이다).
+ * - OPENAI_API_KEY 미설정 → getOpenAIClient가 throw → 라우트 501(키 없음).
+ * - callWithSchema throw(재요청 2회 실패) → 라우트 500(재시도 가치 있음).
+ */
+export async function lookupWordMeaning(
+  word: string,
+  sentence: string,
+): Promise<WordMeaning> {
+  const w = word.trim();
+  const s = sentence.trim();
+  if (w === "" || s === "") {
+    throw new Error("[ai:word-meaning] 단어와 문장이 모두 필요합니다.");
+  }
+  return callWithSchema({
+    call: WORD_MEANING_CALL_OPTIONS.call,
+    system: WORD_MEANING_SYSTEM_PROMPT,
+    user: [textPart(buildWordMeaningUserMessage(w, s))],
+    jsonSchema: WORD_MEANING_JSON_SCHEMA,
+    zodSchema: wordMeaningSchema,
+    temperature: WORD_MEANING_CALL_OPTIONS.temperature,
+    maxOutputTokens: WORD_MEANING_CALL_OPTIONS.maxOutputTokens,
+  });
 }

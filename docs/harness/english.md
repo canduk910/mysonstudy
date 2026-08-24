@@ -1090,6 +1090,13 @@ zod 추가 검증(스키마가 못 잡는 것):
 - 자막에 그 챕터의 내용이 없으면(자막이 거기까지 닿지 않았거나 그 챕터를 읽지 않았으면)
   matched를 false로 하고 sentences를 비운다. 없는 내용을 지어내 채우지 않는다.
 
+[목차가 없을 때]
+- 목차 챕터 제목이 "전체" 하나뿐이면, 챕터는 그 하나만 만든다. titleEn은 "전체", matched는 true.
+- 챕터가 하나라고 해서 문장을 뭉치지 마라. sentences는 **반드시 한 문장씩 쪼갠다** — 목차가 있을 때와 똑같다.
+  sentences 배열의 각 항목은 정확히 **한 문장**이다(마침표·물음표·느낌표 하나로 끝나는 단위, en 대략 40단어 이내).
+  여러 문장이나 문단을 한 항목에 뭉쳐 넣으면 안 된다. en은 그 한 문장, ko는 그 한 문장의 번역이다.
+- 책을 소리 내어 읽은 부분의 문장을 처음부터 끝까지 순서대로 하나씩 담는다.
+
 [제외할 것 — 채널 인트로/아웃트로]
 - 자막 앞뒤의 낭독자·채널 멘트는 책 내용이 아니다. 어느 챕터에도 넣지 않는다.
   ("Welcome to ○○ Storytime, I'm Ms. △△" 같은 인사, 구독·좋아요·후원 안내, 시작·작별 멘트 등)
@@ -1118,6 +1125,9 @@ zod 추가 검증(스키마가 못 잡는 것):
 ```
 
 `chapterTitles`는 목차 사진을 호출 A′(toc 모드)로 읽어 얻은 영어 챕터 제목 배열이다(app-builder가 넘긴다).
+**목차가 없으면(빈 배열)** `resolveChapterTitles`가 단일 제목 `WHOLE_TRANSCRIPT_TITLE`("전체") 하나로
+치환하므로, 사용자 메시지의 목차 목록은 `1. 전체` 한 줄이 되고 프롬프트 [목차가 없을 때] 규칙에 따라
+자막 전체가 그 한 챕터에 담긴다. **자막(transcript)만 필수**이고 목차는 선택이다.
 `transcript`는 `truncateTranscriptForChapterize`로 `CHAPTERIZE_TRANSCRIPT_MAX_CHARS`(12,000자)까지 앞부분
 우선으로 자른 자막이다 — 넘으면 앞 챕터부터 채워지고 뒤쪽 챕터는 자막이 닿지 않아 `matched:false`로 온다.
 
@@ -1202,11 +1212,14 @@ zod 추가 검증(스키마가 못 잡는 것):
 - **경계면(app-builder)**: `chapterizeTranscript(chapterTitles: string[], transcript: string)` →
   `{ chapters, truncated, droppedSentenceCount }`. app-builder가 /api에서 호출하고, `chapters`를
   book/card 레코드에 저장한 뒤 챕터 리더 UI를 그린다.
+  - **목차 없음 갈래**: `chapterTitles`에 빈 배열을 넘기면(목차 사진이 없거나 판독 실패) 정상 처리되어
+    단일 "전체" 챕터 하나로 온다(`chapters.length === 1`, `titleEn === "전체"`, `matched === true`).
+    app-builder는 목차가 없을 때 빈 배열을 넘기면 된다 — throw하지 않는다.
   - 저장 shape: `chapters: { titleEn: string, matched: boolean, sentences: { en: string, ko: string }[] }[]`.
     선택키·undefined 없음(store 규약) — matched=false 챕터는 `sentences: []`.
   - `truncated`(자막이 잘렸는지)·`droppedSentenceCount`(잘라낸 문장 수)는 부분 처리 안내 메타다(저장 필수 아님).
-  - 실패 구분: `ChapterizeError("invalid_input")` → 400(목차·자막 비었음, 사용자가 목차를 먼저 읽어야 함) /
-    callWithSchema throw(재요청 2회 실패) → 500(재시도 가치 있음).
+  - 실패 구분: `ChapterizeError("invalid_input")` → 400(**자막이 비었음** — 낭독 원문+번역이 필수 입력) /
+    callWithSchema throw(재요청 2회 실패) → 500(재시도 가치 있음). **목차 없음은 실패가 아니다.**
 - **M1 스코프**: 챕터화 호출 + 스키마 + 저장 shape + eval까지다. 단어 뜻(더블탭)·단어장 추가는 M2다.
 
 ### 9-7. 평가 하네스 점검 (`scripts/eval-english.ts` — 실호출 0회 + 게이트)
@@ -1219,4 +1232,115 @@ zod 추가 검증(스키마가 못 잡는 것):
 - 실호출 게이트(`EVAL_CHAPTERS=1`일 때만 실호출 1회 — 기본은 돌지 않는다): 실제 자막→챕터 1건이
   (a) 모든 en이 자막 부분문자열이고(grounding) (b) 채널 인트로/아웃트로 노이즈가 어느 챕터에도
   안 섞였고 (c) matched 챕터는 sentences가 있고 en/ko가 1:1이고 ko가 우리말인지를 검사한다.
+  오프라인 게이트(`EVAL_OFFLINE_ONLY=1`)에서는 절대 도달하지 않는다.
+
+## 10. 호출 G — 단어 뜻 조회 (문맥 기반 우리말 뜻, 챕터 리더 더블탭 기능)
+
+호출 G는 A→A′→B 카드 파이프라인과 별개 경로입니다. 챕터 리더(§9)에서 아이가 영어 문장의 단어를
+더블탭하면, 그 단어가 아니라 **그 단어가 속한 문장 맥락**에서의 우리말 뜻을 짧게 돌려줍니다.
+
+> 판독(호출 C)이 책을 그대로 옮기고, 보강(호출 D)이 영영 정의를 창작한다면, 호출 G는 "이 문장에서
+> 이 단어가 무슨 뜻인지"를 초등 저학년 눈높이로 한 낱말~짧은 구로 짚어 줍니다. 다의어(left = 왼쪽/떠나다)는
+> 문장 맥락으로 뜻을 좁힙니다. 사진 없는 텍스트 단일 호출이고, 출력이 아주 작습니다.
+
+파이프라인:
+
+```
+챕터 리더의 영어 문장 + 더블탭한 단어 ──▶ 호출 G ──▶ { meaningKo }(그 문맥의 우리말 뜻)
+```
+
+**M2 스코프 경계**: 이 명세는 호출 G(프롬프트 + 스키마 + zod + eval)까지입니다. 더블탭 감지·뜻 팝업·
+"모은 단어" 단어장 추가(V8 append 재사용)는 앱(app-builder/M2) 몫입니다.
+
+### 10-1. 시스템 프롬프트 (원문 그대로 사용)
+
+```
+너는 아이와 영어 문장을 함께 읽다가 모르는 단어를 만난 한국인 부모를 돕는 조교다.
+영어 단어 하나와 그 단어가 들어 있는 영어 문장을 받아, 그 문장에서 이 단어가 뜻하는 바를 우리말로 알려준다.
+
+[meaningKo — 문맥 속 우리말 뜻]
+- 그 문장에서 이 단어가 쓰인 뜻만 우리말로 짧게 적는다. 한 낱말이나 짧은 구로 쓴다.
+- 뜻이 여러 개인 단어(다의어)면 사전의 첫 번째 뜻이 아니라 이 문장에 맞는 뜻을 고른다.
+- 문장에서 쓰인 모습 그대로 옮긴다. 과거형으로 쓰였으면 과거형으로, 복수면 복수로 적는다.
+- 초등학교 저학년 아이도 알아들을 쉬운 말로 적는다. 어려운 한자어나 긴 설명을 붙이지 않는다.
+- 한글로만 적는다. 영어 단어를 그대로 옮겨 적지 않는다.
+- 뜻만 적는다. 품사·발음·예문·부연 설명을 붙이지 않는다.
+
+[금지]
+- 이 문맥과 상관없는 다른 뜻을 나열하지 않는다. 문장에 맞는 뜻 하나만 적는다.
+- 영어를 그대로 남기거나 뜻에 영어 단어를 이어 쓰지 않는다.
+- 출력은 지정된 JSON 스키마로만. 스키마 밖 텍스트 금지.
+
+[예시]
+문장: "He bellowed in fear." · 단어: "bellowed"
+  → {"meaningKo":"울부짖었다"}
+문장: "She left the party early." · 단어: "left"
+  → {"meaningKo":"떠났다"}
+문장: "Turn left at the corner." · 단어: "left"
+  → {"meaningKo":"왼쪽"}
+```
+
+### 10-2. 사용자 메시지 템플릿
+
+플레이스홀더(`{sentence}`·`{word}`)가 든 서술이라 고정 문자열이 아닙니다(호출 F·B 템플릿과 같이
+`SPEC_SYNC_TARGETS` 대상이 아닙니다). `buildWordMeaningUserMessage(word, sentence)`가 조립합니다.
+
+```
+아래 영어 문장에서 지정한 단어가 이 문맥에서 무슨 뜻인지 알려줘.
+
+문장: {sentence}
+단어: {word}
+```
+
+### 10-3. 출력 JSON Schema — `word_meaning` (strict)
+
+모든 필드 required + `additionalProperties: false`. 선택 키·null 유니온 없음 — 뜻은 항상 하나
+있어야 합니다. 길이 제약(`minItems`/`maxItems`·`maxLength`)은 스키마에 넣지 않고 zod가 담당합니다(§1 공통 규칙).
+
+```json
+{
+  "name": "word_meaning",
+  "strict": true,
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "meaningKo": {
+        "type": "string",
+        "description": "그 문장 맥락에서 이 단어의 우리말 뜻. 한 낱말~짧은 구, 한글만."
+      }
+    },
+    "required": ["meaningKo"]
+  }
+}
+```
+
+### 10-4. zod 추가 검증 (스키마가 못 잡는 것)
+
+```
+- meaningKo 길이: trim 후 1자 이상 WORD_MEANING_KO_MAX(40)자 이하. 길면 뜻이 아니라 설명으로 흐른 것으로 보고 거부
+- 한글만: meaningKo에 한글이 한 글자도 없으면 거부 (원어(영단어)를 그대로 옮긴 echo 차단)
+- 영어 단어 연속 금지: 영어 낱말이 2개 이상 이어지면 거부 (원문 문장·단어를 그대로 옮긴 것). 한글에 영어 낱말 1개가 섞이는 것은 허용
+```
+
+### 10-5. 호출 옵션 · 경계면 · 후처리
+
+- **호출 옵션(`WORD_MEANING_CALL_OPTIONS`)**: temperature 0 (같은 단어·문장은 같은 뜻),
+  max_output_tokens 600 (출력이 `{"meaningKo":"…"}` 한 줄로 아주 작다 — 카드 6,000·판독 16,000보다
+  한참 작게 두되 추론형 모델의 내부 토큰까지 감안해 여유를 남긴다). 단일 호출. 출력 한도 도달
+  (`status: incomplete`)은 callWithSchema의 재요청 경로가 받는다(§4).
+- **경계면(app-builder)**: `lookupWordMeaning(word: string, sentence: string)` → `{ meaningKo: string }`.
+  app-builder가 `POST /api/word-meaning`로 감싸 챕터 리더 더블탭 팝업에 붙이고, "단어장 추가"는
+  V8 append를 재사용한다(대상은 "모은 단어" 단어장). 실패는 전부 throw다:
+  - 단어·문장이 비면 throw → 500 (입력 오류지만 별도 에러 타입을 두지 않는 작은 호출).
+  - `OPENAI_API_KEY` 미설정 → getOpenAIClient throw → 501 (키 없음).
+  - callWithSchema throw(재요청 2회 실패) → 500 (재시도 가치 있음).
+
+### 10-6. 평가 하네스 점검 (`scripts/eval-english.ts` — 실호출 0회 + 게이트)
+
+- 오프라인(실호출 0회): word_meaning zod가 (a) 정상 입력(짧은 한글 뜻)을 통과시키고 (b) 빈 문자열,
+  40자 초과, 한글 없는 영어 echo("bellowed"), 영어 낱말 2개 연속("he bellowed …")을 각각 거부하는지.
+  JSON Schema가 strict·additionalProperties:false·required meaningKo인지. 프롬프트↔스펙 spec-sync.
+- 실호출 게이트(`EVAL_WORDMEANING=1`일 때만 실호출 1회 — 기본은 돌지 않는다): 실제 단어·문장 1건이
+  (a) 한글이 있고 (b) WORD_MEANING_KO_MAX 이하로 짧고 (c) 영어 낱말이 이어지지 않는지를 검사한다.
   오프라인 게이트(`EVAL_OFFLINE_ONLY=1`)에서는 절대 도달하지 않는다.

@@ -708,10 +708,11 @@ export default function CardView({
       </article>
 
       {/*
-       * 챕터별로 읽기 (호출 F · §9) — 목차(toc)+낭독 자막이 있는 책에만 나타난다.
-       * chapters가 저장돼 있으면 리더를, 아직 안 나눴으면 "챕터로 나누기" 버튼을 그린다.
-       * 목차/자막이 없으면 canChapterize=false·chapters=null이라 아무것도 그리지 않는다(회귀 0).
-       * 화면 전용(자체 @media print로 숨김) — 영어 원문 표시는 §9가 이 리더에 한해 허용한 것이다.
+       * 챕터별로 읽기 (호출 F · §9) — 낭독 자막이 있는 책에 나타난다(목차는 선택).
+       * chapters가 저장돼 있으면 리더를(챕터별 또는 "전체" 단일 블록), 아직 안 만들었으면
+       * "챕터로 읽기 만들기" 버튼을 그린다. 자막이 없으면 canChapterize=false·chapters=null이라
+       * 아무것도 그리지 않는다(회귀 0). 화면 전용(자체 @media print로 숨김) —
+       * 영어 원문 표시는 §9가 이 리더에 한해 허용한 것이다.
        */}
       <ChapterReaderSection bookId={book.id} chapters={book.chapters} canChapterize={canChapterize} />
 

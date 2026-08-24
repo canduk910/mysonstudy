@@ -12,7 +12,7 @@
  * 코드블록과 글자 단위로 같은지 파일을 읽어서 확인한다(`scripts/spec-sync.ts`).
  */
 
-import { chapterizeTranscript, enrichVocab, generateCard } from "../lib/ai/client";
+import { chapterizeTranscript, enrichVocab, generateCard, lookupWordMeaning } from "../lib/ai/client";
 import {
   CHAPTER_TITLE_MAX,
   CHAPTERIZE_MAX_CHAPTERS,
@@ -29,6 +29,9 @@ import {
   STORY_OUTLINE_MIN_SENTENCES,
   STORY_SOURCE_LABELS_KO,
   STORY_SOURCE_RANK,
+  WHOLE_TRANSCRIPT_TITLE,
+  WORD_MEANING_JSON_SCHEMA,
+  WORD_MEANING_KO_MAX,
   containsHangul,
   countKoreanSentences,
   groundChapters,
@@ -38,13 +41,16 @@ import {
   makeLearningCardSchema,
   makePageDigestSchema,
   resolveAllowedStorySource,
+  resolveChapterTitles,
   resolveStorySource,
   storyOutlineSentenceRange,
   tokenizeForGrounding,
   truncateTranscriptForChapterize,
+  wordMeaningSchema,
   type Chapter,
   type LearningCard,
   type SceneDigestItem,
+  type WordMeaning,
 } from "../lib/ai/english/schemas";
 import {
   CARD_SYSTEM_PROMPT,
@@ -53,6 +59,7 @@ import {
   EXTRACT_USER_TEXT,
   PAGES_SYSTEM_PROMPT,
   TRANSCRIPT_MAX_CHARS,
+  WORD_MEANING_SYSTEM_PROMPT,
   buildCardUserMessage,
   buildChapterizeUserMessage,
   type CardUserMessageInput,
@@ -2057,6 +2064,210 @@ function runChapterizeChecks(): CheckResult[] {
     detail: `total=${CHAPTERIZE_MAX_SENTENCES_TOTAL}, perChapter=${CHAPTERIZE_MAX_SENTENCES_PER_CHAPTER}, maxChars=${CHAPTERIZE_TRANSCRIPT_MAX_CHARS}`,
   });
 
+  // ── 목차 없음 갈래(§9): 자막만 있으면 단일 "전체" 챕터 ─────────────────────────
+  results.push({
+    book,
+    check: `resolveChapterTitles: 빈 배열 → ["${WHOLE_TRANSCRIPT_TITLE}"]`,
+    pass: JSON.stringify(resolveChapterTitles([])) === JSON.stringify([WHOLE_TRANSCRIPT_TITLE]),
+    detail: JSON.stringify(resolveChapterTitles([])),
+  });
+  results.push({
+    book,
+    check: `resolveChapterTitles: 공백뿐 → ["${WHOLE_TRANSCRIPT_TITLE}"]`,
+    pass: JSON.stringify(resolveChapterTitles(["  ", ""])) === JSON.stringify([WHOLE_TRANSCRIPT_TITLE]),
+    detail: JSON.stringify(resolveChapterTitles(["  ", ""])),
+  });
+  results.push({
+    book,
+    check: "resolveChapterTitles: 목차 있으면 그대로(트림)",
+    pass: JSON.stringify(resolveChapterTitles([" Ch 1 ", "Ch 2"])) === JSON.stringify(["Ch 1", "Ch 2"]),
+    detail: JSON.stringify(resolveChapterTitles([" Ch 1 ", "Ch 2"])),
+  });
+  results.push({
+    book,
+    check: `사용자 메시지: 목차 없으면 "1. ${WHOLE_TRANSCRIPT_TITLE}" 한 줄`,
+    pass: buildChapterizeUserMessage(resolveChapterTitles([]), transcript).includes(`1. ${WHOLE_TRANSCRIPT_TITLE}`),
+    detail: "목차 목록이 전체 한 줄로 렌더",
+  });
+
+  // 목차 없음 zod: "전체" 단일 챕터를 통과시키고, 그 갈래에서도 목차 밖 titleEn은 거부한다(창작 금지 유지)
+  const wholeSchema = makeChapterizationSchema({ chapterTitles: resolveChapterTitles([]) });
+  const wholeGood = {
+    chapters: [
+      {
+        titleEn: WHOLE_TRANSCRIPT_TITLE,
+        matched: true,
+        sentences: [sent(GROUNDED_EN[0], "그는 인사하러 토끼네 집으로 걸어갔어요."), sent(GROUNDED_EN[2], "푸는 구멍에 끼었어요.")],
+      },
+    ],
+  };
+  results.push({
+    book,
+    check: "목차 없음 zod: 단일 '전체' 챕터 통과",
+    pass: wholeSchema.safeParse(wholeGood).success,
+    detail: wholeSchema.safeParse(wholeGood).success ? "통과" : JSON.stringify(wholeSchema.safeParse(wholeGood).error?.issues?.slice(0, 3)),
+  });
+  results.push({
+    book,
+    check: "목차 없음 zod: titleEn이 '전체'가 아니면 거부(창작 금지 유지)",
+    pass: !wholeSchema.safeParse({ chapters: [{ titleEn: "Chapter 1", matched: true, sentences: [sent(GROUNDED_EN[2], "푸는 구멍에 끼었어요.")] }] }).success,
+    detail: "목차 없음 갈래에서도 목차 밖 제목 거부",
+  });
+
+  // 목차 없음 grounding: 단일 챕터에서도 자막 밖 문장은 잘린다
+  const wholeGrounded = groundChapters(
+    [
+      {
+        titleEn: WHOLE_TRANSCRIPT_TITLE,
+        matched: true,
+        sentences: [sent(GROUNDED_EN[0], "그는 걸어갔어요."), sent(FABRICATED, "푸는 달에 갔어요.")],
+      },
+    ],
+    transcript,
+  );
+  results.push({
+    book,
+    check: "목차 없음 grounding: 단일 챕터에서도 자막 밖 문장 잘라냄",
+    pass: wholeGrounded.droppedSentenceCount === 1 && wholeGrounded.chapters[0].sentences.length === 1,
+    detail: `dropped=${wholeGrounded.droppedSentenceCount} (기대 1), 남은 문장=${wholeGrounded.chapters[0].sentences.length} (기대 1)`,
+  });
+
+  // ── 긴 자막·목차 없음 회귀 가드(P1): "전체" 단일 챕터가 문장별로 쪼개져야 상한을 안 넘는다 ──
+  // 실호출에서 모델이 문장을 안 쪼개고 거대 덩이로 뱉어 en(600)/ko(800) 상한 초과 → throw가 났다.
+  // 오프라인은 모델을 못 부르므로, (a) 문장별 분할된 정상 출력이 통과하고 (b) 문단 뭉치기(상한 초과)가
+  // zod에 거부되는지를 긴 픽스처로 고정 검증한다. 실제 모델 분할 여부는 team-lead의 실호출 재eval이 본다.
+  const longChapters = {
+    chapters: [
+      {
+        titleEn: WHOLE_TRANSCRIPT_TITLE,
+        matched: true,
+        sentences: [
+          sent("One sunny morning, Winnie the Pooh felt very hungry.", "어느 화창한 아침, 위니 더 푸는 몹시 배가 고팠어요."),
+          sent(GROUNDED_EN[0], "그는 인사하러 토끼네 집으로 걸어갔어요."),
+          sent(GROUNDED_EN[1], "토끼는 친절하게 푸에게 꿀을 주었어요."),
+          sent("Pooh loved honey so much that he ate and ate and ate.", "푸는 꿀을 너무 좋아해서 먹고 또 먹고 또 먹었어요."),
+          sent(GROUNDED_EN[2], "푸는 구멍에 끼고 말았어요."),
+          sent("Rabbit pushed and pushed, but Pooh would not budge.", "토끼가 밀고 또 밀었지만 푸는 꿈쩍도 하지 않았어요."),
+          sent("After many days, Pooh finally became thin enough.", "여러 날이 지나 푸는 마침내 충분히 홀쭉해졌어요."),
+          sent(GROUNDED_EN[3], "그는 마침내 자유로워져서 정말 행복했어요."),
+        ],
+      },
+    ],
+  };
+  const longSchema = makeChapterizationSchema({ chapterTitles: resolveChapterTitles([]) });
+  results.push({
+    book,
+    check: "긴 자막 목차없음: 문장별 분할 출력 통과(각 항목 한 문장)",
+    pass: longSchema.safeParse(longChapters).success,
+    detail: longSchema.safeParse(longChapters).success ? `문장 ${longChapters.chapters[0].sentences.length}개 통과` : JSON.stringify(longSchema.safeParse(longChapters).error?.issues?.slice(0, 3)),
+  });
+  results.push({
+    book,
+    check: "긴 자막 목차없음: 분할 출력의 각 en ≤ 600자·≤ 40단어(한 문장 기준)",
+    pass: longChapters.chapters[0].sentences.every((s) => s.en.length <= 600 && s.en.trim().split(/\s+/).length <= 40),
+    detail: `최장 en=${Math.max(...longChapters.chapters[0].sentences.map((s) => s.en.length))}자`,
+  });
+  // 문단 뭉치기: en이 상한(600)을 넘는 거대 덩이 → zod 거부(회귀 가드). 상한 초과가 실호출 throw의 직접 원인이었다.
+  const lumpedEn = POOH_TRANSCRIPT.replace(/\s+/g, " ").trim().slice(50, 760); // 710자 영어 덩이
+  results.push({
+    book,
+    check: "긴 자막 목차없음: 문단 뭉치기(en>600자) zod 거부(회귀 가드)",
+    pass:
+      lumpedEn.length > 600 &&
+      !longSchema.safeParse({ chapters: [{ titleEn: WHOLE_TRANSCRIPT_TITLE, matched: true, sentences: [sent(lumpedEn, "긴 문단을 한 항목에 뭉쳐 넣은 잘못된 출력이에요.")] }] }).success,
+    detail: `lumpedEn=${lumpedEn.length}자 → 거부`,
+  });
+  // 상한 초과 방향별 직접 가드 (en 601자 / ko 801자)
+  results.push({
+    book,
+    check: "en 상한(600) 초과 zod 거부",
+    pass: !longSchema.safeParse({ chapters: [{ titleEn: WHOLE_TRANSCRIPT_TITLE, matched: true, sentences: [sent("a".repeat(601), "짧은 해석이에요.")] }] }).success,
+    detail: "en 601자 거부",
+  });
+  results.push({
+    book,
+    check: "ko 상한(800) 초과 zod 거부",
+    pass: !longSchema.safeParse({ chapters: [{ titleEn: WHOLE_TRANSCRIPT_TITLE, matched: true, sentences: [sent(GROUNDED_EN[2], "가".repeat(801))] }] }).success,
+    detail: "ko 801자 거부",
+  });
+  // 긴 자막 grounding: 문장별 분할 출력은 전부 자막 부분문자열이라 하나도 안 잘린다
+  const longGrounded = groundChapters(longChapters.chapters as Chapter[], POOH_TRANSCRIPT);
+  results.push({
+    book,
+    check: "긴 자막 목차없음: 분할 문장 전부 grounded(0개 잘림)",
+    pass: longGrounded.droppedSentenceCount === 0 && longGrounded.chapters[0].sentences.length === longChapters.chapters[0].sentences.length,
+    detail: `dropped=${longGrounded.droppedSentenceCount} (기대 0), 문장=${longGrounded.chapters[0].sentences.length}`,
+  });
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// 호출 G(단어 뜻 조회, §10) 오프라인 점검 — 실호출 0회.
+// zod 계약(짧게·한글만·영어 연속 금지)과 JSON Schema strict 형태를 고정 입력으로 검사한다.
+// 실제 뜻의 정확성(맥락 반영)은 모델 출력이 있어야 재현되므로 실호출 게이트(EVAL_WORDMEANING=1)가 본다.
+// ---------------------------------------------------------------------------
+
+function runWordMeaningChecks(): CheckResult[] {
+  const results: CheckResult[] = [];
+  const book = "단어뜻(§10)";
+
+  // 정상 출력: 짧은 한글 뜻 하나 (다의어 문맥 반영 예시)
+  for (const ko of ["울부짖었다", "떠났다", "왼쪽"]) {
+    const ok = wordMeaningSchema.safeParse({ meaningKo: ko }).success;
+    results.push({
+      book,
+      check: `zod: 정상 뜻 통과 ("${ko}")`,
+      pass: ok,
+      detail: ok ? "통과" : JSON.stringify(wordMeaningSchema.safeParse({ meaningKo: ko }).error?.issues?.slice(0, 2)),
+    });
+  }
+
+  // zod 거부 케이스 — 각각 계약 하나씩 위반
+  const rejectCases: { name: string; meaningKo: unknown }[] = [
+    { name: "빈 문자열", meaningKo: "" },
+    { name: "공백만", meaningKo: "   " },
+    { name: `길이 초과(>${WORD_MEANING_KO_MAX}자)`, meaningKo: "아".repeat(WORD_MEANING_KO_MAX + 1) },
+    { name: "한글 없는 영어 echo(bellowed)", meaningKo: "bellowed" },
+    { name: "영어 낱말 2개 연속(he bellowed)", meaningKo: "he bellowed 울부짖었다" },
+    { name: "타입 위반(문자열 아님)", meaningKo: 123 },
+  ];
+  for (const rc of rejectCases) {
+    const rejected = !wordMeaningSchema.safeParse({ meaningKo: rc.meaningKo }).success;
+    results.push({ book, check: `zod 거부: ${rc.name}`, pass: rejected, detail: rejected ? "거부됨" : "통과되면 안 됨" });
+  }
+
+  // 한글에 영어 낱말 1개가 섞이는 것은 허용 (고유명사 등) — run 2 미만은 통과해야 한다
+  const oneEnglishOk = wordMeaningSchema.safeParse({ meaningKo: "TV를 봤다" }).success;
+  results.push({
+    book,
+    check: "zod: 한글+영어 낱말 1개는 허용 (\"TV를 봤다\")",
+    pass: oneEnglishOk,
+    detail: oneEnglishOk ? "통과" : "허용돼야 하는데 거부됨",
+  });
+
+  // JSON Schema 형태 — strict·additionalProperties:false·required meaningKo (Structured Outputs 계약)
+  const js = WORD_MEANING_JSON_SCHEMA;
+  const schemaObj = js.schema as {
+    additionalProperties?: unknown;
+    required?: unknown;
+    properties?: { meaningKo?: { type?: unknown } };
+  };
+  const shapeOk =
+    js.name === "word_meaning" &&
+    js.strict === true &&
+    schemaObj.additionalProperties === false &&
+    Array.isArray(schemaObj.required) &&
+    (schemaObj.required as string[]).length === 1 &&
+    (schemaObj.required as string[])[0] === "meaningKo" &&
+    schemaObj.properties?.meaningKo?.type === "string"; // 선택키·null 유니온 없음
+  results.push({
+    book,
+    check: "JSON Schema: strict·additionalProperties:false·required meaningKo(string, non-null)",
+    pass: shapeOk,
+    detail: shapeOk ? "형태 정합" : JSON.stringify(js),
+  });
+
   return results;
 }
 
@@ -2164,6 +2375,13 @@ const SPEC_SYNC_TARGETS: readonly SpecSyncTarget[] = [
     text: CHAPTERIZE_SYSTEM_PROMPT,
     mode: "block",
   },
+  {
+    constName: "WORD_MEANING_SYSTEM_PROMPT",
+    source: "lib/ai/english/prompts.ts",
+    specLabel: "§10-1 호출 G 시스템 프롬프트",
+    text: WORD_MEANING_SYSTEM_PROMPT,
+    mode: "block",
+  },
 ];
 
 /** 표 뒤에 상세 diff를 찍기 위해 남겨 둔다 (main이 읽는다) */
@@ -2204,6 +2422,8 @@ async function main(): Promise<void> {
   allResults.push(...runTranscriptOfflineChecks());
   // 챕터화(§9) — chapters zod 계약·groundChapters 자막 밖 창작 금지·truncate·상수 정합 (실호출 0회)
   allResults.push(...runChapterizeChecks());
+  // 단어 뜻 조회(§10) — word_meaning zod 계약(짧게·한글만·영어 연속 금지)·JSON Schema strict (실호출 0회)
+  allResults.push(...runWordMeaningChecks());
   // 단어장 정복 V1(§7) — 병합 순수 함수·zod 제약·그림 우선순위 (실호출 0회)
   allResults.push(...runVocabbookChecks());
   // 프롬프트 원문이 스펙 문서와 같은지 — 파일을 읽어서 대조한다 (실호출 0회)
@@ -2437,6 +2657,38 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     console.log(`PASS — 호출 D 실호출 점검 ${vocabResults.length}개 항목 통과.`);
+    return;
+  }
+
+  // 호출 G(단어 뜻 조회, §10) 텍스트 점검 — **EVAL_WORDMEANING=1일 때만** 실호출 1회. (오프라인
+  // 게이트가 위에서 이미 return하므로 EVAL_OFFLINE_ONLY=1에서는 절대 도달하지 않는다.) 실제 단어·문장
+  // 1건이 한글이 있고·짧고(WORD_MEANING_KO_MAX 이하)·영어 낱말이 이어지지 않는지를 모델 출력으로
+  // 확인·인쇄한다. 맥락 반영(다의어 뜻 선택)은 사람이 눈으로 봐야 갈리므로 결과를 인쇄한다.
+  if (process.env.EVAL_WORDMEANING === "1") {
+    console.log("EVAL_WORDMEANING=1 — 호출 G(단어 뜻) 실호출 1회로 문맥 뜻을 점검합니다.");
+    const wmResults: CheckResult[] = [];
+    const probe = { word: "bellowed", sentence: "He bellowed in fear." };
+    try {
+      const out: WordMeaning = await lookupWordMeaning(probe.word, probe.sentence);
+      console.log(`호출 G 출력: 단어="${probe.word}" 문장="${probe.sentence}" → ${JSON.stringify(out)}`);
+      const ko = out.meaningKo;
+      wmResults.push({
+        book: "호출 G 실호출",
+        check: `${probe.word}: 한글 있음·짧음(≤${WORD_MEANING_KO_MAX})·영어 낱말 안 이어짐`,
+        pass: containsHangul(ko) && ko.trim().length <= WORD_MEANING_KO_MAX && longestEnglishRun(ko) < 2,
+        detail: `meaningKo=${JSON.stringify(ko)} | 한글=${containsHangul(ko)} 길이=${ko.trim().length} 영어연속=${longestEnglishRun(ko)}`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      wmResults.push({ book: "호출 G 실호출", check: "호출 G (재요청 포함 2회 실패)", pass: false, detail: message });
+    }
+    printTable(wmResults);
+    const wmFailed = wmResults.filter((r) => !r.pass);
+    if (wmFailed.length > 0) {
+      console.error(`FAIL — 호출 G ${wmFailed.length}개 항목 실패.`);
+      process.exit(1);
+    }
+    console.log(`PASS — 호출 G 실호출 점검 ${wmResults.length}개 항목 통과.`);
     return;
   }
 

@@ -806,6 +806,21 @@ export const CHAPTER_TITLE_MAX = 200;
 export const CHAPTER_SENTENCE_EN_MAX = 600;
 /** 문장 ko 길이 상한 — 한 문장 해석 기준으로 넉넉하다 */
 export const CHAPTER_SENTENCE_KO_MAX = 800;
+/**
+ * 목차가 없을 때 쓰는 단일 챕터 제목 (HARNESS §9). 자막만 있고 목차(chapterTitles)가 비면
+ * 자막 전체를 이 제목 한 챕터에 담는다 — 낭독 원문+번역은 필수이고 목차는 선택이기 때문이다.
+ */
+export const WHOLE_TRANSCRIPT_TITLE = "전체";
+
+/**
+ * 실제로 모델·zod에 넘길 챕터 제목을 정한다 (HARNESS §9). 목차가 있으면 그대로,
+ * 없으면(빈 배열·공백뿐) 단일 챕터 제목 하나(`WHOLE_TRANSCRIPT_TITLE`). client와 eval이 같은
+ * 함수를 써야 "목차 없음 → 전체 한 챕터" 계약이 한 곳에서 정의된다.
+ */
+export function resolveChapterTitles(chapterTitles: readonly string[]): string[] {
+  const titles = chapterTitles.map((t) => t.trim()).filter((t) => t !== "");
+  return titles.length > 0 ? titles : [WHOLE_TRANSCRIPT_TITLE];
+}
 
 export const CHAPTERIZATION_JSON_SCHEMA: StrictJsonSchema = {
   name: "chapterization",
@@ -1045,3 +1060,81 @@ export function groundChapters(
   });
   return { chapters: grounded, droppedSentenceCount };
 }
+
+// ===========================================================================
+// 호출 G — 단어 뜻 조회 (문맥 기반 우리말 뜻). docs/harness/english.md §10-3·§10-4.
+//
+// 챕터 리더에서 단어를 더블탭하면, 그 단어가 아니라 **그 단어가 속한 문장** 맥락에서의 우리말 뜻을
+// 짧게 돌려주는 호출이다(다의어면 이 문맥의 뜻). 사진 없는 텍스트 호출이고 출력이 아주 작다.
+// 판독(호출 C, 책 전사)·보강(호출 D, 영영정의 창작)과 달리, 여기서 만드는 것은 **한 낱말짜리
+// 우리말 뜻** 하나뿐이다. 팝업·더블탭·"단어장 추가"는 앱(app-builder/M2) 몫이고, 이 파일은
+// 4중 정의(프롬프트↔JSON Schema↔zod↔eval)의 스키마 뿌리만 담는다.
+// ===========================================================================
+
+/**
+ * 문맥 속 우리말 뜻의 최대 길이. "한 낱말~짧은 구"라 짧다 — 초등 저학년 눈높이의 뜻 하나면
+ * 넉넉하다. 길어지면 뜻이 아니라 설명·부연으로 흐른 것으로 보고 거부한다(§10-4).
+ * JSON Schema에는 넣지 않는다 — 길이는 zod 담당(§1 공통 규칙).
+ */
+export const WORD_MEANING_KO_MAX = 40;
+
+/** 호출 G의 출력 — 그 문맥에서의 우리말 뜻 하나. required-nullable 없음(항상 있는 값). */
+export interface WordMeaning {
+  meaningKo: string;
+}
+
+// ---------------------------------------------------------------------------
+// 호출 G — word_meaning JSON Schema (스펙 §10-3 원문)
+// 모든 필드 required + additionalProperties:false (strict 모드 규약).
+// 선택 키·null 유니온 없음 — 뜻은 항상 하나 있어야 한다. 길이 제약은 zod가 담당한다.
+// ---------------------------------------------------------------------------
+
+export const WORD_MEANING_JSON_SCHEMA: StrictJsonSchema = {
+  name: "word_meaning",
+  strict: true,
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      meaningKo: {
+        type: "string",
+        description: "그 문장 맥락에서 이 단어의 우리말 뜻. 한 낱말~짧은 구, 한글만.",
+      },
+    },
+    required: ["meaningKo"],
+  },
+};
+
+// ---------------------------------------------------------------------------
+// 호출 G — zod 이중 검증 (스펙 §10-4)
+// JSON Schema가 못 잡는 것: 길이 상한, "한글만"(원어 echo 차단), 영어 단어 연속 금지.
+// ---------------------------------------------------------------------------
+
+/**
+ * 호출 G 결과의 zod 스키마 (§10-4). JSON Schema와 필드·타입이 1:1이고, 그 위에 "짧게·한글만"
+ * 규칙을 superRefine으로 얹는다. 생산 시점(callWithSchema)에 걸어야 1회 재요청이 그 자리에서
+ * 교정한다.
+ */
+export const wordMeaningSchema = z
+  .object({
+    meaningKo: z.string().trim().min(1).max(WORD_MEANING_KO_MAX),
+  })
+  .superRefine((data, ctx) => {
+    // 한글만 — 우리말 뜻이므로 한글이 한 글자도 없으면 뜻이 아니라 원어(영단어) echo다
+    if (!containsHangul(data.meaningKo)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["meaningKo"],
+        message: "우리말 뜻에는 한글이 있어야 합니다 (영어 단어를 그대로 옮기지 마세요)",
+      });
+    }
+    // 영어 단어가 2개 이상 연속되면 원문 문장·단어를 그대로 옮긴 것으로 보고 거부한다.
+    // (한글에 영어 낱말 1개가 섞이는 것은 막지 않는다 — 고유명사 등.)
+    if (longestEnglishRun(data.meaningKo) >= 2) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["meaningKo"],
+        message: "우리말 뜻에 영어 단어를 이어 쓰지 마세요 (뜻만 한글로)",
+      });
+    }
+  });
