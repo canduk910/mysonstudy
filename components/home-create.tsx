@@ -26,6 +26,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { BookExtraction, SceneDigestItem, SceneSourceKind } from "@/lib/ai/english/schemas";
 import type { IdentifyResult } from "@/lib/identify";
+import type { ReadaloudCandidate } from "@/lib/youtube-search";
 import { resizeToJpegDataUrl } from "@/lib/image-resize";
 import ImageCropper from "@/components/image-cropper";
 import { COVER_MAX_IMAGES } from "@/lib/upload-limits";
@@ -116,6 +117,15 @@ function inRangeOrNull(v: number | null, min: number, max: number): number | nul
   return v != null && v >= min && v <= max ? v : null;
 }
 
+/** 초 → "M:SS"(1시간 넘으면 "H:MM:SS") — 낭독 영상 후보의 길이 표시용 */
+function formatDuration(sec: number): string {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  const ss = String(s).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
 // ---------------------------------------------------------------------------
 // 컴포넌트
 // ---------------------------------------------------------------------------
@@ -149,8 +159,21 @@ export default function HomeCreate({
   const [prefill, setPrefill] = useState<ManualPrefill | null>(null);
   const [prefillKey, setPrefillKey] = useState(0);
 
-  /** --- 유튜브 낭독 자막 (선택) --- */
-  /** 부모가 넣은 "책 낭독 영상" URL. 표지와 함께 제출하면 서버가 자막을 근거로 싣는다 */
+  /** --- 유튜브 낭독 영상 (선택) — 표지 판독으로 제목·저자가 정해진 뒤 자동 검색 → 상위 3개 → 한 번 탭 --- */
+  /**
+   * 낭독 영상 선택 패널 상태. null이면 안 띄운다. 값이 있으면 identify가 끝나 제목·저자가
+   * 정해졌고, 그 값으로 검색해 후보를 고르는 중이다(카드 생성은 탭/건너뛰기 후 진행).
+   */
+  const [readaloud, setReadaloud] = useState<{ title: string; author: string | null } | null>(null);
+  /** /api/youtube-search 결과. loading=검색 중, candidates=후보 표시, noticeKo=폴백 안내 */
+  const [readaloudSearch, setReadaloudSearch] = useState<{
+    loading: boolean;
+    candidates: ReadaloudCandidate[];
+    noticeKo: string | null;
+  } | null>(null);
+  /** 후보가 마음에 안 들 때의 보조 입력(직접 주소 넣기) 열림 여부 */
+  const [manualUrlOpen, setManualUrlOpen] = useState(false);
+  /** 직접 넣는 낭독 영상 URL(보조 입력) */
   const [youtubeUrl, setYoutubeUrl] = useState("");
   /** 이번 카드 생성이 자막 fetch를 포함하는가 — 진행 UI 캡션 표시용(card 단계에 fetch가 겹친다) */
   const [cardHasTranscript, setCardHasTranscript] = useState(false);
@@ -199,6 +222,13 @@ export default function HomeCreate({
   // 검토 패널은 본문 촬영 패널과 동시에 마운트된다(촬영 패널은 hidden). 같은 ref를
   // 나눠 쓰면 스크롤이 숨겨진 쪽으로 가므로 각자 ref를 쓴다.
   const reviewRef = useRef<HTMLDivElement>(null);
+  const readaloudRef = useRef<HTMLDivElement>(null);
+  /**
+   * 낭독 영상 선택(후보 탭 / 건너뛰기 / 자동 폴백) 후 실행할 이어가기 동작.
+   * **첫 호출이 소비하면 null로 비워** 중복 실행을 막는다(자동 폴백 setTimeout과 사용자 탭이
+   * 경쟁해도 먼저 온 쪽만 카드 생성으로 넘어간다). runRichFlow가 identify 직후 설정한다.
+   */
+  const readaloudContinue = useRef<((youtubeUrl: string | null) => void) | null>(null);
   /** 검토 패널에서 "이대로 만들기"를 누를 때 쓸, 근거를 뺀 카드 페이로드 */
   const pendingCardPayload = useRef<Record<string, unknown> | null>(null);
   /** "본문 다시 찍기"가 판독·식별을 다시 하지 않도록 캐시해 둔다 */
@@ -266,6 +296,11 @@ export default function HomeCreate({
     setDuplicate(null);
     setRetakeKo(null);
     setTranscriptNotice(null);
+    setReadaloud(null);
+    setReadaloudSearch(null);
+    setManualUrlOpen(false);
+    setYoutubeUrl("");
+    readaloudContinue.current = null;
   }
 
   /** 실패 공통 처리 — 진행 표시를 끄고 오류 패널을 띄운다 */
@@ -467,7 +502,6 @@ export default function HomeCreate({
   function buildCardPayload(
     extraction: BookExtraction,
     found: IdentifyResult | null,
-    youtubeUrl: string | null,
   ): Record<string, unknown> {
     const arLevel = inRangeOrNull(extraction.arLevel, 0, 13);
     const lexile = inRangeOrNull(extraction.lexile, 0, 2000);
@@ -494,8 +528,8 @@ export default function HomeCreate({
       levelEstimated: arLevel == null,
       // 뒤표지·책날개 소개글 — 여기서 버리면 줄거리가 3~4문장으로 줄어든다 (HARNESS §3-1)
       blurbText: extraction.blurbText ?? null,
-      // 유튜브 낭독 URL — 서버가 자막을 fetch해 최상위 근거로 싣는다(없으면 키 생략)
-      ...(youtubeUrl ? { youtubeUrl } : {}),
+      // youtubeUrl은 여기서 넣지 않는다 — identify 뒤 낭독 영상 검색·선택 단계에서
+      // 부모가 고른 뒤 pendingCardPayload에 주입한다(resolveReadaloud). 안 고르면 키 없음(회귀 0).
     };
   }
 
@@ -551,12 +585,7 @@ export default function HomeCreate({
     }
   }
 
-  async function runRichFlow(
-    covers: File[],
-    pages: File[],
-    kind: SceneSourceKind,
-    youtubeUrl: string | null,
-  ) {
+  async function runRichFlow(covers: File[], pages: File[], kind: SceneSourceKind) {
     const withPages = pages.length > 0;
     setSteps(
       withPages ? ["extract", "identify", "pages", "card"] : ["extract", "identify", "card"],
@@ -564,7 +593,7 @@ export default function HomeCreate({
     setPhase("extract");
     clearStatus();
     setReview(null);
-    retryAction.current = () => void runRichFlow(covers, pages, kind, youtubeUrl);
+    retryAction.current = () => void runRichFlow(covers, pages, kind);
 
     let coverUrls: string[];
     try {
@@ -591,30 +620,103 @@ export default function HomeCreate({
     setPhase("identify");
     const found = await identifyClient(extraction.title ?? "", extraction.author);
 
-    const payload = buildCardPayload(extraction, found, youtubeUrl);
+    const payload = buildCardPayload(extraction, found);
     pendingCardPayload.current = payload;
     richExtraction.current = extraction;
     pagesFlowReady.current = true;
+    const title = String(payload.title ?? "");
+    const author = (payload.author as string) || null;
     // 본문 판독에 넘길 책 맥락 — 제목·주제를 알면 장면 요약이 훨씬 정확해진다
     richContext.current = {
-      title: String(payload.title ?? ""),
-      author: (payload.author as string) || null,
+      title,
+      author,
       isFiction: Boolean(payload.isFiction),
       topic: String(payload.topic ?? ""),
     };
 
-    // (2′) 본문·목차 판독 — 사진이 없으면 건너뛴다 (기본 경로와 동일해진다)
-    if (!withPages) {
-      await runCard(payload, {
-        onInvalidInput: () =>
-          openManualForRetake(
-            extraction,
-            "사진에서 읽은 정보로는 카드를 만들지 못했어요. 아래 내용을 확인·수정해서 만들어 주시거나, 표지를 다시 찍어 주세요.",
-          ),
-      });
-      return;
+    // 카드 생성으로 넘어가는 실제 이어가기 — 낭독 영상 선택이 끝난 뒤(탭/건너뛰기/자동폴백) 실행된다.
+    // 본문 사진이 없으면 표지-only 흐름과 동일(pages 단계가 통째로 빠진다 — 회귀 0).
+    const proceed = () => {
+      if (withPages) {
+        void runPagesStep(pages, kind);
+      } else {
+        void runCard(pendingCardPayload.current ?? payload, {
+          onInvalidInput: () =>
+            openManualForRetake(
+              extraction,
+              "사진에서 읽은 정보로는 카드를 만들지 못했어요. 아래 내용을 확인·수정해서 만들어 주시거나, 표지를 다시 찍어 주세요.",
+            ),
+        });
+      }
+    };
+
+    // (B) 낭독 영상 자동 검색 → 상위 3개 → 한 번 탭. identify로 제목·저자가 정해진 지금 시작한다.
+    // 부모가 후보를 고르면 그 url을 pendingCardPayload.youtubeUrl로 주입하고, 건너뛰면 표지 기준
+    // 그대로 넘어간다. 결과 0·키 없음이면 조용히 폴백(자동으로 표지 기준 카드 생성).
+    presentReadaloudChoice(title, author, proceed);
+  }
+
+  // -------------------------------------------------------------------------
+  // (B) 낭독 영상 선택 — 자동 검색 → 상위 3개 → 한 번 탭 (identify 이후)
+  // -------------------------------------------------------------------------
+
+  /**
+   * 낭독 영상 선택 패널을 띄우고 검색을 시작한다. `proceed`는 선택이 끝난 뒤 카드 생성으로
+   * 넘어가는 이어가기 동작이다(runRichFlow가 pages/카드 분기를 담아 넘긴다).
+   */
+  function presentReadaloudChoice(
+    title: string,
+    author: string | null,
+    proceed: () => void,
+  ) {
+    // 선택(탭/건너뛰기/자동폴백)이 오면 한 번만 실행 — 먼저 온 쪽이 소비하고 나머지는 무시한다.
+    readaloudContinue.current = (picked) => {
+      if (picked) pendingCardPayload.current = { ...(pendingCardPayload.current ?? {}), youtubeUrl: picked };
+      setReadaloud(null);
+      setReadaloudSearch(null);
+      setManualUrlOpen(false);
+      proceed();
+    };
+    setPhase(null);
+    setReadaloud({ title, author });
+    setReadaloudSearch({ loading: true, candidates: [], noticeKo: null });
+    setManualUrlOpen(false);
+    setYoutubeUrl("");
+    setTimeout(() => readaloudRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 30);
+    void fireReadaloudSearch(title, author);
+  }
+
+  /** 낭독 영상 선택 결과를 이어가기로 넘긴다 — **첫 호출만 소비**(중복 진행 방지) */
+  function resolveReadaloud(picked: string | null) {
+    const go = readaloudContinue.current;
+    readaloudContinue.current = null;
+    go?.(picked);
+  }
+
+  /** /api/youtube-search 호출 → 후보 채우기. 결과 0·키 없음·오류는 조용히 폴백(자동 진행) */
+  async function fireReadaloudSearch(title: string, author: string | null) {
+    try {
+      const qs = new URLSearchParams({ title });
+      if (author) qs.set("author", author);
+      const res = await fetch(`/api/youtube-search?${qs.toString()}`);
+      const data = (await res.json().catch(() => null)) as
+        | { ok?: boolean; results?: ReadaloudCandidate[] }
+        | null;
+      if (res.ok && data?.ok && Array.isArray(data.results) && data.results.length > 0) {
+        setReadaloudSearch({ loading: false, candidates: data.results, noticeKo: null });
+        return;
+      }
+    } catch {
+      // 무시 — 아래 폴백으로
     }
-    await runPagesStep(pages, kind);
+    // 결과 0 / 키 없음 / 오류 → 조용히 폴백: 사유를 잠깐 보여 준 뒤 자동으로 표지 기준 카드 생성.
+    // (사용자가 그 사이 "건너뛰기"를 눌러 먼저 진행했다면 resolveReadaloud가 이미 소비돼 무시된다.)
+    setReadaloudSearch({
+      loading: false,
+      candidates: [],
+      noticeKo: "낭독 영상을 못 찾았어요 — 표지 기준으로 만들게요",
+    });
+    setTimeout(() => resolveReadaloud(null), 1200);
   }
 
   /** 검토 패널의 "본문 다시 찍기" — 판독·식별은 다시 하지 않는다 */
@@ -1035,6 +1137,115 @@ export default function HomeCreate({
         </div>
       )}
 
+      {/*
+       * 낭독 영상 선택 패널 (B) — 표지 판독으로 제목·저자가 정해진 뒤 자동 검색한 상위 3개를
+       * 보여 준다. 한 번 탭하면 그 영상 자막을 근거로 카드가 만들어지고, "건너뛰기"면 표지 기준
+       * 그대로 넘어간다. 결과 0·키 없음이면 사유를 잠깐 보여 준 뒤 자동으로 표지 기준 카드 생성.
+       */}
+      {!busy && readaloud && (
+        <div ref={readaloudRef} className={panelCls}>
+          <h2 className="t-section-title">📺 낭독 영상으로 더 좋은 카드 만들기 (선택)</h2>
+          <p className="t-caption mt-1">
+            「{readaloud.title}」을(를) 읽어 주는 유튜브 영상을 찾아봤어요. 맞는 영상을 하나
+            골라 주면 그 낭독을 바탕으로 카드를 만들어 아이가 읽는 책과 더 잘 맞아요.
+          </p>
+
+          {/* 검색 중 */}
+          {readaloudSearch?.loading && (
+            <p className="t-caption mt-4">🔎 낭독 영상을 찾고 있어요…</p>
+          )}
+
+          {/* 후보 3개 — 썸네일·제목·채널·길이. 한 번 탭하면 그 url로 카드 생성 진행 */}
+          {readaloudSearch && !readaloudSearch.loading && readaloudSearch.candidates.length > 0 && (
+            <ul className="mt-4 flex flex-col gap-3">
+              {readaloudSearch.candidates.map((c) => (
+                <li key={c.videoId}>
+                  <button
+                    type="button"
+                    onClick={() => resolveReadaloud(c.url)}
+                    className="flex w-full items-center gap-3 rounded-[var(--radius-box)] border border-line bg-bg p-2 text-left hover:border-accent"
+                  >
+                    {c.thumbnailUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element -- 외부 썸네일, next/image 원격 설정은 과설계
+                      <img
+                        src={c.thumbnailUrl}
+                        alt=""
+                        width={120}
+                        height={68}
+                        className="h-[68px] w-[120px] flex-none rounded-md object-cover"
+                      />
+                    ) : (
+                      <span className="flex h-[68px] w-[120px] flex-none items-center justify-center rounded-md bg-line text-2xl">
+                        📺
+                      </span>
+                    )}
+                    <span className="min-w-0 flex-1">
+                      <span className="t-question-ko block text-ink line-clamp-2">{c.title}</span>
+                      <span className="t-caption mt-0.5 block truncate">
+                        {c.channel}
+                        {c.durationSec != null ? ` · ${formatDuration(c.durationSec)}` : ""}
+                      </span>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {/* 폴백 안내 — 결과 0·키 없음·오류. 이 뒤 잠깐 있다 자동으로 표지 기준 카드 생성 */}
+          {readaloudSearch && !readaloudSearch.loading && readaloudSearch.noticeKo && (
+            <p className="t-caption mt-4">{readaloudSearch.noticeKo}</p>
+          )}
+
+          {/* 건너뛰기 + 직접 주소 넣기(보조) — 폴백 진행 중(noticeKo)이 아닐 때만 노출 */}
+          {readaloudSearch && !readaloudSearch.noticeKo && (
+            <div className="mt-5">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => resolveReadaloud(null)}
+                  className="u-btn u-btn-secondary"
+                >
+                  건너뛰기 (표지 기준으로 만들기)
+                </button>
+                {!manualUrlOpen && (
+                  <button
+                    type="button"
+                    onClick={() => setManualUrlOpen(true)}
+                    className="u-btn u-btn-secondary"
+                  >
+                    직접 주소 넣기
+                  </button>
+                )}
+              </div>
+
+              {/* 후보가 마음에 안 들면 URL을 직접 넣어 그 영상으로 만든다(보조 입력) */}
+              {manualUrlOpen && (
+                <div className="mt-3">
+                  <input
+                    type="url"
+                    inputMode="url"
+                    value={youtubeUrl}
+                    onChange={(e) => setYoutubeUrl(e.target.value)}
+                    placeholder="예: https://youtu.be/… 또는 https://www.youtube.com/watch?v=…"
+                    className={inputCls}
+                    aria-label="유튜브 낭독 영상 주소"
+                  />
+                  <button
+                    type="button"
+                    disabled={youtubeUrl.trim().length === 0}
+                    onClick={() => resolveReadaloud(youtubeUrl.trim())}
+                    className="u-btn u-btn-primary mt-2 disabled:opacity-55"
+                  >
+                    이 주소로 만들기
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* 오류 패널 — 재시도는 실패한 단계부터 다시 (SPEC §9) */}
       {!busy && errorKo && (
         <div
@@ -1169,7 +1380,7 @@ export default function HomeCreate({
       {panel === "photo" && (
         <div
           ref={panelRef}
-          className={`${panelCls} ${busy || duplicate || review || transcriptNotice ? "hidden" : ""}`}
+          className={`${panelCls} ${busy || duplicate || review || transcriptNotice || readaloud ? "hidden" : ""}`}
         >
           <h2 className="t-section-title">사진으로 카드 만들기</h2>
           <p className="t-caption mt-1">
@@ -1313,44 +1524,22 @@ export default function HomeCreate({
             </p>
           </div>
 
-          {/* 3단계 — 유튜브 낭독 영상 (선택). 넣으면 자막 전문을 근거로 삼아 카드가 실제 책과
-              어긋나지 않게 만든다(배지 "낭독 확인"). 자막을 못 가져와도 카드는 만들어진다. */}
+          {/* 낭독 영상은 더 이상 URL을 붙여넣지 않는다 — 표지를 읽어 제목·저자가 정해지면
+              앱이 유튜브에서 자동으로 찾아 후보 3개를 보여 준다(아래 안내). 부모가 한 번 탭해
+              고른 영상의 자막을 근거로 카드가 만들어진다(배지 "낭독 확인"). */}
           <div className="mt-5">
-            <p className={labelCls}>3. 유튜브 낭독 영상 (선택)</p>
-            <p className="t-caption mb-2">
-              이 책을 처음부터 끝까지 읽어 주는 유튜브 영상 주소를 넣으면, 그 낭독 내용을 바탕으로
-              카드를 만들어요. 아이가 읽는 책과 더 잘 맞아요.
+            <p className={labelCls}>3. 낭독 영상 (자동으로 찾아 드려요)</p>
+            <p className="t-caption">
+              📺 표지를 읽고 나면 이 책을 읽어 주는 유튜브 낭독 영상을 자동으로 찾아
+              보여 드려요. 맞는 영상을 한 번 탭하면 그 낭독을 바탕으로 카드를 만들어
+              아이가 읽는 책과 더 잘 맞아요. (찾은 영상이 없으면 표지 기준으로 만들어요.)
             </p>
-            <input
-              type="url"
-              inputMode="url"
-              value={youtubeUrl}
-              onChange={(e) => setYoutubeUrl(e.target.value)}
-              placeholder="예: https://youtu.be/… 또는 https://www.youtube.com/watch?v=…"
-              className={inputCls}
-              aria-label="유튜브 낭독 영상 주소"
-            />
-            {youtubeUrl.trim() && (
-              <p className="t-caption mt-1">
-                🎧 낭독 영상의 자막을 가져와 카드에 반영해요
-                {" · "}
-                <button
-                  type="button"
-                  onClick={() => setYoutubeUrl("")}
-                  className="underline"
-                >
-                  지우기
-                </button>
-              </p>
-            )}
           </div>
 
           <button
             type="button"
             disabled={coverFiles.length === 0}
-            onClick={() =>
-              void runRichFlow(coverFiles, pageFiles, sceneKind, youtubeUrl.trim() || null)
-            }
+            onClick={() => void runRichFlow(coverFiles, pageFiles, sceneKind)}
             className="u-btn u-btn-primary mt-6 w-full disabled:opacity-55"
           >
             🪄 학습 카드 만들기
