@@ -15,8 +15,13 @@
  * (a)가 없으면 줄거리가 안 길어지고, (b)가 없으면 "다시 생성"이 근거를 잃고,
  * (c)가 없으면 카드 화면에 장면 메모가 안 나온다.
  *
+ * transcript grounding 확장: 신규 경로 입력에 youtubeUrl(선택)을 받는다. 있으면 서버가
+ * Supadata로 낭독 자막을 fetch해 (a) 호출 B 입력의 transcript(최상위 근거)로 싣고,
+ * (b) book에 transcript·youtubeUrl을 내부 근거로 보관한다(화면 미표시, 재생성용).
+ * 자막 fetch 실패는 비치명 — 카드는 표지 기준으로 만들어지고, 사유를 transcriptNotice로 안내한다.
+ *
  * 응답 shape (qa-inspector 교차 검증용 — 빌드 리포트에도 명시):
- * - 200 { ok: true, bookId, cardId }
+ * - 200 { ok: true, bookId, cardId, transcriptNotice: string | null }         ← notice≠null이면 자막 실패(비치명) 안내
  * - 200 { ok: false, reason: "duplicate", messageKo, bookId, cardId | null }  ← SPEC §9 동일 책 재등록
  * - 400 { ok: false, error: "invalid_input", messageKo, issues: {path, message}[] }
  * - 404 { ok: false, error: "book_not_found", messageKo }                     ← 재생성 시 bookId 미존재
@@ -42,6 +47,7 @@ import {
   type SceneDigestItem,
 } from "@/lib/ai/english/schemas";
 import { getStore, type BookRecord } from "@/lib/store";
+import { fetchYoutubeTranscript, youtubeUrlSchema } from "@/lib/youtube-transcript";
 
 export const runtime = "nodejs";
 
@@ -102,6 +108,10 @@ const newCardBodySchema = z.object({
   force: z.boolean().optional(), // 동일 책 재등록 시 "그래도 새로 만들기"
   // --- story-2: 줄거리 근거 (호출 A의 blurbText + 호출 A′의 sceneDigest) ---
   ...evidenceShape,
+  // --- transcript grounding: 유튜브 낭독 영상 URL (선택) ---
+  // 형식 검증은 youtube-transcript.ts의 단일 정의처를 재사용한다. 서버가 자막을 fetch해
+  // 최상위 근거로 싣고, 실패해도 카드는 표지 기준으로 만들어진다(비치명).
+  youtubeUrl: youtubeUrlSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -172,6 +182,9 @@ function bookToMeta(book: BookRecord): CardUserMessageInput {
     blurbText: book.blurbText,
     sceneKind: book.sceneKind,
     sceneDigest: book.sceneDigest,
+    // 저장된 자막을 그대로 다시 실어 "다시 생성"이 최상위 근거(storySource=transcript)를
+    // 유지하게 한다 — 재생성 시 Supadata를 다시 부르지 않는다(영상 삭제·비공개에도 안전).
+    transcript: book.transcript,
   };
 }
 
@@ -233,7 +246,8 @@ export async function POST(req: Request) {
     // (HARNESS §2A-6: 모델에게 되돌려 받으면 출력 토큰만 늘고 요약이 변조된다)
     const content: Card = attachSceneDigest(gen.card, book.sceneDigest);
     const card = await store.createCard({ bookId: book.id, content, model });
-    return NextResponse.json({ ok: true, bookId: book.id, cardId: card.id });
+    // 재생성은 저장된 transcript를 그대로 재사용하므로 새로 fetch하지 않는다(안내도 없음)
+    return NextResponse.json({ ok: true, bookId: book.id, cardId: card.id, transcriptNotice: null });
   }
 
   // --- 신규 경로: 수동 메타데이터 → 카드 생성 ---
@@ -263,6 +277,18 @@ export async function POST(req: Request) {
   // 장면이 없으면 sceneKind도 의미가 없다(배지 오표기 방지)
   const sceneKind = sceneDigest ? (input.sceneKind ?? "pages") : null;
 
+  // 유튜브 낭독 자막 — URL이 있으면 서버에서 fetch해 **최상위 근거(transcript)**로 싣는다.
+  // 실패는 **비치명**: 자막 없이 표지 기준으로 카드를 만들고, 사유를 transcriptNotice로 안내한다.
+  // (fetchYoutubeTranscript는 throw하지 않고 { ok:false, messageKo }를 돌려준다.)
+  const youtubeUrl = input.youtubeUrl ?? null;
+  let transcript: string | null = null;
+  let transcriptNotice: string | null = null;
+  if (youtubeUrl) {
+    const fetched = await fetchYoutubeTranscript(youtubeUrl);
+    if (fetched.ok) transcript = fetched.text;
+    else transcriptNotice = fetched.messageKo;
+  }
+
   const meta: CardUserMessageInput = {
     title: input.title,
     author,
@@ -277,6 +303,8 @@ export async function POST(req: Request) {
     blurbText,
     sceneKind,
     sceneDigest,
+    // 최상위 근거 — 있으면 resolveAllowedStorySource가 storySource=transcript로 잡는다
+    transcript,
   };
 
   const gen = await tryGenerate(meta);
@@ -307,19 +335,26 @@ export async function POST(req: Request) {
       blurbText,
       sceneKind,
       sceneDigest,
+      // 자막은 내부 근거 저장분(화면 미표시). URL도 보관(재생성·표기). 자막 fetch가
+      // 실패해도 URL은 남긴다 — 무엇을 넣었는지 기록은 유지하되 근거는 비운다.
+      transcript,
+      youtubeUrl,
     }));
 
   // "그래도 새로 만들기"(force)로 기존 book을 재사용한 경우 — 이번에 새로 얻은 근거가
   // 있으면 book에 갱신해 둔다. 갱신하지 않으면 다음 재생성이 옛 근거로 돌아간다.
   // 빈 값으로 기존 근거를 지우지는 않는다(넘어온 키만 덮어쓴다).
-  if (existing && (blurbText || sceneDigest)) {
+  if (existing && (blurbText || sceneDigest || transcript || youtubeUrl)) {
     await store.updateBookEvidence(existing.id, {
       ...(blurbText ? { blurbText } : {}),
       ...(sceneDigest ? { sceneDigest, sceneKind } : {}),
+      // 새 자막을 받았을 때만 덮어쓴다(실패 시 옛 자막 보존). URL은 넣었으면 갱신.
+      ...(transcript ? { transcript } : {}),
+      ...(youtubeUrl ? { youtubeUrl } : {}),
     });
   }
 
   const content: Card = attachSceneDigest(gen.card, sceneDigest);
   const card = await store.createCard({ bookId: book.id, content, model });
-  return NextResponse.json({ ok: true, bookId: book.id, cardId: card.id });
+  return NextResponse.json({ ok: true, bookId: book.id, cardId: card.id, transcriptNotice });
 }

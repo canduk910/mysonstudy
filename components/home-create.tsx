@@ -149,6 +149,19 @@ export default function HomeCreate({
   const [prefill, setPrefill] = useState<ManualPrefill | null>(null);
   const [prefillKey, setPrefillKey] = useState(0);
 
+  /** --- 유튜브 낭독 자막 (선택) --- */
+  /** 부모가 넣은 "책 낭독 영상" URL. 표지와 함께 제출하면 서버가 자막을 근거로 싣는다 */
+  const [youtubeUrl, setYoutubeUrl] = useState("");
+  /** 이번 카드 생성이 자막 fetch를 포함하는가 — 진행 UI 캡션 표시용(card 단계에 fetch가 겹친다) */
+  const [cardHasTranscript, setCardHasTranscript] = useState(false);
+  /**
+   * 자막 fetch 실패(비치명) 안내 — 카드는 만들어졌으므로 바로 이동하지 않고 사유를 보여 준 뒤
+   * "카드 보러 가기"로 넘긴다. duplicate 패널과 같은 격의 비치명 안내 패널.
+   */
+  const [transcriptNotice, setTranscriptNotice] = useState<{ messageKo: string; cardId: string } | null>(
+    null,
+  );
+
   /** --- 본문·목차 촬영 (선택 경로) --- */
   const [coverFiles, setCoverFiles] = useState<File[]>([]);
   const [pageFiles, setPageFiles] = useState<File[]>([]);
@@ -252,6 +265,7 @@ export default function HomeCreate({
     setCanRetry(false);
     setDuplicate(null);
     setRetakeKo(null);
+    setTranscriptNotice(null);
   }
 
   /** 실패 공통 처리 — 진행 표시를 끄고 오류 패널을 띄운다 */
@@ -306,10 +320,14 @@ export default function HomeCreate({
       setSteps(["card"]);
       void runCard(payload, opts);
     };
+    // 자막 fetch는 /api/card 서버 내부에서 카드 생성과 한 호출로 일어난다(별도 단계로 관측 불가) —
+    // 지어낸 단계 대신 card 단계에 "자막도 반영 중" 캡션을 붙인다(파일의 사실-그대로 진행 원칙).
+    setCardHasTranscript(Boolean(payload.youtubeUrl));
     setPhase("card");
     setErrorKo(null);
     setCanRetry(false);
     setDuplicate(null);
+    setTranscriptNotice(null);
     let navigating = false;
     try {
       const res = await fetch("/api/card", {
@@ -325,10 +343,17 @@ export default function HomeCreate({
             reason?: string;
             error?: string;
             messageKo?: string;
+            transcriptNotice?: string | null;
           }
         | null;
 
       if (res.ok && data?.ok && data.cardId) {
+        // 자막을 못 가져왔으면(비치명) 바로 이동하지 않고 사유를 보여 준 뒤 넘긴다 —
+        // "표지 기준으로 만들었어요"를 부모가 인지하도록. 성공(자막 반영)이면 즉시 이동.
+        if (data.transcriptNotice) {
+          setTranscriptNotice({ messageKo: data.transcriptNotice, cardId: data.cardId });
+          return;
+        }
         navigating = true;
         router.push(`/card/${data.cardId}`);
         return;
@@ -442,6 +467,7 @@ export default function HomeCreate({
   function buildCardPayload(
     extraction: BookExtraction,
     found: IdentifyResult | null,
+    youtubeUrl: string | null,
   ): Record<string, unknown> {
     const arLevel = inRangeOrNull(extraction.arLevel, 0, 13);
     const lexile = inRangeOrNull(extraction.lexile, 0, 2000);
@@ -468,6 +494,8 @@ export default function HomeCreate({
       levelEstimated: arLevel == null,
       // 뒤표지·책날개 소개글 — 여기서 버리면 줄거리가 3~4문장으로 줄어든다 (HARNESS §3-1)
       blurbText: extraction.blurbText ?? null,
+      // 유튜브 낭독 URL — 서버가 자막을 fetch해 최상위 근거로 싣는다(없으면 키 생략)
+      ...(youtubeUrl ? { youtubeUrl } : {}),
     };
   }
 
@@ -523,7 +551,12 @@ export default function HomeCreate({
     }
   }
 
-  async function runRichFlow(covers: File[], pages: File[], kind: SceneSourceKind) {
+  async function runRichFlow(
+    covers: File[],
+    pages: File[],
+    kind: SceneSourceKind,
+    youtubeUrl: string | null,
+  ) {
     const withPages = pages.length > 0;
     setSteps(
       withPages ? ["extract", "identify", "pages", "card"] : ["extract", "identify", "card"],
@@ -531,7 +564,7 @@ export default function HomeCreate({
     setPhase("extract");
     clearStatus();
     setReview(null);
-    retryAction.current = () => void runRichFlow(covers, pages, kind);
+    retryAction.current = () => void runRichFlow(covers, pages, kind, youtubeUrl);
 
     let coverUrls: string[];
     try {
@@ -558,7 +591,7 @@ export default function HomeCreate({
     setPhase("identify");
     const found = await identifyClient(extraction.title ?? "", extraction.author);
 
-    const payload = buildCardPayload(extraction, found);
+    const payload = buildCardPayload(extraction, found, youtubeUrl);
     pendingCardPayload.current = payload;
     richExtraction.current = extraction;
     pagesFlowReady.current = true;
@@ -942,6 +975,12 @@ export default function HomeCreate({
               <br />
               사진이 많으면 1~2분까지 걸릴 수 있어요. 창을 닫지 말고 기다려 주세요!
             </p>
+          ) : phase === "card" && cardHasTranscript ? (
+            // 자막 fetch는 카드 생성과 한 서버 호출이라 별도 단계로 쪼갤 수 없다 —
+            // card 단계에 "자막도 함께 가져와 반영 중"임을 사실대로 덧붙인다.
+            <p className="t-caption mt-3">
+              🎧 유튜브 낭독 자막을 가져와 카드에 반영하고 있어요 · 자막이 길면 조금 더 걸릴 수 있어요
+            </p>
           ) : (
             <p className="t-caption mt-3">보통 20~40초 정도 걸려요. 조금만 기다려 주세요!</p>
           )}
@@ -973,6 +1012,24 @@ export default function HomeCreate({
               className="u-btn u-btn-secondary"
             >
               그래도 새로 만들기
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 자막 fetch 실패(비치명) 안내 — 카드는 이미 만들어졌다. 표지 기준으로 만들었음을
+          부모가 인지하도록 사유를 보여 준 뒤 "카드 보러 가기"로 넘긴다. */}
+      {!busy && transcriptNotice && (
+        <div className="mt-6 rounded-[var(--radius-card)] border border-line bg-bg p-5 text-center">
+          <p className="t-section-title">카드를 만들었어요 ✨</p>
+          <p className="t-caption mt-1">{transcriptNotice.messageKo}</p>
+          <div className="mt-4 flex justify-center">
+            <button
+              type="button"
+              onClick={() => router.push(`/card/${transcriptNotice.cardId}`)}
+              className="u-btn u-btn-primary"
+            >
+              카드 보러 가기
             </button>
           </div>
         </div>
@@ -1110,7 +1167,10 @@ export default function HomeCreate({
        * 예전의 "표지 사진으로 만들기"와 완전히 같은 흐름이 된다.
        */}
       {panel === "photo" && (
-        <div ref={panelRef} className={`${panelCls} ${busy || duplicate || review ? "hidden" : ""}`}>
+        <div
+          ref={panelRef}
+          className={`${panelCls} ${busy || duplicate || review || transcriptNotice ? "hidden" : ""}`}
+        >
           <h2 className="t-section-title">사진으로 카드 만들기</h2>
           <p className="t-caption mt-1">
             표지만 있어도 카드가 나와요. 사진은 저장하지 않고 우리말 요약만 남아요.
@@ -1253,10 +1313,44 @@ export default function HomeCreate({
             </p>
           </div>
 
+          {/* 3단계 — 유튜브 낭독 영상 (선택). 넣으면 자막 전문을 근거로 삼아 카드가 실제 책과
+              어긋나지 않게 만든다(배지 "낭독 확인"). 자막을 못 가져와도 카드는 만들어진다. */}
+          <div className="mt-5">
+            <p className={labelCls}>3. 유튜브 낭독 영상 (선택)</p>
+            <p className="t-caption mb-2">
+              이 책을 처음부터 끝까지 읽어 주는 유튜브 영상 주소를 넣으면, 그 낭독 내용을 바탕으로
+              카드를 만들어요. 아이가 읽는 책과 더 잘 맞아요.
+            </p>
+            <input
+              type="url"
+              inputMode="url"
+              value={youtubeUrl}
+              onChange={(e) => setYoutubeUrl(e.target.value)}
+              placeholder="예: https://youtu.be/… 또는 https://www.youtube.com/watch?v=…"
+              className={inputCls}
+              aria-label="유튜브 낭독 영상 주소"
+            />
+            {youtubeUrl.trim() && (
+              <p className="t-caption mt-1">
+                🎧 낭독 영상의 자막을 가져와 카드에 반영해요
+                {" · "}
+                <button
+                  type="button"
+                  onClick={() => setYoutubeUrl("")}
+                  className="underline"
+                >
+                  지우기
+                </button>
+              </p>
+            )}
+          </div>
+
           <button
             type="button"
             disabled={coverFiles.length === 0}
-            onClick={() => void runRichFlow(coverFiles, pageFiles, sceneKind)}
+            onClick={() =>
+              void runRichFlow(coverFiles, pageFiles, sceneKind, youtubeUrl.trim() || null)
+            }
             className="u-btn u-btn-primary mt-6 w-full disabled:opacity-55"
           >
             🪄 학습 카드 만들기

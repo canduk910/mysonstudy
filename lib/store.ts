@@ -88,16 +88,31 @@ export interface BookRecord {
   sceneKind: SceneSourceKind | null;
   /** 호출 A′의 장면별 요약. 저장 전 normalizeSceneDigest()를 통과시킬 것(Firestore는 undefined 거부) */
   sceneDigest: SceneDigestItem[] | null;
+
+  /**
+   * --- 유튜브 낭독 자막 근거 (transcript grounding) ---
+   *
+   * 부모가 넣은 "책 낭독 영상"에서 받은 자막 전문. **최상위 근거 티어**(storySource=transcript,
+   * 배지 "낭독 확인")로 카드가 자막 밖을 지어내지 못하게 하는 grounding이다. sceneDigest와 같은
+   * 격의 **내부 근거** — 화면에 원문을 표시하지 않고(SPEC §1 본문 재현 금지), "다시 생성"이 사진·
+   * 영상 재입력 없이 같은 근거로 돌도록 보관한다. 여기가 비면 재생성 시 storySource가 강등된다.
+   */
+  transcript: string | null;
+  /** 자막을 받아 온 유튜브 영상 URL — 재생성·표기용(자막 본문은 transcript에 별도 보관) */
+  youtubeUrl: string | null;
 }
 
 /**
- * 근거 3필드만 갱신하는 패치 — `/api/pages`가 기존 책에 장면 메모를 붙일 때 쓴다.
+ * 근거 필드만 갱신하는 패치 — `/api/pages`가 기존 책에 장면 메모를 붙이거나, 같은 책을
+ * "그래도 새로 만들기"로 재사용할 때 이번에 새로 얻은 근거를 덮어쓴다.
  * 지정한 키만 덮어쓴다(생략한 키는 보존).
  */
 export interface BookEvidencePatch {
   blurbText?: string | null;
   sceneKind?: SceneSourceKind | null;
   sceneDigest?: SceneDigestItem[] | null;
+  transcript?: string | null;
+  youtubeUrl?: string | null;
 }
 
 export interface CardRecord {
@@ -403,12 +418,27 @@ function emptyDb(): DbShape {
   return { books: [], cards: [], readings: [], explanations: [], vocabBooks: [], vocabQuizzes: [] };
 }
 
+/**
+ * 파일 스토어 방어 변환 — transcript grounding 이전에 저장된 book 레코드에는
+ * `transcript`·`youtubeUrl` 키가 없다. 읽을 때 null로 메워 타입 계약(필수 nullable)을 지킨다.
+ * (Firestore 쪽 대응은 store-firestore.ts의 `toBook`이 `toNullable`로 담당한다.)
+ */
+function normalizeBookRecord(b: BookRecord): BookRecord {
+  return {
+    ...b,
+    transcript: b.transcript ?? null,
+    youtubeUrl: b.youtubeUrl ?? null,
+  };
+}
+
 async function readDb(): Promise<DbShape> {
   try {
     const raw = await fs.readFile(DB_PATH, "utf8");
     const parsed = JSON.parse(raw) as Partial<DbShape>;
     return {
-      books: parsed.books ?? [],
+      // transcript grounding 이전 db.json에는 이 두 필드가 없다 — 읽을 때 null로 채운다
+      // (없는 채로 흘리면 bookToMeta가 undefined를 넘겨 타입 계약과 어긋난다). 하위호환.
+      books: (parsed.books ?? []).map(normalizeBookRecord),
       cards: parsed.cards ?? [],
       readings: parsed.readings ?? [],
       // M4 이전에 만들어진 db.json에는 이 키가 없다 — 마이그레이션 없이 그대로 열린다
@@ -627,6 +657,8 @@ class JsonFileStore implements BookCardStore {
       if ("blurbText" in patch) book.blurbText = patch.blurbText ?? null;
       if ("sceneKind" in patch) book.sceneKind = patch.sceneKind ?? null;
       if ("sceneDigest" in patch) book.sceneDigest = patch.sceneDigest ?? null;
+      if ("transcript" in patch) book.transcript = patch.transcript ?? null;
+      if ("youtubeUrl" in patch) book.youtubeUrl = patch.youtubeUrl ?? null;
       return book;
     });
   }

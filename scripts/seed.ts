@@ -50,6 +50,8 @@ const wolvesBook: BookRecord = {
   blurbText: null,
   sceneKind: null,
   sceneDigest: null,
+  transcript: null,
+  youtubeUrl: null,
 };
 
 const wolvesCard: Card = {
@@ -297,6 +299,8 @@ const poohBook: BookRecord = {
     "꿀을 좋아하는 곰돌이 푸가 친구 집에서 벌인 소동을 담은 이야기. 첫 읽기 책 시리즈로, 짧은 문장과 큰 그림으로 되어 있어요.",
   sceneKind: "pages",
   sceneDigest: null,
+  transcript: null,
+  youtubeUrl: null,
 };
 
 const poohCard: Card = {

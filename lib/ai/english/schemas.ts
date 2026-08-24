@@ -284,7 +284,7 @@ export const LEARNING_CARD_JSON_SCHEMA: StrictJsonSchema = {
       bookIntroKo: { type: "string" },
       levelNoteKo: { type: "string" },
       storyOutlineKo: { type: "string" },
-      storySource: { type: "string", enum: ["metadata", "blurb", "toc", "pages"] },
+      storySource: { type: "string", enum: ["metadata", "blurb", "toc", "pages", "transcript"] },
       beforeReading: {
         type: "array",
         items: {
@@ -380,18 +380,22 @@ export const SIGHT_WORD_SET: ReadonlySet<string> = new Set(SIGHT_WORDS);
 // 기존 불리언 storyIsGuess를 대체한다. 근거가 두꺼울수록 분량을 늘린다.
 // ---------------------------------------------------------------------------
 
-export const STORY_SOURCES = ["metadata", "blurb", "toc", "pages"] as const;
+export const STORY_SOURCES = ["metadata", "blurb", "toc", "pages", "transcript"] as const;
 export type StorySource = (typeof STORY_SOURCES)[number];
 
 /**
  * 근거의 두께 순서 — 모델은 받은 근거보다 높은 값을 주장할 수 없다 (zod가 강제).
  * 낮춰 적는 것은 허용이므로 비교는 반드시 `<=`로 한다. eval도 이 상수를 쓴다(등호 비교 금지).
+ *
+ * transcript(유튜브 낭독 자막 = 책 전체 텍스트)가 가장 두껍다 — pages(장면 메모, 요약)보다도
+ * 원문 전체를 근거로 삼으므로 최상위 티어다.
  */
 export const STORY_SOURCE_RANK: Record<StorySource, number> = {
   metadata: 0,
   blurb: 1,
   toc: 2,
   pages: 3,
+  transcript: 4,
 };
 
 /** 카드 배지 문구 (SPEC §4-2). UI는 이 상수를 쓴다 — 문구를 따로 적지 말 것. */
@@ -400,16 +404,19 @@ export const STORY_SOURCE_LABELS_KO: Record<StorySource, string> = {
   blurb: "소개글 기반",
   toc: "목차 기반",
   pages: "본문 확인",
+  transcript: "낭독 확인",
 };
 
 /**
  * 근거 단위를 셀 수 없는 출처의 고정 구간 (HARNESS §3-1).
  * metadata·blurb는 "몇 개"를 셀 대상이 없어 종류만으로 정한다.
+ * transcript는 책 전체 텍스트라 셀 장면은 없지만 근거가 가장 두꺼우므로 다이얼 상한([8,10])에 둔다.
  */
 export const STORY_OUTLINE_FLAT_RANGE = {
   metadata: [3, 4],
   blurb: [4, 6],
-} as const satisfies Record<"metadata" | "blurb", readonly [number, number]>;
+  transcript: [8, 10],
+} as const satisfies Record<"metadata" | "blurb" | "transcript", readonly [number, number]>;
 
 /** 줄거리 분량의 절대 하한 — 이보다 짧으면 카드로서 맥락이 안 잡힌다 */
 export const STORY_OUTLINE_MIN_SENTENCES = 3;
@@ -438,7 +445,7 @@ export function storyOutlineSentenceRange(
   storySource: StorySource,
   sceneCount = 0,
 ): readonly [number, number] {
-  if (storySource === "metadata" || storySource === "blurb") {
+  if (storySource === "metadata" || storySource === "blurb" || storySource === "transcript") {
     return STORY_OUTLINE_FLAT_RANGE[storySource];
   }
   const scenes = Math.max(0, Math.floor(sceneCount));
@@ -477,10 +484,14 @@ export function countKoreanSentences(text: string): number {
  * 치르고 얻은 A′ 결과를 버리면 카드 품질이 그만큼 떨어지기 때문이다.
  */
 export function resolveAllowedStorySource(evidence: {
+  transcript?: string | null;
   blurbText?: string | null;
   sceneKind?: SceneSourceKind | null;
   sceneDigest?: readonly SceneDigestItem[] | null;
 }): StorySource {
+  // transcript(낭독 자막 = 책 전체 텍스트)는 최상위 티어. 다른 근거가 함께 와도 상한은 transcript다
+  // (카드가 실제로는 자막을 덜 썼다면 낮춰 적을 수 있다 — 비교가 `<=`라 낮춰 적기는 허용된다).
+  if ((evidence.transcript ?? "").trim() !== "") return "transcript";
   const hasScenes = (evidence.sceneDigest?.length ?? 0) > 0;
   if (hasScenes) return evidence.sceneKind === "toc" ? "toc" : "pages";
   if ((evidence.blurbText ?? "").trim() !== "") return "blurb";

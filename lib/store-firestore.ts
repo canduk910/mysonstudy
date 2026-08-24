@@ -136,6 +136,9 @@ function toBook(id: string, d: DocumentData): BookRecord {
     blurbText: toNullable(d.blurbText as string | null),
     sceneKind: toSceneKind(d.sceneKind),
     sceneDigest: toSceneDigest(d.sceneDigest),
+    // 유튜브 낭독 자막 근거 — transcript grounding 이전 문서는 null로 읽힌다(하위 호환)
+    transcript: toNullable(d.transcript as string | null),
+    youtubeUrl: toNullable(d.youtubeUrl as string | null),
   };
 }
 
@@ -347,6 +350,8 @@ export class FirestoreStore implements StudyStore {
         ? normalizeSceneDigest(patch.sceneDigest)
         : null;
     }
+    if ("transcript" in patch) data.transcript = patch.transcript ?? null;
+    if ("youtubeUrl" in patch) data.youtubeUrl = patch.youtubeUrl ?? null;
     if (Object.keys(data).length > 0) await ref.update(data);
 
     const updated = await ref.get();

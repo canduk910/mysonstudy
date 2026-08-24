@@ -22,6 +22,7 @@ import {
   SIGHT_WORD_SET,
   STORY_OUTLINE_MAX_SENTENCES,
   STORY_OUTLINE_MIN_SENTENCES,
+  STORY_SOURCE_LABELS_KO,
   STORY_SOURCE_RANK,
   countKoreanSentences,
   longestEnglishRun,
@@ -38,6 +39,7 @@ import {
   EXTRACT_SYSTEM_PROMPT,
   EXTRACT_USER_TEXT,
   PAGES_SYSTEM_PROMPT,
+  TRANSCRIPT_MAX_CHARS,
   buildCardUserMessage,
   type CardUserMessageInput,
 } from "../lib/ai/english/prompts";
@@ -136,6 +138,8 @@ interface Fixture {
   blurbText?: string | null;
   sceneKind?: "toc" | "pages" | null;
   sceneDigest?: SceneDigestItem[] | null;
+  /** 유튜브 낭독 자막 근거 변형 (선택) — 있으면 storySource가 transcript(최상위)가 된다 */
+  transcript?: string | null;
 }
 
 /**
@@ -353,6 +357,46 @@ const FIXTURES: Fixture[] = [
     sceneDigest: ACTIVE_SCENE_DIGEST,
   },
 ];
+
+/**
+ * 낭독 자막 근거 변형용 데모 자막 — 실제 유튜브 자막이 아니라 손으로 쓴 고정 입력이다.
+ * 일부러 앞뒤에 **채널·낭독자 인트로/아웃트로 노이즈**를 넣었다: transcript grounding이
+ * (a) 이 노이즈를 줄거리로 오인하지 않고 (b) 자막 본문 안에서만 단어·질문·줄거리를 뽑는지를
+ * 실호출 게이트가 검사한다. 노이즈의 고유 문구는 `TRANSCRIPT_NOISE_TOKENS`로 잡는다.
+ * 본문은 §12 Pooh 픽스처의 줄거리를 짧은 영어로 풀어 쓴 것으로, 원문 전사는 없다.
+ */
+const POOH_TRANSCRIPT = `Hello everyone, and welcome back to Storytime Land! I'm Ms. Robin, and today we are reading Pooh Gets Stuck. If you love our stories, please like and subscribe so you never miss a video. Okay, let's begin!
+
+One sunny morning, Winnie the Pooh felt very hungry. He walked over to Rabbit's house to say hello. Rabbit was kind and gave Pooh some honey. Pooh loved honey so much that he ate and ate and ate. He ate every last pot of honey until his tummy was round and full.
+
+When it was time to go home, Pooh tried to climb out through Rabbit's front door. But he had eaten too much! Pooh was stuck in the hole. He could not move forward, and he could not move back. "Oh bother," said Pooh.
+
+Rabbit pushed and pushed, but Pooh would not budge. Rabbit called his friends. Christopher Robin came, and so did all the others. They decided that Pooh must wait until he grew thin again. So they waited, and they read him stories, and they kept him company.
+
+After many days, Pooh finally became thin enough. Everyone pulled together, and out popped Pooh! He was so happy to be free at last.
+
+And that is the end of our story. Thank you so much for watching Storytime Land! Don't forget to like and subscribe, and we'll see you next time. Bye bye, friends!`;
+
+/** 낭독 자막의 채널·낭독자 노이즈 고유 문구 — 줄거리에 이 문구가 새어 들어가면 인트로를 줄거리로 오인한 것이다 */
+const TRANSCRIPT_NOISE_TOKENS = ["Storytime Land", "Ms. Robin", "subscribe", "Bye bye"];
+
+/**
+ * 낭독 자막 실호출 게이트용 픽스처(EVAL_TRANSCRIPT=1) — Pooh 본문 + 채널 노이즈 자막.
+ * 항상 도는 FIXTURES에 넣지 않는다: 실호출 3회를 늘리지 않기 위해서다(§5, 기본 3회 유지).
+ */
+const TRANSCRIPT_FIXTURE: Fixture = {
+  label: "Pooh (낭독 자막)",
+  title: "Pooh Gets Stuck",
+  author: "Isabel Gaines",
+  series: "A Winnie the Pooh First Reader",
+  isFiction: true,
+  arLevel: 2.0,
+  lexile: 430,
+  wordCount: 551,
+  arQuizNo: "41866",
+  topic: "푸가 꿀을 너무 많이 먹고 토끼네 집 구멍에 끼는 소동",
+  transcript: POOH_TRANSCRIPT,
+};
 
 // ---------------------------------------------------------------------------
 // 점검 항목 (HARNESS §5) — 5개 전부
@@ -763,6 +807,154 @@ function runStoryLengthDialChecks(): CheckResult[] {
   }
 
   return results;
+}
+
+// ---------------------------------------------------------------------------
+// 오프라인 점검 — 낭독 자막(transcript) grounding 계약. 실호출 0회.
+// 자막이 최상위 근거 티어로 다뤄지는지, 분량이 다이얼 상한인지, 근거 없이 transcript를 주장하면
+// 거부되는지, 배지가 "낭독 확인"인지, buildCardUserMessage가 자막을 슬롯에 넣고 상한 초과 시
+// 앞부분 우선으로 자르는지를 고정 입력으로 잠근다(§5). 자막 grounding의 '자막 밖 창작 금지'는
+// 모델 출력이 있어야 재현되므로 실호출 게이트(EVAL_TRANSCRIPT=1)가 별도로 본다.
+// ---------------------------------------------------------------------------
+
+function runTranscriptOfflineChecks(): CheckResult[] {
+  const results: CheckResult[] = [];
+  const add = (check: string, pass: boolean, detail: string) =>
+    results.push({ book: "낭독 자막", check, pass, detail });
+
+  // 1. resolveAllowedStorySource가 자막을 최상위 티어로 잡는다 — 장면 메모가 함께 와도 transcript다
+  const allowedTranscriptOnly = resolveAllowedStorySource({ transcript: POOH_TRANSCRIPT });
+  const allowedWithScenes = resolveAllowedStorySource({
+    transcript: POOH_TRANSCRIPT,
+    sceneKind: "pages",
+    sceneDigest: ACTIVE_SCENE_DIGEST,
+  });
+  add(
+    "transcript. resolveAllowedStorySource가 자막을 transcript(최상위)로 잡음",
+    allowedTranscriptOnly === "transcript" && allowedWithScenes === "transcript",
+    `자막만=${allowedTranscriptOnly} / 자막+장면=${allowedWithScenes}`,
+  );
+
+  // 2. 빈/공백 자막은 티어를 올리지 않는다 (blurb·장면 등 아래 근거 규칙 유지)
+  const emptyTranscript = resolveAllowedStorySource({ transcript: "   " });
+  add(
+    "transcript. 빈 자막은 티어를 올리지 않음",
+    emptyTranscript === "metadata",
+    `결과 ${emptyTranscript}`,
+  );
+
+  // 3. 분량 다이얼이 상한(8~10문장)이다 — 책 전체 텍스트라 다이얼 top (§3-1 표)
+  const range = storyOutlineSentenceRange("transcript");
+  add(
+    "transcript. 분량 다이얼이 8~10문장(다이얼 상한)",
+    range[0] === 8 && range[1] === 10,
+    `${range.join("~")}문장`,
+  );
+
+  // 4. 근거 없이 transcript를 주장하면 zod가 거부한다 (랭크 초과 — 없는 근거 주장 금지)
+  const overclaimCard = { ...makeTranscriptStubCard(), storySource: "transcript" as const };
+  const overclaimResult = makeLearningCardSchema({
+    arLevel: 2.0,
+    isFiction: true,
+    allowedStorySource: "metadata", // 자막을 안 넘긴 호출
+  }).safeParse(overclaimCard);
+  const overclaimRejected =
+    !overclaimResult.success &&
+    overclaimResult.error.issues.some((i) => i.path.includes("storySource"));
+  add(
+    "transcript. 근거 없이 transcript 주장 → zod 거부(랭크 초과)",
+    overclaimRejected,
+    overclaimRejected ? "거부됨" : "거부되지 않음(랭크 규칙 누락)",
+  );
+
+  // 5. 자막을 넘긴 호출은 transcript 주장을 허용한다 (랭크 이내)
+  const okCard = { ...makeTranscriptStubCard(), storySource: "transcript" as const };
+  const okResult = makeLearningCardSchema({
+    arLevel: 2.0,
+    isFiction: true,
+    allowedStorySource: "transcript",
+  }).safeParse(okCard);
+  add(
+    "transcript. 자막 넘긴 호출은 transcript 주장 허용",
+    okResult.success,
+    okResult.success
+      ? "통과"
+      : okResult.error.issues.map((i) => `${i.path.map(String).join(".")}: ${i.message}`).join("; "),
+  );
+
+  // 6. 배지 — transcript 카드는 "낭독 확인"으로 해석된다 (실제 근거 기반, "예상" 아님)
+  const badge = resolveStorySource({ storySource: "transcript" });
+  add(
+    "transcript. 배지 해석 = 낭독 확인",
+    badge === "transcript" && STORY_SOURCE_LABELS_KO.transcript === "낭독 확인",
+    `배지 근거=${badge ?? "없음"} · 문구="${STORY_SOURCE_LABELS_KO.transcript}"`,
+  );
+
+  // 7. buildCardUserMessage가 자막을 [유튜브 낭독 자막] 슬롯에 넣고 [줄거리 분량]에 8~10문장을 박는다
+  const message = buildCardUserMessage(toCardInput(TRANSCRIPT_FIXTURE));
+  const hasSlot = message.includes("[유튜브 낭독 자막]");
+  const hasContent = message.includes("Pooh loved honey");
+  const hasRange = message.includes("8~10문장");
+  add(
+    "transcript. 자막 슬롯 렌더 + [줄거리 분량] 8~10문장 지시",
+    hasSlot && hasContent && hasRange,
+    `슬롯=${hasSlot} 자막본문=${hasContent} 8~10문장=${hasRange}`,
+  );
+
+  // 8. 상한 초과 자막은 앞부분 우선으로 잘린다 (카드는 요약이라 앞부분이 중요, §3-2)
+  const longHead = "A".repeat(TRANSCRIPT_MAX_CHARS);
+  const longTail = "ZZZTAILMARKER end of the very long transcript.";
+  const longMessage = buildCardUserMessage(
+    toCardInput({ ...TRANSCRIPT_FIXTURE, transcript: `${longHead}\n${longTail}` }),
+  );
+  const keptHead = longMessage.includes("AAAA");
+  const droppedTail = !longMessage.includes("ZZZTAILMARKER");
+  const markedTruncated = longMessage.includes("앞부분까지만");
+  add(
+    "transcript. 상한 초과 시 앞부분 유지·뒷부분 절단·절단 표시",
+    keptHead && droppedTail && markedTruncated,
+    `앞부분유지=${keptHead} 뒷부분절단=${droppedTail} 절단표시=${markedTruncated}`,
+  );
+
+  return results;
+}
+
+/** 랭크 규칙만 재는 최소 스텁 카드 — 다른 zod 제약(개수 등)은 이미 통과하도록 채운다(§4) */
+function makeTranscriptStubCard(): LearningCard {
+  const vocab = Array.from({ length: 12 }, (_, i) => ({
+    word: `word${i}`,
+    pronKo: "워드",
+    meaningKo: "뜻",
+    easyEn: "a thing",
+    exampleEn: `I see word${i} here.`,
+    difficulty: "basic" as const,
+    isCore: i === 0 ? true : null,
+  }));
+  const questionTypes = [
+    "인물", "사건", "인과", "감정", "예측", "결말", "나와연결", "배경",
+  ] as const;
+  const questions = questionTypes.map((type, i) => ({
+    type,
+    en: "What happens next in the story here?",
+    ko: "다음에 무슨 일이 일어날까?",
+    hintKo: i < 4 ? "힌트" : null,
+  }));
+  return {
+    bookIntroKo: "재미있는 이야기예요. 함께 읽어요.",
+    levelNoteKo: "AR 2.0은 미국 2학년 수준이에요.",
+    storyOutlineKo: "푸가 꿀을 많이 먹어요. 그러다 구멍에 껴요. 친구들이 도와줘요.",
+    storySource: "transcript",
+    beforeReading: [{ ko: "표지를 봐요" }, { ko: "배경을 떠올려요" }],
+    vocab,
+    teachingTipKo: "복수형을 알려줘요.",
+    whileReading: [{ ko: "동작 미션1" }, { ko: "동작 미션2" }, { ko: "동작 미션3" }],
+    questions,
+    funFacts: null,
+    activities: [
+      { titleKo: "놀이1", descKo: "몸으로 놀아요. 재밌게 해요." },
+      { titleKo: "놀이2", descKo: "생활에 연결해요. 함께 해요." },
+    ],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1672,6 +1864,7 @@ function toCardInput(fixture: Fixture): CardUserMessageInput {
     blurbText: fixture.blurbText ?? null,
     sceneKind: fixture.sceneKind ?? null,
     sceneDigest: fixture.sceneDigest ?? null,
+    transcript: fixture.transcript ?? null,
   };
 }
 
@@ -1790,6 +1983,8 @@ async function main(): Promise<void> {
   // 실호출 0회 — 호출 A′ 스키마·하위 호환 헬퍼·분량 다이얼부터 검사한다 (키 없이도 돈다)
   allResults.push(...runPageDigestChecks());
   allResults.push(...runStoryLengthDialChecks());
+  // 낭독 자막(transcript) grounding 계약 — 최상위 티어·분량 상한·랭크 거부·배지·슬롯/절단 (실호출 0회)
+  allResults.push(...runTranscriptOfflineChecks());
   // 단어장 정복 V1(§7) — 병합 순수 함수·zod 제약·그림 우선순위 (실호출 0회)
   allResults.push(...runVocabbookChecks());
   // 프롬프트 원문이 스펙 문서와 같은지 — 파일을 읽어서 대조한다 (실호출 0회)
@@ -1807,6 +2002,54 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     console.log(`PASS — 오프라인 ${allResults.length}개 항목 통과 (실호출 미실행).`);
+    return;
+  }
+
+  // 낭독 자막 grounding 실호출 게이트 — **EVAL_TRANSCRIPT=1일 때만** 실호출 1회. (오프라인 게이트가
+  // 위에서 이미 return하므로 EVAL_OFFLINE_ONLY=1에서는 절대 도달하지 않는다.) 자막을 넣은 카드 1건이
+  // (a) storySource=transcript·분량 8~10문장이고 (b) 영어 원문 전사가 없고 (c) 채널 인트로/아웃트로
+  // 노이즈가 줄거리에 안 섞였는지를 본다. 자막 밖 창작 여부는 사람이 읽어야 갈리므로 줄거리를 인쇄한다.
+  if (process.env.EVAL_TRANSCRIPT === "1") {
+    console.log("EVAL_TRANSCRIPT=1 — 낭독 자막 grounding 실호출 1회로 카드를 점검합니다.");
+    const transcriptResults: CheckResult[] = [];
+    try {
+      const card = await generateCard(toCardInput(TRANSCRIPT_FIXTURE));
+      console.log(`storyOutlineKo (${card.storySource}):\n${card.storyOutlineKo}`);
+      // (a)·(b) 등 §4/§5 공통 점검은 runChecks가 전부 본다 (storySource·분량·영어 전사 포함)
+      transcriptResults.push(...runChecks(TRANSCRIPT_FIXTURE, card));
+      // 자막이 최상위 근거이므로 카드는 transcript를 주장해야 정상이다 (낮춰 적으면 근거를 버린 것)
+      transcriptResults.push({
+        book: TRANSCRIPT_FIXTURE.label,
+        check: "자막 근거를 transcript로 주장(최상위 근거 사용)",
+        pass: card.storySource === "transcript",
+        detail: `storySource=${card.storySource}`,
+      });
+      // (c) 채널·낭독자 인트로/아웃트로 고유 문구가 줄거리에 새어 들어가지 않았는지 (자동 부분 점검)
+      const noiseLeak = TRANSCRIPT_NOISE_TOKENS.filter((tok) =>
+        card.storyOutlineKo.toLowerCase().includes(tok.toLowerCase()),
+      );
+      transcriptResults.push({
+        book: TRANSCRIPT_FIXTURE.label,
+        check: "채널 인트로/아웃트로 노이즈가 줄거리에 안 섞임",
+        pass: noiseLeak.length === 0,
+        detail: noiseLeak.length === 0 ? "노이즈 문구 없음" : `새어 든 문구: ${noiseLeak.join(", ")}`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      transcriptResults.push({
+        book: TRANSCRIPT_FIXTURE.label,
+        check: "낭독 자막 카드 생성 (재요청 포함 2회 실패)",
+        pass: false,
+        detail: message,
+      });
+    }
+    printTable(transcriptResults);
+    const transcriptFailed = transcriptResults.filter((r) => !r.pass);
+    if (transcriptFailed.length > 0) {
+      console.error(`FAIL — 낭독 자막 게이트 ${transcriptFailed.length}개 항목 실패.`);
+      process.exit(1);
+    }
+    console.log(`PASS — 낭독 자막 게이트 ${transcriptResults.length}개 항목 통과.`);
     return;
   }
 
