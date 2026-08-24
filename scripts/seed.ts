@@ -52,6 +52,7 @@ const wolvesBook: BookRecord = {
   sceneDigest: null,
   transcript: null,
   youtubeUrl: null,
+  chapters: null,
 };
 
 const wolvesCard: Card = {
@@ -301,6 +302,7 @@ const poohBook: BookRecord = {
   sceneDigest: null,
   transcript: null,
   youtubeUrl: null,
+  chapters: null,
 };
 
 const poohCard: Card = {

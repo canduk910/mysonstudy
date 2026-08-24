@@ -21,6 +21,8 @@ import {
 // 발음 재생은 lib/speech.ts가 단일 정의처다 (lang·rate 다이얼이 화면마다 갈리지 않도록).
 import { speak } from "@/lib/speech";
 import type { BookRecord, CardRecord, ReadingRecord } from "@/lib/store";
+// 챕터 리더(호출 F, §9) — 목차+자막이 있을 때만 스스로를 그린다(없으면 null → 회귀 0).
+import ChapterReaderSection from "./chapter-reader";
 import s from "./card-view.module.css";
 
 /**
@@ -417,12 +419,15 @@ export default function CardView({
   card,
   readings,
   history,
+  canChapterize,
 }: {
   book: BookRecord;
   card: CardRecord;
   readings: ReadingRecord[];
   /** 이 책의 카드 버전 목록(최신순). 1장뿐이면 섹션이 생략된다 */
   history: CardHistoryItem[];
+  /** 목차(toc)+낭독 자막이 둘 다 있어 챕터로 나눌 수 있는가 — 서버가 판정해 넘긴다(§9) */
+  canChapterize: boolean;
 }) {
   const router = useRouter();
   const [regenBusy, setRegenBusy] = useState(false);
@@ -701,6 +706,14 @@ export default function CardView({
           </ul>
         </section>
       </article>
+
+      {/*
+       * 챕터별로 읽기 (호출 F · §9) — 목차(toc)+낭독 자막이 있는 책에만 나타난다.
+       * chapters가 저장돼 있으면 리더를, 아직 안 나눴으면 "챕터로 나누기" 버튼을 그린다.
+       * 목차/자막이 없으면 canChapterize=false·chapters=null이라 아무것도 그리지 않는다(회귀 0).
+       * 화면 전용(자체 @media print로 숨김) — 영어 원문 표시는 §9가 이 리더에 한해 허용한 것이다.
+       */}
+      <ChapterReaderSection bookId={book.id} chapters={book.chapters} canChapterize={canChapterize} />
 
       {/* M3 — 읽음 기록 (인쇄 시 숨김, SPEC §4-3) */}
       <ReadingLog bookId={book.id} initialReadings={readings} />

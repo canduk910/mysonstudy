@@ -773,3 +773,275 @@ export function normalizeSceneDigest(
     gapBefore: scene.gapBefore ?? false,
   }));
 }
+
+// ---------------------------------------------------------------------------
+// 호출 F — 챕터화 (transcript → 목차 챕터별 EN/KO 문장, HARNESS §9)
+//
+// 목차 챕터 제목 + 유튜브 낭독 자막 전문을 받아, 자막을 챕터별로 나누고 각 챕터를
+// "자막에 실제로 나온 영어 문장 + 그 우리말 해석"으로 만든다. 이 기능은 가족 전용이라
+// 영어 원문을 그대로 실어도 된다(SPEC §1 "본문 재현 금지"를 이 호출에 한해 완화 — 카드의
+// 다른 부분은 기존 규칙 유지). "자막 밖 창작 금지"는 프롬프트 지시만으로 두지 않고
+// groundChapters()가 코드로 강제한다 — 자막에 없는 en 문장은 저장 전에 잘라낸다.
+// ---------------------------------------------------------------------------
+
+/**
+ * 자막 truncate 상한 (문자 수) — 챕터화 단일 정의처.
+ *
+ * 카드(§3-2 TRANSCRIPT_MAX_CHARS=16,000)보다 낮은 이유: 카드는 8~10문장 요약만 내지만
+ * 챕터화는 자막 전체를 EN(원문)+KO(해석)으로 되뽑아 출력이 입력의 ~2배가 된다. 한 호출의
+ * max_output_tokens(16,000) 안에 EN+KO가 들어가려면 입력을 이 선에서 잘라야 한다. 넘으면
+ * 앞부분 우선으로 자른다 — 챕터 책은 앞 챕터부터 채워지고, 잘린 뒤쪽 챕터는 자막이 닿지
+ * 않아 matched:false로 돌아온다(그 자리에서 지어내지 않는다). M1의 알려진 한계다.
+ */
+export const CHAPTERIZE_TRANSCRIPT_MAX_CHARS = 12_000;
+/** 한 책의 챕터 수 상한 — 목차가 이보다 많으면 비정상 입력이다 (가드) */
+export const CHAPTERIZE_MAX_CHAPTERS = 40;
+/** 한 챕터의 문장 수 상한 — 모델이 문장을 중복 생성하는 폭주를 막는 가드 */
+export const CHAPTERIZE_MAX_SENTENCES_PER_CHAPTER = 120;
+/** 한 책 전체 문장 수 상한 — 자막 길이(12,000자)에 이미 묶여 있고, 이 값은 폭주 가드다 */
+export const CHAPTERIZE_MAX_SENTENCES_TOTAL = 600;
+/** titleEn 길이 상한 — 챕터 제목 기준으로 넉넉하다 */
+export const CHAPTER_TITLE_MAX = 200;
+/** 문장 en 길이 상한 — 한 문장 기준으로 넉넉하다 */
+export const CHAPTER_SENTENCE_EN_MAX = 600;
+/** 문장 ko 길이 상한 — 한 문장 해석 기준으로 넉넉하다 */
+export const CHAPTER_SENTENCE_KO_MAX = 800;
+
+export const CHAPTERIZATION_JSON_SCHEMA: StrictJsonSchema = {
+  name: "chapterization",
+  strict: true,
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      chapters: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            titleEn: { type: "string", description: "받은 목차 챕터 제목을 그대로" },
+            matched: { type: "boolean", description: "자막에서 이 챕터 내용을 찾았는지" },
+            sentences: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  en: { type: "string", description: "자막에 실제로 나온 문장(원문 그대로)" },
+                  ko: { type: "string", description: "그 문장의 우리말 해석(1:1)" },
+                },
+                required: ["en", "ko"],
+              },
+            },
+          },
+          required: ["titleEn", "matched", "sentences"],
+        },
+      },
+    },
+    required: ["chapters"],
+  },
+};
+
+export interface ChapterSentence {
+  en: string; // 자막 원문 문장 (groundChapters가 자막 부분문자열임을 보장)
+  ko: string; // en의 우리말 해석 (1:1)
+}
+
+export interface Chapter {
+  titleEn: string;
+  matched: boolean; // 자막에서 내용을 찾았으면 true (찾으면 sentences 채움, 못 찾으면 비움)
+  sentences: ChapterSentence[];
+}
+
+/** 한글 음절·자모가 하나라도 있으면 true (en은 없어야, ko는 있어야) */
+export function containsHangul(text: string): boolean {
+  return /[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(text);
+}
+
+/** 챕터 제목 대조용 정규화 — NFC·트림·연속 공백 1칸·소문자. 모델이 제목을 그대로 echo했는지만 본다 */
+export function normalizeTitleForMatch(text: string): string {
+  return text.normalize("NFC").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+const chapterSentenceSchema = z.object({
+  en: z.string().trim().min(1).max(CHAPTER_SENTENCE_EN_MAX),
+  ko: z.string().trim().min(1).max(CHAPTER_SENTENCE_KO_MAX),
+});
+
+const chapterSchema = z.object({
+  titleEn: z.string().trim().min(1).max(CHAPTER_TITLE_MAX),
+  matched: z.boolean(),
+  sentences: z.array(chapterSentenceSchema),
+});
+
+export interface ChapterizationValidationMeta {
+  /** 입력으로 준 목차 챕터 제목 — 모델은 이 목록 밖의 챕터를 새로 만들 수 없다 */
+  chapterTitles: readonly string[];
+}
+
+/**
+ * 호출 F zod 이중 검증 (HARNESS §9). JSON Schema가 못 잡는 것:
+ * - 챕터/문장 수 상한 (프롬프트가 아니라 자막 길이가 실질 상한이지만 폭주 가드로 둔다)
+ * - matched ⟺ sentences 채움 (없는 챕터는 matched:false·빈 sentences)
+ * - en은 영어(한글 없음), ko는 우리말(한글 있음) — 자리를 바꿔 넣는 실패를 막는다
+ * - titleEn은 받은 목차 제목 중 하나 (목차 밖 챕터 창작 금지) + 제목 중복 금지
+ *
+ * "en이 자막에 실제로 있는가"(자막 밖 창작 금지)는 zod가 아니라 groundChapters()가 본다 —
+ * 자막 문자열이 필요하고, 어긋난 문장은 throw가 아니라 잘라내는 편이 사용자에게 낫기 때문이다
+ * (digestPages의 부분 성공 철학과 같다).
+ */
+export function makeChapterizationSchema(meta: ChapterizationValidationMeta) {
+  const allowedTitles = new Set(meta.chapterTitles.map(normalizeTitleForMatch));
+  return z
+    .object({ chapters: z.array(chapterSchema) })
+    .superRefine((data, ctx) => {
+      if (data.chapters.length === 0) {
+        ctx.addIssue({ code: "custom", path: ["chapters"], message: "챕터가 1개 이상이어야 합니다" });
+      }
+      if (data.chapters.length > CHAPTERIZE_MAX_CHAPTERS) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["chapters"],
+          message: `챕터는 최대 ${CHAPTERIZE_MAX_CHAPTERS}개입니다 (현재 ${data.chapters.length}개)`,
+        });
+      }
+
+      const totalSentences = data.chapters.reduce((n, ch) => n + ch.sentences.length, 0);
+      if (totalSentences > CHAPTERIZE_MAX_SENTENCES_TOTAL) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["chapters"],
+          message: `전체 문장은 최대 ${CHAPTERIZE_MAX_SENTENCES_TOTAL}개입니다 (현재 ${totalSentences}개)`,
+        });
+      }
+
+      const seenTitles = new Set<string>();
+      data.chapters.forEach((ch, i) => {
+        const norm = normalizeTitleForMatch(ch.titleEn);
+        if (allowedTitles.size > 0 && !allowedTitles.has(norm)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["chapters", i, "titleEn"],
+            message: `titleEn "${ch.titleEn}"은 받은 목차 챕터 제목이 아닙니다 — 새 챕터를 만들지 마세요`,
+          });
+        }
+        if (seenTitles.has(norm)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["chapters", i, "titleEn"],
+            message: `titleEn "${ch.titleEn}"이 중복됩니다`,
+          });
+        }
+        seenTitles.add(norm);
+
+        if (ch.sentences.length > CHAPTERIZE_MAX_SENTENCES_PER_CHAPTER) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["chapters", i, "sentences"],
+            message: `한 챕터의 문장은 최대 ${CHAPTERIZE_MAX_SENTENCES_PER_CHAPTER}개입니다 (현재 ${ch.sentences.length}개)`,
+          });
+        }
+        if (ch.matched && ch.sentences.length === 0) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["chapters", i, "sentences"],
+            message: "matched=true인데 sentences가 비어 있습니다 — 내용을 못 찾았으면 matched=false로 두세요",
+          });
+        }
+        if (!ch.matched && ch.sentences.length > 0) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["chapters", i, "matched"],
+            message: "matched=false인데 sentences가 있습니다 — 내용을 찾았으면 matched=true로 두세요",
+          });
+        }
+
+        ch.sentences.forEach((s, j) => {
+          if (containsHangul(s.en)) {
+            ctx.addIssue({
+              code: "custom",
+              path: ["chapters", i, "sentences", j, "en"],
+              message: "en은 자막의 영어 원문이어야 합니다 (한글이 섞였습니다 — ko와 자리를 바꿨는지 확인)",
+            });
+          }
+          if (!containsHangul(s.ko)) {
+            ctx.addIssue({
+              code: "custom",
+              path: ["chapters", i, "sentences", j, "ko"],
+              message: "ko는 우리말 해석이어야 합니다 (한글이 없습니다)",
+            });
+          }
+        });
+      });
+    });
+}
+
+export type Chapterization = z.infer<ReturnType<typeof makeChapterizationSchema>>;
+
+/**
+ * 자막 앞부분 우선 truncate (HARNESS §9). 상한을 넘으면 앞에서 자른다 —
+ * 앞 챕터부터 채워지고 뒤쪽은 matched:false로 돌아온다.
+ */
+export function truncateTranscriptForChapterize(transcript: string): {
+  text: string;
+  truncated: boolean;
+} {
+  const trimmed = transcript.trim();
+  if (trimmed.length <= CHAPTERIZE_TRANSCRIPT_MAX_CHARS) return { text: trimmed, truncated: false };
+  return { text: trimmed.slice(0, CHAPTERIZE_TRANSCRIPT_MAX_CHARS), truncated: true };
+}
+
+/**
+ * grounding 대조용 토큰화 — 소문자 영숫자 토큰만 뽑는다. 아포스트로피·따옴표·문장부호·
+ * 대소문자·공백 차이를 무시하므로("don't"↔"dont", 스마트따옴표↔직선따옴표), 모델이 자막을
+ * 옮기며 생긴 사소한 표기 흔들림에는 관대하되 "같은 단어가 같은 순서로 나왔는가"는 지킨다.
+ */
+export function tokenizeForGrounding(text: string): string[] {
+  return text
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .match(/[a-z0-9]+/g) ?? [];
+}
+
+/** en의 토큰 열이 자막 토큰 열의 연속 구간으로 존재하는가 — "자막에 실제로 나온 문장"인지 판정 */
+export function isGroundedInTranscript(en: string, transcriptTokens: readonly string[]): boolean {
+  const needle = tokenizeForGrounding(en);
+  if (needle.length === 0) return false;
+  const hay = transcriptTokens;
+  for (let i = 0; i + needle.length <= hay.length; i++) {
+    let hit = true;
+    for (let k = 0; k < needle.length; k++) {
+      if (hay[i + k] !== needle[k]) {
+        hit = false;
+        break;
+      }
+    }
+    if (hit) return true;
+  }
+  return false;
+}
+
+/**
+ * "자막 밖 창작 금지"의 최종 강제 (HARNESS §9). 각 챕터의 문장 중 en이 자막에 실제로 없는 것을
+ * 잘라낸다. 잘라서 문장이 하나도 안 남은 챕터는 matched를 false로 내린다(비운 챕터와 같은 상태).
+ * throw가 아니라 잘라내는 이유: 사용자는 이미 호출 비용을 치렀고, 몇 문장을 버리는 편이 카드
+ * 전체를 실패시키는 것보다 낫다. 저장되는 en은 이 필터를 지나 전부 자막 부분문자열임이 보장된다.
+ */
+export function groundChapters(
+  chapters: readonly Chapter[],
+  transcript: string,
+): { chapters: Chapter[]; droppedSentenceCount: number } {
+  const transcriptTokens = tokenizeForGrounding(transcript);
+  let droppedSentenceCount = 0;
+  const grounded = chapters.map((ch) => {
+    const kept = ch.sentences.filter((s) => {
+      const ok = isGroundedInTranscript(s.en, transcriptTokens);
+      if (!ok) droppedSentenceCount += 1;
+      return ok;
+    });
+    return { titleEn: ch.titleEn, matched: kept.length > 0, sentences: kept };
+  });
+  return { chapters: grounded, droppedSentenceCount };
+}

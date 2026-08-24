@@ -1,0 +1,274 @@
+/*
+ * 챕터 리더 스타일 (components/chapter-reader.tsx)
+ *
+ * card-view.module.css와 같은 규약: 색·크기 값을 여기에 직접 쓰지 않고 전부
+ * app/globals.css의 토큰(var(--*))만 참조한다. 카드 화면 안에 얹히는 섹션이라
+ * .section/.h3/.h3en의 리듬을 카드와 맞춘다.
+ *
+ * 아이·부모가 함께 보는 화면이라 영어 원문(en)은 크고 또렷하게, 우리말 해석(ko)은
+ * 그 아래 편안한 크기로 둔다. 화면 전용(인쇄 시 통째 숨김) — 문장이 많으면 종이
+ * 목표를 넘기고, 읽어주기(TTS)가 핵심이라 화면에 두는 편이 실사용에 맞다.
+ */
+
+.section {
+  margin-top: 28px;
+  padding: 0 28px;
+}
+.h3 {
+  margin: 0 0 12px;
+  font-size: var(--fs-section-title);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.h3en {
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-light);
+  color: var(--ink-3);
+}
+
+/* --- 챕터화 전 안내(CTA) --- */
+.cta {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: flex-start;
+}
+.ctaText {
+  margin: 0;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-light);
+  line-height: var(--lh-body);
+  color: var(--ink);
+}
+.ctaBtn,
+.readAllBtn,
+.rechapterizeBtn {
+  cursor: pointer;
+  border: none;
+  border-radius: var(--radius-box);
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: var(--fw-bold);
+}
+.ctaBtn {
+  font-size: var(--fs-list-title);
+  padding: 12px 20px;
+}
+.ctaBtn:hover:not(:disabled),
+.readAllBtn:hover:not(:disabled),
+.rechapterizeBtn:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+.ctaBtn:disabled,
+.readAllBtn:disabled,
+.rechapterizeBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* --- 리더 --- */
+.reader {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+  overflow: hidden;
+}
+.readerNote {
+  margin: 0;
+  padding: 16px 18px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--fs-parent-hint);
+  font-weight: var(--fw-light);
+  line-height: var(--lh-body);
+  color: var(--ink-2);
+}
+
+/* 챕터 목록 — 가로 스크롤 탭 */
+.tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+  scrollbar-width: thin;
+}
+.tab {
+  flex: 0 0 auto;
+  max-width: 240px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  color: var(--ink-2);
+  padding: 8px 14px;
+  font-size: var(--fs-meta-chip);
+  font-weight: var(--fw-medium);
+}
+.tab:hover {
+  border-color: var(--line-strong);
+}
+.tabActive {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.tabDim {
+  opacity: 0.55;
+}
+.tabNo {
+  flex: 0 0 auto;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-caption);
+  min-width: 1.4em;
+  text-align: center;
+  padding: 1px 5px;
+  border-radius: var(--radius-chip);
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+.tabActive .tabNo {
+  background: var(--accent);
+  color: var(--bg);
+}
+.tabTitle {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tabDimMark {
+  flex: 0 0 auto;
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-light);
+  color: var(--ink-3);
+}
+
+/* 선택된 챕터 본문 */
+.chapterPane {
+  padding: 20px 18px;
+}
+.chapterTitle {
+  margin: 0 0 4px;
+  font-size: var(--fs-list-title);
+  font-weight: var(--fw-bold);
+  color: var(--ink);
+}
+.notFound {
+  margin: 12px 0 0;
+  padding: 16px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-light);
+  line-height: var(--lh-body);
+  color: var(--ink-2);
+}
+
+.chapterTools {
+  margin: 12px 0 4px;
+}
+.readAllBtn {
+  font-size: var(--fs-meta-chip);
+  padding: 8px 16px;
+  border-radius: var(--radius-chip);
+}
+
+/* 문장 목록 — 영어 원문 + 그 아래 우리말 해석 */
+.sentences {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+.sentence {
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+.sentence:first-child {
+  border-top: none;
+}
+.enRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.en {
+  margin: 0;
+  flex: 1 1 auto;
+  /* 아이가 먼저 보고 따라 읽는 영어 문장 — 질문 영어와 같은 크기(20/500) */
+  font-size: var(--fs-question-en);
+  font-weight: var(--fw-medium);
+  line-height: 1.5;
+  color: var(--ink);
+}
+.ko {
+  margin: 6px 0 0;
+  font-size: var(--fs-question-ko);
+  font-weight: var(--fw-light);
+  line-height: var(--lh-body);
+  color: var(--ink-2);
+}
+.speak {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: var(--fs-vocab-pron);
+  line-height: 1;
+  padding: 4px;
+  border-radius: var(--radius-chip);
+}
+.speak:hover {
+  background: var(--surface-2);
+}
+
+/* 다시 나누기 */
+.rechapterize {
+  padding: 14px 18px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+.rechapterizeBtn {
+  font-size: var(--fs-meta-chip);
+  padding: 8px 16px;
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  color: var(--ink-2);
+  border: 1px solid var(--line);
+}
+.rechapterizeBtn:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+}
+
+.error {
+  margin: 12px 0 0;
+  font-size: var(--fs-parent-hint);
+  color: var(--danger);
+}
+
+/* 모바일 — 카드와 같은 좌우 패딩 축소 */
+@media (max-width: 640px) {
+  .section {
+    padding: 0 16px;
+  }
+}
+
+/* 화면 전용 — 인쇄에서는 섹션째 뺀다(장면별 읽기 가이드와 같은 이유) */
+@media print {
+  .section {
+    display: none;
+  }
+}

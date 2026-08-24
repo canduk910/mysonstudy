@@ -12,8 +12,13 @@
  * 코드블록과 글자 단위로 같은지 파일을 읽어서 확인한다(`scripts/spec-sync.ts`).
  */
 
-import { enrichVocab, generateCard } from "../lib/ai/client";
+import { chapterizeTranscript, enrichVocab, generateCard } from "../lib/ai/client";
 import {
+  CHAPTER_TITLE_MAX,
+  CHAPTERIZE_MAX_CHAPTERS,
+  CHAPTERIZE_MAX_SENTENCES_PER_CHAPTER,
+  CHAPTERIZE_MAX_SENTENCES_TOTAL,
+  CHAPTERIZE_TRANSCRIPT_MAX_CHARS,
   ENGLISH_RUN_LIMIT,
   MAX_SCENE_DIGEST_ITEMS,
   SCENE_ASK_KO_MAX,
@@ -24,23 +29,32 @@ import {
   STORY_OUTLINE_MIN_SENTENCES,
   STORY_SOURCE_LABELS_KO,
   STORY_SOURCE_RANK,
+  containsHangul,
   countKoreanSentences,
+  groundChapters,
+  isGroundedInTranscript,
   longestEnglishRun,
+  makeChapterizationSchema,
   makeLearningCardSchema,
   makePageDigestSchema,
   resolveAllowedStorySource,
   resolveStorySource,
   storyOutlineSentenceRange,
+  tokenizeForGrounding,
+  truncateTranscriptForChapterize,
+  type Chapter,
   type LearningCard,
   type SceneDigestItem,
 } from "../lib/ai/english/schemas";
 import {
   CARD_SYSTEM_PROMPT,
+  CHAPTERIZE_SYSTEM_PROMPT,
   EXTRACT_SYSTEM_PROMPT,
   EXTRACT_USER_TEXT,
   PAGES_SYSTEM_PROMPT,
   TRANSCRIPT_MAX_CHARS,
   buildCardUserMessage,
+  buildChapterizeUserMessage,
   type CardUserMessageInput,
 } from "../lib/ai/english/prompts";
 // 단어장 정복 V1 (§7) — 오프라인 점검 대상: 판독 프롬프트↔스펙, 병합 순수 함수, zod 제약, 그림 우선순위
@@ -1850,6 +1864,202 @@ function runVocabbookChecks(): CheckResult[] {
 // 실행: 픽스처 2권으로 실제 카드 생성 → 점검 → 항목별 pass/fail 표 → 실패 시 exit 1
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 호출 F(챕터화, §9) 오프라인 점검 — 실호출 0회.
+//
+// 모델 출력이 있어야 재현되는 것(노이즈 제외·실제 번역 품질)은 실호출 게이트(EVAL_CHAPTERS=1)가
+// 본다. 여기서는 (a) chapters zod가 계약 위반을 거부하는지, (b) groundChapters가 자막 밖 문장을
+// 잘라내고 자막 안 문장을 en/ko 1:1로 보존하는지를 고정 입력으로 검사한다.
+//
+// 픽스처는 낭독 자막 게이트와 같은 POOH_TRANSCRIPT(채널 인트로/아웃트로 노이즈 포함)를 재사용한다.
+// ---------------------------------------------------------------------------
+
+/** 챕터화 픽스처의 목차 챕터 제목 — 앞 4개는 자막에 내용이 있고, 마지막은 없다(matched:false 경로) */
+const CHAPTERIZE_FIXTURE_TITLES = [
+  "Pooh Visits Rabbit",
+  "Stuck!",
+  "Waiting to Get Thin",
+  "Free at Last",
+  "A New Adventure",
+];
+
+/** POOH_TRANSCRIPT에서 글자 그대로 가져온 문장들 — grounding을 통과해야 하는 '자막 안' 문장 */
+const GROUNDED_EN = [
+  "He walked over to Rabbit's house to say hello.",
+  "Rabbit was kind and gave Pooh some honey.",
+  "Pooh was stuck in the hole.",
+  "He was so happy to be free at last.",
+];
+
+function runChapterizeChecks(): CheckResult[] {
+  const results: CheckResult[] = [];
+  const book = "챕터화(§9)";
+  const schema = makeChapterizationSchema({ chapterTitles: CHAPTERIZE_FIXTURE_TITLES });
+  const sent = (en: string, ko: string) => ({ en, ko });
+
+  // 정상 출력: 앞 챕터는 자막 문장으로 채우고, 마지막 챕터는 내용 없음(matched:false·빈 sentences)
+  const good = {
+    chapters: [
+      { titleEn: "Pooh Visits Rabbit", matched: true, sentences: [sent(GROUNDED_EN[0], "그는 인사하러 토끼네 집으로 걸어갔어요."), sent(GROUNDED_EN[1], "토끼는 친절하게 푸에게 꿀을 주었어요.")] },
+      { titleEn: "Stuck!", matched: true, sentences: [sent(GROUNDED_EN[2], "푸는 구멍에 끼고 말았어요.")] },
+      { titleEn: "Waiting to Get Thin", matched: false, sentences: [] },
+      { titleEn: "Free at Last", matched: true, sentences: [sent(GROUNDED_EN[3], "그는 마침내 자유로워져서 정말 행복했어요.")] },
+      { titleEn: "A New Adventure", matched: false, sentences: [] },
+    ],
+  };
+  results.push({
+    book,
+    check: "zod: 정상 출력 통과 (matched·빈챕터·en/ko 1:1)",
+    pass: schema.safeParse(good).success,
+    detail: schema.safeParse(good).success ? "통과" : JSON.stringify(schema.safeParse(good).error?.issues?.slice(0, 3)),
+  });
+
+  // zod 거부 케이스들 — 각각 계약 하나씩 위반
+  const rejectCases: { name: string; obj: unknown }[] = [
+    {
+      name: "matched=true인데 sentences 비어 있음",
+      obj: { chapters: [{ titleEn: "Stuck!", matched: true, sentences: [] }] },
+    },
+    {
+      name: "matched=false인데 sentences 있음",
+      obj: { chapters: [{ titleEn: "Stuck!", matched: false, sentences: [sent(GROUNDED_EN[2], "푸는 구멍에 끼었어요.")] }] },
+    },
+    {
+      name: "en에 한글이 섞임(en/ko 자리 바꿈)",
+      obj: { chapters: [{ titleEn: "Stuck!", matched: true, sentences: [sent("푸는 구멍에 끼었어요.", "Pooh was stuck.")] }] },
+    },
+    {
+      name: "ko에 한글이 없음",
+      obj: { chapters: [{ titleEn: "Stuck!", matched: true, sentences: [sent(GROUNDED_EN[2], "Pooh was stuck.")] }] },
+    },
+    {
+      name: "목차 밖 titleEn(챕터 창작)",
+      obj: { chapters: [{ titleEn: "Chapter Nobody Asked For", matched: true, sentences: [sent(GROUNDED_EN[2], "푸는 구멍에 끼었어요.")] }] },
+    },
+    {
+      name: "titleEn 중복",
+      obj: {
+        chapters: [
+          { titleEn: "Stuck!", matched: true, sentences: [sent(GROUNDED_EN[2], "푸는 구멍에 끼었어요.")] },
+          { titleEn: "Stuck!", matched: false, sentences: [] },
+        ],
+      },
+    },
+    {
+      name: `챕터 수 상한(${CHAPTERIZE_MAX_CHAPTERS}) 초과`,
+      obj: {
+        chapters: Array.from({ length: CHAPTERIZE_MAX_CHAPTERS + 1 }, () => ({
+          titleEn: "Stuck!",
+          matched: false,
+          sentences: [],
+        })),
+      },
+    },
+    {
+      name: `챕터당 문장 상한(${CHAPTERIZE_MAX_SENTENCES_PER_CHAPTER}) 초과`,
+      obj: {
+        chapters: [
+          {
+            titleEn: "Stuck!",
+            matched: true,
+            sentences: Array.from({ length: CHAPTERIZE_MAX_SENTENCES_PER_CHAPTER + 1 }, () =>
+              sent(GROUNDED_EN[2], "푸는 구멍에 끼었어요."),
+            ),
+          },
+        ],
+      },
+    },
+  ];
+  for (const rc of rejectCases) {
+    const rejected = !schema.safeParse(rc.obj).success;
+    results.push({ book, check: `zod 거부: ${rc.name}`, pass: rejected, detail: rejected ? "거부됨" : "통과되면 안 됨" });
+  }
+
+  // groundChapters — 자막 밖 창작 금지의 최종 강제
+  const transcript = POOH_TRANSCRIPT;
+  const FABRICATED = "Pooh flew to the moon on a silver rocket.";
+  const mixed: Chapter[] = [
+    {
+      titleEn: "Stuck!",
+      matched: true,
+      sentences: [
+        sent(GROUNDED_EN[2], "푸는 구멍에 끼었어요."), // 자막 안 → 보존
+        sent(FABRICATED, "푸는 은빛 로켓을 타고 달에 갔어요."), // 자막 밖 → 잘림
+      ],
+    },
+    {
+      titleEn: "A New Adventure",
+      matched: true,
+      sentences: [sent(FABRICATED, "푸는 은빛 로켓을 타고 달에 갔어요.")], // 전부 자막 밖 → matched:false로 내려감
+    },
+  ];
+  const grounded = groundChapters(mixed, transcript);
+  results.push({
+    book,
+    check: "groundChapters: 자막 밖 문장 잘라냄(창작 금지)",
+    pass: grounded.droppedSentenceCount === 2 && grounded.chapters[0].sentences.length === 1,
+    detail: `dropped=${grounded.droppedSentenceCount} (기대 2), 첫 챕터 남은 문장=${grounded.chapters[0].sentences.length} (기대 1)`,
+  });
+  results.push({
+    book,
+    check: "groundChapters: 자막 안 문장은 en/ko 1:1 보존",
+    pass:
+      grounded.chapters[0].sentences[0].en === GROUNDED_EN[2] &&
+      grounded.chapters[0].sentences[0].ko === "푸는 구멍에 끼었어요.",
+    detail: JSON.stringify(grounded.chapters[0].sentences[0]),
+  });
+  results.push({
+    book,
+    check: "groundChapters: 문장 전부 잘린 챕터는 matched:false",
+    pass: grounded.chapters[1].matched === false && grounded.chapters[1].sentences.length === 0,
+    detail: `matched=${grounded.chapters[1].matched}, sentences=${grounded.chapters[1].sentences.length}`,
+  });
+
+  // grounding은 대소문자·문장부호·아포스트로피 흔들림에 관대해야 한다(모델 전사 드리프트 흡수)
+  const transcriptTokens = tokenizeForGrounding(transcript);
+  results.push({
+    book,
+    check: "grounding: 대소문자·문장부호 흔들림 허용",
+    pass: isGroundedInTranscript("pooh was STUCK in the hole", transcriptTokens),
+    detail: "구두점·대소문자를 무시하고 토큰 열로 대조",
+  });
+  results.push({
+    book,
+    check: "grounding: 자막에 없는 문장은 거부",
+    pass: !isGroundedInTranscript(FABRICATED, transcriptTokens),
+    detail: "자막 밖 문장은 grounded=false",
+  });
+
+  // 노이즈 제외 계약의 실호출 게이트 준비 — 노이즈 문구가 자막에 실제로 있어야 게이트가 의미 있다
+  results.push({
+    book,
+    check: "픽스처: 채널 노이즈 문구가 자막에 존재(게이트 준비)",
+    pass: TRANSCRIPT_NOISE_TOKENS.every((t) => transcript.includes(t)),
+    detail: `노이즈 제외 판정은 EVAL_CHAPTERS=1 실호출 게이트가 본다 (토큰: ${TRANSCRIPT_NOISE_TOKENS.join(", ")})`,
+  });
+
+  // truncate·상한 상수 정합
+  const longTranscript = "word ".repeat(CHAPTERIZE_TRANSCRIPT_MAX_CHARS); // 상한보다 훨씬 긴 입력
+  const trunc = truncateTranscriptForChapterize(longTranscript);
+  results.push({
+    book,
+    check: "truncate: 상한 초과 시 앞부분 우선 절단",
+    pass: trunc.truncated === true && trunc.text.length === CHAPTERIZE_TRANSCRIPT_MAX_CHARS,
+    detail: `truncated=${trunc.truncated}, len=${trunc.text.length} (상한 ${CHAPTERIZE_TRANSCRIPT_MAX_CHARS})`,
+  });
+  results.push({
+    book,
+    check: "상수 정합: 전체 문장 상한 ≥ 챕터당 문장 상한 · 길이 상한 > 0",
+    pass:
+      CHAPTERIZE_MAX_SENTENCES_TOTAL >= CHAPTERIZE_MAX_SENTENCES_PER_CHAPTER &&
+      CHAPTERIZE_TRANSCRIPT_MAX_CHARS > 0 &&
+      CHAPTER_TITLE_MAX > 0,
+    detail: `total=${CHAPTERIZE_MAX_SENTENCES_TOTAL}, perChapter=${CHAPTERIZE_MAX_SENTENCES_PER_CHAPTER}, maxChars=${CHAPTERIZE_TRANSCRIPT_MAX_CHARS}`,
+  });
+
+  return results;
+}
+
 function toCardInput(fixture: Fixture): CardUserMessageInput {
   return {
     title: fixture.title,
@@ -1947,6 +2157,13 @@ const SPEC_SYNC_TARGETS: readonly SpecSyncTarget[] = [
     // 스펙에 코드블록이 아니라 인라인 코드 한 줄로 적혀 있다 — 본문 포함 여부로 본다
     mode: "inline",
   },
+  {
+    constName: "CHAPTERIZE_SYSTEM_PROMPT",
+    source: "lib/ai/english/prompts.ts",
+    specLabel: "§9-1 호출 F 시스템 프롬프트",
+    text: CHAPTERIZE_SYSTEM_PROMPT,
+    mode: "block",
+  },
 ];
 
 /** 표 뒤에 상세 diff를 찍기 위해 남겨 둔다 (main이 읽는다) */
@@ -1985,6 +2202,8 @@ async function main(): Promise<void> {
   allResults.push(...runStoryLengthDialChecks());
   // 낭독 자막(transcript) grounding 계약 — 최상위 티어·분량 상한·랭크 거부·배지·슬롯/절단 (실호출 0회)
   allResults.push(...runTranscriptOfflineChecks());
+  // 챕터화(§9) — chapters zod 계약·groundChapters 자막 밖 창작 금지·truncate·상수 정합 (실호출 0회)
+  allResults.push(...runChapterizeChecks());
   // 단어장 정복 V1(§7) — 병합 순수 함수·zod 제약·그림 우선순위 (실호출 0회)
   allResults.push(...runVocabbookChecks());
   // 프롬프트 원문이 스펙 문서와 같은지 — 파일을 읽어서 대조한다 (실호출 0회)
@@ -2050,6 +2269,78 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     console.log(`PASS — 낭독 자막 게이트 ${transcriptResults.length}개 항목 통과.`);
+    return;
+  }
+
+  // 챕터화(§9) 실호출 게이트 — **EVAL_CHAPTERS=1일 때만** 실호출 1회. (오프라인 게이트가 위에서 이미
+  // return하므로 EVAL_OFFLINE_ONLY=1에서는 절대 도달하지 않는다.) 실제 자막→챕터 1건이 (a) 모든 en이
+  // 자막 부분문자열이고(grounding) (b) 채널 인트로/아웃트로 노이즈가 어느 챕터에도 안 섞였고 (c) matched
+  // 챕터는 sentences가 있고 en/ko 1:1·ko가 우리말인지를 본다. 자막 밖 창작·번역 품질은 사람이 읽게 인쇄한다.
+  if (process.env.EVAL_CHAPTERS === "1") {
+    console.log("EVAL_CHAPTERS=1 — 챕터화 실호출 1회로 grounding·노이즈 제외를 점검합니다.");
+    const chapterResults: CheckResult[] = [];
+    const book = "챕터화 실호출";
+    try {
+      const { chapters, truncated, droppedSentenceCount } = await chapterizeTranscript(
+        CHAPTERIZE_FIXTURE_TITLES,
+        POOH_TRANSCRIPT,
+      );
+      console.log(
+        `chapters (truncated=${truncated}, dropped=${droppedSentenceCount}):\n${JSON.stringify(chapters, null, 2)}`,
+      );
+      const transcriptTokens = tokenizeForGrounding(POOH_TRANSCRIPT);
+      const allSentences = chapters.flatMap((c) => c.sentences);
+
+      // (a) 모든 en이 자막에 실제로 있는가 — groundChapters가 이미 강제하지만 결과로 재확인한다
+      const ungrounded = allSentences.filter((s) => !isGroundedInTranscript(s.en, transcriptTokens));
+      chapterResults.push({
+        book,
+        check: "모든 en이 자막 부분문자열(자막 밖 창작 없음)",
+        pass: ungrounded.length === 0,
+        detail: ungrounded.length === 0 ? `문장 ${allSentences.length}개 전부 grounded` : `자막 밖 ${ungrounded.length}개: ${ungrounded.slice(0, 2).map((s) => s.en).join(" | ")}`,
+      });
+
+      // (b) 채널 인트로/아웃트로 노이즈가 어느 챕터에도 안 섞였는가
+      const flat = allSentences.map((s) => `${s.en} ${s.ko}`).join(" ").toLowerCase();
+      const noiseLeak = TRANSCRIPT_NOISE_TOKENS.filter((t) => flat.includes(t.toLowerCase()));
+      chapterResults.push({
+        book,
+        check: "채널 인트로/아웃트로 노이즈가 챕터에 안 섞임",
+        pass: noiseLeak.length === 0,
+        detail: noiseLeak.length === 0 ? "노이즈 문구 없음" : `새어 든 문구: ${noiseLeak.join(", ")}`,
+      });
+
+      // (c) matched 챕터는 sentences가 있고 en/ko가 채워졌고 ko가 우리말인가
+      const matchedBad = chapters.filter(
+        (c) => c.matched && (c.sentences.length === 0 || c.sentences.some((s) => s.en.trim() === "" || !containsHangul(s.ko))),
+      );
+      chapterResults.push({
+        book,
+        check: "matched 챕터는 문장 채움·en/ko 1:1·ko 우리말",
+        pass: matchedBad.length === 0,
+        detail: matchedBad.length === 0 ? `matched 챕터 ${chapters.filter((c) => c.matched).length}개 정상` : `문제 챕터: ${matchedBad.map((c) => c.titleEn).join(", ")}`,
+      });
+
+      // titleEn은 목차 밖으로 벗어나지 않음
+      const titleSet = new Set(CHAPTERIZE_FIXTURE_TITLES.map((t) => t.trim().toLowerCase()));
+      const strayTitles = chapters.filter((c) => !titleSet.has(c.titleEn.trim().toLowerCase()));
+      chapterResults.push({
+        book,
+        check: "titleEn이 준 목차 제목 안에 있음(챕터 창작 없음)",
+        pass: strayTitles.length === 0,
+        detail: strayTitles.length === 0 ? "목차 제목만 사용" : `목차 밖: ${strayTitles.map((c) => c.titleEn).join(", ")}`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      chapterResults.push({ book, check: "챕터화 (재요청 포함 2회 실패)", pass: false, detail: message });
+    }
+    printTable(chapterResults);
+    const chapterFailed = chapterResults.filter((r) => !r.pass);
+    if (chapterFailed.length > 0) {
+      console.error(`FAIL — 챕터화 게이트 ${chapterFailed.length}개 항목 실패.`);
+      process.exit(1);
+    }
+    console.log(`PASS — 챕터화 게이트 ${chapterResults.length}개 항목 통과.`);
     return;
   }
 

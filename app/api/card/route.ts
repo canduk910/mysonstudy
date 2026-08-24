@@ -339,6 +339,8 @@ export async function POST(req: Request) {
       // 실패해도 URL은 남긴다 — 무엇을 넣었는지 기록은 유지하되 근거는 비운다.
       transcript,
       youtubeUrl,
+      // 챕터 리더는 카드 생성과 별개 경로(/api/chapterize)라 신규 book은 항상 챕터 없음으로 시작한다.
+      chapters: null,
     }));
 
   // "그래도 새로 만들기"(force)로 기존 book을 재사용한 경우 — 이번에 새로 얻은 근거가

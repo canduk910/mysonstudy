@@ -24,7 +24,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Card, SceneDigestItem, SceneSourceKind } from "./ai/english/schemas";
+import type { Card, Chapter, SceneDigestItem, SceneSourceKind } from "./ai/english/schemas";
 // 수학 설명 기록(M4)이 통째로 안는 타입들 — **전부 `import type`이다.**
 // `lib/ai/math/pipeline.ts`는 openai 클라이언트를 값으로 끌고 오므로 값 import를
 // 하면 저장 계층이 AI 모듈에 묶인다. 타입만 가져오면 빌드에서 지워진다.
@@ -100,6 +100,21 @@ export interface BookRecord {
   transcript: string | null;
   /** 자막을 받아 온 유튜브 영상 URL — 재생성·표기용(자막 본문은 transcript에 별도 보관) */
   youtubeUrl: string | null;
+
+  /**
+   * --- 챕터 리더 (호출 F · 챕터화, docs/harness/english.md §9) ---
+   *
+   * 목차(sceneKind='toc') 챕터 제목 + 낭독 자막(transcript)이 둘 다 있을 때만 채워진다.
+   * `chapterizeTranscript()`가 자막을 챕터별 영어 원문(en)/우리말 해석(ko) 문장으로 나눈 결과다.
+   *
+   * **이 필드에 한해 영어 원문을 그대로 저장·표시한다** — 가족 전용 챕터 리더로, §9 서두가
+   * SPEC §1 "본문 재현 금지"를 이 결과에만 완화했다(사용자 확정). 저장되는 모든 en은
+   * groundChapters()를 지나 자막 부분문자열임이 보장된다.
+   *
+   * 옛 레코드(챕터화 이전)에는 이 키가 없다 — 읽을 때 null로 메운다(하위호환). null이면
+   * 챕터 리더 섹션을 통째로 생략하므로 목차/자막 없는 카드 흐름은 바이트 동일하다(회귀 0).
+   */
+  chapters: Chapter[] | null;
 }
 
 /**
@@ -113,6 +128,21 @@ export interface BookEvidencePatch {
   sceneDigest?: SceneDigestItem[] | null;
   transcript?: string | null;
   youtubeUrl?: string | null;
+  /** 챕터화(호출 F) 결과 — /api/chapterize가 목차+자막으로 만들어 붙인다(재나누기 시 덮어씀) */
+  chapters?: Chapter[] | null;
+}
+
+/**
+ * 챕터로 나눌 수 있는 책인가 — 목차(sceneKind='toc') 챕터 제목과 낭독 자막(transcript)이
+ * 둘 다 있어야 한다(docs/harness/english.md §9). 챕터 리더 버튼 노출(서버 페이지)과
+ * /api/chapterize의 전제조건이 **같은 정의**를 봐야 서로 어긋나지 않는다(QA F12식 드리프트 방지).
+ */
+export function canChapterizeBook(
+  book: Pick<BookRecord, "sceneKind" | "sceneDigest" | "transcript">,
+): boolean {
+  const hasToc = book.sceneKind === "toc" && (book.sceneDigest?.length ?? 0) > 0;
+  const hasTranscript = (book.transcript?.trim() ?? "") !== "";
+  return hasToc && hasTranscript;
 }
 
 export interface CardRecord {
@@ -428,6 +458,8 @@ function normalizeBookRecord(b: BookRecord): BookRecord {
     ...b,
     transcript: b.transcript ?? null,
     youtubeUrl: b.youtubeUrl ?? null,
+    // 챕터화 이전 db.json에는 이 키가 없다 — 읽을 때 null로 채운다(하위호환).
+    chapters: b.chapters ?? null,
   };
 }
 
@@ -659,6 +691,7 @@ class JsonFileStore implements BookCardStore {
       if ("sceneDigest" in patch) book.sceneDigest = patch.sceneDigest ?? null;
       if ("transcript" in patch) book.transcript = patch.transcript ?? null;
       if ("youtubeUrl" in patch) book.youtubeUrl = patch.youtubeUrl ?? null;
+      if ("chapters" in patch) book.chapters = patch.chapters ?? null;
       return book;
     });
   }

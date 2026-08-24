@@ -14,14 +14,19 @@ import OpenAI from "openai";
 import type { z } from "zod";
 import {
   BOOK_EXTRACTION_JSON_SCHEMA,
+  CHAPTERIZATION_JSON_SCHEMA,
   LEARNING_CARD_JSON_SCHEMA,
   MAX_SCENE_DIGEST_ITEMS,
   PAGE_DIGEST_JSON_SCHEMA,
   bookExtractionSchema,
+  groundChapters,
+  makeChapterizationSchema,
   makeLearningCardSchema,
   makePageDigestSchema,
   resolveAllowedStorySource,
+  truncateTranscriptForChapterize,
   type BookExtraction,
+  type Chapter,
   type LearningCard,
   type SceneDigestItem,
   type SceneSourceKind,
@@ -29,10 +34,12 @@ import {
 } from "./english/schemas";
 import {
   CARD_SYSTEM_PROMPT,
+  CHAPTERIZE_SYSTEM_PROMPT,
   EXTRACT_SYSTEM_PROMPT,
   EXTRACT_USER_TEXT,
   PAGES_SYSTEM_PROMPT,
   buildCardUserMessage,
+  buildChapterizeUserMessage,
   buildPagesUserMessage,
   type CardUserMessageInput,
 } from "./english/prompts";
@@ -88,6 +95,12 @@ export function getOpenAIClient(): OpenAI {
 export const EXTRACT_CALL_OPTIONS = { temperature: 0, maxOutputTokens: 2_000 } as const;
 export const PAGES_CALL_OPTIONS = { temperature: 0.3, maxOutputTokens: 4_000 } as const;
 export const CARD_CALL_OPTIONS = { temperature: 0.7, maxOutputTokens: 6_000 } as const;
+/**
+ * 호출 F(챕터화) 파라미터 (HARNESS §9). 전사+번역이라 temperature 0 — 같은 자막은 같은 결과.
+ * 자막 전체를 EN(원문)+KO(해석)으로 되뽑아 출력이 크므로 max_output_tokens를 카드보다 높인다.
+ * 입력은 CHAPTERIZE_TRANSCRIPT_MAX_CHARS(12,000자)로 잘라 EN+KO가 이 한도 안에 들도록 균형을 맞춘다.
+ */
+export const CHAPTERIZE_CALL_OPTIONS = { temperature: 0, maxOutputTokens: 16_000 } as const;
 
 /**
  * 호출 A′ 배치 크기 (HARNESS §2A-5). 사진을 이 단위로 나눠 병렬 호출한다:
@@ -529,4 +542,79 @@ export async function digestPages(args: DigestPagesArgs): Promise<DigestPagesRes
   const scenes = merged.map((scene, i) => ({ ...scene, seq: startSeq + i }));
 
   return { sourceKind, scenes, batches: outcomes, failedBatchCount, truncatedSceneCount };
+}
+
+// ---------------------------------------------------------------------------
+// 호출 F — 챕터화 (HARNESS §9)
+// 목차 챕터 제목 + 유튜브 낭독 자막 → 챕터별 EN(자막 원문)/KO(해석) 문장.
+// 단일 호출로 뽑은 뒤 groundChapters()로 자막에 없는 en 문장을 잘라낸다(자막 밖 창작 금지).
+// ---------------------------------------------------------------------------
+
+/** `chapterizeTranscript`의 입력 오류. 라우트가 상태코드를 고르려면 구분이 필요하다. */
+export class ChapterizeError extends Error {
+  constructor(
+    readonly code: "invalid_input",
+    message: string,
+  ) {
+    super(message);
+    this.name = "ChapterizeError";
+  }
+}
+
+export function isChapterizeError(err: unknown): err is ChapterizeError {
+  return err instanceof ChapterizeError;
+}
+
+/**
+ * `chapterizeTranscript`의 반환. app-builder는 `chapters`를 book/card 레코드에 저장하고
+ * 챕터 리더 UI를 그린다. 저장 shape은 `Chapter[]`({ titleEn, matched, sentences: { en, ko }[] }).
+ * `truncated`·`droppedSentenceCount`는 부분 처리 안내용 메타다(저장 필수는 아님).
+ */
+export interface ChapterizeResult {
+  chapters: Chapter[];
+  /** 자막이 상한을 넘어 앞부분만 챕터화했는지 — 뒤쪽 챕터는 matched:false로 온다 */
+  truncated: boolean;
+  /** groundChapters가 잘라낸(자막에 없던) 문장 수 — 0이 정상, 크면 프롬프트 이탈 신호 */
+  droppedSentenceCount: number;
+}
+
+/**
+ * 호출 F — 목차 챕터 제목 + 자막 전문을 받아 챕터별 EN/KO 문장을 만든다.
+ *
+ * 흐름: 자막 앞부분 우선 truncate → 단일 호출(callWithSchema, temp 0) → groundChapters로
+ * 자막에 없는 en 문장 제거. 저장되는 en은 전부 자막 부분문자열임이 보장된다(§9).
+ *
+ * 실패 구분(라우트가 상태코드를 고른다):
+ * - ChapterizeError("invalid_input") → 400. 목차·자막이 비었다 (사용자가 목차를 먼저 읽어야 함)
+ * - callWithSchema throw(재요청 2회 실패) → 500. 재시도 가치가 있다
+ */
+export async function chapterizeTranscript(
+  chapterTitles: string[],
+  transcript: string,
+): Promise<ChapterizeResult> {
+  const titles = chapterTitles.map((t) => t.trim()).filter((t) => t !== "");
+  if (titles.length === 0) {
+    throw new ChapterizeError("invalid_input", "[ai:chapterize] 목차 챕터 제목이 없습니다.");
+  }
+  const { text, truncated } = truncateTranscriptForChapterize(transcript);
+  if (text === "") {
+    throw new ChapterizeError("invalid_input", "[ai:chapterize] 낭독 자막이 비어 있습니다.");
+  }
+
+  const raw = await callWithSchema({
+    call: "chapterize",
+    system: CHAPTERIZE_SYSTEM_PROMPT,
+    user: [textPart(buildChapterizeUserMessage(titles, text))],
+    jsonSchema: CHAPTERIZATION_JSON_SCHEMA,
+    zodSchema: makeChapterizationSchema({ chapterTitles: titles }),
+    ...CHAPTERIZE_CALL_OPTIONS,
+  });
+
+  const { chapters, droppedSentenceCount } = groundChapters(raw.chapters, text);
+  if (droppedSentenceCount > 0) {
+    console.warn(
+      `[ai:chapterize] 자막에 없는 문장 ${droppedSentenceCount}개를 잘라냈습니다 (자막 밖 창작 방지).`,
+    );
+  }
+  return { chapters, truncated, droppedSentenceCount };
 }

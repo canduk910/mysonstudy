@@ -11,7 +11,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import CardView, { type CardHistoryItem } from "@/components/card-view";
 import { resolveStorySource } from "@/lib/ai/english/schemas";
-import { getStore } from "@/lib/store";
+import { canChapterizeBook, getStore } from "@/lib/store";
 
 // db.json은 요청 시점에 읽는다
 export const dynamic = "force-dynamic";
@@ -60,9 +60,19 @@ export default async function CardPage({ params }: CardPageProps) {
     sceneCount: c.content.sceneDigest?.length ?? 0,
   }));
 
+  // 챕터 리더(호출 F) 진입 조건 — 목차(toc) 챕터 제목 + 낭독 자막이 둘 다 있는가.
+  // book.transcript(자막 전문)를 클라이언트가 다시 판정하지 않도록 여기서 boolean만 넘긴다.
+  const canChapterize = canChapterizeBook(book);
+
   return (
     <main>
-      <CardView book={book} card={card} readings={readings} history={history} />
+      <CardView
+        book={book}
+        card={card}
+        readings={readings}
+        history={history}
+        canChapterize={canChapterize}
+      />
     </main>
   );
 }

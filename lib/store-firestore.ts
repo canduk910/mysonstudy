@@ -62,6 +62,7 @@ import { VOCAB_QUIZ_MODES } from "./vocab-quiz";
 import type { ExplainVerifyReport } from "./ai/math/pipeline";
 import type { Explanation } from "./ai/math/schemas";
 import { SCENE_TIERS, type SceneTier } from "./scene/types";
+import type { Chapter, ChapterSentence } from "./ai/english/schemas";
 import {
   normalizeSceneDigest,
   type Card,
@@ -113,6 +114,29 @@ function toSceneKind(v: unknown): SceneSourceKind | null {
   return v === "toc" || v === "pages" ? v : null;
 }
 
+/**
+ * 저장된 챕터 리더 읽기 방어 — 챕터화(호출 F) 이전 문서에는 이 필드가 없다(undefined → null).
+ * Chapter/ChapterSentence는 선택 키가 없지만(Firestore undefined 거부 위험 없음), 문서가
+ * 손상된 경우를 대비해 문자열/불리언으로 좁혀 다시 굳힌다. 배열이 아니면 null로 내린다.
+ */
+function toChapters(v: unknown): Chapter[] | null {
+  if (!Array.isArray(v) || v.length === 0) return null;
+  return v.map((ch): Chapter => {
+    const c = ch as Partial<Chapter>;
+    const sentences = Array.isArray(c.sentences)
+      ? c.sentences.map((se): ChapterSentence => {
+          const s = se as Partial<ChapterSentence>;
+          return { en: String(s.en ?? ""), ko: String(s.ko ?? "") };
+        })
+      : [];
+    return {
+      titleEn: String(c.titleEn ?? ""),
+      matched: Boolean(c.matched),
+      sentences,
+    };
+  });
+}
+
 function toBook(id: string, d: DocumentData): BookRecord {
   return {
     id,
@@ -139,6 +163,8 @@ function toBook(id: string, d: DocumentData): BookRecord {
     // 유튜브 낭독 자막 근거 — transcript grounding 이전 문서는 null로 읽힌다(하위 호환)
     transcript: toNullable(d.transcript as string | null),
     youtubeUrl: toNullable(d.youtubeUrl as string | null),
+    // 챕터 리더(호출 F) — 챕터화 이전 문서는 null로 읽힌다(하위 호환)
+    chapters: toChapters(d.chapters),
   };
 }
 
@@ -279,6 +305,8 @@ export class FirestoreStore implements StudyStore {
       // 방어적 정규화 — 장면 항목의 선택 키가 undefined면 Firestore가 쓰기를 거부한다.
       // 라우트도 통과시키지만, 저장 계층이 마지막 관문이라 여기서 한 번 더 조인다.
       sceneDigest: input.sceneDigest?.length ? normalizeSceneDigest(input.sceneDigest) : null,
+      // 챕터는 신규 book 생성 시엔 항상 null(챕터화는 별도 /api/chapterize 경로) — 방어적으로 좁힌다.
+      chapters: toChapters(input.chapters),
       id: ref.id,
       createdAt: new Date().toISOString(),
     };
@@ -352,6 +380,9 @@ export class FirestoreStore implements StudyStore {
     }
     if ("transcript" in patch) data.transcript = patch.transcript ?? null;
     if ("youtubeUrl" in patch) data.youtubeUrl = patch.youtubeUrl ?? null;
+    // 챕터화 결과 붙이기/다시 나누기 — Chapter는 선택 키가 없어 그대로 써도 안전하나
+    // 손상 방어를 위해 toChapters로 좁혀 쓴다(빈 결과는 null).
+    if ("chapters" in patch) data.chapters = toChapters(patch.chapters);
     if (Object.keys(data).length > 0) await ref.update(data);
 
     const updated = await ref.get();

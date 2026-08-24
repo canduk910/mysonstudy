@@ -1050,3 +1050,173 @@ zod 추가 검증(스키마가 못 잡는 것):
 - **재생성:** 사진 없는 텍스트 호출이라 "다시 만들기"가 판독 없이 된다. 대상은 늘 definitionEn 또는
   definitionKo가 null인 단어(해석 백필 포함).
 - imageEmoji가 null인 단어는 `resolveVocabImage`(§7)가 첫 글자 배지로 떨어뜨린다 — 빈자리를 안 만든다.
+
+## 9. 호출 F — 챕터화 (transcript → 목차 챕터별 EN/KO 문장, 챕터 리더 기능)
+
+목차 챕터 제목 목록과 유튜브 낭독 자막 전문을 받아, 자막을 챕터별로 나누고 **각 챕터를
+자막에 실제로 나온 영어 원문 문장 + 그 우리말 해석(문장 1:1)** 으로 만드는 호출입니다.
+결과는 book/card 레코드에 저장되어 **챕터 리더 UI**의 근거가 됩니다.
+
+호출 F는 A→A′→B 카드 파이프라인과 별개 경로입니다. 목차(TOC) 사진은 호출 A′(toc 모드)로
+챕터 제목을 읽고, 그 제목 목록 + 자막을 이 호출에 넘깁니다. 카드의 다른 부분(호출 B)은 여전히
+자막을 우리말 요약으로만 쓰지만, 이 챕터 리더는 다릅니다.
+
+> **이 호출에 한해 "본문 재현 금지"(SPEC §1)를 완화한다.** 은우 북카드는 가족 전용 앱이라,
+> 낭독 자막(부모가 직접 넣은 공개 영상 자막)을 챕터 리더로 **영어 원문 그대로 표시·저장**하는 것을
+> 사용자가 확정했다. 완화는 **이 챕터화 결과에만** 적용된다 — 호출 A′의 장면 메모, 호출 B의 줄거리·
+> 예문 등 카드의 다른 부분은 기존 "원문 전사 금지" 규칙을 그대로 지킨다.
+
+> **grounding — "자막 밖 창작 금지"는 프롬프트 지시로 끝내지 않는다.** 프롬프트가 "en은 자막에서
+> 복사"라고 지시하고, 그 위에 `groundChapters()`(schemas.ts)가 **각 en 문장이 자막의 토큰 열에
+> 연속 구간으로 실제 존재하는지 코드로 검사해**, 없는 문장을 저장 전에 잘라낸다. 저장되는 모든 en은
+> 자막 부분문자열임이 보장된다. throw가 아니라 잘라내는 이유는 §9-5.
+
+### 9-1. 시스템 프롬프트 (원문 그대로 사용)
+
+```
+너는 아이와 영어 원서를 함께 읽는 한국인 가족을 위해, 유튜브 낭독 자막을 목차의 챕터별로 나누는 편집자다.
+목차에서 읽은 챕터 제목 목록과, 그 책을 처음부터 끝까지 소리 내어 읽은 낭독 영상의 자막 전문을 받는다.
+자막을 각 챕터에 배정하고, 챕터마다 영어 원문 문장과 그 우리말 해석을 1:1로 만든다.
+
+[이 기능은 영어 원문을 그대로 실어도 된다]
+- 이 결과물은 가족만 보는 챕터 리더다. 다른 호출과 달리 영어 원문을 요약하지 말고 자막에 나온 그대로 옮긴다.
+- en에는 자막에 실제로 나온 문장을 글자 그대로 복사한다. 고쳐 쓰거나 다듬거나 요약하지 않는다.
+- ko에는 그 en 문장의 자연스러운 우리말 해석을 쓴다. 문장 하나에 해석 하나(1:1)다.
+
+[챕터 배정]
+- 자막의 내용과 순서를 보고 각 문장이 어느 챕터에 속하는지 정한다. 챕터는 목차에 준 제목과 순서를 따른다.
+- titleEn에는 받은 챕터 제목을 그대로 쓴다. 목차에 없는 챕터를 새로 만들지 않는다.
+- 자막에서 그 챕터에 해당하는 내용을 찾으면 matched를 true로 하고 sentences를 채운다.
+- 자막에 그 챕터의 내용이 없으면(자막이 거기까지 닿지 않았거나 그 챕터를 읽지 않았으면)
+  matched를 false로 하고 sentences를 비운다. 없는 내용을 지어내 채우지 않는다.
+
+[제외할 것 — 채널 인트로/아웃트로]
+- 자막 앞뒤의 낭독자·채널 멘트는 책 내용이 아니다. 어느 챕터에도 넣지 않는다.
+  ("Welcome to ○○ Storytime, I'm Ms. △△" 같은 인사, 구독·좋아요·후원 안내, 시작·작별 멘트 등)
+- 책을 읽기 시작하기 전과 다 읽은 뒤의 잡담은 버린다. 챕터의 문장은 책을 소리 내어 읽은 부분에서만 뽑는다.
+
+[금지]
+- 자막에 없는 문장을 en에 지어내지 않는다. en은 반드시 자막에서 복사한 것이어야 한다.
+- 한 문장을 여러 챕터에 중복해서 넣지 않는다.
+- 출력은 지정된 JSON 스키마로만. 스키마 밖 텍스트 금지.
+```
+
+### 9-2. 사용자 메시지 템플릿
+
+목차 챕터 제목을 번호로 나열하고 자막을 붙인다 (`buildChapterizeUserMessage`).
+
+```
+[목차 챕터 제목]
+1. {chapterTitles[0]}
+2. {chapterTitles[1]}
+...
+
+[유튜브 낭독 자막]
+{transcript (앞부분 우선 truncate 후)}
+
+각 챕터에 해당하는 자막 문장을 배정하고, 문장마다 영어 원문(en)과 우리말 해석(ko)을 만들어줘.
+```
+
+`chapterTitles`는 목차 사진을 호출 A′(toc 모드)로 읽어 얻은 영어 챕터 제목 배열이다(app-builder가 넘긴다).
+`transcript`는 `truncateTranscriptForChapterize`로 `CHAPTERIZE_TRANSCRIPT_MAX_CHARS`(12,000자)까지 앞부분
+우선으로 자른 자막이다 — 넘으면 앞 챕터부터 채워지고 뒤쪽 챕터는 자막이 닿지 않아 `matched:false`로 온다.
+
+### 9-3. 출력 JSON Schema — `chapterization` (strict)
+
+```json
+{
+  "name": "chapterization",
+  "strict": true,
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "chapters": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "titleEn":  { "type": "string", "description": "받은 목차 챕터 제목을 그대로" },
+            "matched":  { "type": "boolean", "description": "자막에서 이 챕터 내용을 찾았는지" },
+            "sentences": {
+              "type": "array",
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                  "en": { "type": "string", "description": "자막에 실제로 나온 문장(원문 그대로)" },
+                  "ko": { "type": "string", "description": "그 문장의 우리말 해석(1:1)" }
+                },
+                "required": ["en", "ko"]
+              }
+            }
+          },
+          "required": ["titleEn", "matched", "sentences"]
+        }
+      }
+    },
+    "required": ["chapters"]
+  }
+}
+```
+
+모든 필드는 required이고 선택키는 없다(store 규약). "없는 챕터"는 필드를 빼는 게 아니라
+`matched:false` + 빈 `sentences`([])로 표현한다. 배열 개수 제약(minItems/maxItems)은 스키마에
+넣지 않는다 — 상한은 프롬프트 밖의 자막 길이가 실질적으로 정하고, 폭주 가드는 zod가 담당한다(§1 공통 규칙).
+
+### 9-4. zod 추가 검증 (스키마가 못 잡는 것)
+
+```
+- 챕터 1개 이상, 최대 CHAPTERIZE_MAX_CHAPTERS(40)개
+- 전체 문장 최대 CHAPTERIZE_MAX_SENTENCES_TOTAL(600)개, 챕터당 최대 CHAPTERIZE_MAX_SENTENCES_PER_CHAPTER(120)개
+  (자막 길이가 실질 상한이고, 이 값들은 모델이 문장을 중복 생성하는 폭주를 막는 가드다)
+- matched ⟺ sentences 채움: matched=true인데 빈 sentences거나, matched=false인데 sentences가 있으면 거부
+- en은 영어(한글 없음), ko는 우리말(한글 있음) — en/ko 자리를 바꿔 넣는 실패를 막는다
+- titleEn은 받은 목차 제목 중 하나여야 한다(정규화 비교: NFC·트림·연속공백1칸·소문자) — 목차 밖 챕터 창작 금지
+- titleEn 중복 금지
+- 길이 상한: titleEn 200자 · en 600자 · ko 800자 (상수는 schemas.ts 단일 정의처)
+```
+
+"en이 자막에 실제로 있는가"(자막 밖 창작 금지)는 zod가 아니라 `groundChapters()`가 본다 — 자막
+문자열이 필요하고, 어긋난 문장은 throw가 아니라 잘라내는 편이 낫기 때문이다(§9-5).
+
+### 9-5. grounding 후처리 (`groundChapters` — 자막 밖 창작 금지의 최종 강제)
+
+```
+- 자막과 각 en을 소문자 영숫자 토큰으로 쪼갠다(tokenizeForGrounding): 아포스트로피·따옴표·문장부호·
+  대소문자·공백 차이를 무시한다("don't"↔"dont", 스마트따옴표↔직선따옴표). 모델이 자막을 옮기며 생긴
+  사소한 표기 흔들림엔 관대하되 "같은 단어가 같은 순서로 나왔는가"는 지킨다
+- 각 문장의 en 토큰 열이 자막 토큰 열의 '연속 구간'으로 존재하지 않으면 그 문장을 잘라낸다
+  (isGroundedInTranscript). 잘라내 문장이 하나도 안 남은 챕터는 matched를 false로 내린다
+- 잘라낸 문장 수를 droppedSentenceCount로 반환한다 (0이 정상, 크면 프롬프트 이탈 신호 → 로그 경고)
+- throw가 아니라 잘라내는 이유: 사용자는 이미 호출 비용을 치렀다. 몇 문장을 버리는 편이 카드 전체를
+  실패시키는 것보다 낫다(호출 A′ 배치 부분 성공과 같은 철학, §2A-5). 저장되는 en은 이 필터를 지나
+  전부 자막 부분문자열임이 보장된다
+```
+
+### 9-6. 호출 옵션 · 경계면 · 후처리
+
+- **호출 옵션(`CHAPTERIZE_CALL_OPTIONS`)**: temperature 0 (전사+번역이라 같은 자막은 같은 결과),
+  max_output_tokens 16,000 (자막 전체를 EN+KO로 되뽑아 출력이 크다 — 입력을 12,000자로 잘라 균형).
+  단일 호출이다. 출력 한도 도달(`status: incomplete`)은 callWithSchema의 재요청 경로가 받는다(§4).
+- **경계면(app-builder)**: `chapterizeTranscript(chapterTitles: string[], transcript: string)` →
+  `{ chapters, truncated, droppedSentenceCount }`. app-builder가 /api에서 호출하고, `chapters`를
+  book/card 레코드에 저장한 뒤 챕터 리더 UI를 그린다.
+  - 저장 shape: `chapters: { titleEn: string, matched: boolean, sentences: { en: string, ko: string }[] }[]`.
+    선택키·undefined 없음(store 규약) — matched=false 챕터는 `sentences: []`.
+  - `truncated`(자막이 잘렸는지)·`droppedSentenceCount`(잘라낸 문장 수)는 부분 처리 안내 메타다(저장 필수 아님).
+  - 실패 구분: `ChapterizeError("invalid_input")` → 400(목차·자막 비었음, 사용자가 목차를 먼저 읽어야 함) /
+    callWithSchema throw(재요청 2회 실패) → 500(재시도 가치 있음).
+- **M1 스코프**: 챕터화 호출 + 스키마 + 저장 shape + eval까지다. 단어 뜻(더블탭)·단어장 추가는 M2다.
+
+### 9-7. 평가 하네스 점검 (`scripts/eval-english.ts` — 실호출 0회 + 게이트)
+
+- 오프라인(실호출 0회): chapters zod가 (a) 정상 입력을 통과시키고 (b) matched/빈 sentences 모순,
+  en에 한글, ko에 한글 없음, 목차 밖 titleEn, 제목 중복, 챕터/문장 수 상한 초과를 각각 거부하는지.
+  `groundChapters`가 자막에 없는 문장을 잘라내고(자막 밖 창작 금지) 자막에 있는 문장은 en/ko 1:1로
+  보존하는지(droppedSentenceCount 포함). 상한 상수가 서로 어긋나지 않는지. 프롬프트↔스펙 spec-sync.
+  픽스처는 TOC 제목 + 짧은 자막(채널 인트로/아웃트로 노이즈 포함)이다.
+- 실호출 게이트(`EVAL_CHAPTERS=1`일 때만 실호출 1회 — 기본은 돌지 않는다): 실제 자막→챕터 1건이
+  (a) 모든 en이 자막 부분문자열이고(grounding) (b) 채널 인트로/아웃트로 노이즈가 어느 챕터에도
+  안 섞였고 (c) matched 챕터는 sentences가 있고 en/ko가 1:1이고 ko가 우리말인지를 검사한다.
+  오프라인 게이트(`EVAL_OFFLINE_ONLY=1`)에서는 절대 도달하지 않는다.
