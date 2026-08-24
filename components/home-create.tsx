@@ -1220,8 +1220,8 @@ export default function HomeCreate({
                     <span className="min-w-0 flex-1">
                       <span className="t-question-ko block text-ink line-clamp-2">{c.title}</span>
                       <span className="t-caption mt-0.5 block truncate">
+                        {c.durationSec != null ? `${formatDuration(c.durationSec)} · ` : ""}
                         {c.channel}
-                        {c.durationSec != null ? ` · ${formatDuration(c.durationSec)}` : ""}
                       </span>
                     </span>
                   </button>
