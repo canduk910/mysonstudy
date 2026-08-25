@@ -90,7 +90,7 @@
 10. 확장 놀이 (2개)
 
 - 단어마다 스피커 버튼: Web Speech API(speechSynthesis, en-US)로 발음 재생 — 외부 API·비용 없음
-- "읽어주기 영상 찾기" 버튼: `https://www.youtube.com/results?search_query={제목 저자 read aloud}` 새 탭 링크 (API 불필요, 링크 제공은 저작권 문제 없음)
+- "읽어주기 영상 찾기": 원래는 `https://www.youtube.com/results?search_query={제목 저자 read aloud}` 검색 결과를 새 탭으로 여는 링크였다(API 불필요). **지금은 이 자리가 카드 생성 중 낭독 영상 자동 검색·선택 → 자막 grounding → 챕터 리더로 확장됐다 — §14-1 참조.**
 - 인쇄 버튼: A4 세로, 책당 1~2쪽 목표의 인쇄 CSS
 - "다시 생성" 버튼: 같은 책으로 새 카드 생성(기존 카드 유지)
 
@@ -274,6 +274,8 @@ OPENAI_API_KEY=      # 필수. 서버 전용
 OPENAI_MODEL=        # 기본값: 비전+Structured Outputs 지원 최신 모델 (OpenAI 문서에서 확인)
 GOOGLE_BOOKS_API_KEY= # 선택. 없으면 무키 호출(저볼륨 가능)
 GOOGLE_APPLICATION_CREDENTIALS= # 로컬 개발용. Cloud Run에서는 서비스 계정 ADC 사용
+SUPADATA_API_KEY=    # 선택(낭독 자막 grounding 시). 서버 전용. 유튜브 자막 fetch(Supadata) — §14-1
+YOUTUBE_API_KEY=     # 선택(낭독 영상 자동 검색 시). 서버 전용. YouTube Data API v3 search — §14-1
 ```
 
 ## 12. 테스트 픽스처 (실물 검증 데이터)
@@ -307,3 +309,30 @@ GOOGLE_APPLICATION_CREDENTIALS= # 로컬 개발용. Cloud Run에서는 서비스
 - 외부 사이트 크롤링·스크래핑
 - 로그인·회원 시스템, 다국어 UI, 상태관리·차트 라이브러리 추가
 - 모델 ID 하드코딩, 클라이언트에서 직접 AI 호출, API 키 노출
+
+## 14. 확장 기능 (2026-08 — §1~13 기본 흐름 위에 얹힌 것)
+
+> AI 호출·프롬프트·JSON Schema·zod·grounding 규칙의 상세는 모두 `docs/harness/english.md`에 있다(호출 F 챕터화·호출 G 단어 뜻·단어장 판독/정의 등). 여기서는 제품 수준의 흐름과 경계만 적는다.
+
+### 14-1. 유튜브 낭독 자막 grounding + 챕터 리더
+
+표지·소개글만으로 줄거리를 **예측**하던 카드가 조악했던 문제(환각)를 실제 본문에 붙여 해결한다.
+
+- **낭독 영상 자동 검색**: 판독으로 제목·저자가 정해지면 그 값으로 낭독 영상을 검색(`lib/youtube-search.ts`, YouTube Data API v3)해 **상위 3개 후보**를 보여주고 사용자가 하나를 탭한다. 첫 결과를 자동 채택하지 않는 것은 **엉뚱한 책에 grounding되는 것을 막기 위함**(사람이 표지를 보고 고른다). 후보 메타는 영상시간 · 게시자 순으로 표시. 건너뛰기 가능(그러면 §3 기본 경로).
+- **자막 fetch**: 고른 영상의 자막을 **Supadata**(`lib/youtube-transcript.ts`, 서버 전용)로 가져온다. 클라우드 IP 차단·Whisper 폴백을 호스팅 API가 처리한다 — **우리가 직접 유튜브를 스크래핑하지 않는다**(§13의 "크롤링·스크래핑 금지"와 무관, 유료 API 호출이다).
+- **grounding**: 자막이 있으면 storySource 등급에서 transcript가 **최상위**가 되어 카드 줄거리·질문이 실제 본문에 붙는다("낭독 확인" 배지).
+- **챕터 리더**(자막이 있으면 **항상** 생성): 목차가 있으면 챕터별로, 없으면 "전체" 한 블록으로, **영어 원문(문장 단위) + 한글 해석**을 보여준다. 코드가 각 챕터 문장이 자막의 부분 문자열인지 검사(`groundChapters`)해 프롬프트 밖 환각을 막는다. 카드 생성 직후 클라이언트가 `/api/chapterize`를 best-effort로 자동 호출(실패해도 카드는 남는다).
+- **단어 더블탭**: 챕터 리더의 영어 단어를 두 번 탭하면 **그 문장 맥락의 한글 뜻**(호출 G)·발음(TTS)·"**모은 단어**" 단어장 담기. 모은 단어장은 get-or-create(멱등)로 하나만 두고 단어장 정복의 시험·오답노트에 편입된다.
+- **라우트**: `/api/youtube-search`(후보 검색) · `/api/card`(youtubeUrl 선택 — 있으면 자막 fetch 후 grounding, 없으면 §3과 바이트 동일) · `/api/chapterize`(bookId → chapters) · `/api/word-meaning`(호출 G) · `/api/english/vocab/collected/add-word`(모은 단어). 데이터 모델은 `BookRecord`에 `transcript`·`youtubeUrl`·`chapters`(nullable) 추가.
+
+### 14-2. 영어단어장 정복
+
+교재(예: 능률 VOCA류, DAY 20개)를 앱으로 옮겨 **판독 → 시험 → 오답노트**까지 돌리는 별도 기능. 축은 "**판독 = 책 원문 전사 / AI 창작 = 영영 정의·이모지만**"이다 — 예문·뜻은 책 원문을 보존한다.
+
+- **판독**(`/api/english/vocab/extract`, vision): DAY 사진 2~4장을 판독해 단어·발음기호·품사·뜻(번호 보존)·예문(영/한)·유의어를 **원문 그대로 전사**한다. 밀집·2단 조판 정확도가 성패라 few-shot으로 예문 누락을 막았다.
+- **영영 정의 + 이모지**(호출 D, `/api/english/vocab/[id]/enrich`): 판독 직후 자동 생성. **정의는 시험이 매달리므로 한 번 생성되면 불변**(재생성은 `definitionEn === null`인 단어만 채운다). 이모지 없으면 첫 글자 배지.
+- **뷰·TTS**: 표/카드 토글, 단어·예문 읽어주기(`lib/speech.ts`).
+- **시험**(`/api/english/vocab/[id]/quiz`): **영영 정의 제시 → 영단어 5지선다**(정답1 + 같은 DAY 오답4, 셔플). 즉시 피드백·발음. 세션은 별도 컬렉션에 저장(전사본 불변).
+- **오답노트**: DAY 안(`[id]/wrong`)과 DAY 넘어(`/english/vocab/wrong`) 두 층. **연속 2회 정답이면 졸업**(`lib/vocab-mastery.ts`).
+- **라우트**: `/api/english/vocab/*`(extract·route·[id]·enrich·quiz·rename·add-word·collected) · 화면 `/english/vocab/*`(목록·상세·quiz·wrong·new). 순수 함수(병합·보기 생성·졸업·복습)는 `lib/vocab-*.ts`에 두고 오프라인 eval로 잠근다.
+- **경로 규약**: 수학 접두사 규약을 따라 `/english/vocab/*` · `/api/english/vocab/*`.

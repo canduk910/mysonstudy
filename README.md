@@ -8,7 +8,9 @@
 - 카드 내용은 **새로 창작**합니다. 근거는 책의 메타데이터(제목·저자·AR 지수·주제·공개 소개글), 뒤표지·책날개 소개글, 그리고 **직접 찍어 올린 본문·목차 사진의 우리말 요약**입니다.
 - **본문 사진을 올리는 것은 선택**입니다. 안 올리면 표지·소개글만으로 카드가 만들어지고, 올리면 줄거리가 길어지고 장면마다 던질 질문이 붙습니다.
 - **업로드한 사진 원본은 어디에도 저장하지 않습니다** — 판독 직후 버리고, 남는 것은 우리말 요약 텍스트뿐입니다. **영어 원문을 그대로 옮겨 적지 않습니다**(제목·챕터 제목·인물 이름은 예외). 이 원칙은 `docs/SPEC.md` §1에 있고, zod가 연속 영어 8단어를 실제로 거부해 강제합니다.
-- 스택: Next.js(App Router, TS) · Tailwind CSS · OpenAI Responses API(Structured Outputs) · Google Books/Open Library · Firestore · Cloud Run
+- **유튜브 낭독 자막으로 카드를 뒷받침**할 수 있습니다 — 책 제목으로 낭독 영상을 자동 검색해 고르면, 그 자막으로 줄거리를 실제 본문에 grounding하고 챕터별 **영어 원문+한글 해석 리더**(단어 더블탭 뜻·발음·"모은 단어" 담기)를 붙입니다. 자막은 우리가 스크래핑하지 않고 Supadata API로 가져옵니다.
+- 별도로 **영어단어장 정복**(교재 사진 판독 → 영영 정의·이모지 → 영단어 5지선다 시험 → 오답노트)이 있습니다. 상세는 `docs/SPEC.md` §14.
+- 스택: Next.js(App Router, TS) · Tailwind CSS · OpenAI Responses API(Structured Outputs) · Google Books/Open Library · Firestore · Cloud Run · Supadata(자막)·YouTube Data API v3(낭독 영상 검색)
 
 ## 1. 로컬 실행
 
@@ -29,6 +31,8 @@ npm run dev    # http://localhost:3100 (다른 로컬 프로젝트와의 포트 
 | `OPENAI_API_KEY` | AI 생성 시 필수 | 서버 전용. 표지 판독(vision)·카드 생성에 사용. 없으면 시드 데모만 가능 |
 | `OPENAI_MODEL` | 선택 | 기본값 `gpt-5.5` — 비전 입력 + Structured Outputs + Responses API를 모두 지원하는 최신 모델(OpenAI 공식 문서 2026-08 확인). 스냅샷 고정이 필요하면 `gpt-5.5-2026-04-23` 지정 |
 | `GOOGLE_BOOKS_API_KEY` | 선택 | 책 식별(ISBN·소개글·썸네일)용. 없으면 무키 호출(쿼터 낮음) — 실패 시 Open Library로 자동 폴백 |
+| `SUPADATA_API_KEY` | 선택 | 서버 전용. 고른 유튜브 낭독 영상의 자막을 가져와 카드·챕터 리더의 근거로 사용(없으면 자막 grounding만 비활성, 기본 카드 생성은 정상) |
+| `YOUTUBE_API_KEY` | 선택 | 서버 전용. 책 제목·저자로 낭독 영상 후보를 검색(YouTube Data API v3). 없으면 낭독 영상 자동 검색만 비활성 |
 | `GOOGLE_APPLICATION_CREDENTIALS` | 선택 | 로컬에서 Firestore를 쓸 때 서비스 계정 키 파일 경로. Cloud Run에서는 불필요(서비스 계정 ADC) |
 | `STORE_BACKEND` | 선택 | `firestore` \| `file`. 미설정 시 자동 감지 — GCP 신호(`GOOGLE_APPLICATION_CREDENTIALS`/`K_SERVICE`/`GOOGLE_CLOUD_PROJECT`)가 있으면 firestore, 없으면 file |
 | `APP_PIN` | **배포 시 필수** | 접속 잠금 PIN(숫자 **6~8자리 권장**, 최소 4자리 — 4자리는 경우의 수가 1만뿐이라 짧습니다). 서버 전용. 도메인이 공개돼도 가족 외 접속과 AI 비용 유출을 막습니다. **프로덕션에서 미설정이면 전 요청을 503으로 차단**(fail-closed), 로컬 개발에서 미설정이면 잠금 없이 통과 |

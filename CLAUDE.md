@@ -1,6 +1,6 @@
 # mysonstudy — 은우 북카드
 
-아이(은우)와 영어 원서를 함께 읽는 부모를 위한 학습 카드 생성 앱. 표지 사진 → AI 판독 → Google Books 보강 → 학습 카드 → 서재. 앱 전체 명세는 `docs/SPEC.md`, AI 호출 상세는 `docs/harness/english.md`(과목 공통 규약은 `docs/HARNESS.md`), 디자인 원본은 `design/영어책_학습카드_샘플.html`.
+아이(은우)와 영어 원서를 함께 읽는 부모를 위한 학습 카드 생성 앱. **기본 흐름**은 표지 사진(또는 제목) → AI 판독 → Google Books 보강 → 학습 카드 → 서재. 여기에 두 확장이 얹혀 있다 — ① **유튜브 낭독 자막 grounding**: 책 제목으로 낭독 영상을 자동 검색·선택해 그 자막으로 카드를 실제 본문에 붙이고, 챕터별 **영어 원문+한글 해석 리더**(단어 더블탭 뜻·발음·"모은 단어" 담기)를 만든다. ② **영어단어장 정복**: 교재 사진을 판독(원문 전사) → 영영 정의·이모지 → 영단어 5지선다 시험 → 오답노트. 앱 전체 명세는 `docs/SPEC.md`(확장은 §14), AI 호출 상세는 `docs/harness/english.md`(과목 공통 규약은 `docs/HARNESS.md`), 디자인 원본은 `design/영어책_학습카드_샘플.html`.
 
 ## ⚠️ 로컬 실행이 프로덕션 DB를 향할 수 있다 (2026-08-17 사고)
 
@@ -32,6 +32,8 @@
 | 2026-08-17 | **과목 확장(영어 → 영어+수학)**: 에이전트 6명(재사용 4 + 신규 `math-verifier`·`player-builder`), 스킬 6종. `card-tuner`→`prompt-tuner`, `bookcard-qa`→`study-qa`, `card-eval`→`prompt-eval`, `bookcard-orchestrator`→`study-orchestrator`로 과목 중립화. 도메인 지식은 스킬 references로 분리 | agents 6, skills 6, CLAUDE.md | 수학코치 하네스 명세 반영. 에이전트를 과목별로 복제하면 역할이 중복되고 조율 비용만 커지므로, 에이전트는 재사용하고 references만 가르는 구조를 택했다 |
 | 2026-08-16 | 검증 피드백 반영: worker 스킬 3종 description을 에이전트 스코프로 재작성(트리거 경합 해소), 오케스트레이터에 스캐폴딩 단계·튜닝 가드·에러 폴백 분기·eval 실행 주체·픽스처 출처 명시 | skills 4종 | Phase 6 검증(구조·충실도·트리거·드라이런) 결과 10건 수정 |
 | 2026-08-16 | 개발 명세 원본 확보(docs/SPEC.md 저장): 픽스처를 §12 실측값으로 갱신(Pooh AR 2.0 — AR<2 경로 미커버 명시), Open Library 폴백·디자인 원본 파일 반영 | docs/SPEC.md, card-eval, ai-harness-impl, orchestrator | 사용자가 개발 프롬프트 전문 제공 |
+| 2026-08-25 | `doc-commit` 스킬 신설 — 메모리·git 이력·코드 실체를 근거로 `.md` 문서를 최신화·커밋. 저장소 함정(spec-sync 프롬프트 블록 불가침·§번호 안정성·변경이력 append·next.js 자동블록)을 규칙으로 못박음 | skills(doc-commit), CLAUDE.md | 앱 기능이 문서보다 앞서 나가 서문·플로우가 실제와 어긋나기 시작 — 문서 동기화를 반복 가능한 절차로 |
+| 2026-08-25 | 2026-08-16 이후 앱 확장을 문서에 반영: 서문 앱 흐름에 낭독 자막 grounding·챕터 리더·단어탭·영어단어장 정복 추가, SPEC에 §14(확장 기능)·환경변수 2종(`SUPADATA_API_KEY`·`YOUTUBE_API_KEY`) append, README 소개·환경변수 갱신. 반영 마지막 커밋 `4cabb21` | CLAUDE.md, docs/SPEC.md, README.md | 자막 grounding·단어장 정복 아크가 harness/english.md에만 있고 제품 문서엔 없었다 |
 
 <!-- BEGIN:nextjs-agent-rules -->
 
