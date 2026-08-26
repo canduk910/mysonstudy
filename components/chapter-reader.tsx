@@ -35,6 +35,7 @@ import { lockBodyScroll } from "@/lib/scroll-lock";
 import { speak, speakSequence } from "@/lib/speech";
 import type { WordMeaningResponse } from "@/lib/word-meaning-contract";
 import s from "./chapter-reader.module.css";
+import TtsSpeedControl from "./tts-speed-control";
 
 /** 더블탭으로 인정하는 두 번째 탭까지의 최대 간격(ms). PC dblclick·모바일 연속 탭 모두 이 창 안(V8과 같은 값). */
 const DOUBLE_TAP_MS = 300;
@@ -353,6 +354,9 @@ function Reader({
         <strong>단어를 두 번 톡톡</strong> 치면 뜻과 발음을 보고 모은 단어장에 담을 수 있어요.
         {!single && ` (챕터 ${chapters.length}개 중 ${matchedCount}개에 내용이 있어요.)`}
       </p>
+
+      {/* 읽어주기 속도 — 전역 하나(lib/speech.ts). 여기서 바꾸면 단어장·시험 낭독까지 같이 바뀐다. */}
+      <TtsSpeedControl />
 
       {/* 챕터 목록 — 가로 스크롤 탭. matched 아닌 챕터는 흐리게. 단일 "전체" 챕터면 목록 생략 */}
       {!single && (

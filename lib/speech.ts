@@ -13,8 +13,59 @@
 /** 발음 언어 — 영어 원서용이므로 미국식 고정 */
 export const TTS_LANG = "en-US";
 
-/** 재생 속도 — 1.0은 아이가 따라 하기에 빠르다. 0.9가 카드 화면에서 쓰던 값이다 */
+/** 재생 속도 **기본값** — 1.0은 아이가 따라 하기에 빠르다. 0.9가 카드 화면에서 쓰던 값이다.
+ *  이제 사용자가 "읽기 속도"로 바꿀 수 있고, 지금 값은 getTtsRate()가 돌려준다. */
 export const TTS_RATE = 0.9;
+
+/** 읽기 속도 프리셋 — 분절 버튼(TtsSpeedControl)에서 쓴다. 아이+폰 맥락이라 3단이면 충분(슬라이더 대신). */
+export const TTS_RATE_PRESETS: { labelKo: string; rate: number }[] = [
+  { labelKo: "천천히", rate: 0.7 },
+  { labelKo: "보통", rate: 0.9 },
+  { labelKo: "빠르게", rate: 1.1 },
+];
+
+/** localStorage 키 — 읽기 속도는 화면을 넘어 하나로 기억된다(위 "값 하나" 원칙). */
+const TTS_RATE_KEY = "eunwoo-tts-rate";
+/** 같은 페이지의 여러 속도 컨트롤을 즉시 동기화하는 커스텀 이벤트 이름. */
+export const TTS_RATE_EVENT = "eunwoo:tts-rate";
+
+/** 현재 전역 재생 속도. 기본은 TTS_RATE(0.9). 클라이언트에서 한 번 localStorage 값을 끌어온다. */
+let currentRate = TTS_RATE;
+let rateHydrated = false;
+
+/**
+ * 지금 쓸 재생 속도. 클라이언트 첫 호출 때 저장된 값을 끌어온다.
+ * SSR(window 없음)에서는 기본값을 돌려준다 — 렌더가 아니라 **재생 시점**에만 부르므로 안전하다.
+ */
+export function getTtsRate(): number {
+  if (!rateHydrated && typeof window !== "undefined") {
+    rateHydrated = true;
+    try {
+      const saved = window.localStorage.getItem(TTS_RATE_KEY);
+      const n = saved != null ? Number(saved) : NaN;
+      if (Number.isFinite(n) && n > 0) currentRate = n;
+    } catch {
+      /* 프라이빗 모드 등 localStorage 접근 불가 — 기본값 유지 */
+    }
+  }
+  return currentRate;
+}
+
+/**
+ * 전역 재생 속도를 바꾼다. localStorage에 저장하고, 같은 페이지의 다른 속도 컨트롤이
+ * 즉시 따라오도록 커스텀 이벤트를 쏜다. 다음 speak()부터 이 값으로 읽는다.
+ */
+export function setTtsRate(rate: number): void {
+  currentRate = rate;
+  rateHydrated = true;
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(TTS_RATE_KEY, String(rate));
+  } catch {
+    /* 저장 실패는 비치명 — 이번 세션 동안은 currentRate로 동작 */
+  }
+  window.dispatchEvent(new CustomEvent(TTS_RATE_EVENT, { detail: rate }));
+}
 
 /**
  * 이 브라우저가 발음 재생을 지원하는가.
@@ -40,7 +91,7 @@ export function speak(text: string): void {
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.lang = TTS_LANG;
-  utterance.rate = TTS_RATE;
+  utterance.rate = getTtsRate();
   window.speechSynthesis.speak(utterance);
 }
 

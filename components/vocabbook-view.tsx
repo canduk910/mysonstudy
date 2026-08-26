@@ -37,6 +37,7 @@ import { lockBodyScroll } from "@/lib/scroll-lock";
 import { speak, speakSequence, stopSpeaking } from "@/lib/speech";
 import type { VocabAddWordResponse } from "@/lib/vocab-add-word-contract";
 import type { VocabEnrichResponse } from "@/lib/vocab-enrich-contract";
+import TtsSpeedControl from "./tts-speed-control";
 import s from "./vocabbook-view.module.css";
 
 const VIEW_MODE_KEY = "vocab-view-mode";
@@ -281,6 +282,8 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz 
           {modeToggle}
           {quizButton}
           {enrichButton}
+          {/* 읽어주기 속도 — 전역 하나(lib/speech.ts). 단어·예문 낭독과 시험 자동낭독에 함께 적용된다. */}
+          <TtsSpeedControl />
         </div>
         {/* 정의 불변을 문구로도 드러낸다 — "다시 만들기"가 이미 있는 정의를 안 건드림을 안내 */}
         {fullyEnriched ? null : (
