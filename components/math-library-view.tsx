@@ -28,6 +28,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { useReorder } from "@/components/use-reorder";
 import type { ChildGrade, ProblemPattern } from "@/lib/ai/math/schemas";
 // 채점 배지 문구는 설명 화면과 **한 정의처**를 공유한다 — 예전엔 두 벌이라 `wrong`이 어긋나 있었다
 import { GRADE_BADGE } from "@/lib/math-labels";
@@ -53,6 +54,8 @@ export interface MathLibraryItem {
   /** 답 한 줄. **보류면 화면에 내지 않는다** */
   answerText: string;
   createdAt: string; // ISO 8601
+  /** 수동 정렬 값(서재와 동일 규약). null이면 미정렬(맨 위 블록). 정렬은 서버(page.tsx)가 끝낸다. */
+  sortIndex: number | null;
 }
 
 /** 유형별 집계 — 비율 계산은 화면에서 한다(분모 0 처리와 문구가 붙어 있어서) */
@@ -161,12 +164,40 @@ export default function MathLibraryView({
   const wrongCount = visibleItems.filter(isWrong).length;
   const heldCount = visibleItems.filter((item) => item.held).length;
 
+  /*
+   * 수동 정렬(서재와 동일) — 공유 프리미티브 useReorder에 배선한다.
+   * **필터가 '전체'가 아닐 때 재배치를 끈다**(서재의 "검색 중 비활성"에 대응): reorderExplanations는
+   * 넘긴 목록만 0..n으로 재색인하므로, 필터된 일부만 넘기면 나머지 인덱스와 충돌한다. 전체 목록일
+   * 때만 순서가 일관된다. (삭제는 어느 필터에서도 되게 둔다 — 항목 단위라 인덱스와 무관.)
+   */
+  const reorderEnabled = manageMode && filter === "all";
+  const reorder = useReorder({
+    ids: visibleItems.map((item) => item.id),
+    enabled: reorderEnabled,
+    onPersist: async (orderedIds) => {
+      const res = await fetch("/api/math/reorder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderedIds }),
+      });
+      if (!res.ok) throw new Error("reorder failed");
+      setErrorKo(null);
+      router.refresh(); // 서버가 sortIndex로 다시 정렬해 순서를 확정한다
+    },
+    onError: () => setErrorKo("순서를 저장하지 못했어요. 잠시 후 다시 시도해 주세요."),
+  });
+
+  // 훅이 정한 순서(관리 모드 재배치 반영)로 세운 뒤 필터를 적용한다.
+  const itemById = new Map(visibleItems.map((item) => [item.id, item]));
+  const orderedItems = reorder.order
+    .map((id) => itemById.get(id))
+    .filter((item): item is MathLibraryItem => item != null);
   const filtered =
     filter === "wrong"
-      ? visibleItems.filter(isWrong)
+      ? orderedItems.filter(isWrong)
       : filter === "held"
-        ? visibleItems.filter((item) => item.held)
-        : visibleItems;
+        ? orderedItems.filter((item) => item.held)
+        : orderedItems;
 
   function toggleManage() {
     setManageMode((on) => !on);
@@ -377,8 +408,21 @@ export default function MathLibraryView({
 
         {manageMode && (
           <p className="t-caption mb-3 rounded-[var(--radius-box)] border border-dashed border-line px-4 py-3">
-            지울 설명의 <span className="font-medium text-ink">🗑 지우기</span> 버튼을 누르세요.{" "}
-            <span className="font-medium text-ink">되돌릴 수 없어요.</span>
+            {reorderEnabled ? (
+              <>
+                <span className="font-medium text-ink">≡ 손잡이를 끌어</span> 순서를 바꾸거나{" "}
+                <span className="font-medium text-ink">↑ ↓ 버튼</span>으로 옮겨요. 지울 설명은{" "}
+                <span className="font-medium text-ink">🗑 지우기</span> —{" "}
+                <span className="font-medium text-ink">되돌릴 수 없어요.</span>
+              </>
+            ) : (
+              <>
+                순서 바꾸기는 <span className="font-medium text-ink">‘전체’ 목록</span>에서만 돼요
+                (필터를 걸면 잠시 꺼져요). 지울 설명의{" "}
+                <span className="font-medium text-ink">🗑 지우기</span> 버튼을 누르세요.{" "}
+                <span className="font-medium text-ink">되돌릴 수 없어요.</span>
+              </>
+            )}
           </p>
         )}
 
@@ -448,7 +492,23 @@ export default function MathLibraryView({
                   </div>
                 </li>
               ) : (
-                <li key={item.id} className="flex min-w-0 items-stretch gap-2">
+                <li
+                  key={item.id}
+                  {...reorder.getRowProps(item.id)}
+                  className={`flex min-w-0 items-stretch gap-2 rounded-[var(--radius-box)] ${
+                    reorder.draggingId === item.id ? "opacity-90 ring-2 ring-accent" : ""
+                  }`}
+                >
+                  {/* 드래그 손잡이 — 관리 모드·'전체' 필터에서만. touch-action:none으로 스크롤 안 샘.
+                      키보드는 ↑/↓로 이동(핸들 aria-label 안내). */}
+                  {reorderEnabled && (
+                    <div
+                      {...reorder.getHandleProps(item.id)}
+                      className="t-list-title flex w-8 flex-none select-none items-center justify-center rounded-[var(--radius-box)] border border-line bg-bg text-ink-3 hover:border-line-strong focus-visible:outline-2 focus-visible:outline-accent print:hidden"
+                    >
+                      <span aria-hidden>≡</span>
+                    </div>
+                  )}
                   <Link href={`/math/problem/${item.id}`} className="u-item min-w-0 flex-1">
                     <span className="u-item-thumb" aria-hidden>
                       {item.held ? "⚠️" : "🧮"}
@@ -481,6 +541,30 @@ export default function MathLibraryView({
                       </span>
                     </span>
                   </Link>
+
+                  {/* ↑/↓ 이동 버튼 — 드래그가 어려운 상황·a11y 폴백('전체' 필터에서만) */}
+                  {reorderEnabled && (
+                    <div className="flex w-9 flex-none flex-col gap-1 print:hidden">
+                      <button
+                        type="button"
+                        onClick={() => reorder.moveUp(item.id)}
+                        disabled={!reorder.canMoveUp(item.id) || reorder.saving}
+                        aria-label="이 설명 위로"
+                        className="t-list-title flex flex-1 items-center justify-center rounded-[var(--radius-box)] border border-line bg-bg text-ink disabled:opacity-30 hover:enabled:border-line-strong"
+                      >
+                        <span aria-hidden>↑</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => reorder.moveDown(item.id)}
+                        disabled={!reorder.canMoveDown(item.id) || reorder.saving}
+                        aria-label="이 설명 아래로"
+                        className="t-list-title flex flex-1 items-center justify-center rounded-[var(--radius-box)] border border-line bg-bg text-ink disabled:opacity-30 hover:enabled:border-line-strong"
+                      >
+                        <span aria-hidden>↓</span>
+                      </button>
+                    </div>
+                  )}
 
                   {/* 관리 모드에서만 나타나는 삭제 버튼 — 평소엔 렌더 자체를 하지 않는다 */}
                   {manageMode && (

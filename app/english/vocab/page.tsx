@@ -39,7 +39,20 @@ export default async function VocabLibraryPage() {
     wordCount: record.entries.length,
     photoCount: record.photoCount,
     createdAt: record.createdAt,
+    sortIndex: record.sortIndex,
   }));
+  /*
+   * 정렬 규칙(서재와 동일) — sortIndex null이 먼저(createdAt 역순=최신이 위), 그다음 sortIndex 오름차순.
+   * listVocabBooks는 createdAt desc로 오지만, 수동 정렬 블록을 반영하려면 여기서 다시 세운다.
+   */
+  items.sort((a, b) => {
+    const aNull = a.sortIndex == null;
+    const bNull = b.sortIndex == null;
+    if (aNull && bNull) return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0;
+    if (aNull) return -1;
+    if (bNull) return 1;
+    return a.sortIndex! - b.sortIndex!;
+  });
 
   return (
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">

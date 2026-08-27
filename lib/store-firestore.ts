@@ -204,6 +204,8 @@ function toExplanation(id: string, d: DocumentData): ExplanationRecord {
     verify: d.verify as ExplainVerifyReport,
     model: String(d.model ?? ""),
     createdAt: toIso(d.createdAt),
+    // 수동 정렬 이전 문서는 null(=미정렬)로 읽힌다(하위 호환, toBook과 같은 방어)
+    sortIndex: toNullable(d.sortIndex as number | null),
   };
 }
 
@@ -237,6 +239,8 @@ function toVocabBook(id: string, d: DocumentData): VocabBookRecord {
     enriched: Boolean(d.enriched),
     model: String(d.model ?? ""),
     createdAt: toIso(d.createdAt),
+    // 수동 정렬 이전 문서는 null(=미정렬)로 읽힌다(하위 호환, toBook과 같은 방어)
+    sortIndex: toNullable(d.sortIndex as number | null),
   };
 }
 
@@ -482,12 +486,26 @@ export class FirestoreStore implements StudyStore {
     const record: ExplanationRecord = {
       ...input,
       problem: normalizeProblem(input.problem),
+      // 신규 설명은 미정렬(맨 위)로 시작 — Firestore는 undefined를 거부하므로 명시적 null.
+      sortIndex: null,
       id: ref.id,
       createdAt: new Date().toISOString(),
     };
     const { id: _id, ...data } = record; // 문서 ID가 곧 id — 본문에 중복 저장하지 않는다
     await ref.set(data);
     return record;
+  }
+
+  async reorderExplanations(orderedIds: string[]): Promise<void> {
+    // reorderBooks의 explanations판 — BATCH_LIMIT 단위 batch.update. 수정이라 prod-guard 무관.
+    const db = getDb();
+    for (let i = 0; i < orderedIds.length; i += BATCH_LIMIT) {
+      const batch = db.batch();
+      for (let j = i; j < Math.min(i + BATCH_LIMIT, orderedIds.length); j++) {
+        batch.update(this.explanations().doc(orderedIds[j]), { sortIndex: j });
+      }
+      await batch.commit();
+    }
   }
 
   async getExplanation(id: string): Promise<ExplanationRecord | null> {
@@ -522,12 +540,26 @@ export class FirestoreStore implements StudyStore {
       // 저장 계층이 마지막 관문 — 라우트도 통과시키지만 여기서 한 번 더 조인다(createBook 선례).
       // (B) 창작 필드(V1에서 null)와 중첩 배열의 undefined가 새면 Firestore가 쓰기를 거부한다.
       entries: input.entries.map(normalizeVocabEntry),
+      // 신규 단어장은 미정렬(맨 위)로 시작 — Firestore는 undefined를 거부하므로 명시적 null.
+      sortIndex: null,
       id: ref.id,
       createdAt: new Date().toISOString(),
     };
     const { id: _id, ...data } = record; // 문서 ID가 곧 id — 본문에 중복 저장하지 않는다
     await ref.set(data);
     return record;
+  }
+
+  async reorderVocabBooks(orderedIds: string[]): Promise<void> {
+    // reorderBooks의 vocab판 — BATCH_LIMIT 단위 batch.update. 수정이라 prod-guard 무관.
+    const db = getDb();
+    for (let i = 0; i < orderedIds.length; i += BATCH_LIMIT) {
+      const batch = db.batch();
+      for (let j = i; j < Math.min(i + BATCH_LIMIT, orderedIds.length); j++) {
+        batch.update(this.vocabBooks().doc(orderedIds[j]), { sortIndex: j });
+      }
+      await batch.commit();
+    }
   }
 
   async getVocabBook(id: string): Promise<VocabBookRecord | null> {

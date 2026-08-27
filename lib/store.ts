@@ -216,6 +216,14 @@ export interface ExplanationRecord {
   /** 설명을 만든 모델 ID */
   model: string;
   createdAt: string; // ISO 8601
+
+  /**
+   * 수학 서재 수동 정렬 인덱스 — 서재(BookRecord.sortIndex)와 **같은 규약**이다.
+   * 사용자가 관리 모드에서 맞춘 순서. 재배치하면 그 시점 목록 전체가 0..n으로 재색인된다
+   * (reorderExplanations). 아직 손대지 않은 기록은 null(=미정렬, 맨 위 블록).
+   * 필수 nullable — 생성 경로(createExplanation)는 항상 null로 시작한다(NewExplanation에서 제외).
+   */
+  sortIndex: number | null;
 }
 
 /**
@@ -243,6 +251,14 @@ export interface VocabBookRecord {
   /** 판독한 모델 ID */
   model: string;
   createdAt: string; // ISO 8601
+
+  /**
+   * 단어장 목록 수동 정렬 인덱스 — 서재(BookRecord.sortIndex)와 **같은 규약**이다.
+   * 사용자가 관리 모드에서 맞춘 순서. 재배치하면 그 시점 목록 전체가 0..n으로 재색인된다
+   * (reorderVocabBooks). 아직 손대지 않은 단어장은 null(=미정렬, 맨 위 블록).
+   * 필수 nullable — 생성 경로(createVocabBook)는 항상 null로 시작한다(NewVocabBook에서 제외).
+   */
+  sortIndex: number | null;
 }
 
 /** 단어장 삭제 결과 — `{ ok }` 하나면 충분하다(연쇄로 지운 퀴즈 수는 안내에 쓰지 않는다) */
@@ -311,8 +327,9 @@ export interface VocabQuizRecord {
 export type NewBook = Omit<BookRecord, "id" | "createdAt" | "sortIndex">;
 export type NewCard = Omit<CardRecord, "id" | "createdAt">;
 export type NewReading = Omit<ReadingRecord, "id">;
-export type NewExplanation = Omit<ExplanationRecord, "id" | "createdAt">;
-export type NewVocabBook = Omit<VocabBookRecord, "id" | "createdAt">;
+// sortIndex는 스토어가 매긴다(NewBook과 같은 규약) — 생성 시 null, 이후 reorder<X>로만 값이 박힌다.
+export type NewExplanation = Omit<ExplanationRecord, "id" | "createdAt" | "sortIndex">;
+export type NewVocabBook = Omit<VocabBookRecord, "id" | "createdAt" | "sortIndex">;
 /** 시험 세션 저장 입력 — id는 스토어가 매긴다. startedAt/finishedAt은 클라이언트가 정한 값 그대로 */
 export type NewVocabQuiz = Omit<VocabQuizRecord, "id">;
 
@@ -388,6 +405,12 @@ export interface StudyStore {
   listExplanations(limit?: number): Promise<ExplanationRecord[]>;
   /** 지웠으면 true, 없는 id였으면 false — deleteCard와 같은 규약 */
   deleteExplanation(id: string): Promise<boolean>;
+  /**
+   * 수학 서재 수동 정렬 — `reorderBooks`의 explanations판(같은 규약). `orderedIds`가 곧 최종
+   * 순서이고, 각 설명의 sortIndex를 0..n으로 재색인한다. 목록에 없는 기록은 건드리지 않는다.
+   * 수정이라 prod-guard 무관.
+   */
+  reorderExplanations(orderedIds: string[]): Promise<void>;
 
   // ---- vocabBooks — 단어장 정복 (V1, english.md §7-6) ----
   // explanations와 같은 규약: 백엔드가 하나라 인터페이스를 쪼개지 않고 네 개를 더한다.
@@ -435,6 +458,12 @@ export interface StudyStore {
    * 갱신된 레코드를 돌려준다. 없는 id면 null — 404 판단은 호출측 라우트의 몫.
    */
   updateVocabBookTitle(id: string, titleKo: string): Promise<VocabBookRecord | null>;
+  /**
+   * 단어장 목록 수동 정렬 — `reorderBooks`의 vocab판(같은 규약). `orderedIds`가 곧 최종 순서이고,
+   * 각 단어장의 sortIndex를 0..n으로 재색인한다. 목록에 없는 단어장은 건드리지 않는다.
+   * 수정이라 prod-guard 무관.
+   */
+  reorderVocabBooks(orderedIds: string[]): Promise<void>;
   /**
    * 단어장 1개를 지운다 — 그 단어장의 **시험 세션(V4)까지 연쇄 삭제**한다(deleteBook과 같은 규약).
    * 지웠으면 `{ ok: true }`, 없는 id였으면 `{ ok: false }`. 존재 확인·404는 라우트의 몫.
@@ -512,10 +541,11 @@ async function readDb(): Promise<DbShape> {
       books: (parsed.books ?? []).map(normalizeBookRecord),
       cards: parsed.cards ?? [],
       readings: parsed.readings ?? [],
-      // M4 이전에 만들어진 db.json에는 이 키가 없다 — 마이그레이션 없이 그대로 열린다
-      explanations: parsed.explanations ?? [],
-      // V1 이전 db.json에는 이 키가 없다 — 같은 하위호환(없으면 빈 배열)
-      vocabBooks: parsed.vocabBooks ?? [],
+      // M4 이전에 만들어진 db.json에는 이 키가 없다 — 마이그레이션 없이 그대로 열린다.
+      // 수동 정렬 이전 문서엔 sortIndex 키가 없어 읽을 때 null(=미정렬)로 채운다(필수 nullable 방어).
+      explanations: (parsed.explanations ?? []).map((e) => ({ ...e, sortIndex: e.sortIndex ?? null })),
+      // V1 이전 db.json에는 이 키가 없다 — 같은 하위호환(없으면 빈 배열). sortIndex도 같은 방어.
+      vocabBooks: (parsed.vocabBooks ?? []).map((v) => ({ ...v, sortIndex: v.sortIndex ?? null })),
       // V4 이전 db.json에는 이 키가 없다 — 같은 하위호환(없으면 빈 배열)
       vocabQuizzes: parsed.vocabQuizzes ?? [],
     };
@@ -826,12 +856,25 @@ class JsonFileStore implements BookCardStore {
       ...input,
       // Firestore 구현과 같은 정규화를 태운다 — 두 백엔드가 같은 것을 저장해야 한다
       problem: normalizeProblem(input.problem),
+      // 신규 설명은 미정렬(맨 위)로 시작 — reorderExplanations로만 값이 박힌다.
+      sortIndex: null,
       id: randomUUID(),
       createdAt: new Date().toISOString(),
     };
     return this.mutate((db) => {
       db.explanations.push(record);
       return record;
+    });
+  }
+
+  async reorderExplanations(orderedIds: string[]): Promise<void> {
+    // reorderBooks의 explanations판(같은 규약). 넘긴 순서대로 0..n, 목록에 없는 기록은 불간섭.
+    const rank = new Map(orderedIds.map((id, i) => [id, i]));
+    await this.mutate((db) => {
+      for (const e of db.explanations) {
+        const idx = rank.get(e.id);
+        if (idx !== undefined) e.sortIndex = idx;
+      }
     });
   }
 
@@ -861,12 +904,25 @@ class JsonFileStore implements BookCardStore {
       ...input,
       // Firestore 구현과 같은 정규화를 태운다 — 두 백엔드가 같은 것을 저장해야 한다
       entries: input.entries.map(normalizeVocabEntry),
+      // 신규 단어장은 미정렬(맨 위)로 시작 — reorderVocabBooks로만 값이 박힌다.
+      sortIndex: null,
       id: randomUUID(),
       createdAt: new Date().toISOString(),
     };
     return this.mutate((db) => {
       db.vocabBooks.push(record);
       return record;
+    });
+  }
+
+  async reorderVocabBooks(orderedIds: string[]): Promise<void> {
+    // reorderBooks의 vocab판(같은 규약). 넘긴 순서대로 0..n, 목록에 없는 단어장은 불간섭.
+    const rank = new Map(orderedIds.map((id, i) => [id, i]));
+    await this.mutate((db) => {
+      for (const v of db.vocabBooks) {
+        const idx = rank.get(v.id);
+        if (idx !== undefined) v.sortIndex = idx;
+      }
     });
   }
 
@@ -896,6 +952,7 @@ class JsonFileStore implements BookCardStore {
         photoCount: 0,
         enriched: false,
         model: "",
+        sortIndex: null,
         id: randomUUID(),
         createdAt: new Date().toISOString(),
       };

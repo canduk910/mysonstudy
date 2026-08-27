@@ -15,6 +15,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { useReorder } from "@/components/use-reorder";
 
 /** 서버가 목록 줄에 필요한 것만 줄여 넘긴다 (레코드 전문 X — entries 배열이 무겁다) */
 export interface VocabLibraryItem {
@@ -24,6 +25,8 @@ export interface VocabLibraryItem {
   wordCount: number;
   photoCount: number;
   createdAt: string; // ISO 8601
+  /** 수동 정렬 값(서재와 동일 규약). null이면 미정렬(맨 위 블록). 정렬은 서버(page.tsx)가 끝낸다. */
+  sortIndex: number | null;
 }
 
 /** 만든 날짜 표시 — 타임존 계산 없이 ISO 날짜부만 (SSR/클라이언트 동일 출력) */
@@ -48,6 +51,33 @@ export default function VocabLibraryView({
   const [errorKo, setErrorKo] = useState<string | null>(null);
 
   const visibleItems = items.filter((item) => !deletedIds.includes(item.id));
+
+  /*
+   * 수동 정렬(서재와 동일) — 공유 프리미티브 useReorder에 배선. 단어장 목록엔 검색/필터가 없어
+   * 게이트는 관리 모드 하나뿐이다(reorderEnabled = manageMode).
+   */
+  const reorderEnabled = manageMode;
+  const reorder = useReorder({
+    ids: visibleItems.map((item) => item.id),
+    enabled: reorderEnabled,
+    onPersist: async (orderedIds) => {
+      const res = await fetch("/api/english/vocab/reorder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderedIds }),
+      });
+      if (!res.ok) throw new Error("reorder failed");
+      setErrorKo(null);
+      router.refresh(); // 서버가 sortIndex로 다시 정렬해 순서를 확정한다
+    },
+    onError: () => setErrorKo("순서를 저장하지 못했어요. 잠시 후 다시 시도해 주세요."),
+  });
+
+  // 훅이 정한 순서대로 항목을 세운다(관리 모드 재배치 반영).
+  const itemById = new Map(visibleItems.map((item) => [item.id, item]));
+  const orderedItems = reorder.order
+    .map((id) => itemById.get(id))
+    .filter((item): item is VocabLibraryItem => item != null);
 
   function toggleManage() {
     setManageMode((on) => !on);
@@ -133,7 +163,9 @@ export default function VocabLibraryView({
 
         {manageMode && (
           <p className="t-caption mb-3 rounded-[var(--radius-box)] border border-dashed border-line px-4 py-3">
-            지울 단어장의 <span className="font-medium text-ink">🗑 지우기</span> 버튼을 누르세요.{" "}
+            <span className="font-medium text-ink">≡ 손잡이를 끌어</span> 순서를 바꾸거나{" "}
+            <span className="font-medium text-ink">↑ ↓ 버튼</span>으로 옮겨요. 지울 단어장은{" "}
+            <span className="font-medium text-ink">🗑 지우기</span> —{" "}
             <span className="font-medium text-ink">되돌릴 수 없어요.</span>
           </p>
         )}
@@ -158,7 +190,7 @@ export default function VocabLibraryView({
           </p>
         ) : (
           <ul className="flex flex-col gap-2">
-            {visibleItems.map((item) =>
+            {orderedItems.map((item) =>
               confirmId === item.id ? (
                 /* 인라인 확인 — 그 자리에서 묻는다 (window.confirm 금지) */
                 <li key={item.id}>
@@ -193,7 +225,23 @@ export default function VocabLibraryView({
                   </div>
                 </li>
               ) : (
-                <li key={item.id} className="flex min-w-0 items-stretch gap-2">
+                <li
+                  key={item.id}
+                  {...reorder.getRowProps(item.id)}
+                  className={`flex min-w-0 items-stretch gap-2 rounded-[var(--radius-box)] ${
+                    reorder.draggingId === item.id ? "opacity-90 ring-2 ring-accent" : ""
+                  }`}
+                >
+                  {/* 드래그 손잡이 — 관리 모드에서만. touch-action:none으로 드래그가 스크롤로 안 샌다.
+                      키보드는 ↑/↓로 이동(핸들 aria-label 안내). */}
+                  {reorderEnabled && (
+                    <div
+                      {...reorder.getHandleProps(item.id)}
+                      className="t-list-title flex w-8 flex-none select-none items-center justify-center rounded-[var(--radius-box)] border border-line bg-bg text-ink-3 hover:border-line-strong focus-visible:outline-2 focus-visible:outline-accent print:hidden"
+                    >
+                      <span aria-hidden>≡</span>
+                    </div>
+                  )}
                   <Link href={`/english/vocab/${item.id}`} className="u-item min-w-0 flex-1">
                     <span className="u-item-thumb" aria-hidden>
                       📓
@@ -209,6 +257,30 @@ export default function VocabLibraryView({
                       </span>
                     </span>
                   </Link>
+
+                  {/* ↑/↓ 이동 버튼 — 드래그가 어려운 상황·a11y 폴백 */}
+                  {reorderEnabled && (
+                    <div className="flex w-9 flex-none flex-col gap-1 print:hidden">
+                      <button
+                        type="button"
+                        onClick={() => reorder.moveUp(item.id)}
+                        disabled={!reorder.canMoveUp(item.id) || reorder.saving}
+                        aria-label={`${item.titleKo} 위로`}
+                        className="t-list-title flex flex-1 items-center justify-center rounded-[var(--radius-box)] border border-line bg-bg text-ink disabled:opacity-30 hover:enabled:border-line-strong"
+                      >
+                        <span aria-hidden>↑</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => reorder.moveDown(item.id)}
+                        disabled={!reorder.canMoveDown(item.id) || reorder.saving}
+                        aria-label={`${item.titleKo} 아래로`}
+                        className="t-list-title flex flex-1 items-center justify-center rounded-[var(--radius-box)] border border-line bg-bg text-ink disabled:opacity-30 hover:enabled:border-line-strong"
+                      >
+                        <span aria-hidden>↓</span>
+                      </button>
+                    </div>
+                  )}
 
                   {manageMode && (
                     <button
