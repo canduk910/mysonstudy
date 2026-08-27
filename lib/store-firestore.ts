@@ -167,6 +167,8 @@ function toBook(id: string, d: DocumentData): BookRecord {
     youtubeUrl: toNullable(d.youtubeUrl as string | null),
     // 챕터 리더(호출 F) — 챕터화 이전 문서는 null로 읽힌다(하위 호환)
     chapters: toChapters(d.chapters),
+    // 수동 정렬 인덱스 — 이 필드가 없던 기존 문서는 null(=미정렬, 맨 위)로 읽힌다(하위 호환)
+    sortIndex: toNullable(d.sortIndex as number | null),
   };
 }
 
@@ -309,12 +311,29 @@ export class FirestoreStore implements StudyStore {
       sceneDigest: input.sceneDigest?.length ? normalizeSceneDigest(input.sceneDigest) : null,
       // 챕터는 신규 book 생성 시엔 항상 null(챕터화는 별도 /api/chapterize 경로) — 방어적으로 좁힌다.
       chapters: toChapters(input.chapters),
+      // 신규 책은 미정렬(맨 위)로 시작 — reorderBooks로만 값이 박힌다. Firestore는 undefined를
+      // 거부하므로 명시적 null로 쓴다(NewBook엔 이 키가 없다).
+      sortIndex: null,
       id: ref.id,
       createdAt: new Date().toISOString(),
     };
     const { id: _id, ...data } = record; // 문서 ID가 곧 id — 본문에 중복 저장하지 않는다
     await ref.set(data);
     return record;
+  }
+
+  async reorderBooks(orderedIds: string[]): Promise<void> {
+    // 넘어온 순서 = 최종 순서. 각 book 문서의 sortIndex를 0..n으로 갱신한다.
+    // **수정이라 prod-guard를 걸지 않는다**(updateBookEvidence와 같은 규약 — 삭제가 아니다).
+    // 목록에 없는 book은 여기 오지 않으니 건드려지지 않는다. BATCH_LIMIT 단위로 나눠 커밋한다.
+    const db = getDb();
+    for (let i = 0; i < orderedIds.length; i += BATCH_LIMIT) {
+      const batch = db.batch();
+      for (let j = i; j < Math.min(i + BATCH_LIMIT, orderedIds.length); j++) {
+        batch.update(this.books().doc(orderedIds[j]), { sortIndex: j });
+      }
+      await batch.commit();
+    }
   }
 
   async getBook(id: string): Promise<BookRecord | null> {

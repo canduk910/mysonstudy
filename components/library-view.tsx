@@ -19,6 +19,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { useReorder } from "@/components/use-reorder";
 
 export interface LibraryItem {
   /**
@@ -48,6 +49,11 @@ export interface LibraryItem {
   arLevel: number | null;
   levelEstimated: boolean;
   createdAt: string; // ISO 8601
+  /**
+   * 서재 수동 정렬 값(SPEC §4-3). null이면 미정렬(맨 위 블록), 값이 있으면 사용자가 맞춘 순서.
+   * 정렬 자체는 서버(page.tsx)가 끝내 넘겨준다 — 이 필드는 관리 모드 재배치에 참고만 한다.
+   */
+  sortIndex: number | null;
 }
 
 export interface ChartPoint {
@@ -254,7 +260,38 @@ export default function LibraryView({
 
   const visibleItems = items.filter((item) => !deletedBookIds.includes(item.bookId));
   const q = query.trim().toLowerCase();
-  const filtered = q ? visibleItems.filter((item) => item.title.toLowerCase().includes(q)) : visibleItems;
+
+  /*
+   * 수동 정렬(SPEC §4-3) — 공유 프리미티브 useReorder에 배선한다.
+   * **검색 중(q 있음)엔 재배치를 끈다**: reorderBooks는 넘어온 목록만 0..n으로 재색인하므로,
+   * 필터된 일부만 넘기면 나머지 인덱스와 충돌한다. 전체 목록일 때만 순서가 일관된다.
+   * (삭제는 검색 중에도 되게 둔다 — 그건 항목 단위라 인덱스와 무관하다.)
+   */
+  const reorderEnabled = manageMode && !q;
+  const reorder = useReorder({
+    ids: visibleItems.map((item) => item.bookId),
+    enabled: reorderEnabled,
+    onPersist: async (orderedIds) => {
+      const res = await fetch("/api/library/reorder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderedIds }),
+      });
+      if (!res.ok) throw new Error("reorder failed");
+      setErrorKo(null);
+      router.refresh(); // 서버가 sortIndex로 다시 정렬해 순서를 확정한다
+    },
+    onError: () => setErrorKo("순서를 저장하지 못했어요. 잠시 후 다시 시도해 주세요."),
+  });
+
+  // 훅이 정한 순서대로 항목을 세운 뒤(관리 모드에서 재배치 반영), 검색어로 거른다.
+  const itemById = new Map(visibleItems.map((item) => [item.bookId, item]));
+  const orderedItems = reorder.order
+    .map((id) => itemById.get(id))
+    .filter((item): item is LibraryItem => item != null);
+  const filtered = q
+    ? orderedItems.filter((item) => item.title.toLowerCase().includes(q))
+    : orderedItems;
 
   function toggleManage() {
     setManageMode((on) => !on);
@@ -367,8 +404,20 @@ export default function LibraryView({
 
         {manageMode && (
           <p className="t-caption mb-3 rounded-[var(--radius-box)] border border-dashed border-line px-4 py-3 print:hidden">
-            지울 책의 <span className="font-medium text-ink">🗑 지우기</span> 버튼을 누르세요. 카드와
-            읽음 기록이 함께 사라지고, <span className="font-medium text-ink">되돌릴 수 없어요.</span>
+            {reorderEnabled ? (
+              <>
+                <span className="font-medium text-ink">≡ 손잡이를 끌어</span> 순서를 바꾸거나,{" "}
+                <span className="font-medium text-ink">↑ ↓ 버튼</span>으로 한 칸씩 옮겨요. 지울 책은{" "}
+                <span className="font-medium text-ink">🗑 지우기</span>를 누르세요 —{" "}
+                <span className="font-medium text-ink">되돌릴 수 없어요.</span>
+              </>
+            ) : (
+              <>
+                검색 중에는 순서를 바꿀 수 없어요. 지울 책의{" "}
+                <span className="font-medium text-ink">🗑 지우기</span> 버튼을 누르세요. 카드와 읽음
+                기록이 함께 사라지고, <span className="font-medium text-ink">되돌릴 수 없어요.</span>
+              </>
+            )}
           </p>
         )}
 
@@ -437,7 +486,25 @@ export default function LibraryView({
                   </div>
                 </li>
               ) : (
-                <li key={item.bookId} className="flex min-w-0 items-stretch gap-2">
+                <li
+                  key={item.bookId}
+                  {...reorder.getRowProps(item.bookId)}
+                  className={`flex min-w-0 items-stretch gap-2 rounded-[var(--radius-box)] ${
+                    reorder.draggingId === item.bookId
+                      ? "opacity-90 ring-2 ring-accent"
+                      : ""
+                  }`}
+                >
+                  {/* 드래그 손잡이 — 관리 모드(검색 아님)에서만. touch-action:none이라 드래그가
+                      스크롤로 새지 않는다. 키보드는 ↑/↓로 이동(핸들 aria-label 안내). */}
+                  {reorderEnabled && (
+                    <div
+                      {...reorder.getHandleProps(item.bookId)}
+                      className="t-list-title flex w-8 flex-none select-none items-center justify-center rounded-[var(--radius-box)] border border-line bg-bg text-ink-3 hover:border-line-strong focus-visible:outline-2 focus-visible:outline-accent print:hidden"
+                    >
+                      <span aria-hidden>≡</span>
+                    </div>
+                  )}
                   {/* 줄을 누르면 그 책의 **최신 카드**로 바로 간다 — 아이와 카드를 펼치는
                       것이 이 앱에서 가장 잦은 동작이라, 책 상세를 한 번 더 거치지 않는다.
                       버전 목록·낱개 삭제는 그 카드 페이지 하단의 히스토리 섹션에 있다. */}
@@ -474,6 +541,30 @@ export default function LibraryView({
                       </span>
                     </span>
                   </Wrap>
+
+                  {/* ↑/↓ 이동 버튼 — 드래그가 어려운 상황·a11y 폴백(관리 모드·검색 아님) */}
+                  {reorderEnabled && (
+                    <div className="flex w-9 flex-none flex-col gap-1 print:hidden">
+                      <button
+                        type="button"
+                        onClick={() => reorder.moveUp(item.bookId)}
+                        disabled={!reorder.canMoveUp(item.bookId) || reorder.saving}
+                        aria-label={`${item.title} 위로`}
+                        className="t-list-title flex flex-1 items-center justify-center rounded-[var(--radius-box)] border border-line bg-bg text-ink disabled:opacity-30 hover:enabled:border-line-strong"
+                      >
+                        <span aria-hidden>↑</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => reorder.moveDown(item.bookId)}
+                        disabled={!reorder.canMoveDown(item.bookId) || reorder.saving}
+                        aria-label={`${item.title} 아래로`}
+                        className="t-list-title flex flex-1 items-center justify-center rounded-[var(--radius-box)] border border-line bg-bg text-ink disabled:opacity-30 hover:enabled:border-line-strong"
+                      >
+                        <span aria-hidden>↓</span>
+                      </button>
+                    </div>
+                  )}
 
                   {/* 관리 모드에서만 나타나는 삭제 버튼 — 평소엔 렌더 자체를 하지 않는다 */}
                   {manageMode && (

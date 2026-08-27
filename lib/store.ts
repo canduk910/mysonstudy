@@ -119,6 +119,21 @@ export interface BookRecord {
    * 챕터 리더 섹션을 통째로 생략하므로 목차/자막 없는 카드 흐름은 바이트 동일하다(회귀 0).
    */
   chapters: Chapter[] | null;
+
+  /**
+   * --- 서재 수동 정렬 인덱스 ---
+   *
+   * 사용자가 서재 관리 모드에서 드래그·↑/↓로 맞춘 순서. 재배치하면 그 시점 목록 **전체**가
+   * 0..n으로 재색인돼 여기에 박힌다(reorderBooks). 아직 손대지 않은 책은 null이다.
+   *
+   * 정렬 규칙(app/library/page.tsx): **null이 먼저**(createdAt 역순 = 최신이 위) → 그다음
+   * sortIndex 있는 항목(오름차순). 즉 새로 만든 책(sortIndex=null)은 늘 맨 위에 뜨고, 사용자가
+   * 맞춘 정렬 블록은 그 아래에 고정된다.
+   *
+   * 선택(?)이 아니라 **필수 nullable**로 둔 것은 근거 3필드와 같은 이유다 — 옛 레코드·신규
+   * 생성에서 빠뜨리면 타입이 막는다. 생성 경로(createBook)는 항상 null로 시작한다(NewBook에서 제외).
+   */
+  sortIndex: number | null;
 }
 
 /**
@@ -291,7 +306,9 @@ export interface VocabQuizRecord {
   items: VocabQuizItem[];
 }
 
-export type NewBook = Omit<BookRecord, "id" | "createdAt">;
+// sortIndex도 제외한다 — id·createdAt처럼 **스토어가 매기는 값**이다. 신규 책은 항상
+// sortIndex=null로 태어나(맨 위), 이후 reorderBooks로만 값이 박힌다. 생성부는 넘기지 않는다.
+export type NewBook = Omit<BookRecord, "id" | "createdAt" | "sortIndex">;
 export type NewCard = Omit<CardRecord, "id" | "createdAt">;
 export type NewReading = Omit<ReadingRecord, "id">;
 export type NewExplanation = Omit<ExplanationRecord, "id" | "createdAt">;
@@ -332,6 +349,14 @@ export interface StudyStore {
    * 없는 bookId면 null — 404 판단은 호출측 라우트의 몫.
    */
   updateBookEvidence(bookId: string, patch: BookEvidencePatch): Promise<BookRecord | null>;
+
+  /**
+   * 서재 수동 정렬 — `orderedIds`가 곧 최종 순서다. 각 book의 sortIndex를 0..n으로 재색인해
+   * 저장한다(두 백엔드 동일 동작). **목록에 없는 book은 건드리지 않는다**(sortIndex 보존).
+   * 수정이지 삭제가 아니라 prod-guard를 걸지 않는다(updateBookEvidence와 같은 규약).
+   * 단어장·수학 목록도 같은 시그니처의 재색인 메서드를 이 선례대로 붙인다.
+   */
+  reorderBooks(orderedIds: string[]): Promise<void>;
 
   createCard(input: NewCard): Promise<CardRecord>;
   getCard(id: string): Promise<CardRecord | null>;
@@ -472,6 +497,8 @@ function normalizeBookRecord(b: BookRecord): BookRecord {
     youtubeUrl: b.youtubeUrl ?? null,
     // 챕터화 이전 db.json에는 이 키가 없다 — 읽을 때 null로 채운다(하위호환).
     chapters: b.chapters ?? null,
+    // 수동 정렬 이전 db.json에는 이 키가 없다 — 읽을 때 null(=미정렬, 맨 위)로 채운다(하위호환).
+    sortIndex: b.sortIndex ?? null,
   };
 }
 
@@ -665,10 +692,24 @@ class JsonFileStore implements BookCardStore {
       ...input,
       id: randomUUID(),
       createdAt: new Date().toISOString(),
+      // 신규 책은 미정렬(맨 위)로 시작한다 — 정렬 규칙상 sortIndex=null이 최신 블록.
+      sortIndex: null,
     };
     return this.mutate((db) => {
       db.books.push(record);
       return record;
+    });
+  }
+
+  async reorderBooks(orderedIds: string[]): Promise<void> {
+    // 넘어온 순서 = 최종 순서. 각 book의 sortIndex를 0..n으로 박는다.
+    // **목록에 없는 book은 건드리지 않는다**(sortIndex 보존) — 부분 재배치·검색 필터 안전.
+    const rank = new Map(orderedIds.map((id, i) => [id, i]));
+    await this.mutate((db) => {
+      for (const book of db.books) {
+        const idx = rank.get(book.id);
+        if (idx !== undefined) book.sortIndex = idx;
+      }
     });
   }
 

@@ -53,6 +53,8 @@ const wolvesBook: BookRecord = {
   transcript: null,
   youtubeUrl: null,
   chapters: null,
+  // 시드 책은 미정렬(맨 위 블록)로 시작 — 서재 정렬 규칙(sortIndex=null=최신 블록)
+  sortIndex: null,
 };
 
 const wolvesCard: Card = {
@@ -303,6 +305,8 @@ const poohBook: BookRecord = {
   transcript: null,
   youtubeUrl: null,
   chapters: null,
+  // 시드 책은 미정렬(맨 위 블록)로 시작 — 서재 정렬 규칙(sortIndex=null=최신 블록)
+  sortIndex: null,
 };
 
 const poohCard: Card = {

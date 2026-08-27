@@ -97,10 +97,24 @@ export default async function LibraryPage() {
       // 가장 최근에 만든 카드의 날짜 — "이 책을 마지막으로 손본 때".
       // 카드가 없으면 기댈 카드 날짜가 없으니 책 등록일로 되돌린다(정렬이 깨지지 않게).
       createdAt: cards?.latestAt ?? book.createdAt,
+      // 서재 수동 정렬 값 — null이면 미정렬(맨 위 블록), 값이 있으면 사용자가 맞춘 순서
+      sortIndex: book.sortIndex,
     };
   });
-  // 최신 카드가 있는 책이 위로 (listRecentCards가 최신순이지만 books는 등록순이다)
-  items.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+  /*
+   * 정렬 규칙(SPEC §4-3 수동 정렬):
+   * 1) sortIndex가 **null인 항목이 먼저** — 그 안에선 createdAt 역순(최신 카드가 위, 기존 동작 유지).
+   * 2) 그다음 **sortIndex 있는 항목** — 오름차순(사용자가 맞춘 순서).
+   * 즉 새로 만든 책(sortIndex=null)은 늘 맨 위에 뜨고, 사용자가 재배치한 블록은 그 아래 고정된다.
+   */
+  items.sort((a, b) => {
+    const aNull = a.sortIndex == null;
+    const bNull = b.sortIndex == null;
+    if (aNull && bNull) return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0;
+    if (aNull) return -1; // null 블록이 위
+    if (bNull) return 1;
+    return a.sortIndex! - b.sortIndex!; // 둘 다 값 있음 → 오름차순
+  });
 
   return (
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
