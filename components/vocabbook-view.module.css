@@ -545,6 +545,9 @@
 /* 연결 시트 — 목록이 길 수 있어 고정 높이 + 내부 스크롤(하단 시트 규약 유지) */
 .linkSheet {
   max-height: min(78vh, 640px);
+  /* 시트는 넘치지 않게 clip — 스크롤은 안쪽 추천 목록(.suggestArea > .linkList)만 담당한다.
+     헤더·종류 토글·직접 입력은 고정으로 남고 후보만 스크롤된다. */
+  overflow: hidden;
 }
 .linkKindGroup {
   display: flex;
@@ -615,6 +618,16 @@
   border: 1px solid var(--line);
   border-radius: var(--radius-box);
   background: var(--surface);
+}
+/* 추천 영역만 시트 높이 안에서 늘었다 줄었다 하며 내부 목록(.linkList)이 스크롤된다.
+   min-height:0이 없으면 flex 자식이 콘텐츠 높이 아래로 못 줄어 스크롤이 안 걸린다. */
+.suggestArea {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+/* 직접 입력은 자연 높이 고정(줄어들지 않음) — 항상 손에 닿게 둔다. */
+.directArea {
+  flex: 0 0 auto;
 }
 .suggestLabel {
   margin: 0;
