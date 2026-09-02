@@ -76,13 +76,18 @@ function unionExamples(lists: readonly (readonly VocabExample[])[]): VocabExampl
   return out;
 }
 
-/** 관련어 합집합 — 종류+단어(소문자) 기준 중복 제거 */
+/**
+ * 관련어 합집합 — 출처+종류+단어(소문자) 기준 중복 제거.
+ * 병합(호출 C)은 교재 판독분(source:"book")만 다루므로 book끼리는 종전대로 접힌다. 키에 source를 넣는 건,
+ * 같은 kind:word라도 교재 유의어와 사용자가 직접 이은 유의어(source:"user")를 별개로 보존하기 위함이다
+ * (사용자 연결은 판독을 재병합해도 사라지면 안 된다). 등장 순서는 지킨다.
+ */
 function unionRelated(lists: readonly (readonly VocabRelated[])[]): VocabRelated[] {
   const out: VocabRelated[] = [];
   const seen = new Set<string>();
   for (const list of lists) {
     for (const rel of list) {
-      const key = `${rel.kind}:${rel.word.trim().toLowerCase()}`;
+      const key = `${rel.source}:${rel.kind}:${rel.word.trim().toLowerCase()}`;
       if (seen.has(key)) continue;
       seen.add(key);
       out.push(rel);

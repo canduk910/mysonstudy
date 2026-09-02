@@ -162,6 +162,9 @@ export function buildReviewCandidates(
   const lastSeen = new Map<string, number>();
   const lastWrong = new Map<string, number>();
   allQuizzes.forEach((quiz, i) => {
+    // 관계 문제(V8) 세션은 복습 후보 축이 아니라 제외한다(aggregateWordStats와 같은 규약 — P2 무오염).
+    // recency도 관계 세션에 오염되지 않아야 stats와 키·순번이 어긋나지 않는다.
+    if (quiz.mode === "relation") return;
     const order = i + 1; // 세션 순번(전역 오름차순) — 뒤일수록 최근
     for (const item of quiz.items) {
       if (item.answered !== true) continue; // 시도 = answered===true인 문항만(aggregate와 같은 규약)

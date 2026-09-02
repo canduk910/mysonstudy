@@ -26,12 +26,16 @@ import {
   type Firestore,
 } from "firebase-admin/firestore";
 import {
+  applyVocabLink,
   normalizeProblem,
   normalizeTitleAuthorKey,
   normalizeVocabEntry,
   normalizeVocabQuizItem,
   type LegacyOrNewVocabEntry,
   type AppendVocabEntryResult,
+  type VocabLinkInput,
+  type VocabLinkOp,
+  type VocabLinkResult,
   type BookEvidencePatch,
   type BookRecord,
   type CardRecord,
@@ -627,6 +631,32 @@ export class FirestoreStore implements StudyStore {
     await ref.update({ entries: nextEntries, enriched });
     const updated = await ref.get();
     return { record: toVocabBook(updated.id, updated.data()!), appended: true };
+  }
+
+  async linkVocabRelated(id: string, input: VocabLinkInput): Promise<VocabLinkResult> {
+    return this.applyLink(id, input, "link");
+  }
+
+  async unlinkVocabRelated(id: string, input: VocabLinkInput): Promise<VocabLinkResult> {
+    return this.applyLink(id, input, "unlink");
+  }
+
+  /**
+   * link/unlink 공용 — 읽기 정규화(toVocabBook)로 옛 문서도 안전히 다룬 뒤, 파일 백엔드와 **같은 순수
+   * 함수**(applyVocabLink)로 새 entries를 만들어 entries만 update한다. undefined는 Firestore가 거부하므로
+   * normalizeVocabEntry로 마지막에 조인다. **수정이라 assertDestructiveAllowed 무관**(필드 편집).
+   */
+  private async applyLink(id: string, input: VocabLinkInput, op: VocabLinkOp): Promise<VocabLinkResult> {
+    const ref = this.vocabBooks().doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return { status: "not_found" };
+    const current = toVocabBook(snap.id, snap.data()!);
+    const result = applyVocabLink(current.entries, input, op);
+    if (result.status === "invalid") return { status: "invalid" };
+    const nextEntries = result.entries.map(normalizeVocabEntry);
+    await ref.update({ entries: nextEntries });
+    const updated = await ref.get();
+    return { status: "ok", record: toVocabBook(updated.id, updated.data()!) };
   }
 
   async updateVocabBookTitle(id: string, titleKo: string): Promise<VocabBookRecord | null> {

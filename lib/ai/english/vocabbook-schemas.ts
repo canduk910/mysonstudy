@@ -63,6 +63,17 @@ export const RELATED_KIND_LABELS_KO: Record<RelatedKind, string> = {
   derivative: "파생어",
 };
 
+/**
+ * 관련어 출처 — 그 연결이 **어디서 왔는가**.
+ * - `book`: 교재 판독(호출 C)이 책에 함께 실린 유의어·반의어·파생어를 옮긴 것. 정규화가 기본으로 매긴다.
+ * - `user`: 사용자가 단어장 안에서 (단어+뜻) 둘을 골라 **직접 이은** 관계(유의어/반의어 연결 기능).
+ *   관계 문제 시험(buildRelationQuestions)은 오직 이 source가 user인 것만 대상으로 삼는다.
+ *
+ * 이 필드는 모델(호출 C)이 내보내지 않는다(§7-3 JSON Schema에 없음) — 앱이 정규화 단계에서 채운다.
+ */
+export const VOCAB_RELATED_SOURCES = ["book", "user"] as const;
+export type VocabRelatedSource = (typeof VOCAB_RELATED_SOURCES)[number];
+
 /** 판독 신뢰도 — low면 재촬영 유도 대상 (호출 A′ SceneConfidence와 같은 3단계). */
 export const VOCAB_CONFIDENCE_LEVELS = ["high", "medium", "low"] as const;
 export type VocabConfidence = (typeof VOCAB_CONFIDENCE_LEVELS)[number];
@@ -120,12 +131,25 @@ export interface VocabExample {
  * 책이 함께 실은 관련어 하나. 두 자리에서 재사용한다:
  * - `VocabMeaning.related`: 특정 뜻 옆에 붙은 유의어·반의어 (교재의 ⑤repair = fix 뜻1의 유의어)
  * - `VocabEntry.related`: 뜻이 아니라 단어 전체 아래에 딸린 관련어 (교재의 ⊞burial = bury의 파생어)
- * 어느 자리든 shape은 같다 — kind·word·glossKo.
+ * 어느 자리든 shape은 같다 — kind·word·glossKo·source·linkedNo·linkedMeaningIndex.
+ *
+ * ## 출처·연결 참조 (source·linkedNo·linkedMeaningIndex)
+ * (A) 책 전사분(호출 C)은 모델이 kind·word·glossKo만 내보내고, 나머지 세 필드는 **정규화가 채운다**
+ * (판독분 → source:"book", linked* null). 모델 프롬프트·JSON Schema 원문을 바꾸지 않으려는 것이다.
+ * 사용자가 단어장 안에서 (단어+뜻)을 직접 이은 관계는 source:"user"로 저장하고, 연결 대상(어느 단어의
+ * 어느 뜻인지)을 linkedNo(대상 단어의 번호)·linkedMeaningIndex(그 단어 meanings 배열의 0-based 인덱스)로 참조한다.
+ * 전부 required-nullable — 선택(?) 키 금지(store.ts:73 규약). 값이 없을 수 있는 자리(linked*)는 null.
  */
 export interface VocabRelated {
   kind: RelatedKind;
   word: string;
   glossKo: string | null;
+  /** 연결 출처 — 교재 판독분="book", 사용자가 직접 이은 것="user" */
+  source: VocabRelatedSource;
+  /** (user 링크만) 연결 대상 단어의 번호(VocabEntry.no). 없으면 null */
+  linkedNo: string | null;
+  /** (user 링크만) 연결 대상 단어 meanings 배열의 0-based 인덱스. 없으면 null */
+  linkedMeaningIndex: number | null;
 }
 
 /**
@@ -312,6 +336,13 @@ const vocabRelatedSchema = z.object({
   kind: z.enum(RELATED_KINDS),
   word: z.string().trim().min(1).max(VOCAB_RELATED_WORD_MAX),
   glossKo: z.string().trim().max(VOCAB_RELATED_GLOSS_MAX).nullable(),
+  // source·linkedNo·linkedMeaningIndex는 모델(호출 C)이 내보내지 않는다(§7-3 JSON Schema에 없음). 프롬프트·
+  // JSON Schema 원문을 안 바꾸려고, 판독 출력에는 빠져 있는 이 세 필드를 zod 기본값으로 흡수한다 —
+  // 판독분은 자동으로 source:"book"·linked* null이 된다(길이·개수를 zod가 채우는 것과 같은 갈래, §1 공통 규칙).
+  // 사용자가 만든 연결(source:"user")은 저장 경로(route/store)에서 값을 실어 보내면 그대로 보존된다.
+  source: z.enum(VOCAB_RELATED_SOURCES).default("book"),
+  linkedNo: z.string().trim().min(1).max(VOCAB_NO_MAX).nullable().default(null),
+  linkedMeaningIndex: z.number().int().min(0).nullable().default(null),
 });
 
 // 뜻 하나 — no는 교재 뜻 번호(1·2·3) 정수 또는 null, ko는 필수, related는 그 뜻에 붙은 유의어.
@@ -388,6 +419,31 @@ export const vocabExtractionSchema = z
       }
     });
   });
+
+// ---------------------------------------------------------------------------
+// 관련어 방어 정규화 — normalizeRelated (VocabRelated의 단일 정의처)
+// 옛 레코드(source·linked* 세 필드가 없던 시절 저장분)를 안전히 새 shape으로 흡수한다.
+// store(app-builder)가 읽기·쓰기 경로에서 이 헬퍼로 방어 fill한다 — 값이 두 곳에서 정규화되면
+// 반드시 어긋나므로, 관련어 정규화는 여기 한 곳만 산다(normalizeVocabRelated in store.ts가 위임).
+// ---------------------------------------------------------------------------
+
+/**
+ * 관련어 하나를 방어 정규화한다.
+ * - kind·word·glossKo: 있으면 쓰고, undefined는 정한 값(빈 문자열·null)으로 조인다(Firestore 거부 방어).
+ * - source: "user"가 명시된 것만 user, 그 밖(없음 포함)은 "book"(교재 판독분·옛 레코드).
+ * - linkedNo·linkedMeaningIndex: 타입이 맞을 때만 살리고, 아니면 null(user 링크가 아니면 늘 null).
+ */
+export function normalizeRelated(r: unknown): VocabRelated {
+  const o = (r ?? {}) as Partial<VocabRelated>;
+  return {
+    kind: o.kind as RelatedKind,
+    word: String(o.word ?? ""),
+    glossKo: o.glossKo ?? null,
+    source: o.source === "user" ? "user" : "book",
+    linkedNo: typeof o.linkedNo === "string" ? o.linkedNo : null,
+    linkedMeaningIndex: typeof o.linkedMeaningIndex === "number" ? o.linkedMeaningIndex : null,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // 그림 우선순위 — resolveVocabImage (schemas.ts:499 resolveStorySource 관용구 복제)

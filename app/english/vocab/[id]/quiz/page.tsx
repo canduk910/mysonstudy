@@ -23,7 +23,11 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import VocabQuizView from "@/components/vocab-quiz-view";
-import { MIN_QUIZ_WORDS, type QuizPoolItem } from "@/lib/vocab-quiz";
+import {
+  MIN_QUIZ_WORDS,
+  type QuizPoolItem,
+  type RelationSourceEntry,
+} from "@/lib/vocab-quiz";
 import { aggregateWordStats, isStatMastered } from "@/lib/vocab-mastery";
 import {
   buildReviewCandidates,
@@ -190,6 +194,18 @@ export default async function VocabQuizPage({ params, searchParams }: QuizPagePr
     sources,
   });
 
+  // ── V8 관계 문제 — 사용자가 이 단어장 안에서 이은 유의어/반의어 연결을 시험에 합류시킨다 ──────────
+  // buildRelationQuestions(source:"user"만 대상)는 클라이언트가 startSession에서 돌린다(보기 셔플이 rng라
+  // hydration mismatch 회피 — buildQuizQuestions와 같은 규약). 그래서 여기선 그 입력(최소 shape)만 넘긴다.
+  // 사용자 링크가 없으면 클라이언트가 빈 배열을 만들어 기존 시험 그대로다(회귀 0).
+  const relationSource: RelationSourceEntry[] = record.entries.map((e) => ({
+    word: e.word,
+    meanings: e.meanings.map((m) => ({
+      ko: m.ko,
+      related: m.related.map((r) => ({ kind: r.kind, word: r.word, source: r.source })),
+    })),
+  }));
+
   return (
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
       {backHeader}
@@ -200,6 +216,7 @@ export default async function VocabQuizPage({ params, searchParams }: QuizPagePr
         pool={definedWords}
         dayWords={dayWords}
         reviewQuestions={reviewQuestions}
+        relationSource={relationSource}
       />
     </main>
   );

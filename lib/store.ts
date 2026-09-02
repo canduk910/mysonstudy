@@ -33,6 +33,7 @@ import type { Explanation } from "./ai/math/schemas";
 // 단어장 정복(V1) 완성형 항목 — **`import type`이다.** `vocabbook-schemas.ts`는 zod를
 // 값으로 끌고 오지만, 타입만 가져오면 빌드에서 지워져 저장 계층이 AI 모듈에 묶이지 않는다.
 import type { VocabEntry, VocabMeaning, VocabRelated } from "./ai/english/vocabbook-schemas";
+import { normalizeRelated } from "./ai/english/vocabbook-schemas";
 // enriched 재계산의 단일 정의처(V8). 순수 함수라(타입만 import) 값으로 끌어와도 저장 계층이
 // openai/client에 묶이지 않는다 — appendVocabEntry가 새 단어를 붙일 때 enriched를 다시 굳힌다.
 import { isVocabBookEnriched } from "./ai/english/vocabbook-enrich";
@@ -279,6 +280,33 @@ export interface AppendVocabEntryResult {
 }
 
 /**
+ * 유의어/반의어 연결·해제 입력 (단어장 정복 V8, 관계 문제). 사용자가 단어장 안의 다른 (단어+뜻)을
+ * 골라 잇는다. 넷 다 `entries` 배열의 0-based 인덱스(단어)·뜻 인덱스다 — no가 아니라 인덱스로
+ * 가리키는 이유는 `lib/vocab-link-contract.ts` 주석("왜 인덱스인가") 참고(손입력 단어는 no가 null).
+ */
+export interface VocabLinkInput {
+  sourceIndex: number;
+  sourceMeaningIndex: number;
+  targetIndex: number;
+  targetMeaningIndex: number;
+  /** 유의어·반의어만(파생어 제외). syn/ant는 대칭이라 양쪽 뜻에 같은 kind로 상호 기록된다. */
+  kind: "synonym" | "antonym";
+}
+
+/**
+ * 연결·해제 결과 (단어장 정복 V8). `AppendVocabEntryResult`가 record:null로 404를 알리듯,
+ * 여기선 세 상태를 status로 가른다 — 라우트가 그대로 200/400/404로 옮긴다.
+ * - `"ok"`        → 연결/해제 반영됨(record는 갱신본). **멱등**: 이미 있는 링크를 또 걸거나 없는 링크를
+ *                   풀어도 예외 없이 ok(record는 현재 레코드).
+ * - `"not_found"` → 없거나 열 수 없는 단어장(404).
+ * - `"invalid"`   → 인덱스 범위 밖·뜻 인덱스 밖·자기 자신 연결(source==target) 등 방어 실패(400).
+ */
+export type VocabLinkResult =
+  | { status: "ok"; record: VocabBookRecord }
+  | { status: "not_found" }
+  | { status: "invalid" };
+
+/**
  * 시험 한 문항의 결과 (단어장 정복 V4, 계획 §V4).
  *
  * **전부 필수 nullable — 선택(?) 키 금지**(lib/store.ts:73 규약, Firestore undefined 거부).
@@ -450,6 +478,21 @@ export interface StudyStore {
    * "다시 만들기"가 열린다). 없는 id면 `{ record:null, appended:false }` — 404 판단은 라우트의 몫.
    */
   appendVocabEntry(id: string, entry: VocabEntry): Promise<AppendVocabEntryResult>;
+  /**
+   * 유의어/반의어 연결 — 단어장 안의 두 (단어+뜻)을 잇는다 (V8 관계 문제). **양쪽 상호 기록**:
+   * source 뜻의 related에 대상(word·glossKo=대상 뜻 ko·source:"user"·linkedNo=대상 no·linkedMeaningIndex)을,
+   * target 뜻의 related에 대칭으로(word·glossKo=source 뜻 ko·linkedNo=source no·linkedMeaningIndex) 붙인다.
+   * **멱등** — 이미 있는 링크면 중복 추가하지 않는다. **삭제가 아니라 수정**이라 prod-guard를 걸지 않는다
+   * (updateVocabBookEnrichment와 같은 규약). AI 호출 없음(glossKo는 대상 뜻 ko를 복사). 인덱스 방어는
+   * `VocabLinkResult`의 status로 알린다(범위 밖·자기 자신 → "invalid").
+   */
+  linkVocabRelated(id: string, input: VocabLinkInput): Promise<VocabLinkResult>;
+  /**
+   * 유의어/반의어 연결 해제 — `linkVocabRelated`의 역연산(V8). 양쪽 뜻에서 그 사용자 링크를 제거한다.
+   * 매칭은 `source:"user"` + kind + **상대 word** + 상대 meaningIndex로 한다(no가 null일 수 있어 안정적인
+   * word를 키로 쓴다). **멱등** — 없는 링크를 풀어도 ok. 수정이라 prod-guard 무관.
+   */
+  unlinkVocabRelated(id: string, input: VocabLinkInput): Promise<VocabLinkResult>;
   /**
    * 단어장의 **화면 이름(titleKo)만** 바꾼다 (상세 헤더 인라인 편집). **삭제가 아니라 수정**이라
    * prod-guard를 걸지 않는다(updateVocabBookEnrichment와 같은 규약). entries·enriched·dayLabel·판독
@@ -630,14 +673,13 @@ export function normalizeProblem(problem: MathProblemInput): MathProblemInput {
  */
 export type LegacyOrNewVocabEntry = Partial<VocabEntry> & { meaningsKo?: unknown };
 
-/** 관련어 하나를 방어 정규화 — undefined를 null(또는 빈 문자열)로 조인다. */
+/**
+ * 관련어 하나를 방어 정규화 — undefined를 null(또는 빈 문자열)로 조이고, 출처·연결 참조
+ * (source·linkedNo·linkedMeaningIndex)를 채운다. 정규화 규칙은 스키마 단일 정의처(normalizeRelated)에
+ * 위임한다 — 옛 레코드(세 필드 없음)는 source:"book"·linked* null로, 사용자 연결(source:"user")은 그대로 보존된다.
+ */
 function normalizeVocabRelated(r: unknown): VocabRelated {
-  const o = (r ?? {}) as Partial<VocabRelated>;
-  return {
-    kind: o.kind as VocabRelated["kind"],
-    word: String(o.word ?? ""),
-    glossKo: o.glossKo ?? null,
-  };
+  return normalizeRelated(r);
 }
 
 /**
@@ -700,6 +742,80 @@ export function normalizeVocabQuizItem(item: Partial<VocabQuizItem>): VocabQuizI
     correct: item.correct === true,
     answered: item.answered === true ? true : item.answered === false ? false : null,
   };
+}
+
+/** `applyVocabLink`의 방향 — 링크를 걸(link) 것인지 뺄(unlink) 것인지. */
+export type VocabLinkOp = "link" | "unlink";
+
+/**
+ * 유의어/반의어 연결·해제의 **순수 변환** — 링크를 걸거나 뺀 새 `entries`를 돌려준다 (V8 관계 문제).
+ *
+ * **두 백엔드가 같은 것을 저장하도록 여기서만 정의한다**(normalizeVocabEntry·normalizeVocabQuizItem과
+ * 같은 자리·이유). 파일·Firestore 스토어가 각각 링크 로직을 구현하면 반드시 어긋난다 — 그래서 변환은
+ * 이 순수 함수 한 곳만 살고, 두 스토어는 "읽고 → 이 함수로 새 entries 만들고 → 저장"만 한다.
+ *
+ * ── 상호 기록(양쪽 뜻) ──────────────────────────────────────────────────────
+ * source 뜻의 related에 대상(word=target.word·glossKo=대상 뜻 ko·source:"user"·linkedNo=대상 no·
+ * linkedMeaningIndex)을, target 뜻의 related에 대칭으로(word=source.word·glossKo=source 뜻 ko·
+ * linkedNo=source no·linkedMeaningIndex) 붙인다. syn/ant는 대칭이라 양쪽 kind가 같다.
+ *
+ * ── 멱등 ────────────────────────────────────────────────────────────────────
+ * link는 이미 있는 링크면 추가하지 않고, unlink는 없는 링크를 풀어도 조용히 통과한다(둘 다 status "ok").
+ * 매칭은 (source:"user"·kind·상대 word·상대 meaningIndex)로 한다 — no가 null(손입력 단어)이어도 안정적.
+ *
+ * ── 방어 ────────────────────────────────────────────────────────────────────
+ * 인덱스가 범위 밖이거나 뜻 인덱스가 밖이거나 자기 자신(source==target)이면 "invalid"(라우트가 400).
+ * 입력 entries를 **바꾸지 않는다**(얕은 복제로 불변성 유지).
+ */
+export function applyVocabLink(
+  entries: VocabEntry[],
+  input: VocabLinkInput,
+  op: VocabLinkOp,
+): { status: "ok"; entries: VocabEntry[] } | { status: "invalid" } {
+  const { sourceIndex, sourceMeaningIndex, targetIndex, targetMeaningIndex, kind } = input;
+  // 자기 자신 금지 — 같은 단어(entry)끼리는 잇지 않는다(뜻이 달라도 self).
+  if (sourceIndex === targetIndex) return { status: "invalid" };
+  const source = entries[sourceIndex];
+  const target = entries[targetIndex];
+  if (!source || !target) return { status: "invalid" };
+  const sm = source.meanings[sourceMeaningIndex];
+  const tm = target.meanings[targetMeaningIndex];
+  if (!sm || !tm) return { status: "invalid" };
+
+  // 상호 링크 한 쌍 — source 뜻에 붙는 것(→target)과 target 뜻에 붙는 것(→source).
+  const onSource: VocabRelated = {
+    kind, word: target.word, glossKo: tm.ko, source: "user",
+    linkedNo: target.no, linkedMeaningIndex: targetMeaningIndex,
+  };
+  const onTarget: VocabRelated = {
+    kind, word: source.word, glossKo: sm.ko, source: "user",
+    linkedNo: source.no, linkedMeaningIndex: sourceMeaningIndex,
+  };
+  // 사용자 링크 식별(멱등 검사·해제 매칭 공용). 상대 word가 유일 키 역할(no가 null이어도 안정적).
+  const matchOnSource = (r: VocabRelated) =>
+    r.source === "user" && r.kind === kind && r.word === target.word && r.linkedMeaningIndex === targetMeaningIndex;
+  const matchOnTarget = (r: VocabRelated) =>
+    r.source === "user" && r.kind === kind && r.word === source.word && r.linkedMeaningIndex === sourceMeaningIndex;
+
+  const next = entries.map((e, i) => {
+    if (i !== sourceIndex && i !== targetIndex) return e;
+    const meanings = e.meanings.map((m, mi) => {
+      const isSourceMeaning = i === sourceIndex && mi === sourceMeaningIndex;
+      const isTargetMeaning = i === targetIndex && mi === targetMeaningIndex;
+      if (!isSourceMeaning && !isTargetMeaning) return m;
+      const add = isSourceMeaning ? onSource : onTarget;
+      const matches = isSourceMeaning ? matchOnSource : matchOnTarget;
+      let related: VocabRelated[];
+      if (op === "link") {
+        related = m.related.some(matches) ? m.related : [...m.related, add]; // 멱등
+      } else {
+        related = m.related.filter((r) => !matches(r));
+      }
+      return { ...m, related };
+    });
+    return { ...e, meanings };
+  });
+  return { status: "ok", entries: next };
 }
 
 class JsonFileStore implements BookCardStore {
@@ -1000,6 +1116,31 @@ class JsonFileStore implements BookCardStore {
       // 뜻 null 단어가 붙으면 enriched가 false로 떨어진다 — 단일 정의처로 다시 계산(우회 금지).
       book.enriched = isVocabBookEnriched(book.entries);
       return { record: { ...book }, appended: true };
+    });
+  }
+
+  async linkVocabRelated(id: string, input: VocabLinkInput): Promise<VocabLinkResult> {
+    return this.applyLink(id, input, "link");
+  }
+
+  async unlinkVocabRelated(id: string, input: VocabLinkInput): Promise<VocabLinkResult> {
+    return this.applyLink(id, input, "unlink");
+  }
+
+  /**
+   * link/unlink 공용 — 읽기 정규화(getVocabBook 규약)로 옛 레코드도 안전히 다룬 뒤, 순수 변환
+   * `applyVocabLink`로 새 entries를 만들어 저장한다. 저장 직전 normalizeVocabEntry로 undefined를 조인다.
+   * **수정이라 prod-guard 무관**(레코드 삭제가 아니라 필드 편집).
+   */
+  private applyLink(id: string, input: VocabLinkInput, op: VocabLinkOp): Promise<VocabLinkResult> {
+    return this.mutate((db) => {
+      const book = db.vocabBooks.find((v) => v.id === id);
+      if (!book) return { status: "not_found" as const };
+      const entries = (book.entries ?? []).map(normalizeVocabEntry);
+      const result = applyVocabLink(entries, input, op);
+      if (result.status === "invalid") return { status: "invalid" as const };
+      book.entries = result.entries.map(normalizeVocabEntry);
+      return { status: "ok" as const, record: { ...book, entries: book.entries } };
     });
   }
 

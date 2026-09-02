@@ -78,6 +78,7 @@ import {
   type VocabEnrichItem,
   type VocabEntry,
   type VocabExtractEntry,
+  type VocabRelated,
 } from "../lib/ai/english/vocabbook-schemas";
 import {
   findMissingNumbers,
@@ -85,7 +86,8 @@ import {
   type VocabPageForMerge,
 } from "../lib/ai/english/vocabbook-merge";
 // 시험(V4) 보기 생성 순수 함수 — 오프라인 eval이 불변을 잠근다(정답 포함·전부 상이·개수·오답 같은 DAY)
-import { buildChoices } from "../lib/vocab-quiz";
+// 관계 문제(V8, 유의어/반의어 연결) buildRelationQuestions — source:"user"만 대상·정답 포함·meaningKo 정확 등을 잠근다
+import { buildChoices, buildRelationQuestions, type VocabQuizMode } from "../lib/vocab-quiz";
 // 오답노트(V5) 집계·졸업 순수 함수 — 오프라인 eval이 불변을 잠근다(연속 2회 경계·streak 리셋·미시도·시간순)
 import {
   MASTERY_STREAK,
@@ -1006,6 +1008,16 @@ function runVocabbookChecks(): CheckResult[] {
     ...over,
   });
 
+  // 관련어 픽스처 — 교재 판독분(source:"book", linked* null). 세 필드가 required라 타입 채우기용 헬퍼로 짧게 쓴다.
+  const rel = (kind: VocabRelated["kind"], word: string, glossKo: string | null): VocabRelated => ({
+    kind,
+    word,
+    glossKo,
+    source: "book",
+    linkedNo: null,
+    linkedMeaningIndex: null,
+  });
+
   // --- 병합 1: 겹쳐 찍기(같은 번호가 두 사진에) → 한 항목·배열 합집합 ---
   {
     const merged = mergeVocabPages([
@@ -1019,7 +1031,7 @@ function runVocabbookChecks(): CheckResult[] {
           entry({
             meanings: [{ no: null, ko: "꾸러미", related: [] }],
             examples: [{ en: "Pack your bag.", ko: "가방을 싸라." }],
-            related: [{ kind: "synonym", word: "bundle", glossKo: "묶음" }],
+            related: [rel("synonym", "bundle", "묶음")],
           }),
         ],
       },
@@ -1123,10 +1135,10 @@ function runVocabbookChecks(): CheckResult[] {
           entry({
             word: "fix",
             meanings: [
-              { no: 1, ko: "수리하다, 고치다", related: [{ kind: "synonym", word: "repair", glossKo: null }] },
+              { no: 1, ko: "수리하다, 고치다", related: [rel("synonym", "repair", null)] },
               { no: 2, ko: "고정시키다", related: [] },
             ],
-            related: [{ kind: "derivative", word: "fixture", glossKo: "설비" }],
+            related: [rel("derivative", "fixture", "설비")],
           }),
         ],
       },
@@ -1135,7 +1147,7 @@ function runVocabbookChecks(): CheckResult[] {
         entries: [
           entry({
             word: "fix",
-            meanings: [{ no: 1, ko: "수리하다, 고치다", related: [{ kind: "antonym", word: "break", glossKo: null }] }],
+            meanings: [{ no: 1, ko: "수리하다, 고치다", related: [rel("antonym", "break", null)] }],
             related: [],
           }),
         ],
@@ -1619,6 +1631,93 @@ function runVocabbookChecks(): CheckResult[] {
     add("buildChoices. dayWords 정답·중복 오염에도 정답 미중복·오답 유일", ok, `값=[${noisy.join(", ")}]`);
   }
 
+  // --- 관계 문제 시험 buildRelationQuestions (V8) — source:"user" 대상·정답 포함·meaningKo 정확·graceful ---
+  // 관련어 픽스처 헬퍼 — source·kind만 다르게, 나머지는 위 rel(book)과 구분해 짧게 만든다.
+  const userRel = (kind: string, word: string) => ({ kind, word, source: "user" });
+  const bookRel = (kind: string, word: string) => ({ kind, word, source: "book" });
+  {
+    // 표제어 넉넉(≥5)한 단어장. big↔large(유의어), big↔small(반의어) 사용자 연결 + 잡음(book·derivative·user-derivative).
+    const entries = [
+      {
+        word: "big",
+        meanings: [
+          { ko: "큰", related: [userRel("synonym", "large"), userRel("antonym", "small")] },
+          { ko: "중요한", related: [bookRel("synonym", "major"), userRel("derivative", "bigly")] },
+        ],
+      },
+      { word: "large", meanings: [{ ko: "큰", related: [userRel("synonym", "big")] }] },
+      { word: "small", meanings: [{ ko: "작은", related: [] }] },
+      { word: "major", meanings: [{ ko: "주요한", related: [] }] },
+      { word: "tiny", meanings: [{ ko: "아주 작은", related: [] }] },
+    ];
+    const qs = buildRelationQuestions(entries, 5);
+
+    // (b) source:"user"·synonym/antonym만 — big의 user 유의어/반의어(2) + large의 user 유의어(1) = 3.
+    //     book(major)·user-derivative(bigly)는 제외된다.
+    const onlyUserSynAnt = qs.every(
+      (q) => (q.relationKind === "synonym" || q.relationKind === "antonym"),
+    );
+    const bigglyExcluded = !qs.some((q) => q.answer === "bigly" || q.answer === "major");
+    add(
+      "buildRelationQuestions. source:user·유의어/반의어만 대상(book·derivative 제외)",
+      qs.length === 3 && onlyUserSynAnt && bigglyExcluded,
+      `문항=${qs.length}(기대 3) 답=[${qs.map((q) => q.answer).join(", ")}]`,
+    );
+
+    // (a) 각 문항 정답 포함·보기 전부 상이
+    const choicesOk = qs.every(
+      (q) => q.choices.includes(q.answer) && new Set(q.choices).size === q.choices.length,
+    );
+    add(
+      "buildRelationQuestions. 각 문항 정답 포함·보기 전부 상이",
+      choicesOk,
+      choicesOk ? "정답 포함·중복 0" : "정답 누락 또는 중복",
+    );
+
+    // (c) meaningKo가 연결이 걸린 그 뜻으로 정확 — big의 large/small 연결은 "큰" 뜻에 걸려 있다.
+    const bigSyn = qs.find((q) => q.promptWord === "big" && q.answer === "large");
+    const bigAnt = qs.find((q) => q.promptWord === "big" && q.answer === "small");
+    add(
+      "buildRelationQuestions. meaningKo가 연결된 그 뜻으로 정확",
+      bigSyn?.meaningKo === "큰" && bigAnt?.meaningKo === "큰" && bigSyn?.relationKind === "synonym" && bigAnt?.relationKind === "antonym",
+      `big유의어.뜻=${bigSyn?.meaningKo} big반의어.뜻=${bigAnt?.meaningKo}`,
+    );
+
+    // 판별자 — 관계 문항은 kind:"relation"으로 def-to-word와 갈린다
+    add(
+      "buildRelationQuestions. kind:relation 판별자",
+      qs.every((q) => q.kind === "relation"),
+      qs.every((q) => q.kind === "relation") ? "전부 relation" : "판별자 누락",
+    );
+  }
+
+  // (d) 사용자 연결이 없으면 빈 배열 (교재 판독분만 있을 때)
+  {
+    const entries = [
+      { word: "big", meanings: [{ ko: "큰", related: [bookRel("synonym", "large")] }] },
+      { word: "large", meanings: [{ ko: "큰", related: [] }] },
+    ];
+    const qs = buildRelationQuestions(entries, 5);
+    add("buildRelationQuestions. user 링크 없으면 빈 배열", qs.length === 0, `문항=${qs.length}(기대 0)`);
+  }
+
+  // (e) dayWords 부족(표제어 2개)해도 정답을 포함한 채 가능한 만큼(count 미만) graceful
+  {
+    const entries = [
+      { word: "up", meanings: [{ ko: "위로", related: [userRel("antonym", "down")] }] },
+      { word: "down", meanings: [{ ko: "아래로", related: [userRel("antonym", "up")] }] },
+    ];
+    const qs = buildRelationQuestions(entries, 5);
+    const graceful = qs.length === 2 && qs.every(
+      (q) => q.choices.includes(q.answer) && q.choices.length <= 2 && new Set(q.choices).size === q.choices.length,
+    );
+    add(
+      "buildRelationQuestions. dayWords 부족 시 graceful(정답 포함·count 미만·중복0)",
+      graceful,
+      `문항=${qs.length} 보기수=[${qs.map((q) => q.choices.length).join(", ")}]`,
+    );
+  }
+
   // --- 오답노트 집계·졸업 aggregateWordStats·isMastered (V5) ---
   // streak는 startedAt 오름차순 입력의 **순서**에 의존한다 — 재정렬 없이 그대로 소비하는지,
   // 연속 2회 경계·중간 틀림 리셋·미시도(answered!==true) 제외·여러 세션 시간순 합산을 잠근다.
@@ -1860,6 +1959,48 @@ function runVocabbookChecks(): CheckResult[] {
           fix.lastWrongOrder === 1 &&
           fix.lastSeenOrder === 3,
         `fix=${JSON.stringify(fix)}`,
+      );
+    }
+
+    // --- 관계 무오염 회귀 가드 (V8, P2) — mode:"relation" 세션이 def→word 숙련도/오답노트/복습에 안 섞인다 ---
+    // 값으로 못박는다: 가드(aggregateWordStats의 relation 제외 / buildReviewCandidates recency의 relation 제외)를
+    // 지우면 total/wrong/streak·recency가 실제로 달라져 아래 두 항목이 FAIL 난다(조용히 깨지지 않게).
+    {
+      const qz = (
+        startedAt: string,
+        mode: VocabQuizMode,
+        items: { word: string; correct: boolean; answered: boolean | null }[],
+      ): VocabQuizRecord => ({ id: startedAt, bookId: "b1", mode, startedAt, finishedAt: startedAt, items });
+
+      // 가드 1 — aggregateWordStats: fix는 def-to-word 2연속 정답(total2·wrong0·streak2=졸업).
+      //   가장 최근 관계 세션에서 fix를 '틀림'으로 넣어도 def→word 집계에 새면 안 된다(새면 total3·wrong1·streak0).
+      const aggFix = aggregateWordStats([
+        qz("2026-08-20T01:00:00.000Z", "def-to-word", [{ word: "fix", correct: true, answered: true }]),
+        qz("2026-08-21T01:00:00.000Z", "def-to-word", [{ word: "fix", correct: true, answered: true }]),
+        qz("2026-08-22T01:00:00.000Z", "relation", [{ word: "fix", correct: false, answered: true }]),
+      ])["fix"];
+      add(
+        "무오염 가드. aggregateWordStats가 mode:relation을 def→word 집계에서 제외(total/wrong/streak 불변)",
+        aggFix != null && aggFix.total === 2 && aggFix.wrong === 0 && aggFix.streak === 2,
+        `fix=${JSON.stringify(aggFix)} (기대 total2·wrong0·streak2; 관계가 새면 total3·wrong1·streak0)`,
+      );
+
+      // 가드 2 — buildReviewCandidates: cool은 def-to-word 1회 정답(order1)뿐. 관계 세션(order2)에서 cool을
+      //   '틀림'으로 넣어도 stats(aggregate 재사용)·recency 어느 쪽도 오염되면 안 된다.
+      //   무오염이면 total1·wrong0·streak1·lastWrongOrder0(틀린 적 없음)·lastSeenOrder1(관계 order2는 안 셈).
+      const coolCand = buildReviewCandidates([
+        qz("2026-08-20T01:00:00.000Z", "def-to-word", [{ word: "cool", correct: true, answered: true }]),
+        qz("2026-08-21T01:00:00.000Z", "relation", [{ word: "cool", correct: false, answered: true }]),
+      ]).find((c) => c.word === "cool");
+      add(
+        "무오염 가드. buildReviewCandidates가 mode:relation을 복습(stats·recency)에서 제외",
+        coolCand != null &&
+          coolCand.total === 1 &&
+          coolCand.wrong === 0 &&
+          coolCand.streak === 1 &&
+          coolCand.lastWrongOrder === 0 &&
+          coolCand.lastSeenOrder === 1,
+        `cool=${JSON.stringify(coolCand)} (기대 total1·wrong0·lastWrong0·lastSeen1; 관계가 새면 wrong·recency가 변함)`,
       );
     }
   }

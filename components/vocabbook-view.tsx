@@ -32,11 +32,13 @@ import {
   RELATED_KIND_LABELS_KO,
   resolveVocabImage,
   type VocabEntry,
+  type VocabRelated,
 } from "@/lib/ai/english/vocabbook-schemas";
 import { lockBodyScroll } from "@/lib/scroll-lock";
 import { speak, speakSequence, stopSpeaking } from "@/lib/speech";
 import type { VocabAddWordResponse } from "@/lib/vocab-add-word-contract";
 import type { VocabEnrichResponse } from "@/lib/vocab-enrich-contract";
+import type { VocabLinkKind, VocabLinkRequest, VocabLinkResponse } from "@/lib/vocab-link-contract";
 import TtsSpeedControl from "./tts-speed-control";
 import s from "./vocabbook-view.module.css";
 
@@ -52,6 +54,37 @@ const DOUBLE_TAP_MS = 300;
  * null이면(제공 안 됨) DoubleTapText가 평범한 텍스트로 폴백한다 — 담기 대상이 아닌 화면에서 안전.
  */
 const AddWordContext = createContext<((word: string) => void) | null>(null);
+
+/**
+ * 유의어/반의어 연결(V8) — 뜻별 "＋ 연결" 버튼·사용자 칩 해제가 쓰는 컨텍스트. 표·카드 두 모드가 같은
+ * 연결 시트·해제 흐름을 공유하도록 최상위에서 내려보낸다. null이면(제공 안 됨) 연결 UI를 그리지 않는다.
+ * - `bookId`   : POST/DELETE `/api/english/vocab/[id]/link` 대상
+ * - `entries`  : 연결 대상 후보 목록·해제 시 targetIndex 역해석의 원본(화면이 보는 그 배열 = 인덱스 기준)
+ * - `openLink` : 어느 (단어 index·뜻 index)에서 연결을 시작할지 시트를 연다
+ * - `onLinked` : 연결/해제 성공 후 서버 재조회(router.refresh) — 표·카드의 관계 칩을 갱신한다
+ */
+interface VocabLinkContext {
+  bookId: string;
+  entries: VocabEntry[];
+  openLink: (sourceIndex: number, sourceMeaningIndex: number) => void;
+  onLinked: () => void;
+}
+const LinkContext = createContext<VocabLinkContext | null>(null);
+
+/**
+ * 해제(DELETE) 때 관련어 칩의 상대 단어(word)·linkedNo로 **대상 단어의 entries 인덱스**를 역해석한다.
+ * no가 있으면 (word·no) 둘 다 맞는 것을, 없으면 word만 맞는 첫 항목을 고른다(자기 자신 제외). 스토어가
+ * targetIndex로 대상 뜻의 대칭 링크를 찾아 지운다. 못 찾으면(-1) 라우트가 invalid(400)로 안전히 거른다.
+ */
+function resolveTargetIndex(entries: VocabEntry[], sourceIndex: number, r: VocabRelated): number {
+  if (r.linkedNo !== null) {
+    const byNo = entries.findIndex(
+      (e, k) => k !== sourceIndex && e.word === r.word && e.no === r.linkedNo,
+    );
+    if (byNo >= 0) return byNo;
+  }
+  return entries.findIndex((e, k) => k !== sourceIndex && e.word === r.word);
+}
 
 /**
  * 토큰에서 앞뒤 구두점을 벗겨 담을 단어만 남긴다. 내부 아포스트로피·하이픈은 지킨다(don't · well-known).
@@ -91,6 +124,21 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz 
 
   // 더블탭 담기 팝업(V8) — 지금 팝업에 올라온 단어(null=닫힘). 표·카드 두 모드 공용이라 최상위에 둔다.
   const [pickWord, setPickWord] = useState<string | null>(null);
+
+  // 유의어/반의어 연결 시트(V8) — 지금 연결을 시작한 (단어 index·뜻 index). null=닫힘. 표·카드 공용.
+  const [linkSource, setLinkSource] = useState<{ sourceIndex: number; sourceMeaningIndex: number } | null>(
+    null,
+  );
+  // 연결 컨텍스트 — 콜백·entries를 자식(표·카드의 뜻 칩)에게 내려보낸다. entries가 바뀔 때만 새로 만든다.
+  const linkCtx = useMemo<VocabLinkContext>(
+    () => ({
+      bookId: id,
+      entries,
+      openLink: (sourceIndex, sourceMeaningIndex) => setLinkSource({ sourceIndex, sourceMeaningIndex }),
+      onLinked: () => router.refresh(),
+    }),
+    [id, entries, router],
+  );
 
   // 정의 불변의 UI 측 단일 정의처는 저장된 entries다 — record.enriched를 믿지 않고 여기서 계산해
   // 서버 재조회(router.refresh) 뒤 자동으로 갱신되게 한다.
@@ -356,17 +404,29 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz 
     entries.some((e) => e.word.trim().toLowerCase() === pickWord.trim().toLowerCase());
 
   return (
-    <AddWordContext.Provider value={setPickWord}>
-      {viewMode === "table" ? tableBody : cardBody}
-      {pickWord !== null && (
-        <AddWordSheet
-          bookId={id}
-          word={pickWord}
-          alreadyExists={alreadyExists}
-          onClose={() => setPickWord(null)}
-        />
-      )}
-    </AddWordContext.Provider>
+    <LinkContext.Provider value={linkCtx}>
+      <AddWordContext.Provider value={setPickWord}>
+        {viewMode === "table" ? tableBody : cardBody}
+        {pickWord !== null && (
+          <AddWordSheet
+            bookId={id}
+            word={pickWord}
+            alreadyExists={alreadyExists}
+            onClose={() => setPickWord(null)}
+          />
+        )}
+        {linkSource !== null && (
+          <LinkSheet
+            bookId={id}
+            entries={entries}
+            sourceIndex={linkSource.sourceIndex}
+            sourceMeaningIndex={linkSource.sourceMeaningIndex}
+            onClose={() => setLinkSource(null)}
+            onLinked={() => router.refresh()}
+          />
+        )}
+      </AddWordContext.Provider>
+    </LinkContext.Provider>
   );
 }
 
@@ -436,15 +496,8 @@ function VocabCard({
                 {m.no !== null && <span className={s.meaningNo}>{m.no}.</span>}
                 {m.ko}
               </span>
-              {m.related.length > 0 && (
-                <span className={s.chips}>
-                  {m.related.map((r, j) => (
-                    <span key={j} className="u-chip">
-                      {RELATED_KIND_LABELS_KO[r.kind]} {r.word}
-                    </span>
-                  ))}
-                </span>
-              )}
+              {/* 이 뜻 옆 관련어 칩 + "＋ 연결" 버튼(사용자 링크는 해제 가능) — 표·카드 공용(MeaningLinks) */}
+              <MeaningLinks entryIndex={index} meaningIndex={k} related={m.related} className={s.chips} />
             </li>
           ))}
         </ol>
@@ -794,6 +847,300 @@ function AddWordSheet({
 }
 
 // ---------------------------------------------------------------------------
+// 유의어/반의어 연결 (V8 관계 문제) — 뜻마다 관련어 칩 + "＋ 연결" 버튼 + 사용자 링크 해제
+// ---------------------------------------------------------------------------
+
+/**
+ * 한 뜻(meaning) 아래 관련어 칩과 연결 버튼을 그린다 — 표·카드 두 모드가 이 한 컴포넌트를 쓴다.
+ * - 교재 판독 관련어(source:"book")는 그대로 칩으로.
+ * - 사용자가 이은 것(source:"user")은 accent 톤 + "내가 연결" 표식 + ✕ 해제 버튼(UserLinkChip).
+ * - 맨 끝에 "＋ 유의어/반의어 연결" 버튼 — LinkContext.openLink로 이 (단어 index·뜻 index)에서 시트를 연다.
+ * LinkContext가 없으면(제공 안 됨) 연결 버튼·해제 없이 칩만 그린다(안전 폴백).
+ */
+function MeaningLinks({
+  entryIndex,
+  meaningIndex,
+  related,
+  className,
+}: {
+  entryIndex: number;
+  meaningIndex: number;
+  related: VocabRelated[];
+  className: string;
+}) {
+  const ctx = useContext(LinkContext);
+  return (
+    <span className={className}>
+      {related.map((r, j) =>
+        r.source === "user" ? (
+          <UserLinkChip key={j} entryIndex={entryIndex} meaningIndex={meaningIndex} related={r} />
+        ) : (
+          <span key={j} className="u-chip">
+            {RELATED_KIND_LABELS_KO[r.kind]} {r.word}
+          </span>
+        ),
+      )}
+      {ctx ? (
+        <button
+          type="button"
+          className={s.linkAddBtn}
+          onClick={() => ctx.openLink(entryIndex, meaningIndex)}
+        >
+          ＋ 유의어/반의어 연결
+        </button>
+      ) : null}
+    </span>
+  );
+}
+
+/** 사용자가 이은 관계 칩 하나 — "내가 연결" 표식 + ✕ 해제(DELETE `/link`). 성공하면 onLinked로 refresh. */
+function UserLinkChip({
+  entryIndex,
+  meaningIndex,
+  related,
+}: {
+  entryIndex: number;
+  meaningIndex: number;
+  related: VocabRelated;
+}) {
+  const ctx = useContext(LinkContext);
+  const [busy, setBusy] = useState(false);
+  // 사용자 링크는 유의어·반의어만 만든다(파생어 user 링크는 없음) — 계약 kind로 좁힌다(방어적으로 syn 폴백).
+  const kind: VocabLinkKind = related.kind === "antonym" ? "antonym" : "synonym";
+
+  async function unlink() {
+    if (!ctx || busy) return;
+    // 상대 단어의 entries 인덱스·뜻 인덱스를 역해석 — 하나라도 없으면(구조 변화) 조용히 무시(라우트도 400 방어).
+    const targetIndex = resolveTargetIndex(ctx.entries, entryIndex, related);
+    if (targetIndex < 0 || related.linkedMeaningIndex === null) return;
+    setBusy(true);
+    try {
+      const body: VocabLinkRequest = {
+        sourceIndex: entryIndex,
+        sourceMeaningIndex: meaningIndex,
+        targetIndex,
+        targetMeaningIndex: related.linkedMeaningIndex,
+        kind,
+      };
+      const res = await fetch(`/api/english/vocab/${ctx.bookId}/link`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = (await res.json()) as VocabLinkResponse;
+      if (data.ok) {
+        ctx.onLinked(); // 서버 재조회 — 이 칩이 사라진 새 entries로 다시 그려진다
+      } else {
+        setBusy(false); // 실패면 다시 시도할 수 있게 되돌린다
+      }
+    } catch {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <span className={`u-chip ${s.userChip}`}>
+      {RELATED_KIND_LABELS_KO[related.kind]} {related.word}
+      <span className={s.userTag}>내가 연결</span>
+      <button
+        type="button"
+        className={s.unlinkBtn}
+        onClick={unlink}
+        disabled={busy}
+        aria-label={`${related.word} 연결 해제`}
+        title="연결 해제"
+      >
+        ✕
+      </button>
+    </span>
+  );
+}
+
+/** 연결 시트가 그리는 후보 한 줄 — 대상 (단어 index·뜻 index·표제어·그 뜻 한글). */
+interface LinkCandidate {
+  targetIndex: number;
+  targetMeaningIndex: number;
+  word: string;
+  meaningKo: string;
+}
+
+/**
+ * 유의어/반의어 연결 시트(하단 시트) — 종류(유의어·반의어)를 고르고, 이 단어장의 **다른 (단어·뜻)** 목록에서
+ * 하나를 골라 잇는다(검색 가능, 자기 자신 entry·이미 연결된 것은 제외). 확정 → POST `/link` → onLinked(refresh).
+ * AddWordSheet와 같은 시트 규약(body 스크롤 잠금·Esc·배경 탭 닫기).
+ */
+function LinkSheet({
+  bookId,
+  entries,
+  sourceIndex,
+  sourceMeaningIndex,
+  onClose,
+  onLinked,
+}: {
+  bookId: string;
+  entries: VocabEntry[];
+  sourceIndex: number;
+  sourceMeaningIndex: number;
+  onClose: () => void;
+  onLinked: () => void;
+}) {
+  const [kind, setKind] = useState<VocabLinkKind>("synonym");
+  const [query, setQuery] = useState("");
+  const [phase, setPhase] = useState<"idle" | "loading" | "error">("idle");
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => lockBodyScroll(), []);
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const source = entries[sourceIndex];
+  const sourceMeaning = source?.meanings[sourceMeaningIndex];
+
+  // 후보 목록 + "이미 연결됨" 제외는 kind·query가 바뀔 때만 다시 만든다.
+  const candidates = useMemo<LinkCandidate[]>(() => {
+    // 이 뜻에 이 kind로 이미 이은 (상대 word·상대 뜻 index) — 목록에서 뺀다.
+    const linked = new Set(
+      (sourceMeaning?.related ?? [])
+        .filter((r) => r.source === "user" && r.kind === kind)
+        .map((r) => `${r.word} ${r.linkedMeaningIndex ?? ""}`),
+    );
+    const q = query.trim().toLowerCase();
+    const out: LinkCandidate[] = [];
+    entries.forEach((e, ti) => {
+      if (ti === sourceIndex) return; // 자기 자신(같은 단어) 제외
+      e.meanings.forEach((m, tmi) => {
+        if (linked.has(`${e.word} ${tmi}`)) return; // 이미 연결됨
+        if (q && !e.word.toLowerCase().includes(q) && !m.ko.toLowerCase().includes(q)) return;
+        out.push({ targetIndex: ti, targetMeaningIndex: tmi, word: e.word, meaningKo: m.ko });
+      });
+    });
+    return out;
+  }, [entries, sourceIndex, sourceMeaning, kind, query]);
+
+  async function pick(c: LinkCandidate) {
+    if (phase === "loading") return;
+    setPhase("loading");
+    setMessage(null);
+    try {
+      const body: VocabLinkRequest = {
+        sourceIndex,
+        sourceMeaningIndex,
+        targetIndex: c.targetIndex,
+        targetMeaningIndex: c.targetMeaningIndex,
+        kind,
+      };
+      const res = await fetch(`/api/english/vocab/${bookId}/link`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = (await res.json()) as VocabLinkResponse;
+      if (data.ok) {
+        onLinked(); // 서버 재조회 — 양쪽 뜻에 칩이 생긴 새 entries로 다시 그린다
+        onClose();
+      } else {
+        setPhase("error");
+        setMessage(data.messageKo);
+      }
+    } catch {
+      setPhase("error");
+      setMessage("연결이 끊겼어요. 잠시 후 다시 시도해 주세요.");
+    }
+  }
+
+  return (
+    <div
+      className={s.sheetBackdrop}
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${source?.word ?? ""} 유의어·반의어 연결`}
+      onClick={onClose}
+    >
+      <div className={`${s.sheet} ${s.linkSheet}`} onClick={(e) => e.stopPropagation()}>
+        <p className={s.sheetWord} lang="en">
+          {source?.word}
+        </p>
+        <p className={s.sheetHint}>
+          <b lang="ko">{sourceMeaning?.ko}</b> 뜻에 이을 {kind === "synonym" ? "유의어" : "반의어"}를 골라요.
+        </p>
+
+        {/* 종류 선택 — 유의어/반의어 */}
+        <div role="group" aria-label="관계 종류" className={s.linkKindGroup}>
+          <button
+            type="button"
+            onClick={() => setKind("synonym")}
+            aria-pressed={kind === "synonym"}
+            className={`u-btn ${s.linkKindBtn} ${kind === "synonym" ? "u-btn-primary" : "u-btn-secondary"}`}
+          >
+            유의어
+          </button>
+          <button
+            type="button"
+            onClick={() => setKind("antonym")}
+            aria-pressed={kind === "antonym"}
+            className={`u-btn ${s.linkKindBtn} ${kind === "antonym" ? "u-btn-primary" : "u-btn-secondary"}`}
+          >
+            반의어
+          </button>
+        </div>
+
+        {/* 검색 */}
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="단어나 뜻으로 찾기"
+          aria-label="단어·뜻 검색"
+          className={s.linkSearch}
+        />
+
+        {/* 후보 목록 */}
+        <ul className={s.linkList}>
+          {candidates.length === 0 ? (
+            <li className={s.linkEmpty}>고를 수 있는 단어가 없어요.</li>
+          ) : (
+            candidates.map((c) => (
+              <li key={`${c.targetIndex}-${c.targetMeaningIndex}`}>
+                <button
+                  type="button"
+                  className={s.linkItem}
+                  onClick={() => pick(c)}
+                  disabled={phase === "loading"}
+                >
+                  <span className="t-vocab-word" lang="en">
+                    {c.word}
+                  </span>
+                  <span className="t-caption" lang="ko">
+                    {c.meaningKo}
+                  </span>
+                </button>
+              </li>
+            ))
+          )}
+        </ul>
+
+        {message ? (
+          <p className={`${s.sheetHint} ${s.sheetError}`} role="status">
+            {message}
+          </p>
+        ) : null}
+
+        <div className={s.sheetBtns}>
+          <button type="button" className={`u-btn u-btn-secondary ${s.sheetBtn}`} onClick={onClose}>
+            닫기
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 단어 그림 (호출 D) — 우선순위는 resolveVocabImage 한 곳에서 판정한다(svg>emoji>첫 글자).
 // V3는 이모지 우선이라 svg 자리는 지금 항상 비어 letter/emoji로만 떨어진다. 미래 SVG(V3.1)까지
 // dangerouslySetInnerHTML를 열지 않으려고, svg kind는 첫 글자 배지로 안전 폴백한다(XSS 표면 0).
@@ -924,16 +1271,13 @@ function TableView({ entries }: { entries: VocabEntry[] }) {
                           )}
                           {m.ko}
                         </span>
-                        {/* 이 뜻 옆에 붙은 유의어·반의어 — 뜻 아래 칩으로 (단어 전체 파생어는 단어 열) */}
-                        {m.related.length > 0 && (
-                          <span className="flex flex-wrap gap-1">
-                            {m.related.map((r, j) => (
-                              <span key={j} className="u-chip">
-                                {RELATED_KIND_LABELS_KO[r.kind]} {r.word}
-                              </span>
-                            ))}
-                          </span>
-                        )}
+                        {/* 이 뜻 옆 관련어 칩 + "＋ 연결" 버튼(사용자 링크는 해제 가능) — 표·카드 공용(MeaningLinks) */}
+                        <MeaningLinks
+                          entryIndex={i}
+                          meaningIndex={k}
+                          related={m.related}
+                          className="flex flex-wrap items-center gap-1"
+                        />
                       </li>
                     ))}
                   </ol>

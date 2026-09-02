@@ -23,6 +23,7 @@ import {
   RELATED_KINDS,
   VOCAB_CONFIDENCE_LEVELS,
   VOCAB_MEANING_NO_MAX,
+  VOCAB_RELATED_SOURCES,
 } from "@/lib/ai/english/vocabbook-schemas";
 import { VOCAB_LIMITS, type VocabCreateResponse } from "@/lib/vocab-create-contract";
 import { getStore } from "@/lib/store";
@@ -43,6 +44,11 @@ const relatedSchema = z.object({
   kind: z.enum(RELATED_KINDS),
   word: z.string().trim().max(VOCAB_LIMITS.relatedWord),
   glossKo: z.string().trim().max(VOCAB_LIMITS.relatedGloss).nullable(),
+  // 출처·연결 참조 — 화면이 값을 안 실어 보내면 판독분(source:"book"·linked* null)으로 흡수하고,
+  // 사용자가 이은 관계는 source:"user"+linkedNo+linkedMeaningIndex를 실어 보내면 그대로 보존한다(판독 zod와 같은 기본값 규약).
+  source: z.enum(VOCAB_RELATED_SOURCES).default("book"),
+  linkedNo: z.string().trim().max(VOCAB_LIMITS.no).nullable().default(null),
+  linkedMeaningIndex: z.number().int().min(0).nullable().default(null),
 });
 
 const entrySchema = z.object({

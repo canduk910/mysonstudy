@@ -73,8 +73,9 @@ export function isStatMastered(stat: { streak: number }): boolean {
  *
  * **`quizzes`는 startedAt 오름차순이어야 한다**(listVocabQuizzes 계약). 이 함수는 순서를 바꾸지
  * 않고 그대로 걸으며 각 단어의 시도를 시간순으로 잇는다 — 그 순서가 streak의 뜻이기 때문이다.
- * 일반 시험이든 오답복습(mode)이든 **모드를 가리지 않고** 모든 시도를 함께 센다(재시험이 streak를
- * 밀어 올려 졸업하는 경로가 성립해야 하므로).
+ * 일반 시험이든 오답복습(mode)이든 **모드를 가리지 않고** 함께 센다(재시험이 streak를 밀어 올려
+ * 졸업하는 경로가 성립해야 하므로). **단, `mode:"relation"`(관계 문제, V8) 세션은 제외한다** — 관계
+ * 문항은 정의→단어와 다른 축이라 그 답을 def→word 숙련도로 세면 안 된다(P2 무오염).
  *
  * @param quizzes startedAt 오름차순 세션 목록(한 단어장 또는 여러 단어장 무관 — 호출측이 범위를 정한다)
  * @returns 단어 → { total, wrong, streak }. 한 번도 시도 안 된 단어는 키에 없다(호출측이 total===0로 채운다).
@@ -85,6 +86,9 @@ export function aggregateWordStats(
   // 단어별 정답 이력을 **시간순으로** 쌓는다(세션 순서 = startedAt 오름차순을 그대로 소비).
   const histories = new Map<string, boolean[]>();
   for (const quiz of quizzes) {
+    // 관계 문제(V8) 세션은 def→word 숙련도의 **다른 축**이라 제외한다 — 관계 문항의 답(연결된 상대
+    // 단어)이 그 단어의 정의→단어 통계로 새어 들면 안 된다(P2 무오염). def-to-word·wrong-review만 센다.
+    if (quiz.mode === "relation") continue;
     for (const item of quiz.items) {
       if (item.answered !== true) continue; // 시도 = answered===true인 문항만
       let h = histories.get(item.word);

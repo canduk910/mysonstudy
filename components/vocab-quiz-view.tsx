@@ -26,9 +26,13 @@ import { useEffect, useRef, useState } from "react";
 import {
   buildChoices,
   buildQuizQuestions,
+  buildRelationQuestions,
   DEFAULT_CHOICE_COUNT,
+  isRelationQuestion,
   type QuizPoolItem,
   type QuizQuestion,
+  type RelationSourceEntry,
+  type SessionQuizQuestion,
   type VocabQuizMode,
 } from "@/lib/vocab-quiz";
 import type { ReviewQuestion } from "@/lib/vocab-review";
@@ -58,10 +62,45 @@ interface VocabQuizViewProps {
    * 비었으면(콜드 스타트·후보 0) 기존 DAY 시험 그대로다(회귀 0). 오답복습 모드에는 넘기지 않는다.
    */
   reviewQuestions?: ReviewQuestion[];
+  /**
+   * 관계 문제(V8) 입력 — 이 단어장의 (단어·뜻·관련어) 최소 shape. 서버가 record.entries를 그대로 넘긴다.
+   * `buildRelationQuestions`가 그중 **사용자가 이은 것(source:"user")·유의어/반의어**만 골라 문항을
+   * 만든다(보기 셔플이 rng라 클라이언트 startSession에서 조립 — hydration mismatch 회피). 사용자 링크가
+   * 없으면 빈 배열이라 기존 시험 그대로다(회귀 0). 저장 시 관계 문항은 def→word와 갈라 mode:"relation"으로
+   * 별도 레코드가 된다(P2 무오염). 오답복습 모드에는 넘기지 않는다.
+   */
+  relationSource?: RelationSourceEntry[];
 }
 
 /** 세션 결과 저장 상태 — 끝/중단 시 1회 POST의 진행을 화면에 표시한다 */
 type SaveState = "idle" | "saving" | "saved" | "error";
+
+// ── 문항 종류별 서술자 (def-to-word vs relation) — isRelationQuestion으로 좁혀 한 곳에서 판정한다 ──
+// 렌더·채점·낭독이 각자 분기하면 어긋난다. 아래 네 헬퍼가 SessionQuizQuestion을 받아 뷰가 쓰는
+// 문자열/정답을 돌려준다(관계 문항은 promptWord·meaningKo·answer, def 문항은 definitionEn·word).
+
+/** 발문 — def:"이 뜻에 맞는 단어는?", 관계:"{promptWord}의 유의어는?/반대말은?". */
+function promptLabelOf(q: SessionQuizQuestion): string {
+  if (isRelationQuestion(q)) {
+    return `${q.promptWord}의 ${q.relationKind === "synonym" ? "유의어는?" : "반대말은?"}`;
+  }
+  return "이 뜻에 맞는 단어는?";
+}
+
+/** 문제 본문 — def:영영 정의(EN), 관계:연결이 걸린 그 뜻의 한글(KO, 어느 뜻 기준인지 보여준다). */
+function promptMainOf(q: SessionQuizQuestion): string {
+  return isRelationQuestion(q) ? q.meaningKo : q.definitionEn;
+}
+
+/** 🔊 낭독 대상 — def:정의(EN), 관계:표제어 promptWord(EN). 둘 다 영어라 en-US TTS가 맞다. */
+function promptSpeechOf(q: SessionQuizQuestion): string {
+  return isRelationQuestion(q) ? q.promptWord : q.definitionEn;
+}
+
+/** 정답 영단어 — def:word(정답 표제어), 관계:answer(연결된 상대 단어). 채점·정답 발음의 단일 기준. */
+function correctAnswerOf(q: SessionQuizQuestion): string {
+  return isRelationQuestion(q) ? q.answer : q.word;
+}
 
 export default function VocabQuizView({
   id,
@@ -71,10 +110,12 @@ export default function VocabQuizView({
   dayWords,
   mode = "def-to-word",
   reviewQuestions,
+  relationSource,
 }: VocabQuizViewProps) {
   const isReview = mode === "wrong-review"; // 오답복습이면 문구를 "다시 풀기" 톤으로 바꾼다
   // 문제는 마운트 후 1회만 조립한다(hydration mismatch 회피). null = 아직 준비 중.
-  const [questions, setQuestions] = useState<QuizQuestion[] | null>(null);
+  // 세션은 def→word 문항(QuizQuestion)과 관계 문항(RelationQuizQuestion)의 합집합(SessionQuizQuestion)이다.
+  const [questions, setQuestions] = useState<SessionQuizQuestion[] | null>(null);
   const [startedAt, setStartedAt] = useState<string>("");
   // 문항별 결과: true=맞힘, false=틀림, null=미응답. 길이는 questions와 같다.
   const [answers, setAnswers] = useState<(boolean | null)[]>([]);
@@ -99,8 +140,17 @@ export default function VocabQuizView({
       choices: buildChoices(r.word, r.sourceDayWords, DEFAULT_CHOICE_COUNT),
       isReview: true,
     }));
-    // 복습 먼저, 그다음 이 DAY의 새 단어(계획 §V6).
-    const built = [...reviewBuilt, ...buildQuizQuestions(pool, dayWords, DEFAULT_CHOICE_COUNT)];
+    // 관계 문항(V8) — 사용자가 이 단어장 안에서 이은 유의어/반의어(source:"user")만. 보기 셔플이 rng라
+    // 여기(마운트 후)에서 조립한다. 사용자 링크가 없으면 빈 배열이라 기존 시험 그대로다(회귀 0).
+    const relationBuilt = relationSource
+      ? buildRelationQuestions(relationSource, DEFAULT_CHOICE_COUNT)
+      : [];
+    // 복습 먼저 → 이 DAY의 새 단어(계획 §V6) → 관계 문항. 관계 문항은 def→word를 다 푼 뒤 이어서 나온다.
+    const built: SessionQuizQuestion[] = [
+      ...reviewBuilt,
+      ...buildQuizQuestions(pool, dayWords, DEFAULT_CHOICE_COUNT),
+      ...relationBuilt,
+    ];
     setQuestions(built);
     setAnswers(new Array(built.length).fill(null));
     setStartedAt(new Date().toISOString());
@@ -135,7 +185,7 @@ export default function VocabQuizView({
     if (phase !== "quiz" || !questions) return;
     const q = questions[current];
     if (!q) return;
-    speak(q.definitionEn);
+    speak(promptSpeechOf(q)); // def:정의(EN) · 관계:표제어 promptWord(EN)
     return () => stopSpeaking();
   }, [current, phase, questions]);
 
@@ -159,33 +209,50 @@ export default function VocabQuizView({
     setSaveState("saving");
     setSaveMessage(null);
 
-    const qs = questions as QuizQuestion[];
-    // answers 3상태를 저장 문항으로 옮긴다: null=미응답(answered:null), 그 외=답함(answered:true).
-    const items: VocabQuizItem[] = qs.map((q, i) => ({
-      word: q.word,
-      correct: answers[i] === true,
-      answered: answers[i] === null ? null : true,
-    }));
-    const body: VocabQuizSubmitRequest = {
-      mode,
-      startedAt,
-      finishedAt: complete ? new Date().toISOString() : null, // 완료면 시각, 중단이면 null
-      items,
-    };
+    const qs = questions as SessionQuizQuestion[];
+    const finishedAt = complete ? new Date().toISOString() : null; // 완료면 시각, 중단이면 null
+
+    // ── P2 무오염: def→word 문항과 관계 문항을 갈라 **별도 레코드**로 저장한다 ──────────────────────
+    // 관계 문항의 답(연결된 상대 단어)을 같은 레코드에 두면 그 단어의 def→word 통계로 새어 든다.
+    // 그래서 관계 문항은 mode:"relation"으로 분리한다(aggregateWordStats가 relation 레코드를 제외 — 무오염).
+    // answers 3상태는 그대로 옮긴다: null=미응답(answered:null), 그 외=답함(answered:true). 정답 단어는
+    // correctAnswerOf(q)로(관계 문항은 answer). 두 레코드는 같은 startedAt/finishedAt을 공유한다.
+    const defItems: VocabQuizItem[] = [];
+    const relItems: VocabQuizItem[] = [];
+    qs.forEach((q, i) => {
+      const item: VocabQuizItem = {
+        word: correctAnswerOf(q),
+        correct: answers[i] === true,
+        answered: answers[i] === null ? null : true,
+      };
+      (isRelationQuestion(q) ? relItems : defItems).push(item);
+    });
+
+    // 문항이 있는 축만 POST한다 — 관계 문항이 없으면 def 한 번(기존과 동일). def가 없고 관계만 있을 일은
+    // 정의 게이트(canQuiz) 때문에 일반 시험에선 없지만, 방어적으로 각 축을 독립 판정한다.
+    const posts: { mode: VocabQuizMode; items: VocabQuizItem[] }[] = [];
+    if (defItems.length > 0) posts.push({ mode, items: defItems });
+    if (relItems.length > 0) posts.push({ mode: "relation", items: relItems });
 
     try {
-      const res = await fetch(`/api/english/vocab/${id}/quiz`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = (await res.json()) as VocabQuizSubmitResponse;
-      if (data.ok) {
+      const results = await Promise.all(
+        posts.map(async (p) => {
+          const body: VocabQuizSubmitRequest = { mode: p.mode, startedAt, finishedAt, items: p.items };
+          const res = await fetch(`/api/english/vocab/${id}/quiz`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          return (await res.json()) as VocabQuizSubmitResponse;
+        }),
+      );
+      const failed = results.find((d) => !d.ok);
+      if (!failed) {
         setSaveState("saved");
         setSaveMessage(complete ? "시험 결과를 저장했어요!" : "여기까지 푼 결과를 저장했어요.");
       } else {
         setSaveState("error");
-        setSaveMessage(data.messageKo);
+        setSaveMessage(failed.ok ? "결과를 저장하지 못했어요." : failed.messageKo);
       }
     } catch {
       setSaveState("error");
@@ -197,14 +264,15 @@ export default function VocabQuizView({
   function choose(choice: string) {
     if (selected !== null) return; // 이 문항은 이미 답함
     const q = questions![current];
-    const isCorrect = choice === q.word;
+    const answer = correctAnswerOf(q); // def:정답 표제어 · 관계:연결된 상대 단어
+    const isCorrect = choice === answer;
     setSelected(choice);
     setAnswers((prev) => {
       const next = [...prev];
       next[current] = isCorrect;
       return next;
     });
-    speak(q.word); // 🔊 정답 단어 발음(맞든 틀리든 올바른 소리를 들려준다)
+    speak(answer); // 🔊 정답 단어 발음(맞든 틀리든 올바른 소리를 들려준다)
   }
 
   // "다음" — 마지막 문항이면 완료로 넘어가며 1회 저장한다.
@@ -290,6 +358,9 @@ export default function VocabQuizView({
 
   // ── 문제 화면 ──────────────────────────────────────────────────────────────
   const q = questions[current];
+  const isRel = isRelationQuestion(q); // 관계 문항이면 발문·본문·정답을 관계 shape에서 읽는다
+  const answer = correctAnswerOf(q); // 정답 영단어(def:표제어 · 관계:연결된 상대 단어)
+  const promptSpeech = promptSpeechOf(q); // 🔊 낭독 대상(둘 다 영어)
   const answered = selected !== null;
   const progress = total > 0 ? ((current + (answered ? 1 : 0)) / total) * 100 : 0;
 
@@ -309,19 +380,23 @@ export default function VocabQuizView({
         <div className={s.progressFill} style={{ width: `${progress}%` }} />
       </div>
 
-      {/* 문제 = 영영 정의. 새 문항마다 자동 낭독(위 useEffect)되며, 🔊로 언제든 다시 들을 수 있다
-          (모바일 autoplay가 자동 낭독을 막았을 때의 대체 경로) */}
+      {/* 문제 — def:영영 정의(EN) / 관계:연결이 걸린 뜻의 한글(KO)+발문. 새 문항마다 자동 낭독(위
+          useEffect)되며, 🔊로 언제든 다시 들을 수 있다(모바일 autoplay가 자동 낭독을 막았을 때의 대체 경로).
+          관계 문항은 발문에 표제어(promptWord)가 이미 들어 있어 🔊가 그 단어(promptSpeech)를 읽는다. */}
       <div className={s.prompt}>
         <p className={s.promptLabel}>
           {q.isReview ? <span className={s.reviewBadge}>복습</span> : null}
-          이 뜻에 맞는 단어는?
+          {isRel ? <span className={s.reviewBadge}>연결</span> : null}
+          {promptLabelOf(q)}
         </p>
         <div className={s.promptBody}>
-          <p className={s.promptText}>{q.definitionEn}</p>
+          <p className={s.promptText} lang={isRel ? "ko" : "en"}>
+            {promptMainOf(q)}
+          </p>
           <button
             type="button"
             className={s.speaker}
-            onClick={() => speak(q.definitionEn)}
+            onClick={() => speak(promptSpeech)}
             aria-label="문제 다시 듣기"
             title="다시 듣기"
           >
@@ -333,7 +408,7 @@ export default function VocabQuizView({
       {/* 5지선다 */}
       <div className={s.choices} role="group" aria-label="보기">
         {q.choices.map((choice) => {
-          const isCorrectChoice = choice === q.word;
+          const isCorrectChoice = choice === answer;
           const isPicked = choice === selected;
           // 답한 뒤에만 색을 칠한다: 정답은 항상 강조, 내가 고른 오답은 빨강, 나머지는 흐리게.
           let stateClass = "";
@@ -368,13 +443,13 @@ export default function VocabQuizView({
           role="status"
         >
           <span className={s.feedbackText}>
-            {answers[current] ? "정답이에요! 🎉" : `아쉬워요 — 정답은 "${q.word}"예요.`}
+            {answers[current] ? "정답이에요! 🎉" : `아쉬워요 — 정답은 "${answer}"예요.`}
           </span>
           <button
             type="button"
             className={s.speaker}
-            onClick={() => speak(q.word)}
-            aria-label={`${q.word} 발음 듣기`}
+            onClick={() => speak(answer)}
+            aria-label={`${answer} 발음 듣기`}
           >
             🔊
           </button>
