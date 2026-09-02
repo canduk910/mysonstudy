@@ -994,6 +994,9 @@ function LinkSheet({
   // 직접 입력
   const [directWord, setDirectWord] = useState("");
   const [directGloss, setDirectGloss] = useState("");
+  // 직접 입력 접이식(V8 UX) — 기본 접힘으로 추천 목록에 높이를 양보한다. 추천 실패·후보 0·키 없음이면
+  // 아래 effect가 자동으로 펼친다(안내 문구와 일관). 사용자가 <details>를 직접 여닫으면 onToggle이 동기화.
+  const [directOpen, setDirectOpen] = useState(false);
   // 추가·연결 진행/결과
   const [adding, setAdding] = useState<string | null>(null); // 진행 중인 후보 word(중복 클릭 방어). null=없음
   const [addMessage, setAddMessage] = useState<string | null>(null);
@@ -1057,6 +1060,13 @@ function LinkSheet({
     // bookId·source.word·sourceMeaning.ko는 시트 생명주기 동안 고정 — kind 변경에만 재요청한다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind]);
+
+  // 추천을 못 쓰면(오류·후보 0·키 없음) 직접 입력을 자동으로 펼친다 — 안내 문구와 일관(바로 입력).
+  useEffect(() => {
+    if (suggestPhase === "error" || (suggestPhase === "done" && candidates.length === 0)) {
+      setDirectOpen(true);
+    }
+  }, [suggestPhase, candidates.length]);
 
   // 고른(추천 또는 직접입력) 상대를 추가·연결한다. 성공하면 refresh하고 시트는 유지(여러 개 이어 추가).
   async function addRelated(chosen: VocabRelatedCandidate) {
@@ -1172,16 +1182,17 @@ function LinkSheet({
                       onClick={() => addRelated(c)}
                       disabled={already || adding !== null}
                     >
-                      <span className={s.linkItemMain}>
-                        <span className="t-vocab-word" lang="en">
-                          {c.word}
-                        </span>
-                        {already ? <span className={s.userTag}>연결됨</span> : null}
-                        {adding === c.word.trim() ? <span className={s.userTag}>추가 중…</span> : null}
+                      {/* 콤팩트: 단어(20px)와 우리말 뜻을 한 줄에(뜻은 말줄임). 표식은 오른쪽 끝. */}
+                      <span className={s.linkItemWord} lang="en">
+                        {c.word}
                       </span>
-                      <span className="t-caption" lang="ko">
+                      <span className={s.linkItemGloss} lang="ko">
                         {c.glossKo}
                       </span>
+                      {already ? <span className={`${s.userTag} ${s.linkItemTag}`}>연결됨</span> : null}
+                      {adding === c.word.trim() ? (
+                        <span className={`${s.userTag} ${s.linkItemTag}`}>추가 중…</span>
+                      ) : null}
                     </button>
                   </li>
                 );
@@ -1190,48 +1201,54 @@ function LinkSheet({
           )}
         </div>
 
-        {/* 직접 입력 — 추천에 없거나 원하는 단어를 직접 이어 준다(영단어 + 짧은 우리말 뜻) */}
-        <div className={s.directArea}>
-          <p className={`t-caption ${s.suggestLabel}`}>
+        {/* 직접 입력 — 접이식(기본 접힘, 추천 목록에 높이 양보). 추천 실패·후보 0·키 없음이면 자동 펼침. */}
+        <details
+          className={s.directArea}
+          open={directOpen}
+          onToggle={(e) => setDirectOpen(e.currentTarget.open)}
+        >
+          <summary className={s.directSummary}>
             <span aria-hidden>✏️</span> 직접 입력
-          </p>
-          <div className={s.directRow}>
-            <input
-              type="text"
-              value={directWord}
-              onChange={(e) => setDirectWord(e.target.value)}
-              placeholder="영단어"
-              aria-label="이을 영단어"
-              lang="en"
-              className={s.linkSearch}
-            />
-            <input
-              type="text"
-              value={directGloss}
-              onChange={(e) => setDirectGloss(e.target.value)}
-              placeholder="우리말 뜻"
-              aria-label="그 단어의 우리말 뜻"
-              lang="ko"
-              className={s.linkSearch}
-            />
+          </summary>
+          <div className={s.directBody}>
+            <div className={s.directRow}>
+              <input
+                type="text"
+                value={directWord}
+                onChange={(e) => setDirectWord(e.target.value)}
+                placeholder="영단어"
+                aria-label="이을 영단어"
+                lang="en"
+                className={s.linkSearch}
+              />
+              <input
+                type="text"
+                value={directGloss}
+                onChange={(e) => setDirectGloss(e.target.value)}
+                placeholder="우리말 뜻"
+                aria-label="그 단어의 우리말 뜻"
+                lang="ko"
+                className={s.linkSearch}
+              />
+            </div>
+            <button
+              type="button"
+              className={`u-btn u-btn-primary ${s.directAddBtn}`}
+              onClick={() => addRelated({ word: directWord, glossKo: directGloss })}
+              disabled={directDisabled}
+            >
+              {adding !== null ? (
+                <>
+                  <span aria-hidden>⏳</span> 추가 중…
+                </>
+              ) : (
+                <>
+                  <span aria-hidden>➕</span> 이어 추가
+                </>
+              )}
+            </button>
           </div>
-          <button
-            type="button"
-            className={`u-btn u-btn-primary ${s.directAddBtn}`}
-            onClick={() => addRelated({ word: directWord, glossKo: directGloss })}
-            disabled={directDisabled}
-          >
-            {adding !== null ? (
-              <>
-                <span aria-hidden>⏳</span> 추가 중…
-              </>
-            ) : (
-              <>
-                <span aria-hidden>➕</span> 이어 추가
-              </>
-            )}
-          </button>
-        </div>
+        </details>
 
         {addMessage ? (
           <p className={`${s.sheetHint} ${s.suggestOk}`} role="status">

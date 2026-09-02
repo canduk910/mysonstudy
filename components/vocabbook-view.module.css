@@ -542,11 +542,13 @@
   cursor: default;
 }
 
-/* 연결 시트 — 목록이 길 수 있어 고정 높이 + 내부 스크롤(하단 시트 규약 유지) */
+/* 연결 시트 — 목록이 길 수 있어 고정 높이 + 내부 스크롤(하단 시트 규약 유지).
+   높이를 키우고(후보가 더 보이게) 고정 영역(직접 입력 접이식)을 줄여 스크롤 영역을 넓힌다(V8 UX). */
 .linkSheet {
-  max-height: min(78vh, 640px);
+  max-height: min(88vh, 760px);
+  gap: 10px; /* 기본 시트 12px보다 조금 좁혀 고정 영역이 먹는 세로를 줄인다(전역 .sheet는 불변) */
   /* 시트는 넘치지 않게 clip — 스크롤은 안쪽 추천 목록(.suggestArea > .linkList)만 담당한다.
-     헤더·종류 토글·직접 입력은 고정으로 남고 후보만 스크롤된다. */
+     헤더·종류 토글·직접 입력 요약은 고정으로 남고 후보만 스크롤된다. */
   overflow: hidden;
 }
 .linkKindGroup {
@@ -572,27 +574,52 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  /* 시트 밖으로 스크롤이 전파되지 않게(모달 뒤 문서가 밀리지 않게) + iOS 관성 스크롤 */
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   display: flex;
   flex-direction: column;
   gap: 6px;
   margin: 0;
-  padding: 0;
+  padding: 0 2px; /* 스크롤바와 칩이 붙지 않게 살짝 여백 */
   list-style: none;
 }
+/* 콤팩트 후보 칩 — 단어(20px)와 우리말 뜻을 **한 줄**에(뜻은 말줄임). min-height 44로 탭 타깃은 유지하되
+   세로 2줄(52px 카드형)을 없애 같은 높이에 2배 이상 보이게 한다. 표·카드의 t-vocab-word는 건드리지 않는다. */
 .linkItem {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
   width: 100%;
-  min-height: 52px;
-  padding: 8px 12px;
+  min-height: 44px;
+  padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius-box);
   background: var(--surface-2);
   color: var(--ink);
   text-align: left;
   cursor: pointer;
+}
+.linkItemWord {
+  flex: 0 0 auto;
+  font-size: 20px; /* 시트 안에서만 낮춘다(전역 --fs-vocab-word 26px는 불변) */
+  font-weight: 700;
+  line-height: 1.2;
+  word-break: break-word;
+}
+.linkItemGloss {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-3);
+  font-size: var(--fs-vocab-example);
+}
+.linkItemTag {
+  flex: 0 0 auto;
+  align-self: center;
 }
 .linkItem:hover {
   border-color: var(--accent);
@@ -625,9 +652,44 @@
   flex: 1 1 auto;
   min-height: 0;
 }
-/* 직접 입력은 자연 높이 고정(줄어들지 않음) — 항상 손에 닿게 둔다. */
+/* 직접 입력은 접이식(<details>) — 자연 높이 고정. 접히면 요약 한 줄만 남아 추천에 높이를 양보한다.
+   <details>는 block으로 둔다(shared 규칙의 display:flex가 일부 브라우저에서 네이티브 접힘과 어긋날 수 있어
+   덮어쓴다 — 안쪽 배치는 .directBody가 flex로 맡는다). */
 .directArea {
+  display: block;
   flex: 0 0 auto;
+  padding: 8px 12px;
+}
+/* 요약(항상 보이는 "✏️ 직접 입력" 줄) — 네이티브 마커를 숨기고 오른쪽 caret로 접힘 상태를 알린다. */
+.directSummary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  list-style: none;
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+.directSummary::-webkit-details-marker {
+  display: none;
+}
+.directSummary::after {
+  content: "▾";
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--ink-3);
+  transition: transform 0.15s ease;
+}
+.directArea:not([open]) .directSummary::after {
+  transform: rotate(-90deg);
+}
+/* 펼쳤을 때의 입력 묶음 */
+.directBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
 }
 .suggestLabel {
   margin: 0;
@@ -644,11 +706,6 @@
 }
 .suggestOk {
   color: var(--accent-ink);
-}
-.linkItemMain {
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 .directRow {
   display: flex;
