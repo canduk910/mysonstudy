@@ -34,6 +34,7 @@
 | 2026-08-16 | 개발 명세 원본 확보(docs/SPEC.md 저장): 픽스처를 §12 실측값으로 갱신(Pooh AR 2.0 — AR<2 경로 미커버 명시), Open Library 폴백·디자인 원본 파일 반영 | docs/SPEC.md, card-eval, ai-harness-impl, orchestrator | 사용자가 개발 프롬프트 전문 제공 |
 | 2026-08-25 | `doc-commit` 스킬 신설 — 메모리·git 이력·코드 실체를 근거로 `.md` 문서를 최신화·커밋. 저장소 함정(spec-sync 프롬프트 블록 불가침·§번호 안정성·변경이력 append·next.js 자동블록)을 규칙으로 못박음 | skills(doc-commit), CLAUDE.md | 앱 기능이 문서보다 앞서 나가 서문·플로우가 실제와 어긋나기 시작 — 문서 동기화를 반복 가능한 절차로 |
 | 2026-08-25 | 2026-08-16 이후 앱 확장을 문서에 반영: 서문 앱 흐름에 낭독 자막 grounding·챕터 리더·단어탭·영어단어장 정복 추가, SPEC에 §14(확장 기능)·환경변수 2종(`SUPADATA_API_KEY`·`YOUTUBE_API_KEY`) append, README 소개·환경변수 갱신. 반영 마지막 커밋 `4cabb21` | CLAUDE.md, docs/SPEC.md, README.md | 자막 grounding·단어장 정복 아크가 harness/english.md에만 있고 제품 문서엔 없었다 |
+| 2026-09-02 | 2026-08-25 이후 앱 확장 3종을 문서에 반영: **목록 순서변경**(서재·단어장·수학, 관리모드 드래그+↑↓, 공유 프리미티브 `use-reorder`)·**읽어주기 속도 조절**(전역·localStorage 영속)·**단어장 유의어·반의어 연결 + 관계 문제 시험**을 SPEC §15에 추가, README §5 판단 기록 갱신. 반영 마지막 커밋 `fd3863d` | CLAUDE.md, docs/SPEC.md, README.md | 세 기능이 코드·git에만 있고 제품 문서엔 없었다 — doc-commit 스킬로 동기화 |
 
 <!-- BEGIN:nextjs-agent-rules -->
 

@@ -10,6 +10,7 @@
 - **업로드한 사진 원본은 어디에도 저장하지 않습니다** — 판독 직후 버리고, 남는 것은 우리말 요약 텍스트뿐입니다. **영어 원문을 그대로 옮겨 적지 않습니다**(제목·챕터 제목·인물 이름은 예외). 이 원칙은 `docs/SPEC.md` §1에 있고, zod가 연속 영어 8단어를 실제로 거부해 강제합니다.
 - **유튜브 낭독 자막으로 카드를 뒷받침**할 수 있습니다 — 책 제목으로 낭독 영상을 자동 검색해 고르면, 그 자막으로 줄거리를 실제 본문에 grounding하고 챕터별 **영어 원문+한글 해석 리더**(단어 더블탭 뜻·발음·"모은 단어" 담기)를 붙입니다. 자막은 우리가 스크래핑하지 않고 Supadata API로 가져옵니다.
 - 별도로 **영어단어장 정복**(교재 사진 판독 → 영영 정의·이모지 → 영단어 5지선다 시험 → 오답노트)이 있습니다. 상세는 `docs/SPEC.md` §14.
+- 그 밖에 **목록 순서변경**(서재·단어장·수학을 관리 모드에서 드래그로 재배치), **읽어주기 속도 조절**(천천히·보통·빠르게), **단어장 유의어·반의어 연결**(단어끼리 이어 관계 문제로 시험)이 있습니다. 상세는 `docs/SPEC.md` §15.
 - 스택: Next.js(App Router, TS) · Tailwind CSS · OpenAI Responses API(Structured Outputs) · Google Books/Open Library · Firestore · Cloud Run · Supadata(자막)·YouTube Data API v3(낭독 영상 검색)
 
 ## 1. 로컬 실행
@@ -173,6 +174,9 @@ gcloud run deploy eunwoo-bookcard --source . --region asia-northeast3
 | 잠금은 쿠키 서명(HMAC) 1겹, 세션 저장소 없음 | 쿠키 값 `<exp>.<HMAC-SHA256(APP_PIN, "unlock:<exp>")>` — PIN이 곧 서명 키라 PIN을 바꾸면 기존 쿠키가 자동 무효화된다. 사용자·세션 테이블을 두지 않아 로그인 없는 가족용 규모에 맞다 |
 | 시도 제한은 전역 백스톱 + IP 잠금 2겹 | IP 키의 원천인 `x-forwarded-for`는 **첫 값이 클라이언트 위조 가능**이라(GCP 프런트엔드는 받은 값을 버리지 않고 뒤에 덧붙인다) 마지막 항목으로 키잉하고, 그래도 인덱스 판단이 틀릴 수 있어 헤더를 보지 않는 전역 카운터(10분 30회)를 함께 둔다. 로그인 없는 앱에서 PIN 무차별 대입을 막는 유일한 방어라 우회 불가능한 겹이 하나는 있어야 한다 |
 | 게이트 파일은 `proxy.ts` | Next.js 16에서 `middleware.ts`는 deprecated이고 `proxy.ts`(export `proxy`)로 이름이 바뀌었다 — 새 규약을 따랐다(`node_modules/next/dist/docs/.../proxy.md`) |
+| 목록 순서변경은 `sortIndex` 하나 + 새 항목은 맨 위 | 서재·단어장·수학이 관리 모드 드래그+↑↓로 재배치(SPEC §15-1). 각 레코드 `sortIndex: number\|null`(필수 nullable), 재배치 시 목록 전체를 0..n 재색인. 정렬은 null 먼저(`createdAt` 역순=새 항목 위) → 오름차순이라 수동 정렬 뒤에도 새로 만든 게 눈에 띈다. 공유 프리미티브 `use-reorder`(포인터 드래그+자동스크롤+키보드) 하나로 세 목록. 수학은 필터가 '전체'가 아니면 재배치 비활성(부분 재색인 인덱스 충돌 회피) |
+| 읽어주기 속도는 전역 값 하나 | `lib/speech.ts`의 rate를 화면마다 두면 같은 단어가 다른 목소리로 들린다 — `getTtsRate`/`setTtsRate`(localStorage 영속) 하나를 6개 화면이 공유. 컨트롤은 슬라이더가 아니라 3단 분절 버튼(아이+폰 탭 타깃, 세로 스크롤과 드래그 충돌 회피). 기본 0.9라 안 건드리면 기존 동작 그대로 |
+| 유의어 연결은 엔트리 인덱스로 식별, 관계 시험은 별도 mode | 교재 번호 `no`는 손입력 null·중복 가능이라 유일 식별 불가 → 배열 인덱스로 (단어+뜻)을 잇고 저장 매칭은 `word`+`meaningIndex`. 관계 시험 결과는 `VocabQuizRecord{mode:"relation"}` 별도 저장이라 def→word 숙련도·오답노트·졸업에 안 섞인다(오프라인 eval이 반례로 잠금). `VocabRelated.source`로 사용자 연결분만 시험·해제 대상 |
 
 ## 6. 개발 하네스
 

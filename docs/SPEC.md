@@ -336,3 +336,32 @@ YOUTUBE_API_KEY=     # 선택(낭독 영상 자동 검색 시). 서버 전용. Y
 - **오답노트**: DAY 안(`[id]/wrong`)과 DAY 넘어(`/english/vocab/wrong`) 두 층. **연속 2회 정답이면 졸업**(`lib/vocab-mastery.ts`).
 - **라우트**: `/api/english/vocab/*`(extract·route·[id]·enrich·quiz·rename·add-word·collected) · 화면 `/english/vocab/*`(목록·상세·quiz·wrong·new). 순수 함수(병합·보기 생성·졸업·복습)는 `lib/vocab-*.ts`에 두고 오프라인 eval로 잠근다.
 - **경로 규약**: 수학 접두사 규약을 따라 `/english/vocab/*` · `/api/english/vocab/*`.
+
+## 15. 확장 기능 (2026-09 — §14 위에 더 얹은 것)
+
+> 세 기능 모두 **AI 무관·클라이언트+스토어 중심**. AI 호출·프롬프트는 안 늘었다.
+
+### 15-1. 목록 순서변경 (서재·단어장·수학 공통)
+
+기록 목록의 **관리 모드**에 삭제만 있던 것에 **드래그 순서변경**을 더했다.
+
+- **게이트 = 관리 모드 재사용**: 관리 모드에서만 각 줄에 **드래그 핸들(≡) + ↑/↓ 버튼**(+키보드)이 나타난다. 평소엔 스크롤·열기만 — 모바일 세로 스크롤↔드래그 충돌을 관리 모드 게이트로 피한다.
+- **저장**: 각 레코드에 `sortIndex: number | null`(필수 nullable). 재배치하면 그 목록 전체를 0..n으로 재색인해 저장. 정렬은 `sortIndex` null 먼저(`createdAt` 역순=**새 항목이 맨 위**) → 나머지 오름차순. 생성부는 sortIndex를 안 매긴다(스토어가 매김) — 하위호환.
+- **공유 프리미티브**: `components/use-reorder.ts`(포인터 드래그+자동스크롤+키보드+낙관적 되돌림) · `lib/reorder-contract.ts`(범용 `{orderedIds}`) 하나로 세 목록을 굴린다. 라우트 `/api/library/reorder` · `/api/english/vocab/reorder` · `/api/math/reorder`. 라이브러리 추가 없음.
+- **수학 필터 게이트**: 수학 목록은 필터(전체/틀린 문제/보류)가 있어, **'전체'가 아닐 때는 재배치 비활성**(부분 목록만 재색인하면 인덱스가 충돌). 삭제는 어느 필터에서도 유지. 서재는 검색 중 비활성, 단어장은 필터가 없어 게이트가 관리 모드 하나뿐.
+
+### 15-2. 읽어주기(TTS) 속도 조절
+
+읽어주기 속도를 **천천히(0.7)·보통(0.9, 기본)·빠르게(1.1)** 3단 분절 버튼으로 고른다.
+
+- 슬라이더가 아니라 버튼: 아이+폰 맥락이라 큰 탭 타깃이 낫고, 세로 스크롤 목록 안 가로 슬라이더는 스크롤과 충돌한다. 속도는 3~4단이면 충분.
+- **전역 값 하나**(`lib/speech.ts` `getTtsRate`/`setTtsRate`, localStorage 영속) — 6개 읽어주기 화면(카드·챕터리더·단어장·시험·오답)이 공유한다(같은 단어가 화면마다 다른 목소리로 들리면 안 된다는 원칙). 컨트롤은 `components/tts-speed-control.tsx`, 챕터 리더·단어장 상단에 배선. 기본 0.9라 안 건드리면 기존과 동일.
+
+### 15-3. 단어장 유의어·반의어 연결 + 관계 문제 시험
+
+단어장 안의 다른 **(단어+뜻)**을 골라 특정 단어의 **특정 뜻**에 유의어/반의어로 연결하고, 그 관계를 시험 문제로 낸다(§14-2 단어장 정복 확장).
+
+- **의미별 연결**: 모델이 이미 뜻을 `meanings[].related`로 담으므로(교재 판독분), 여기에 **사용자 연결**을 더한다. `VocabRelated`에 `source:"book"|"user"` + `linkedNo`·`linkedMeaningIndex`(필수 nullable) 추가. **AI 추출 JSON Schema·프롬프트는 무변경** — 판독분은 코드 정규화가 `source:"book"`으로 채운다(spec-sync 무영향).
+- **양쪽 상호 기록**: `linkVocabRelated`/`unlinkVocabRelated`(공용 순수함수 `applyVocabLink`, 양 백엔드)가 두 뜻의 related에 대칭 기록·멱등. 라우트 `/api/english/vocab/[id]/link`(POST·DELETE). 엔트리 식별은 배열 인덱스(교재 번호 `no`는 손입력 null·중복 가능이라 유일 식별 불가), 저장 매칭은 `word`+`meaningIndex`.
+- **연결 UI**: 각 뜻 옆 "＋연결" → 단어장 내 (단어·뜻) 피커(자기·기존 연결 제외). 사용자 연결분만 표식+해제(교재 판독 유의어는 표시만).
+- **관계 문제 시험**: `buildRelationQuestions`로 **"X의 유의어는?/반대말은?"** 5지선다(정답=연결어, 오답=같은 DAY 단어, `buildChoices` 재사용). **내가 연결한 것만**(`source:"user"`) 출제. 관계 결과는 `VocabQuizRecord{mode:"relation"}` 별도 저장 → def→word 숙련도·오답노트·졸업에 **무오염**(오프라인 eval이 반례로 잠금).
