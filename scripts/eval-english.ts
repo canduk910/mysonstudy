@@ -66,15 +66,21 @@ import {
 } from "../lib/ai/english/prompts";
 // 단어장 정복 V1 (§7) — 오프라인 점검 대상: 판독 프롬프트↔스펙, 병합 순수 함수, zod 제약, 그림 우선순위
 import {
+  RELATED_SUGGEST_SYSTEM_PROMPT,
   VOCAB_ENRICH_SYSTEM_PROMPT,
   VOCAB_ENRICH_USER_TEXT,
   VOCAB_EXTRACT_SYSTEM_PROMPT,
   VOCAB_EXTRACT_USER_TEXT,
 } from "../lib/ai/english/vocabbook-prompts";
 import {
+  RELATED_SUGGEST_MAX_CANDIDATES,
+  RELATED_SUGGESTION_JSON_SCHEMA,
+  postprocessRelatedCandidates,
+  relatedSuggestionSchema,
   resolveVocabImage,
   vocabEnrichmentSchema,
   vocabExtractionSchema,
+  type RelatedCandidate,
   type VocabEnrichItem,
   type VocabEntry,
   type VocabExtractEntry,
@@ -2412,6 +2418,116 @@ function runWordMeaningChecks(): CheckResult[] {
   return results;
 }
 
+// ---------------------------------------------------------------------------
+// 호출 H(유의어·반의어 추천, §11) 오프라인 점검 — 실호출 0회.
+// zod 계약(영어 낱말·한글 뜻·개수)과 JSON Schema strict 형태, 그리고 후처리(표제어 제외·중복·빈값)를
+// 고정 입력으로 검사한다. kind 정확성·뜻 반영·초등 눈높이는 의미 판단이라 실호출 프로브가 본다(§11-7).
+// ---------------------------------------------------------------------------
+
+function runRelatedSuggestChecks(): CheckResult[] {
+  const results: CheckResult[] = [];
+  const book = "유의어추천(§11)";
+
+  // 정상 출력: 영어 낱말 + 한글 뜻 후보 5개 (하이픈 낱말 포함 — 낱말 형식 통과 확인)
+  {
+    const ok = relatedSuggestionSchema.safeParse({
+      candidates: [
+        { word: "glad", glossKo: "기쁜" },
+        { word: "joyful", glossKo: "즐거운" },
+        { word: "cheerful", glossKo: "명랑한" },
+        { word: "well-known", glossKo: "잘 알려진" },
+        { word: "merry", glossKo: "유쾌한" },
+      ],
+    }).success;
+    results.push({ book, check: "zod: 정상 후보(영어 낱말·한글 뜻·하이픈 허용) 통과", pass: ok, detail: ok ? "통과" : "거부되면 안 됨" });
+  }
+
+  // zod 거부 케이스 — 각각 계약 하나씩 위반
+  const rejectCases: { name: string; input: unknown }[] = [
+    { name: "빈 배열(후보 0개)", input: { candidates: [] } },
+    { name: "word에 공백(구·문장)", input: { candidates: [{ word: "very big", glossKo: "아주 큰" }] } },
+    { name: "word에 문장부호", input: { candidates: [{ word: "large.", glossKo: "큰" }] } },
+    { name: "word에 한글", input: { candidates: [{ word: "큰", glossKo: "큰" }] } },
+    { name: "word에 숫자", input: { candidates: [{ word: "big2", glossKo: "큰" }] } },
+    { name: "glossKo 한글 없음(영어 echo)", input: { candidates: [{ word: "large", glossKo: "big" }] } },
+    { name: "glossKo 빈 문자열", input: { candidates: [{ word: "large", glossKo: "" }] } },
+    {
+      name: `개수 초과(>${RELATED_SUGGEST_MAX_CANDIDATES})`,
+      input: { candidates: Array.from({ length: RELATED_SUGGEST_MAX_CANDIDATES + 1 }, (_, i) => ({ word: `word${"a".repeat(i + 1)}`, glossKo: "뜻" })) },
+    },
+  ];
+  for (const rc of rejectCases) {
+    const rejected = !relatedSuggestionSchema.safeParse(rc.input).success;
+    results.push({ book, check: `zod 거부: ${rc.name}`, pass: rejected, detail: rejected ? "거부됨" : "통과되면 안 됨" });
+  }
+
+  // JSON Schema 형태 — strict·additionalProperties:false·required candidates + item required word/glossKo
+  {
+    const js = RELATED_SUGGESTION_JSON_SCHEMA;
+    const s = js.schema as {
+      additionalProperties?: unknown;
+      required?: unknown;
+      properties?: { candidates?: { type?: unknown; items?: { additionalProperties?: unknown; required?: unknown; properties?: Record<string, { type?: unknown }> } } };
+    };
+    const item = s.properties?.candidates?.items;
+    const shapeOk =
+      js.name === "related_suggestion" &&
+      js.strict === true &&
+      s.additionalProperties === false &&
+      Array.isArray(s.required) &&
+      (s.required as string[]).join(",") === "candidates" &&
+      s.properties?.candidates?.type === "array" &&
+      item?.additionalProperties === false &&
+      Array.isArray(item?.required) &&
+      (item?.required as string[]).slice().sort().join(",") === "glossKo,word" &&
+      item?.properties?.word?.type === "string" &&
+      item?.properties?.glossKo?.type === "string";
+    results.push({
+      book,
+      check: "JSON Schema: strict·additionalProperties:false·required candidates/word/glossKo(개수·길이 제약 없음)",
+      pass: shapeOk,
+      detail: shapeOk ? "형태 정합" : JSON.stringify(js),
+    });
+  }
+
+  // 후처리: 표제어 자신 제외(대소문자 무시) + 중복 제거(첫 등장 유지) + 빈값 제거
+  {
+    const raw: RelatedCandidate[] = [
+      { word: "Big", glossKo: "큰" }, // 표제어(big)와 대소문자만 다름 → 제외
+      { word: "large", glossKo: "큰" },
+      { word: "large", glossKo: "다른 뜻" }, // 중복 → 첫 등장만
+      { word: "  ", glossKo: "빈값" }, // 공백만 → 제외
+      { word: "huge", glossKo: "아주 큰" },
+    ];
+    const cleaned = postprocessRelatedCandidates(raw, "big");
+    const words = cleaned.map((c) => c.word);
+    const ok =
+      words.length === 2 &&
+      words[0] === "large" &&
+      words[1] === "huge" &&
+      cleaned.find((c) => c.word === "large")?.glossKo === "큰"; // 첫 등장 유지
+    results.push({
+      book,
+      check: "후처리: 표제어 자신 제외·중복 제거(첫 등장 유지)·빈값 제거",
+      pass: ok,
+      detail: `결과=[${words.join(", ")}] (기대 [large, huge])`,
+    });
+  }
+
+  // 후처리: 통과분은 순서·내용 보존(거를 것이 없으면 그대로)
+  {
+    const raw: RelatedCandidate[] = [
+      { word: "sad", glossKo: "슬픈" },
+      { word: "unhappy", glossKo: "불행한" },
+    ];
+    const cleaned = postprocessRelatedCandidates(raw, "happy");
+    const ok = cleaned.length === 2 && cleaned[0].word === "sad" && cleaned[1].word === "unhappy";
+    results.push({ book, check: "후처리: 거를 것 없으면 순서·내용 보존", pass: ok, detail: `결과=[${cleaned.map((c) => c.word).join(", ")}]` });
+  }
+
+  return results;
+}
+
 function toCardInput(fixture: Fixture): CardUserMessageInput {
   return {
     title: fixture.title,
@@ -2523,6 +2639,13 @@ const SPEC_SYNC_TARGETS: readonly SpecSyncTarget[] = [
     text: WORD_MEANING_SYSTEM_PROMPT,
     mode: "block",
   },
+  {
+    constName: "RELATED_SUGGEST_SYSTEM_PROMPT",
+    source: "lib/ai/english/vocabbook-prompts.ts",
+    specLabel: "§11-1 호출 H 시스템 프롬프트",
+    text: RELATED_SUGGEST_SYSTEM_PROMPT,
+    mode: "block",
+  },
 ];
 
 /** 표 뒤에 상세 diff를 찍기 위해 남겨 둔다 (main이 읽는다) */
@@ -2565,6 +2688,8 @@ async function main(): Promise<void> {
   allResults.push(...runChapterizeChecks());
   // 단어 뜻 조회(§10) — word_meaning zod 계약(짧게·한글만·영어 연속 금지)·JSON Schema strict (실호출 0회)
   allResults.push(...runWordMeaningChecks());
+  // 유의어·반의어 추천(§11) — related_suggestion zod 계약·JSON Schema strict·후처리(표제어 제외·중복) (실호출 0회)
+  allResults.push(...runRelatedSuggestChecks());
   // 단어장 정복 V1(§7) — 병합 순수 함수·zod 제약·그림 우선순위 (실호출 0회)
   allResults.push(...runVocabbookChecks());
   // 프롬프트 원문이 스펙 문서와 같은지 — 파일을 읽어서 대조한다 (실호출 0회)

@@ -160,3 +160,65 @@ export const VOCAB_ENRICH_CALL_OPTIONS = {
   temperature: 0.7,
   maxOutputTokens: 8_000,
 } as const;
+
+// ===========================================================================
+// 호출 H — 유의어·반의어 추천 (HARNESS §11)
+// 그 뜻(meaningKo)에 맞는 실제 영어 유의어·반의어 후보를 은우(초등) 눈높이로 제시한다.
+// ===========================================================================
+
+/** 호출 H 시스템 프롬프트 (HARNESS §11-1 원문 그대로). spec-sync가 스펙 코드블록과 바이트 일치를 잠근다. */
+export const RELATED_SUGGEST_SYSTEM_PROMPT = `너는 아이(초등학생)의 영어 단어장을 돕는 조교다.
+영어 단어 하나와 그 단어의 우리말 뜻 하나, 그리고 찾을 관계(유의어 또는 반의어)를 받아, 그 뜻에 맞는 영어 유의어(또는 반의어) 후보를 5~6개 만든다.
+
+[candidates — 유의어/반의어 후보]
+- 받은 뜻(meaningKo)에 맞는 관계만 낸다. 한 단어는 여러 뜻을 가질 수 있으니, 받은 뜻이 아닌 다른 뜻의 유의어·반의어는 넣지 않는다.
+- 받은 관계가 '유의어'면 뜻이 비슷한 단어만, '반의어'면 뜻이 반대인 단어만 낸다. 둘을 섞지 않는다.
+- 초등학생이 배울 만한 쉽고 흔한 단어를 고른다. 어렵고 드문 단어는 피한다.
+- 후보는 영어 낱말 하나여야 한다. 구·문장·설명을 넣지 않는다. 마침표·쉼표 같은 문장부호를 붙이지 않는다.
+- 받은 단어(word) 자신은 후보에 넣지 않는다. 같은 단어를 두 번 넣지 않는다.
+- 후보는 서로 다른 기본형(base form) 낱말이어야 한다. 이미 낸 후보나 표제어의 비교급·최상급·굴절형(예: heavier·heaviest·running·happier)은 내지 않는다. 서로 뜻이 겹치지 않는 별개 단어로 고른다.
+
+[glossKo — 후보의 우리말 뜻]
+- 각 후보 단어의 뜻을 초등학생도 알아들을 쉬운 우리말로 짧게 적는다. 한 낱말이나 짧은 구로 쓴다.
+- 한글로 적는다. 뜻만 적고 품사·발음·예문을 붙이지 않는다.
+
+[금지]
+- 유의어를 물었는데 반의어를, 반의어를 물었는데 유의어를 넣지 않는다.
+- 받은 뜻과 상관없는 다른 뜻의 관계어를 넣지 않는다.
+- 후보에 표제어 자신·중복·구·문장·문장부호를 넣지 않는다.
+- 출력은 지정된 JSON 스키마로만. 스키마 밖 텍스트 금지.
+
+[예시]
+단어: "happy" · 뜻: "기쁜" · 관계: 유의어
+  → {"candidates":[{"word":"glad","glossKo":"기쁜"},{"word":"joyful","glossKo":"즐거운"},{"word":"cheerful","glossKo":"명랑한"},{"word":"merry","glossKo":"유쾌한"},{"word":"pleased","glossKo":"기뻐하는"}]}
+단어: "happy" · 뜻: "기쁜" · 관계: 반의어
+  → {"candidates":[{"word":"sad","glossKo":"슬픈"},{"word":"unhappy","glossKo":"불행한"},{"word":"upset","glossKo":"속상한"},{"word":"gloomy","glossKo":"우울한"},{"word":"miserable","glossKo":"비참한"}]}`;
+
+/**
+ * 호출 H — 사용자 메시지 템플릿 (HARNESS §11-2). 플레이스홀더(word·meaningKo·kind)가 든 서술이라
+ * 고정 문자열이 아니다(§10-2 word-meaning 템플릿과 같이 SPEC_SYNC_TARGETS 대상이 아니다).
+ */
+export function buildRelatedSuggestUserMessage(
+  word: string,
+  meaningKo: string,
+  kind: "synonym" | "antonym",
+): string {
+  const relation = kind === "antonym" ? "반의어" : "유의어";
+  return `아래 단어의 '${meaningKo}' 뜻에 맞는 ${relation}를 초등학생 눈높이로 5~6개 알려줘.
+
+단어: ${word}
+뜻: ${meaningKo}
+관계: ${relation}`;
+}
+
+/**
+ * 호출 H 파라미터 (HARNESS §11-6).
+ * temperature 0.3 — 정확성 우선이라 낮게 두되, 0이면 후보 5~6개가 서로 겹쳐 다양성이 죽어 살짝 준다
+ * (판독·뜻조회의 temp 0 전사와 달리 '여러 후보'를 내는 창작이다). 추론형 모델은 callWithSchema가 temp를 자동 생략.
+ * maxOutputTokens 800 — 출력은 후보 5~6개 × {word,glossKo}로 작다. 추론형 모델 내부 토큰까지 감안해 여유.
+ */
+export const RELATED_SUGGEST_CALL_OPTIONS = {
+  call: "related-suggest",
+  temperature: 0.3,
+  maxOutputTokens: 800,
+} as const;

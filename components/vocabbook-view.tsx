@@ -38,7 +38,15 @@ import { lockBodyScroll } from "@/lib/scroll-lock";
 import { speak, speakSequence, stopSpeaking } from "@/lib/speech";
 import type { VocabAddWordResponse } from "@/lib/vocab-add-word-contract";
 import type { VocabEnrichResponse } from "@/lib/vocab-enrich-contract";
-import type { VocabLinkKind, VocabLinkRequest, VocabLinkResponse } from "@/lib/vocab-link-contract";
+import type {
+  VocabAddRelatedRequest,
+  VocabAddRelatedResponse,
+  VocabLinkKind,
+  VocabLinkRequest,
+  VocabLinkResponse,
+  VocabRelatedCandidate,
+  VocabSuggestRelatedResponse,
+} from "@/lib/vocab-link-contract";
 import TtsSpeedControl from "./tts-speed-control";
 import s from "./vocabbook-view.module.css";
 
@@ -56,12 +64,12 @@ const DOUBLE_TAP_MS = 300;
 const AddWordContext = createContext<((word: string) => void) | null>(null);
 
 /**
- * 유의어/반의어 연결(V8) — 뜻별 "＋ 연결" 버튼·사용자 칩 해제가 쓰는 컨텍스트. 표·카드 두 모드가 같은
- * 연결 시트·해제 흐름을 공유하도록 최상위에서 내려보낸다. null이면(제공 안 됨) 연결 UI를 그리지 않는다.
- * - `bookId`   : POST/DELETE `/api/english/vocab/[id]/link` 대상
- * - `entries`  : 연결 대상 후보 목록·해제 시 targetIndex 역해석의 원본(화면이 보는 그 배열 = 인덱스 기준)
- * - `openLink` : 어느 (단어 index·뜻 index)에서 연결을 시작할지 시트를 연다
- * - `onLinked` : 연결/해제 성공 후 서버 재조회(router.refresh) — 표·카드의 관계 칩을 갱신한다
+ * 유의어/반의어 연결(V8) — 뜻별 "＋ 추가" 버튼·사용자 칩 해제가 쓰는 컨텍스트. 표·카드 두 모드가 같은
+ * 추가 시트·해제 흐름을 공유하도록 최상위에서 내려보낸다. null이면(제공 안 됨) 연결 UI를 그리지 않는다.
+ * - `bookId`   : suggest-related·add-related(추가·연결)·DELETE `/link`(해제) 라우트 대상
+ * - `entries`  : 해제 시 targetIndex 역해석의 원본(화면이 보는 그 배열 = 인덱스 기준)
+ * - `openLink` : 어느 (단어 index·뜻 index)에서 추가 시트를 열지 시작점을 넘긴다
+ * - `onLinked` : 추가/연결/해제 성공 후 서버 재조회(router.refresh) — 표·카드의 관계 칩을 갱신한다
  */
 interface VocabLinkContext {
   bookId: string;
@@ -854,8 +862,8 @@ function AddWordSheet({
  * 한 뜻(meaning) 아래 관련어 칩과 연결 버튼을 그린다 — 표·카드 두 모드가 이 한 컴포넌트를 쓴다.
  * - 교재 판독 관련어(source:"book")는 그대로 칩으로.
  * - 사용자가 이은 것(source:"user")은 accent 톤 + "내가 연결" 표식 + ✕ 해제 버튼(UserLinkChip).
- * - 맨 끝에 "＋ 유의어/반의어 연결" 버튼 — LinkContext.openLink로 이 (단어 index·뜻 index)에서 시트를 연다.
- * LinkContext가 없으면(제공 안 됨) 연결 버튼·해제 없이 칩만 그린다(안전 폴백).
+ * - 맨 끝에 "＋ 유의어/반의어 추가" 버튼 — LinkContext.openLink로 이 (단어 index·뜻 index)에서 추가 시트를 연다.
+ * LinkContext가 없으면(제공 안 됨) 추가 버튼·해제 없이 칩만 그린다(안전 폴백).
  */
 function MeaningLinks({
   entryIndex,
@@ -886,7 +894,7 @@ function MeaningLinks({
           className={s.linkAddBtn}
           onClick={() => ctx.openLink(entryIndex, meaningIndex)}
         >
-          ＋ 유의어/반의어 연결
+          ＋ 유의어/반의어 추가
         </button>
       ) : null}
     </span>
@@ -956,18 +964,11 @@ function UserLinkChip({
   );
 }
 
-/** 연결 시트가 그리는 후보 한 줄 — 대상 (단어 index·뜻 index·표제어·그 뜻 한글). */
-interface LinkCandidate {
-  targetIndex: number;
-  targetMeaningIndex: number;
-  word: string;
-  meaningKo: string;
-}
-
 /**
- * 유의어/반의어 연결 시트(하단 시트) — 종류(유의어·반의어)를 고르고, 이 단어장의 **다른 (단어·뜻)** 목록에서
- * 하나를 골라 잇는다(검색 가능, 자기 자신 entry·이미 연결된 것은 제외). 확정 → POST `/link` → onLinked(refresh).
- * AddWordSheet와 같은 시트 규약(body 스크롤 잠금·Esc·배경 탭 닫기).
+ * 유의어/반의어 추가 시트(하단 시트, V8 재작업) — 상대를 **AI 추천** 또는 **직접 입력**으로 골라 잇는다.
+ * 종류(유의어/반의어)를 고르면 호출 H로 후보를 받아 칩으로 보여주고, 하나를 고르면 `add-related`가
+ * **없으면 새로 추가(+자동 보강) / 있으면 연결만** 한다. 성공하면 refresh하고 시트는 유지해 여러 개를 이어
+ * 추가할 수 있다(방금 추가한 후보는 "연결됨"으로 표식). AddWordSheet와 같은 시트 규약(스크롤 잠금·Esc·배경 탭).
  */
 function LinkSheet({
   bookId,
@@ -985,9 +986,18 @@ function LinkSheet({
   onLinked: () => void;
 }) {
   const [kind, setKind] = useState<VocabLinkKind>("synonym");
-  const [query, setQuery] = useState("");
-  const [phase, setPhase] = useState<"idle" | "loading" | "error">("idle");
-  const [message, setMessage] = useState<string | null>(null);
+  // 추천 상태 — null=아직 없음. suggestPhase: 요청 중/완료/오류.
+  const [suggestPhase, setSuggestPhase] = useState<"loading" | "done" | "error">("loading");
+  const [candidates, setCandidates] = useState<VocabRelatedCandidate[]>([]);
+  const [suggestError, setSuggestError] = useState<string | null>(null);
+  const [noKey, setNoKey] = useState(false); // 키 없음(501) — 추천 불가, 직접 입력 유도
+  // 직접 입력
+  const [directWord, setDirectWord] = useState("");
+  const [directGloss, setDirectGloss] = useState("");
+  // 추가·연결 진행/결과
+  const [adding, setAdding] = useState<string | null>(null); // 진행 중인 후보 word(중복 클릭 방어). null=없음
+  const [addMessage, setAddMessage] = useState<string | null>(null);
+  const [addError, setAddError] = useState<string | null>(null);
 
   useEffect(() => lockBodyScroll(), []);
   useEffect(() => {
@@ -1001,64 +1011,103 @@ function LinkSheet({
   const source = entries[sourceIndex];
   const sourceMeaning = source?.meanings[sourceMeaningIndex];
 
-  // 후보 목록 + "이미 연결됨" 제외는 kind·query가 바뀔 때만 다시 만든다.
-  const candidates = useMemo<LinkCandidate[]>(() => {
-    // 이 뜻에 이 kind로 이미 이은 (상대 word·상대 뜻 index) — 목록에서 뺀다.
-    const linked = new Set(
+  // 이미 이 뜻에 이 kind로 이은 상대 word(소문자) — 후보에 "연결됨" 표식(중복 방지).
+  const linkedWords = useMemo(() => {
+    return new Set(
       (sourceMeaning?.related ?? [])
         .filter((r) => r.source === "user" && r.kind === kind)
-        .map((r) => `${r.word} ${r.linkedMeaningIndex ?? ""}`),
+        .map((r) => r.word.trim().toLowerCase()),
     );
-    const q = query.trim().toLowerCase();
-    const out: LinkCandidate[] = [];
-    entries.forEach((e, ti) => {
-      if (ti === sourceIndex) return; // 자기 자신(같은 단어) 제외
-      e.meanings.forEach((m, tmi) => {
-        if (linked.has(`${e.word} ${tmi}`)) return; // 이미 연결됨
-        if (q && !e.word.toLowerCase().includes(q) && !m.ko.toLowerCase().includes(q)) return;
-        out.push({ targetIndex: ti, targetMeaningIndex: tmi, word: e.word, meaningKo: m.ko });
-      });
-    });
-    return out;
-  }, [entries, sourceIndex, sourceMeaning, kind, query]);
+  }, [sourceMeaning, kind]);
 
-  async function pick(c: LinkCandidate) {
-    if (phase === "loading") return;
-    setPhase("loading");
-    setMessage(null);
+  // 추천 호출(호출 H) — 종류 선택마다 다시 부른다. source/뜻은 시트가 열려 있는 동안 고정이라 kind에만 반응.
+  useEffect(() => {
+    if (!source || !sourceMeaning) return;
+    let alive = true;
+    setSuggestPhase("loading");
+    setSuggestError(null);
+    setNoKey(false);
+    (async () => {
+      try {
+        const res = await fetch(`/api/english/vocab/${bookId}/suggest-related`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ word: source.word, meaningKo: sourceMeaning.ko, kind }),
+        });
+        const data = (await res.json()) as VocabSuggestRelatedResponse;
+        if (!alive) return;
+        if (data.ok) {
+          setCandidates(data.candidates);
+          setSuggestPhase("done");
+        } else {
+          setCandidates([]);
+          setNoKey(data.error === "no_api_key");
+          setSuggestError(data.messageKo);
+          setSuggestPhase("error");
+        }
+      } catch {
+        if (!alive) return;
+        setSuggestError("연결이 끊겼어요. 잠시 후 다시 시도해 주세요.");
+        setSuggestPhase("error");
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // bookId·source.word·sourceMeaning.ko는 시트 생명주기 동안 고정 — kind 변경에만 재요청한다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind]);
+
+  // 고른(추천 또는 직접입력) 상대를 추가·연결한다. 성공하면 refresh하고 시트는 유지(여러 개 이어 추가).
+  async function addRelated(chosen: VocabRelatedCandidate) {
+    const w = chosen.word.trim();
+    const g = chosen.glossKo.trim();
+    if (adding || w === "" || g === "") return;
+    setAdding(w);
+    setAddError(null);
+    setAddMessage(null);
     try {
-      const body: VocabLinkRequest = {
+      const body: VocabAddRelatedRequest = {
         sourceIndex,
         sourceMeaningIndex,
-        targetIndex: c.targetIndex,
-        targetMeaningIndex: c.targetMeaningIndex,
+        chosen: { word: w, glossKo: g },
         kind,
       };
-      const res = await fetch(`/api/english/vocab/${bookId}/link`, {
+      const res = await fetch(`/api/english/vocab/${bookId}/add-related`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = (await res.json()) as VocabLinkResponse;
+      const data = (await res.json()) as VocabAddRelatedResponse;
       if (data.ok) {
-        onLinked(); // 서버 재조회 — 양쪽 뜻에 칩이 생긴 새 entries로 다시 그린다
-        onClose();
+        setAddMessage(
+          data.added
+            ? data.enrichSkipped
+              ? `"${w}" 추가·연결했어요! 영영 뜻은 나중에 "다시 만들기"로 채울 수 있어요.`
+              : `"${w}" 추가·연결했어요!`
+            : `"${w}" 연결했어요! (이미 단어장에 있던 단어예요)`,
+        );
+        setDirectWord("");
+        setDirectGloss("");
+        onLinked(); // 서버 재조회 — 양쪽 뜻에 칩이 생긴 새 entries로 다시 그린다(시트는 유지)
       } else {
-        setPhase("error");
-        setMessage(data.messageKo);
+        setAddError(data.messageKo);
       }
     } catch {
-      setPhase("error");
-      setMessage("연결이 끊겼어요. 잠시 후 다시 시도해 주세요.");
+      setAddError("연결이 끊겼어요. 잠시 후 다시 시도해 주세요.");
+    } finally {
+      setAdding(null);
     }
   }
+
+  const directDisabled = directWord.trim() === "" || directGloss.trim() === "" || adding !== null;
 
   return (
     <div
       className={s.sheetBackdrop}
       role="dialog"
       aria-modal="true"
-      aria-label={`${source?.word ?? ""} 유의어·반의어 연결`}
+      aria-label={`${source?.word ?? ""} 유의어·반의어 추가`}
       onClick={onClose}
     >
       <div className={`${s.sheet} ${s.linkSheet}`} onClick={(e) => e.stopPropagation()}>
@@ -1069,7 +1118,7 @@ function LinkSheet({
           <b lang="ko">{sourceMeaning?.ko}</b> 뜻에 이을 {kind === "synonym" ? "유의어" : "반의어"}를 골라요.
         </p>
 
-        {/* 종류 선택 — 유의어/반의어 */}
+        {/* 종류 선택 — 바꾸면 추천을 다시 받는다 */}
         <div role="group" aria-label="관계 종류" className={s.linkKindGroup}>
           <button
             type="button"
@@ -1089,44 +1138,109 @@ function LinkSheet({
           </button>
         </div>
 
-        {/* 검색 */}
-        <input
-          type="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="단어나 뜻으로 찾기"
-          aria-label="단어·뜻 검색"
-          className={s.linkSearch}
-        />
-
-        {/* 후보 목록 */}
-        <ul className={s.linkList}>
-          {candidates.length === 0 ? (
-            <li className={s.linkEmpty}>고를 수 있는 단어가 없어요.</li>
-          ) : (
-            candidates.map((c) => (
-              <li key={`${c.targetIndex}-${c.targetMeaningIndex}`}>
-                <button
-                  type="button"
-                  className={s.linkItem}
-                  onClick={() => pick(c)}
-                  disabled={phase === "loading"}
-                >
-                  <span className="t-vocab-word" lang="en">
-                    {c.word}
-                  </span>
-                  <span className="t-caption" lang="ko">
-                    {c.meaningKo}
-                  </span>
+        {/* 추천 후보 영역 */}
+        <div className={s.suggestArea}>
+          <p className={`t-caption ${s.suggestLabel}`}>
+            <span aria-hidden>✨</span> 추천 {kind === "synonym" ? "유의어" : "반의어"}
+          </p>
+          {suggestPhase === "loading" ? (
+            <p className={`t-caption ${s.suggestState}`} role="status">
+              <span aria-hidden>⏳</span> 후보를 불러오는 중…
+            </p>
+          ) : suggestPhase === "error" ? (
+            <div className={s.suggestState} role="status">
+              <p className={`t-caption ${s.sheetError}`}>{suggestError}</p>
+              {noKey ? (
+                <p className="t-caption">아래에서 직접 입력으로 이어 줄 수 있어요.</p>
+              ) : (
+                <button type="button" className="u-btn u-btn-secondary" onClick={() => setKind(kind)}>
+                  <span aria-hidden>🔁</span> 다시 시도
                 </button>
-              </li>
-            ))
+              )}
+            </div>
+          ) : candidates.length === 0 ? (
+            <p className={`t-caption ${s.suggestState}`}>추천 후보가 없어요. 아래에서 직접 입력해 보세요.</p>
+          ) : (
+            <ul className={s.linkList}>
+              {candidates.map((c) => {
+                const already = linkedWords.has(c.word.trim().toLowerCase());
+                return (
+                  <li key={c.word}>
+                    <button
+                      type="button"
+                      className={s.linkItem}
+                      onClick={() => addRelated(c)}
+                      disabled={already || adding !== null}
+                    >
+                      <span className={s.linkItemMain}>
+                        <span className="t-vocab-word" lang="en">
+                          {c.word}
+                        </span>
+                        {already ? <span className={s.userTag}>연결됨</span> : null}
+                        {adding === c.word.trim() ? <span className={s.userTag}>추가 중…</span> : null}
+                      </span>
+                      <span className="t-caption" lang="ko">
+                        {c.glossKo}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
           )}
-        </ul>
+        </div>
 
-        {message ? (
+        {/* 직접 입력 — 추천에 없거나 원하는 단어를 직접 이어 준다(영단어 + 짧은 우리말 뜻) */}
+        <div className={s.directArea}>
+          <p className={`t-caption ${s.suggestLabel}`}>
+            <span aria-hidden>✏️</span> 직접 입력
+          </p>
+          <div className={s.directRow}>
+            <input
+              type="text"
+              value={directWord}
+              onChange={(e) => setDirectWord(e.target.value)}
+              placeholder="영단어"
+              aria-label="이을 영단어"
+              lang="en"
+              className={s.linkSearch}
+            />
+            <input
+              type="text"
+              value={directGloss}
+              onChange={(e) => setDirectGloss(e.target.value)}
+              placeholder="우리말 뜻"
+              aria-label="그 단어의 우리말 뜻"
+              lang="ko"
+              className={s.linkSearch}
+            />
+          </div>
+          <button
+            type="button"
+            className={`u-btn u-btn-primary ${s.directAddBtn}`}
+            onClick={() => addRelated({ word: directWord, glossKo: directGloss })}
+            disabled={directDisabled}
+          >
+            {adding !== null ? (
+              <>
+                <span aria-hidden>⏳</span> 추가 중…
+              </>
+            ) : (
+              <>
+                <span aria-hidden>➕</span> 이어 추가
+              </>
+            )}
+          </button>
+        </div>
+
+        {addMessage ? (
+          <p className={`${s.sheetHint} ${s.suggestOk}`} role="status">
+            {addMessage}
+          </p>
+        ) : null}
+        {addError ? (
           <p className={`${s.sheetHint} ${s.sheetError}`} role="status">
-            {message}
+            {addError}
           </p>
         ) : null}
 

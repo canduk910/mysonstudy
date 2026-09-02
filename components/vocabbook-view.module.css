@@ -604,3 +604,47 @@
   color: var(--ink-3);
   text-align: center;
 }
+
+/* ── 추천+직접입력 추가 시트 (V8 재작업) ────────────────────────────────────── */
+.suggestArea,
+.directArea {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+.suggestLabel {
+  margin: 0;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+.suggestState {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 0;
+}
+.suggestOk {
+  color: var(--accent-ink);
+}
+.linkItemMain {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.directRow {
+  display: flex;
+  gap: 8px;
+}
+.directRow > .linkSearch {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.directAddBtn {
+  min-height: 44px;
+}

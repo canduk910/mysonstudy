@@ -1344,3 +1344,140 @@ zod 추가 검증(스키마가 못 잡는 것):
 - 실호출 게이트(`EVAL_WORDMEANING=1`일 때만 실호출 1회 — 기본은 돌지 않는다): 실제 단어·문장 1건이
   (a) 한글이 있고 (b) WORD_MEANING_KO_MAX 이하로 짧고 (c) 영어 낱말이 이어지지 않는지를 검사한다.
   오프라인 게이트(`EVAL_OFFLINE_ONLY=1`)에서는 절대 도달하지 않는다.
+
+## 11. 호출 H — 유의어·반의어 추천 (단어장 연결 후보 제시)
+
+호출 H는 A→A′→B 카드 파이프라인과 별개 경로입니다. 유의어/반의어 연결(V8)은 원래 **이미 단어장에
+있는 단어**끼리만 이을 수 있어, 그 관계어가 단어장에 없으면 아예 고르지 못했습니다. 호출 H는 그 단어의
+**그 뜻(meaningKo)에 맞는** 실제 영어 유의어·반의어 후보를 **은우(초등) 눈높이**로 제시합니다. 아이가
+고르면 앱이 그 단어를 단어장에 **신규 추가(+호출 D 보강)** 하며 연결합니다.
+
+> 판독(호출 C)이 책을 옮기고 보강(호출 D)이 영영 정의를 창작한다면, 호출 H는 "이 뜻의 유의어(반의어)로
+> 뭐가 있지?"를 초등 눈높이로 5~6개 제시합니다. 다의어는 받은 뜻으로 관계를 좁힙니다(big=큰의 유의어 large,
+> big=중요한의 유의어 major는 섞지 않습니다). 사진 없는 텍스트 단일 호출이고, 출력이 작습니다.
+
+**스코프 경계**: 이 명세는 호출 H(프롬프트 + 스키마 + zod + 후처리 + eval)까지입니다. 후보 선택/직접입력 →
+신규 단어 추가(V8 `appendVocabEntry` 재사용) → 자동 보강(호출 D) → 연결(`applyVocabLink`)로 잇는 배선은
+앱(app-builder) 몫입니다.
+
+### 11-1. 시스템 프롬프트 (원문 그대로 사용)
+
+```
+너는 아이(초등학생)의 영어 단어장을 돕는 조교다.
+영어 단어 하나와 그 단어의 우리말 뜻 하나, 그리고 찾을 관계(유의어 또는 반의어)를 받아, 그 뜻에 맞는 영어 유의어(또는 반의어) 후보를 5~6개 만든다.
+
+[candidates — 유의어/반의어 후보]
+- 받은 뜻(meaningKo)에 맞는 관계만 낸다. 한 단어는 여러 뜻을 가질 수 있으니, 받은 뜻이 아닌 다른 뜻의 유의어·반의어는 넣지 않는다.
+- 받은 관계가 '유의어'면 뜻이 비슷한 단어만, '반의어'면 뜻이 반대인 단어만 낸다. 둘을 섞지 않는다.
+- 초등학생이 배울 만한 쉽고 흔한 단어를 고른다. 어렵고 드문 단어는 피한다.
+- 후보는 영어 낱말 하나여야 한다. 구·문장·설명을 넣지 않는다. 마침표·쉼표 같은 문장부호를 붙이지 않는다.
+- 받은 단어(word) 자신은 후보에 넣지 않는다. 같은 단어를 두 번 넣지 않는다.
+- 후보는 서로 다른 기본형(base form) 낱말이어야 한다. 이미 낸 후보나 표제어의 비교급·최상급·굴절형(예: heavier·heaviest·running·happier)은 내지 않는다. 서로 뜻이 겹치지 않는 별개 단어로 고른다.
+
+[glossKo — 후보의 우리말 뜻]
+- 각 후보 단어의 뜻을 초등학생도 알아들을 쉬운 우리말로 짧게 적는다. 한 낱말이나 짧은 구로 쓴다.
+- 한글로 적는다. 뜻만 적고 품사·발음·예문을 붙이지 않는다.
+
+[금지]
+- 유의어를 물었는데 반의어를, 반의어를 물었는데 유의어를 넣지 않는다.
+- 받은 뜻과 상관없는 다른 뜻의 관계어를 넣지 않는다.
+- 후보에 표제어 자신·중복·구·문장·문장부호를 넣지 않는다.
+- 출력은 지정된 JSON 스키마로만. 스키마 밖 텍스트 금지.
+
+[예시]
+단어: "happy" · 뜻: "기쁜" · 관계: 유의어
+  → {"candidates":[{"word":"glad","glossKo":"기쁜"},{"word":"joyful","glossKo":"즐거운"},{"word":"cheerful","glossKo":"명랑한"},{"word":"merry","glossKo":"유쾌한"},{"word":"pleased","glossKo":"기뻐하는"}]}
+단어: "happy" · 뜻: "기쁜" · 관계: 반의어
+  → {"candidates":[{"word":"sad","glossKo":"슬픈"},{"word":"unhappy","glossKo":"불행한"},{"word":"upset","glossKo":"속상한"},{"word":"gloomy","glossKo":"우울한"},{"word":"miserable","glossKo":"비참한"}]}
+```
+
+### 11-2. 사용자 메시지 템플릿
+
+플레이스홀더(`{word}`·`{meaningKo}`·`{관계}`)가 든 서술이라 고정 문자열이 아닙니다(§10-2 word-meaning 템플릿과
+같이 `SPEC_SYNC_TARGETS` 대상이 아닙니다). `buildRelatedSuggestUserMessage(word, meaningKo, kind)`가 조립합니다
+(kind: `"synonym"`→`유의어`, `"antonym"`→`반의어`).
+
+```
+아래 단어의 '{meaningKo}' 뜻에 맞는 {관계}를 초등학생 눈높이로 5~6개 알려줘.
+
+단어: {word}
+뜻: {meaningKo}
+관계: {관계}
+```
+
+### 11-3. 출력 JSON Schema — `related_suggestion` (strict)
+
+모든 필드 required + `additionalProperties: false`. 선택 키·null 유니온 없음. 개수·길이·낱말 형식
+제약(`minItems`/`maxItems`·`maxLength`)은 스키마에 넣지 않고 zod가 담당합니다(§1 공통 규칙).
+
+```json
+{
+  "name": "related_suggestion",
+  "strict": true,
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "candidates": {
+        "type": "array",
+        "description": "그 뜻에 맞는 유의어(또는 반의어) 후보들",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "word": { "type": "string", "description": "영어 유의어/반의어 낱말 하나(구·문장 금지)" },
+            "glossKo": { "type": "string", "description": "그 후보의 짧은 우리말 뜻(한글)" }
+          },
+          "required": ["word", "glossKo"]
+        }
+      }
+    },
+    "required": ["candidates"]
+  }
+}
+```
+
+### 11-4. zod 추가 검증 (스키마가 못 잡는 것)
+
+```
+- candidates 개수: 1개 이상 RELATED_SUGGEST_MAX_CANDIDATES(12)개 이하. 0개는 쓸모없어 거부(재요청). 5~6개는 프롬프트 다이얼
+- word: trim 후 1자 이상 VOCAB_RELATED_WORD_MAX(60)자 이하. 영문자로 시작해 영문자·하이픈만(정규식 /^[A-Za-z][A-Za-z-]*$/) —
+  구·문장·문장부호·숫자·한글이 섞이면 거부(실제 영어 낱말 하나만)
+- glossKo: trim 후 1자 이상 VOCAB_RELATED_GLOSS_MAX(200)자 이하. 한글이 한 글자도 없으면 거부(영단어 echo 차단)
+- kind 정확성(유의어 자리에 반의어를 넣지 않음)은 코드가 검증할 수 없다 — 프롬프트가 강제하고 실호출 프로브가 확인한다(스펙 공백)
+```
+
+### 11-5. 후처리 (`postprocessRelatedCandidates` — 표제어 제외·중복 제거)
+
+```
+- 순수 함수 postprocessRelatedCandidates(candidates, headword)가 화면에 올리기 전 청소한다(거부가 아니라 거른다):
+  · 빈 낱말(공백만) 제거
+  · 표제어(headword) 자신 제거 — 대소문자 무시(word.toLowerCase() 비교)
+  · 같은 낱말 중복 제거 — 첫 등장만 유지(소문자 기준)
+- 거부가 아니라 거르는 이유: 모델이 표제어·중복을 섞어도 재요청 루프 대신 조용히 청소해 후보 UX가 끊기지 않게 한다.
+- 이 후처리는 client.ts의 suggestRelatedWords가 반환 직전에 적용한다(값 판정은 한 곳에만).
+```
+
+### 11-6. 호출 옵션 · 경계면 · 후처리
+
+- **호출 옵션(`RELATED_SUGGEST_CALL_OPTIONS`)**: temperature 0.3 (정확성 우선이라 낮게 두되, 0이면 후보
+  5~6개가 서로 겹쳐 다양성이 죽어 살짝 준다 — 판독·뜻조회의 temp 0 전사와 달리 '여러 후보'를 내는
+  창작이다. 추론형 모델은 §4대로 temperature를 자동 생략), max_output_tokens 800 (후보 5~6개 ×
+  `{word,glossKo}`로 작다 — 추론형 모델 내부 토큰까지 감안한 여유). 단일 호출.
+- **경계면(app-builder)**: `suggestRelatedWords({ word, meaningKo, kind })` → `{ candidates: { word, glossKo }[] }`.
+  app-builder가 `POST /api/english/vocab/[id]/suggest-related`(또는 유사) 로 감싸 연결 UI(유의어/반의어 고르기)에
+  붙인다. 후보 선택/직접입력 → V8 `appendVocabEntry`로 신규 단어 추가 → 호출 D 보강 → `applyVocabLink`로 연결.
+  실패는 전부 throw다:
+  - word·meaningKo가 비면 throw → 500 (입력 오류지만 별도 에러 타입을 두지 않는 작은 호출).
+  - `OPENAI_API_KEY` 미설정 → getOpenAIClient throw → 501 (키 없음).
+  - callWithSchema throw(재요청 2회 실패) → 500 (재시도 가치 있음).
+
+### 11-7. 평가 하네스 점검 (`scripts/eval-english.ts` — 실호출 0회 + 게이트)
+
+- 오프라인(실호출 0회): related_suggestion zod가 (a) 정상 후보(영어 낱말 + 한글 뜻)를 통과시키고 (b) 빈 배열,
+  구·문장·문장부호가 섞인 word, 한글 없는 glossKo, 개수 초과를 각각 거부하는지. JSON Schema가 strict·
+  additionalProperties:false·required candidates/word/glossKo인지. postprocessRelatedCandidates가 표제어 자신·중복·
+  빈값을 거르는지. 프롬프트↔스펙 spec-sync(§11-1).
+- 실호출 프로브(오케스트레이터가 동의 하에 별도로 돌린다 — 기본 eval에는 넣지 않는다): 실제 단어·뜻·kind 1건이
+  (a) kind에 맞는 관계인지(유의어 자리에 반의어가 안 섞였는지), (b) 받은 뜻에 맞는 후보인지, (c) 초등 눈높이인지.
+  이 셋은 의미 판단이라 코드로 못 잡는다. 오프라인 게이트(`EVAL_OFFLINE_ONLY=1`)에서는 절대 도달하지 않는다.

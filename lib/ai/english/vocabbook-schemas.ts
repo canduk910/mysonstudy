@@ -681,3 +681,138 @@ export const vocabEnrichmentSchema = z
       }
     });
   });
+
+// ===========================================================================
+// 호출 H — 유의어·반의어 추천 (단어장 연결 후보 제시). docs/harness/english.md §11.
+//
+// 유의어/반의어 연결 기능은 "이미 단어장에 있는 단어"만 이을 수 있어, 그 관계어가 단어장에 없으면
+// 아예 못 골랐다. 이 호출이 그 뜻(meaningKo)에 맞는 실제 영어 유의어·반의어 후보를 은우(초등) 눈높이로
+// 제시한다 — 고르면 앱이 단어장에 신규 추가(+호출 D 보강)하며 연결한다(배선은 app-builder).
+//
+// 판독(호출 C)·보강(호출 D)과 별개의 사진 없는 텍스트 단일 호출이다. 출력은 { candidates:[{word,glossKo}] }.
+// 표제어 제외·중복 제거 같은 후처리는 순수 함수(postprocessRelatedCandidates) 한 곳에 둔다.
+// ===========================================================================
+
+/** 추천 후보 개수의 방어 상한 — 프롬프트가 5~6개를 유도하고(§11-1), 이 값은 폭주 방어다(개수 다이얼은 프롬프트+zod). */
+export const RELATED_SUGGEST_MAX_CANDIDATES = 12;
+
+/**
+ * 호출 H가 후보 하나에 대해 돌려주는 결과.
+ * - word: 영어 유의어(또는 반의어) 낱말 하나(구·문장·문장부호 금지 — zod가 강제).
+ * - glossKo: 그 후보의 짧은 우리말 뜻(한글).
+ * 전부 required — 선택(?) 키 금지(store.ts:73 규약).
+ */
+export interface RelatedCandidate {
+  word: string;
+  glossKo: string;
+}
+
+/** 호출 H의 전체 출력 — 후보 배열을 object 루트로 감싼다(Responses API strict의 루트는 object). */
+export interface RelatedSuggestion {
+  candidates: RelatedCandidate[];
+}
+
+// ---------------------------------------------------------------------------
+// 호출 H — related_suggestion JSON Schema (스펙 §11-3 원문)
+// 모든 필드 required + 모든 객체 additionalProperties:false (strict 모드 규약).
+// 개수·길이·낱말 형식 제약은 넣지 않는다 — 프롬프트 + zod가 담당한다(§1 공통 규칙).
+// ---------------------------------------------------------------------------
+
+export const RELATED_SUGGESTION_JSON_SCHEMA: StrictJsonSchema = {
+  name: "related_suggestion",
+  strict: true,
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      candidates: {
+        type: "array",
+        description: "그 뜻에 맞는 유의어(또는 반의어) 후보들",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            word: { type: "string", description: "영어 유의어/반의어 낱말 하나(구·문장 금지)" },
+            glossKo: { type: "string", description: "그 후보의 짧은 우리말 뜻(한글)" },
+          },
+          required: ["word", "glossKo"],
+        },
+      },
+    },
+    required: ["candidates"],
+  },
+};
+
+// ---------------------------------------------------------------------------
+// 호출 H — zod 이중 검증 (스펙 §11-4)
+// JSON Schema가 못 잡는 것: 개수 상한, 후보가 '실제 영어 낱말'인지(구·문장·문장부호 거부),
+// glossKo가 한글인지. kind 정확성(유의어 자리에 반의어)은 코드가 못 잡는다 — 프롬프트가 강제하고
+// 실호출 프로브가 본다(§11-7 스펙 공백).
+// ---------------------------------------------------------------------------
+
+/** 후보 낱말 형식 — 영문자로 시작해 영문자·하이픈만(구·문장·문장부호·숫자·한글 거부). */
+const RELATED_CANDIDATE_WORD_RE = /^[A-Za-z][A-Za-z-]*$/;
+
+const relatedCandidateSchema = z.object({
+  word: z.string().trim().min(1).max(VOCAB_RELATED_WORD_MAX),
+  glossKo: z.string().trim().min(1).max(VOCAB_RELATED_GLOSS_MAX),
+});
+
+/**
+ * 호출 H 결과의 zod 스키마 (§11-4). JSON Schema와 필드·타입이 1:1이고, 그 위에 "실제 낱말·한글 뜻·개수"
+ * 규칙을 superRefine으로 얹는다. 생산 시점(callWithSchema)에 걸어야 1회 재요청이 그 자리에서 교정한다.
+ */
+export const relatedSuggestionSchema = z
+  .object({
+    candidates: z.array(relatedCandidateSchema).min(1).max(RELATED_SUGGEST_MAX_CANDIDATES),
+  })
+  .superRefine((data, ctx) => {
+    data.candidates.forEach((c, i) => {
+      // 후보는 영어 낱말 하나여야 한다 — 구·문장·문장부호가 섞이면 거부(공백·마침표 등).
+      if (!RELATED_CANDIDATE_WORD_RE.test(c.word.trim())) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["candidates", i, "word"],
+          message: "후보는 영어 낱말 하나여야 합니다 (구·문장·문장부호 금지)",
+        });
+      }
+      // glossKo는 우리말 뜻이므로 한글이 한 글자도 없으면 뜻이 아니다(영단어 echo 차단).
+      if (!hasHangul(c.glossKo)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["candidates", i, "glossKo"],
+          message: "후보의 우리말 뜻(glossKo)에는 한글이 있어야 합니다",
+        });
+      }
+    });
+  });
+
+// ---------------------------------------------------------------------------
+// 호출 H — 후처리 (스펙 §11-5): 표제어 자신 제외 · 중복 제거 · 빈값 방어.
+// 순수 함수 한 곳에서만 한다 — 여러 화면·라우트가 각자 걸러내면 어긋난다. 거부가 아니라 '거른다'
+// (모델이 표제어·중복을 섞어도 재요청 루프 대신 조용히 청소한다 — 후보 UX가 끊기지 않게).
+// ---------------------------------------------------------------------------
+
+/**
+ * 추천 후보를 화면에 올리기 전 청소한다.
+ * - 빈 낱말(공백만) 제거, 표제어(headword) 자신 제거(대소문자 무시), 같은 낱말 중복 제거(첫 등장 유지).
+ * @param candidates 모델 후보(zod 통과분)
+ * @param headword 추천을 요청한 표제어(자기 자신은 후보가 될 수 없다)
+ */
+export function postprocessRelatedCandidates(
+  candidates: readonly RelatedCandidate[],
+  headword: string,
+): RelatedCandidate[] {
+  const head = headword.trim().toLowerCase();
+  const seen = new Set<string>();
+  const out: RelatedCandidate[] = [];
+  for (const c of candidates) {
+    const key = c.word.trim().toLowerCase();
+    if (key === "") continue; // 빈값 방어
+    if (key === head) continue; // 표제어 자신 제외
+    if (seen.has(key)) continue; // 중복 제외(첫 등장 유지)
+    seen.add(key);
+    out.push(c);
+  }
+  return out;
+}

@@ -51,13 +51,20 @@ import {
   type CardUserMessageInput,
 } from "./english/prompts";
 import {
+  RELATED_SUGGEST_CALL_OPTIONS,
+  RELATED_SUGGEST_SYSTEM_PROMPT,
   VOCAB_ENRICH_CALL_OPTIONS,
   VOCAB_ENRICH_SYSTEM_PROMPT,
   VOCAB_ENRICH_USER_TEXT,
+  buildRelatedSuggestUserMessage,
 } from "./english/vocabbook-prompts";
 import {
+  RELATED_SUGGESTION_JSON_SCHEMA,
   VOCAB_ENRICHMENT_JSON_SCHEMA,
+  postprocessRelatedCandidates,
+  relatedSuggestionSchema,
   vocabEnrichmentSchema,
+  type RelatedSuggestion,
   type VocabEnrichItem,
   type VocabEntry,
 } from "./english/vocabbook-schemas";
@@ -350,6 +357,38 @@ export async function enrichVocab(entries: readonly VocabEntry[]): Promise<Vocab
     maxOutputTokens: VOCAB_ENRICH_CALL_OPTIONS.maxOutputTokens,
   });
   return items;
+}
+
+/**
+ * 호출 H — 유의어·반의어 추천(§11). 사진 없는 텍스트 단일 호출이다.
+ * 그 단어의 meaningKo 뜻에 맞는 실제 영어 유의어(또는 반의어) 후보를 은우(초등) 눈높이로 5~6개 돌려준다.
+ * 반환 전 postprocessRelatedCandidates로 표제어 자신·중복·빈값을 걸러 화면이 그대로 쓸 수 있게 한다.
+ *
+ * 실패는 전부 throw다(라우트가 상태코드를 고른다):
+ * - word·meaningKo가 비면 throw → 라우트 500(입력 오류지만 별도 에러 타입을 두지 않는 작은 호출이다).
+ * - OPENAI_API_KEY 미설정 → getOpenAIClient가 throw → 라우트 501(키 없음).
+ * - callWithSchema throw(재요청 2회 실패) → 라우트 500(재시도 가치 있음).
+ */
+export async function suggestRelatedWords(input: {
+  word: string;
+  meaningKo: string;
+  kind: "synonym" | "antonym";
+}): Promise<RelatedSuggestion> {
+  const word = input.word.trim();
+  const meaningKo = input.meaningKo.trim();
+  if (word === "" || meaningKo === "") {
+    throw new Error("[ai:related-suggest] word와 meaningKo가 모두 필요합니다.");
+  }
+  const { candidates } = await callWithSchema({
+    call: RELATED_SUGGEST_CALL_OPTIONS.call,
+    system: RELATED_SUGGEST_SYSTEM_PROMPT,
+    user: [textPart(buildRelatedSuggestUserMessage(word, meaningKo, input.kind))],
+    jsonSchema: RELATED_SUGGESTION_JSON_SCHEMA,
+    zodSchema: relatedSuggestionSchema,
+    temperature: RELATED_SUGGEST_CALL_OPTIONS.temperature,
+    maxOutputTokens: RELATED_SUGGEST_CALL_OPTIONS.maxOutputTokens,
+  });
+  return { candidates: postprocessRelatedCandidates(candidates, word) };
 }
 
 // ---------------------------------------------------------------------------
