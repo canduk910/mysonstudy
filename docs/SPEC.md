@@ -359,9 +359,9 @@ YOUTUBE_API_KEY=     # 선택(낭독 영상 자동 검색 시). 서버 전용. Y
 
 ### 15-3. 단어장 유의어·반의어 연결 + 관계 문제 시험
 
-단어장 안의 다른 **(단어+뜻)**을 골라 특정 단어의 **특정 뜻**에 유의어/반의어로 연결하고, 그 관계를 시험 문제로 낸다(§14-2 단어장 정복 확장).
+특정 단어의 **특정 뜻**에 유의어/반의어를 붙이고(AI 추천 후보에서 골라 단어장에 **새로 추가**하거나, 이미 있으면 연결), 그 관계를 시험 문제로 낸다(§14-2 단어장 정복 확장).
 
 - **의미별 연결**: 모델이 이미 뜻을 `meanings[].related`로 담으므로(교재 판독분), 여기에 **사용자 연결**을 더한다. `VocabRelated`에 `source:"book"|"user"` + `linkedNo`·`linkedMeaningIndex`(필수 nullable) 추가. **AI 추출 JSON Schema·프롬프트는 무변경** — 판독분은 코드 정규화가 `source:"book"`으로 채운다(spec-sync 무영향).
-- **양쪽 상호 기록**: `linkVocabRelated`/`unlinkVocabRelated`(공용 순수함수 `applyVocabLink`, 양 백엔드)가 두 뜻의 related에 대칭 기록·멱등. 라우트 `/api/english/vocab/[id]/link`(POST·DELETE). 엔트리 식별은 배열 인덱스(교재 번호 `no`는 손입력 null·중복 가능이라 유일 식별 불가), 저장 매칭은 `word`+`meaningIndex`.
-- **연결 UI**: 각 뜻 옆 "＋연결" → 단어장 내 (단어·뜻) 피커(자기·기존 연결 제외). 사용자 연결분만 표식+해제(교재 판독 유의어는 표시만).
+- **양쪽 상호 기록**: `applyVocabLink`(공용 순수함수, 양 백엔드)가 두 뜻의 related에 대칭 기록·멱등. 추가·연결은 `/api/english/vocab/[id]/add-related`, 해제는 `/link` DELETE. 엔트리 식별은 배열 인덱스(교재 번호 `no`는 손입력 null·중복 가능이라 유일 식별 불가), 저장 매칭은 `word`+`meaningIndex`.
+- **후보 추천 + 추가·연결** (호출 H, `docs/harness/english.md` §11): 각 뜻 옆 "＋ 유의어/반의어 추가" → 종류를 고르면 `suggestRelatedWords`가 **그 뜻에 맞는 실제 후보**(영단어+우리말뜻, 표제어·중복·굴절형 제외)를 5~6개 제시하고 **직접 입력**도 된다. 고르면 `/add-related`가 이미 있으면 연결만, 없으면 **단어장에 새로 추가(→호출 D 자동 보강, best-effort)→연결**한다 — 유의어·반의어가 단어장에 없어도 고를 수 있다(기존 "책 항목만 나열" 피커의 한계를 없앤 재작업). 사용자 연결분만 표식+해제(교재 판독 유의어는 표시만).
 - **관계 문제 시험**: `buildRelationQuestions`로 **"X의 유의어는?/반대말은?"** 5지선다(정답=연결어, 오답=같은 DAY 단어, `buildChoices` 재사용). **내가 연결한 것만**(`source:"user"`) 출제. 관계 결과는 `VocabQuizRecord{mode:"relation"}` 별도 저장 → def→word 숙련도·오답노트·졸업에 **무오염**(오프라인 eval이 반례로 잠금).
