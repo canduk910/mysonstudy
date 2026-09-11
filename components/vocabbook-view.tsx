@@ -304,6 +304,13 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz 
     </button>
   );
 
+  // 시험 기록 — 시험 보기 옆. **canQuiz 게이트와 무관하게 항상 활성**(기록 보기는 정의 유무와 무관하다).
+  const historyButton = (
+    <Link href={`/english/vocab/${id}/history`} className={`u-btn u-btn-secondary ${s.modeBtn}`}>
+      <span aria-hidden>📊</span> 시험 기록
+    </Link>
+  );
+
   // 보강 버튼 — 표 툴바(전체)와 카드 chrome(컴팩트)에서 같은 handler를 쓴다. enriched면 숨긴다.
   const enrichLabel = hasAnyDefinition
     ? `영영 뜻·해석 다시 만들기${remainingToEnrich > 0 ? ` (${remainingToEnrich})` : ""}`
@@ -337,6 +344,7 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz 
         <div className={s.toolbar}>
           {modeToggle}
           {quizButton}
+          {historyButton}
           {enrichButton}
           {/* 읽어주기 속도 — 전역 하나(lib/speech.ts). 단어·예문 낭독과 시험 자동낭독에 함께 적용된다. */}
           <TtsSpeedControl />

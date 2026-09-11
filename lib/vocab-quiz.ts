@@ -43,6 +43,16 @@ export const MIN_QUIZ_WORDS = 5;
 export const VOCAB_QUIZ_MODES = ["def-to-word", "wrong-review", "relation"] as const;
 export type VocabQuizMode = (typeof VOCAB_QUIZ_MODES)[number];
 
+/**
+ * 시험 모드 → 한글 라벨 (응시기록 화면의 종류 배지 단일 정의처). 문구를 화면마다 적지 말고 이 상수를 쓴다
+ * (RELATED_KIND_LABELS_KO와 같은 관용구). **추가 export일 뿐 기존 로직·집계는 건드리지 않는다.**
+ */
+export const VOCAB_QUIZ_MODE_LABELS_KO: Record<VocabQuizMode, string> = {
+  "def-to-word": "일반",
+  "wrong-review": "오답복습",
+  relation: "관계",
+};
+
 /** 랜덤 주입 시그니처 — `Math.random`과 같은 [0,1) 실수 생성기. 테스트가 결정적 rng를 넣는다. */
 export type Rng = () => number;
 
