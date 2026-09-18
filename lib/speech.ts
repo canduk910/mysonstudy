@@ -10,7 +10,8 @@
  * import해도 안전하다. 외부 API 호출도, 비용도 없다.
  */
 
-/** 발음 언어 — 영어 원서용이므로 미국식 고정 */
+/** 발음 언어 **기본값** — 영어 원서용이라 미국식. `speak(text, lang)`으로 화면이 다른 언어를 넘길 수 있다
+ *  (일본어=`ja-JP`, J1에서 사용). 인자를 생략하면 이 값이라 기존 영어 화면은 동작이 100% 그대로다. */
 export const TTS_LANG = "en-US";
 
 /** 재생 속도 **기본값** — 1.0은 아이가 따라 하기에 빠르다. 0.9가 카드 화면에서 쓰던 값이다.
@@ -82,15 +83,19 @@ export function isSpeechSupported(): boolean {
 }
 
 /**
- * 한 덩어리의 영어 텍스트를 읽는다.
+ * 한 덩어리의 텍스트를 읽는다.
  * 이전 재생을 취소하고 새로 시작한다 — 아이가 🔊를 연타해도 말이 겹치지 않는다.
  * 지원하지 않는 환경에서는 조용히 아무것도 하지 않는다(에러를 던지지 않는다).
+ *
+ * `lang`은 발음 언어(BCP-47). **생략하면 `TTS_LANG`(en-US)** — 기존 영어 호출부는 인자 없이 부르므로
+ * 동작이 100% 그대로다(회귀 0). 일본어 화면은 `speak(surface, "ja-JP")`로 넘긴다(§5, J1). 속도(getTtsRate)·
+ * cancel 규약은 언어와 무관하게 동일하다.
  */
-export function speak(text: string): void {
+export function speak(text: string, lang: string = TTS_LANG): void {
   if (!isSpeechSupported()) return;
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = TTS_LANG;
+  utterance.lang = lang;
   utterance.rate = getTtsRate();
   window.speechSynthesis.speak(utterance);
 }
@@ -103,10 +108,10 @@ export function speak(text: string): void {
  * 로봇처럼 들린다 — 공백으로 이어 붙여야 연음이 살아 "문장"으로 들린다.
  * 아이가 따라 말하는 대상은 단어의 나열이 아니라 문장이다.
  */
-export function speakSequence(words: string[]): void {
+export function speakSequence(words: string[], lang: string = TTS_LANG): void {
   const sentence = words.join(" ").trim();
   if (!sentence) return;
-  speak(sentence);
+  speak(sentence, lang);
 }
 
 /** 재생 중인 발음을 멈춘다 (화면 이탈·다음 문제로 넘어갈 때) */

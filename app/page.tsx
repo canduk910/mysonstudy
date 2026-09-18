@@ -1,7 +1,9 @@
 /**
  * 과목 선택 `/` — 서버 컴포넌트(정적).
  *
- * 저장소가 과목 둘을 기른다(영어, 수학 = 수학코치). 접속하면 여기서 갈린다.
+ * 저장소가 과목 셋을 기른다(영어, 수학 = 수학코치, 일본어 = 아빠의 일본어). 접속하면 여기서 갈린다.
+ * 영어·수학은 은우(아이)용, 일본어는 **아빠 본인**이 학습자다(docs/harness/japanese.md §0-1) — 그래서
+ * 은우 것 둘을 윗줄에 나란히 두고, 아빠 것(일본어)은 아랫줄 full-width로 분리했다(3칸이 어색하게 남지 않게).
  * 영어는 그 아래 다시 북카드·단어장 두 학습 메뉴로 갈리므로, `/english`는 기능 없이
  * 그 둘을 고르는 **허브**다(북카드 홈은 `/english/books`, 단어장은 `/english/vocab`).
  * 이 화면(`/`)은 과목 갈림길만 담당하고 기능은 하나도 갖지 않는다.
@@ -21,7 +23,7 @@ import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "은우학습",
-  description: "영어책 학습 카드와 수학 문제 풀이 설명을 한곳에서.",
+  description: "영어책 학습 카드, 수학 문제 풀이 설명, 그리고 아빠의 일본어를 한곳에서.",
 };
 
 export default function SubjectPickerPage() {
@@ -33,7 +35,8 @@ export default function SubjectPickerPage() {
         <p className="t-lead mt-1">과목을 골라 주세요. 언제든 여기로 돌아올 수 있어요.</p>
       </header>
 
-      {/* 큰 진입 버튼 2개 — 이 화면의 전부. 주요(영어)만 accent 배경 (DESIGN §5) */}
+      {/* 큰 진입 버튼 3개 — 이 화면의 전부. 주요(영어)만 accent 배경 (DESIGN §5).
+          은우 것(영어·수학)이 윗줄, 아빠 것(일본어)은 아랫줄 full-width(sm:col-span-2)로 분리. */}
       <div className="grid gap-3 sm:grid-cols-2">
         <Link href="/english" className="u-entry u-entry-primary">
           <span className="u-entry-icon" aria-hidden>
@@ -54,6 +57,17 @@ export default function SubjectPickerPage() {
           <span className="u-entry-desc">
             문제를 입력하면 &lsquo;왜 그렇게 푸는지&rsquo;를 탐정 시간 · 되감기 · 다시 재생 3막으로
             설명해요. 문제집 사진으로 읽어 오는 건 준비 중이에요.
+          </span>
+        </Link>
+
+        {/* 아빠의 일본어 — 학습자가 아빠라 은우 것과 구분해 아랫줄 full-width로 둔다(japanese.md §0-1). */}
+        <Link href="/japanese" className="u-entry u-entry-secondary sm:col-span-2">
+          <span className="u-entry-icon" aria-hidden>
+            🗾
+          </span>
+          <span className="u-entry-title">아빠의 일본어</span>
+          <span className="u-entry-desc">
+            아빠가 일본어를 공부하는 곳. JLPT 단어장을 레벨·주제로 만들고, 듀오링고 대화를 찍어 복습해요.
           </span>
         </Link>
       </div>
