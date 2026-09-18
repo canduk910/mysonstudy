@@ -14,19 +14,37 @@
 import {
   JA_ENTRIES_MAX,
   JA_POS,
+  JA_DIALOG_COACHING_JSON_SCHEMA,
+  JA_DIALOG_EXTRACTION_JSON_SCHEMA,
+  JA_KANJI_INFO_JSON_SCHEMA,
   JA_VOCAB_GENERATION_JSON_SCHEMA,
   JA_VOCAB_TOPIC_PRESETS,
   JLPT_LEVELS,
+  jaDialogCoachingSchema,
+  jaDialogExtractionSchema,
+  jaKanjiInfoGenerationSchema,
   jaVocabGenerationSchema,
   resolveJaGlyph,
+  type JaDialogExtraction,
+  type JaKanjiInfo,
   type JaToken,
   type JaVocabGenEntry,
 } from "../lib/ai/japanese/schemas";
 import {
+  JA_DIALOG_COACH_SYSTEM_PROMPT,
+  JA_DIALOG_EXTRACT_SYSTEM_PROMPT,
+  JA_DIALOG_EXTRACT_USER_TEXT,
+  JA_KANJI_SYSTEM_PROMPT,
   JA_VOCAB_SYSTEM_PROMPT,
   JA_VOCAB_USER_TEMPLATE,
   buildJaVocabUserMessage,
 } from "../lib/ai/japanese/prompts";
+import { mergeJaDialogBatches, planJaDialogBatches } from "../lib/ai/japanese/dialog";
+import {
+  applyKanjiPostprocess,
+  collectKanjiFromBooks,
+  selectKanjiToEnrich,
+} from "../lib/ai/japanese/kanji";
 import {
   applyVocabPostprocess,
   normalizeJaWord,
@@ -34,8 +52,10 @@ import {
 } from "../lib/ai/japanese/vocab";
 import {
   aggregateJaStatsByMode,
+  buildJaKanjiQuizQuestions,
   buildJaQuizQuestions,
   buildJaReviewCandidatesByMode,
+  type JaKanjiQuizSource,
   type JaQuizSessionLike,
   type JaQuizSourceEntry,
 } from "../lib/ai/japanese/quiz";
@@ -401,6 +421,34 @@ const SPEC_SYNC_TARGETS: readonly SpecSyncTarget[] = [
     text: JA_VOCAB_USER_TEMPLATE,
     mode: "block",
   },
+  {
+    constName: "JA_KANJI_SYSTEM_PROMPT",
+    source: "lib/ai/japanese/prompts.ts",
+    specLabel: "§12-2-1 호출 D 시스템 프롬프트",
+    text: JA_KANJI_SYSTEM_PROMPT,
+    mode: "block",
+  },
+  {
+    constName: "JA_DIALOG_EXTRACT_SYSTEM_PROMPT",
+    source: "lib/ai/japanese/prompts.ts",
+    specLabel: "§3-1 호출 B 시스템 프롬프트",
+    text: JA_DIALOG_EXTRACT_SYSTEM_PROMPT,
+    mode: "block",
+  },
+  {
+    constName: "JA_DIALOG_EXTRACT_USER_TEXT",
+    source: "lib/ai/japanese/prompts.ts",
+    specLabel: "§3-2 사용자 메시지",
+    text: JA_DIALOG_EXTRACT_USER_TEXT,
+    mode: "block",
+  },
+  {
+    constName: "JA_DIALOG_COACH_SYSTEM_PROMPT",
+    source: "lib/ai/japanese/prompts.ts",
+    specLabel: "§4-1 호출 C 시스템 프롬프트",
+    text: JA_DIALOG_COACH_SYSTEM_PROMPT,
+    mode: "block",
+  },
 ];
 
 const specSyncOutcomes: SpecSyncOutcome[] = [];
@@ -433,34 +481,51 @@ function deepEqual(a: unknown, b: unknown): boolean {
 }
 
 /**
- * JSON Schema 의미 동치 대조 — 스펙 §2-3의 코드블록을 JSON으로 파싱해 코드 상수와 deep-equal.
+ * JSON Schema 의미 동치 대조 — 스펙의 코드블록을 JSON으로 파싱해 코드 상수와 deep-equal.
  * 문자열 spec-sync는 포맷(들여쓰기·키 순서·인라인 공백) 차이에 취약하다. JSON 의미 비교가 더 강하고
- * "스펙 §2-3 == JSON Schema 상수"를 정확히 잠근다.
+ * "스펙 == JSON Schema 상수"를 정확히 잠근다. 이름으로 찾아 각 스키마를 대조한다.
  */
+/** 스펙 §3-3·§4-3은 tokens $defs를 "…§2-3과 동일" 플레이스홀더로 줄여 적는다. 대조 전 상수의 $defs.tokens도
+ *  같은 플레이스홀더로 바꿔 구조만 비교한다(tokens 자체는 §2-3 deep-equal이 잠근다). */
+function withTokensPlaceholder(schemaConst: unknown): unknown {
+  const clone = JSON.parse(JSON.stringify(schemaConst)) as { schema?: { $defs?: Record<string, unknown> } };
+  if (clone.schema?.$defs && "tokens" in clone.schema.$defs) {
+    clone.schema.$defs.tokens = { "…": "§2-3과 동일" };
+  }
+  return clone;
+}
+
 function runJsonSchemaSyncChecks(): CheckResult[] {
   const book = "프롬프트 ↔ 스펙";
+  const targets: { name: string; constName: string; value: unknown; label: string }[] = [
+    { name: "ja_vocab_generation", constName: "JA_VOCAB_GENERATION_JSON_SCHEMA", value: JA_VOCAB_GENERATION_JSON_SCHEMA, label: "§2-3" },
+    { name: "ja_kanji_info", constName: "JA_KANJI_INFO_JSON_SCHEMA", value: JA_KANJI_INFO_JSON_SCHEMA, label: "§12-2-2" },
+    { name: "ja_dialog_extraction", constName: "JA_DIALOG_EXTRACTION_JSON_SCHEMA", value: withTokensPlaceholder(JA_DIALOG_EXTRACTION_JSON_SCHEMA), label: "§3-3" },
+    { name: "ja_dialog_coaching", constName: "JA_DIALOG_COACHING_JSON_SCHEMA", value: withTokensPlaceholder(JA_DIALOG_COACHING_JSON_SCHEMA), label: "§4-3" },
+  ];
+  let blocks: ReturnType<typeof extractSpecBlocks>;
   try {
-    const blocks = extractSpecBlocks(JAPANESE_SPEC_URL);
-    let specSchema: unknown = null;
-    for (const b of blocks) {
-      try {
-        const parsed = JSON.parse(b.text) as { name?: unknown };
-        if (parsed && typeof parsed === "object" && parsed.name === "ja_vocab_generation") {
-          specSchema = parsed;
-          break;
-        }
-      } catch {
-        // JSON 아닌 블록은 건너뛴다
-      }
-    }
-    if (specSchema === null) {
-      return [{ book, check: "JA JSON Schema ↔ §2-3 의미 동치", pass: false, detail: "스펙에서 ja_vocab_generation JSON 블록을 찾지 못함" }];
-    }
-    const ok = deepEqual(specSchema, JA_VOCAB_GENERATION_JSON_SCHEMA as unknown);
-    return [{ book, check: "JA_VOCAB_GENERATION_JSON_SCHEMA ↔ §2-3 의미 동치", pass: ok, detail: ok ? "의미 일치" : "스펙 §2-3과 코드 상수가 다름" }];
+    blocks = extractSpecBlocks(JAPANESE_SPEC_URL);
   } catch (e) {
-    return [{ book, check: "JA JSON Schema ↔ §2-3 의미 동치", pass: false, detail: `스펙 파싱 실패: ${e instanceof Error ? e.message : String(e)}` }];
+    return targets.map((t) => ({ book, check: `${t.constName} ↔ ${t.label} 의미 동치`, pass: false, detail: `스펙 파싱 실패: ${e instanceof Error ? e.message : String(e)}` }));
   }
+  const parsedByName = new Map<string, unknown>();
+  for (const b of blocks) {
+    try {
+      const parsed = JSON.parse(b.text) as { name?: unknown };
+      if (parsed && typeof parsed === "object" && typeof parsed.name === "string") parsedByName.set(parsed.name, parsed);
+    } catch {
+      // JSON 아닌 블록은 건너뛴다
+    }
+  }
+  return targets.map((t) => {
+    const specSchema = parsedByName.get(t.name);
+    if (specSchema === undefined) {
+      return { book, check: `${t.constName} ↔ ${t.label} 의미 동치`, pass: false, detail: `스펙에서 ${t.name} JSON 블록을 찾지 못함` };
+    }
+    const ok = deepEqual(specSchema, t.value);
+    return { book, check: `${t.constName} ↔ ${t.label} 의미 동치`, pass: ok, detail: ok ? "의미 일치" : `스펙 ${t.label}과 코드 상수가 다름` };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -620,6 +685,187 @@ function runQuizModeSeparationChecks(): CheckResult[] {
 }
 
 // ---------------------------------------------------------------------------
+// 한자 (JK, §12) — 수집·선별·후처리·zod·2모드·모드 무오염
+// ---------------------------------------------------------------------------
+
+function runKanjiChecks(): CheckResult[] {
+  const results: CheckResult[] = [];
+  const book = "한자(§12)";
+  const add = (check: string, pass: boolean, detail: string) => results.push({ book, check, pass, detail });
+
+  // 수집: 한자만·중복 제거·역인덱스(등장 순서)
+  {
+    const collected = collectKanjiFromBooks([
+      { entries: [{ word: "本" }, { word: "日本" }, { word: "水" }, { word: "すし" }, { word: "見る" }] },
+    ]);
+    const kanjiList = collected.map((c) => c.kanji).join(",");
+    const hon = collected.find((c) => c.kanji === "本");
+    const ok = kanjiList === "本,日,水,見" && hon?.words.join(",") === "本,日本" && !collected.some((c) => c.kanji === "す");
+    add("collectKanjiFromBooks: 한자만·중복제거·역인덱스", ok, `한자=[${kanjiList}] 本→[${hon?.words.join(",")}]`);
+  }
+
+  // 선별: 이미 정보 있는 한자(水)는 요청에서 제외(불변)
+  {
+    const collected = collectKanjiFromBooks([{ entries: [{ word: "本" }, { word: "水" }, { word: "見る" }] }]);
+    const req = selectKanjiToEnrich(collected, ["水"]);
+    const ok = req.map((r) => r.kanji).join(",") === "本,見" && req[0].sampleWords.includes("本");
+    add("selectKanjiToEnrich: 정보 있는 한자 제외(불변)·예시 단어 부착", ok, `요청=[${req.map((r) => r.kanji).join(",")}]`);
+  }
+
+  // 후처리: 요청 밖 버리기·중복 접기·빠진 한자 보고(부분 성공)
+  {
+    const info = (kanji: string): JaKanjiInfo => ({ kanji, koReading: null, onyomi: [], kunyomi: [], meaningKo: "뜻" });
+    const r = applyKanjiPostprocess([info("本"), info("火"), info("本")], ["本", "日"]);
+    const ok = r.items.length === 1 && r.items[0].kanji === "本" && r.droppedCount === 2 && r.missingKanji.join(",") === "日";
+    add("applyKanjiPostprocess: 요청 밖 버림·중복 접음·빠진 한자 보고", ok, `남음=${r.items.length} dropped=${r.droppedCount} missing=[${r.missingKanji.join(",")}]`);
+  }
+
+  // zod: 정상 통과 + koReading null + kunyomi 빈배열
+  {
+    const okCase = jaKanjiInfoGenerationSchema.safeParse({ items: [
+      { kanji: "本", koReading: "본", onyomi: ["ほん"], kunyomi: ["もと"], meaningKo: "책, 근본" },
+      { kanji: "畑", koReading: null, onyomi: [], kunyomi: ["はたけ"], meaningKo: "밭" },
+    ] });
+    add("zod 통과: 정상·koReading null(국자)·kunyomi", okCase.success, okCase.success ? "통과" : JSON.stringify(okCase.error?.issues?.slice(0, 3)));
+  }
+  const kbad: { name: string; item: unknown }[] = [
+    { name: "kanji 2글자", item: { kanji: "日本", koReading: "일", onyomi: ["にほん"], kunyomi: [], meaningKo: "일본" } },
+    { name: "kanji 가나", item: { kanji: "ほ", koReading: "본", onyomi: ["ほん"], kunyomi: [], meaningKo: "책" } },
+    { name: "koReading 2글자", item: { kanji: "本", koReading: "본본", onyomi: ["ほん"], kunyomi: [], meaningKo: "책" } },
+    { name: "koReading 한글 아님", item: { kanji: "本", koReading: "ホ", onyomi: ["ほん"], kunyomi: [], meaningKo: "책" } },
+    { name: "onyomi 가타카나", item: { kanji: "本", koReading: "본", onyomi: ["ホン"], kunyomi: [], meaningKo: "책" } },
+    { name: "onyomi 4개(>3)", item: { kanji: "生", koReading: "생", onyomi: ["せい", "しょう", "じょう", "ぜい"], kunyomi: [], meaningKo: "날 생" } },
+    { name: "meaningKo 한글 없음", item: { kanji: "本", koReading: "본", onyomi: ["ほん"], kunyomi: [], meaningKo: "book" } },
+    { name: "meaningKo 21자(>20)", item: { kanji: "本", koReading: "본", onyomi: ["ほん"], kunyomi: [], meaningKo: "가".repeat(21) } },
+  ];
+  for (const b of kbad) {
+    const rejected = !jaKanjiInfoGenerationSchema.safeParse({ items: [b.item] }).success;
+    add(`zod 거부: ${b.name}`, rejected, rejected ? "거부됨" : "통과되면 안 됨");
+  }
+
+  // 시험 2모드: 정답 포함·전부 상이·음독 없는 한자는 kanji-to-on 제외
+  {
+    const items: JaKanjiQuizSource[] = [
+      { kanji: "本", onyomi: ["ほん"], meaningKo: "책" },
+      { kanji: "水", onyomi: ["すい"], meaningKo: "물" },
+      { kanji: "火", onyomi: ["か"], meaningKo: "불" },
+      { kanji: "木", onyomi: ["もく"], meaningKo: "나무" },
+      { kanji: "金", onyomi: ["きん"], meaningKo: "금" },
+      { kanji: "畑", onyomi: [], meaningKo: "밭" }, // 음독 없음 → kanji-to-on 제외
+    ];
+    const on = buildJaKanjiQuizQuestions(items, { modes: ["kanji-to-on"], count: 5, rng: makeRng(2) });
+    const onOk = on.questions.every((q) => q.choices.includes(q.answer) && new Set(q.choices).size === q.choices.length) && !on.questions.some((q) => q.word === "畑") && on.questions.length === 5 && on.skipped === 1;
+    add("kanji-to-on: 정답 포함·상이·음독 없는 한자(畑) 제외", onOk, `출제=${on.questions.length}(기대 5) skip=${on.skipped}`);
+
+    const me = buildJaKanjiQuizQuestions(items, { modes: ["kanji-to-meaning"], count: 5, rng: makeRng(4) });
+    const q = me.questions.find((x) => x.word === "本");
+    add("kanji-to-meaning: 문제=한자·정답=뜻", q?.prompt === "本" && q?.answer === "책" && (q?.choices.includes("책") ?? false), `q=${JSON.stringify(q)}`);
+  }
+
+  // 모드 무오염: 한자 모드(kanji-to-on)가 단어 모드(ko-to-word) 통계에 안 섞임(같은 표기 "本")
+  {
+    const session = (mode: JaQuizSessionLike["mode"], startedAt: string, items: JaQuizSessionLike["items"]): JaQuizSessionLike => ({ id: startedAt, bookId: "b1", mode, startedAt, finishedAt: startedAt, items });
+    const quizzes = [
+      session("ko-to-word", "2026-09-18T01:00:00.000Z", [{ word: "本", correct: true, answered: true }]),
+      session("kanji-to-on", "2026-09-18T02:00:00.000Z", [{ word: "本", correct: false, answered: true }]),
+    ];
+    const byMode = aggregateJaStatsByMode(quizzes);
+    const ko = byMode["ko-to-word"]?.["本"];
+    const on = byMode["kanji-to-on"]?.["本"];
+    const ok = ko?.wrong === 0 && ko?.total === 1 && on?.wrong === 1 && on?.total === 1;
+    add("모드 무오염: 한자 모드가 단어 모드 통계에 안 섞임", ok, `ko=${JSON.stringify(ko)} on=${JSON.stringify(on)}`);
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// 대화 전사(호출 B, §3) / 학습 해설(호출 C, §4) — 병합·배치 계획·zod
+// ---------------------------------------------------------------------------
+
+// 발화 픽스처 — 私は学生です。(私·学生에 후리가나, 토큰 무결성 통과)
+function dTurn(speaker: "partner" | "me" | "unknown", ja: string, tokens: JaToken[], feedback: JaDialogExtraction["turns"][number]["feedback"] = null) {
+  return { speaker, ja, tokens, feedback };
+}
+const WATASHI = () => [tok("私", "わたし"), tok("は"), tok("学生", "がくせい"), tok("です"), tok("。")];
+
+function runDialogChecks(): CheckResult[] {
+  const results: CheckResult[] = [];
+  const book = "대화(§3·§4)";
+  const add = (check: string, pass: boolean, detail: string) => results.push({ book, check, pass, detail });
+
+  // 병합: 경계 겹침(연속 ja 완전 일치) 접기·순서 보존·partial OR·focusKo 첫 non-null·allUnknown
+  {
+    const batches: JaDialogExtraction[] = [
+      { focusKo: "자기소개", turns: [dTurn("partner", "こんにちは。", [tok("こんにちは。")]), dTurn("me", "私は学生です。", WATASHI())], partial: false },
+      { focusKo: null, turns: [dTurn("me", "私は学生です。", WATASHI(), { kind: "praise", textKo: "좋아요" }), dTurn("partner", "よろしく。", [tok("よろしく。")])], partial: true },
+    ];
+    const m = mergeJaDialogBatches(batches);
+    const order = m.turns.map((t) => t.ja).join(" | ");
+    const folded = m.turns.find((t) => t.ja === "私は学生です。");
+    const ok = m.turns.length === 3 && m.mergedCount === 1 && m.focusKo === "자기소개" && m.partial === true && !m.allUnknown && folded?.feedback?.kind === "praise";
+    add("병합: 경계 겹침 접기·순서·partial OR·focusKo·접힌 쪽 피드백 살림", ok, `순서=[${order}] merged=${m.mergedCount} focus=${m.focusKo} partial=${m.partial}`);
+  }
+  {
+    const m = mergeJaDialogBatches([{ focusKo: null, turns: [dTurn("unknown", "あ。", [tok("あ。")]), dTurn("unknown", "え。", [tok("え。")])], partial: false }]);
+    add("병합: 전부 unknown 화자면 allUnknown 경고", m.allUnknown === true, `allUnknown=${m.allUnknown}`);
+  }
+  {
+    // 유사도 추정 금지 — ja가 다르면(한 글자만 달라도) 접지 않는다
+    const m = mergeJaDialogBatches([{ focusKo: null, turns: [dTurn("me", "はい。", [tok("はい。")]), dTurn("me", "はい!", [tok("はい!")])], partial: false }]);
+    add("병합: 완전 일치만 접음(다르면 안 접음)", m.turns.length === 2 && m.mergedCount === 0, `turns=${m.turns.length} merged=${m.mergedCount}`);
+  }
+
+  // 배치 계획
+  {
+    const p1 = planJaDialogBatches(6, 4);
+    const p2 = planJaDialogBatches(3, 4);
+    const ok = JSON.stringify(p1) === "[[0,1,2,3],[4,5]]" && JSON.stringify(p2) === "[[0,1,2]]";
+    add("planJaDialogBatches: batchSize 단위로 인덱스 묶음", ok, `6→${JSON.stringify(p1)} 3→${JSON.stringify(p2)}`);
+  }
+
+  // zod B: 정상 통과 + 거부
+  {
+    const good = jaDialogExtractionSchema.safeParse({ focusKo: "요점", turns: [dTurn("me", "私は学生です。", WATASHI())], partial: false });
+    add("zod B: 정상 통과", good.success, good.success ? "통과" : JSON.stringify(good.error?.issues?.slice(0, 2)));
+  }
+  const bReject: { name: string; input: unknown }[] = [
+    { name: "turns 0개", input: { focusKo: null, turns: [], partial: false } },
+    { name: "토큰 무결성 위반", input: { focusKo: null, turns: [dTurn("me", "私は学生です。", [tok("私", "わたし")])], partial: false } },
+    { name: "speaker enum 밖", input: { focusKo: null, turns: [{ speaker: "teacher", ja: "はい。", tokens: [tok("はい。")], feedback: null }], partial: false } },
+    { name: "feedback kind 밖", input: { focusKo: null, turns: [dTurn("me", "はい。", [tok("はい。")], { kind: "warn", textKo: "x" } as unknown as null)], partial: false } },
+  ];
+  for (const rc of bReject) add(`zod B 거부: ${rc.name}`, !jaDialogExtractionSchema.safeParse(rc.input).success, "거부");
+
+  // zod C: 정상 통과 + 거부
+  const item = (word: string, kana: string, wt: JaToken[]) => ({ word, kana, meaningKo: "뜻", usageKo: "대화에서 이렇게 씀", example: { ja: "私は学生です。", ko: "나는 학생입니다.", tokens: WATASHI() }, wordTokens: wt });
+  const practice = () => ({ ja: "よろしくお願いします。", ko: "잘 부탁합니다.", tokens: [tok("よろしくお"), tok("願", "ねが"), tok("いします"), tok("。")] });
+  const goodCoaching = {
+    summaryKo: "전반적으로 좋았어요. 조사 사용이 자연스러웠습니다.",
+    goods: [{ quoteJa: "私は学生です。", whyKo: "は를 올바르게 썼어요." }],
+    fixes: [{ originalJa: "私は学生です。", betterJa: "私は学生でした。", whyKo: "과거는 でした。", grammarKo: "과거형" }],
+    items: [item("学生", "がくせい", [tok("学生", "がくせい")]), item("先生", "せんせい", [tok("先生", "せんせい")])],
+    practice: [practice()],
+  };
+  {
+    const good = jaDialogCoachingSchema.safeParse(goodCoaching);
+    add("zod C: 정상 통과(총평·goods·fixes·items 2개·practice)", good.success, good.success ? "통과" : JSON.stringify(good.error?.issues?.slice(0, 3)));
+  }
+  const cReject: { name: string; mutate: (c: typeof goodCoaching) => unknown }[] = [
+    { name: "items 1개(<2)", mutate: (c) => ({ ...c, items: [c.items[0]] }) },
+    { name: "practice 0개", mutate: (c) => ({ ...c, practice: [] }) },
+    { name: "goods 7개(>6)", mutate: (c) => ({ ...c, goods: Array.from({ length: 7 }, () => c.goods[0]) }) },
+    { name: "summaryKo 한글 없음", mutate: (c) => ({ ...c, summaryKo: "good job" }) },
+    { name: "item.kana 가타카나", mutate: (c) => ({ ...c, items: [item("学生", "ガクセイ", [tok("学生", "がくせい")]), c.items[1]] }) },
+    { name: "fix.originalJa 일본문자 없음", mutate: (c) => ({ ...c, fixes: [{ ...c.fixes[0], originalJa: "hello" }] }) },
+    { name: "item.wordTokens 무결성 위반", mutate: (c) => ({ ...c, items: [item("学生", "がくせい", [tok("生", "せい")]), c.items[1]] }) },
+  ];
+  for (const rc of cReject) add(`zod C 거부: ${rc.name}`, !jaDialogCoachingSchema.safeParse(rc.mutate(goodCoaching)).success, "거부");
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
 // 본체
 // ---------------------------------------------------------------------------
 
@@ -634,6 +880,8 @@ async function main(): Promise<void> {
   all.push(...runUserMessageChecks());
   all.push(...runQuizChecks());
   all.push(...runQuizModeSeparationChecks());
+  all.push(...runKanjiChecks());
+  all.push(...runDialogChecks());
   all.push(...runSpecSyncChecks());
   all.push(...runJsonSchemaSyncChecks());
 

@@ -70,14 +70,33 @@ import {
 } from "./english/vocabbook-schemas";
 import { buildEnrichRequestItems } from "./english/vocabbook-enrich";
 import {
+  JA_DIALOG_COACH_CALL_OPTIONS,
+  JA_DIALOG_COACH_SYSTEM_PROMPT,
+  JA_DIALOG_EXTRACT_CALL_OPTIONS,
+  JA_DIALOG_EXTRACT_SYSTEM_PROMPT,
+  JA_DIALOG_EXTRACT_USER_TEXT,
+  JA_KANJI_CALL_OPTIONS,
+  JA_KANJI_SYSTEM_PROMPT,
   JA_VOCAB_CALL_OPTIONS,
   JA_VOCAB_SYSTEM_PROMPT,
+  buildJaDialogCoachUserMessage,
+  buildJaKanjiUserMessage,
   buildJaVocabUserMessage,
   type JaExcludeItem,
 } from "./japanese/prompts";
 import {
+  JA_DIALOG_COACHING_JSON_SCHEMA,
+  JA_DIALOG_EXTRACTION_JSON_SCHEMA,
+  JA_KANJI_INFO_JSON_SCHEMA,
   JA_VOCAB_GENERATION_JSON_SCHEMA,
+  jaDialogCoachingSchema,
+  jaDialogExtractionSchema,
+  jaKanjiInfoGenerationSchema,
   jaVocabGenerationSchema,
+  type JaDialogCoaching,
+  type JaDialogExtraction,
+  type JaDialogTurn,
+  type JaKanjiInfoGeneration,
   type JaVocabGeneration,
   type JlptLevel,
 } from "./japanese/schemas";
@@ -434,6 +453,61 @@ export async function generateJapaneseVocab(input: {
     zodSchema: jaVocabGenerationSchema,
     temperature: JA_VOCAB_CALL_OPTIONS.temperature,
     maxOutputTokens: JA_VOCAB_CALL_OPTIONS.maxOutputTokens,
+  });
+}
+
+/**
+ * 호출 D(일본어) — 한자 정보 생성(§12-2). 사진 없는 텍스트 단일 호출이다. **10자씩 배치**로 부른다
+ * (app-builder가 selectKanjiToEnrich로 정보 없는 한자만 골라 배치를 만든다 — client에 과목/한자 분기 없음).
+ * 반환은 zod 통과분이다. 요청 밖 한자 버리기·빠진 한자 보고는 app-builder가 lib/ai/japanese/kanji.ts의
+ * applyKanjiPostprocess로 수행한다(그 단계가 '요청한 한자'를 안다).
+ */
+export async function generateKanjiInfo(input: {
+  items: readonly { kanji: string; sampleWords: string[] }[];
+}): Promise<JaKanjiInfoGeneration> {
+  return callWithSchema({
+    call: JA_KANJI_CALL_OPTIONS.call,
+    system: JA_KANJI_SYSTEM_PROMPT,
+    user: [textPart(buildJaKanjiUserMessage(input.items))],
+    jsonSchema: JA_KANJI_INFO_JSON_SCHEMA,
+    zodSchema: jaKanjiInfoGenerationSchema,
+    temperature: JA_KANJI_CALL_OPTIONS.temperature,
+    maxOutputTokens: JA_KANJI_CALL_OPTIONS.maxOutputTokens,
+  });
+}
+
+/**
+ * 호출 B(일본어) — 대화문 전사(vision, §3). 스크린샷 한 배치를 판독한다(app-builder가 planJaDialogBatches로
+ * 나눠 배치별로 부르고 mergeJaDialogBatches로 겹침을 접는다 — client에 분기 없음). 이미지 파트를 **텍스트보다 먼저** 넣는다(영어 §2A 관용구).
+ */
+export async function extractJaDialog(input: { images: readonly string[] }): Promise<JaDialogExtraction> {
+  return callWithSchema({
+    call: JA_DIALOG_EXTRACT_CALL_OPTIONS.call,
+    system: JA_DIALOG_EXTRACT_SYSTEM_PROMPT,
+    user: [...input.images.map((url) => imagePart(url)), textPart(JA_DIALOG_EXTRACT_USER_TEXT)],
+    jsonSchema: JA_DIALOG_EXTRACTION_JSON_SCHEMA,
+    zodSchema: jaDialogExtractionSchema,
+    temperature: JA_DIALOG_EXTRACT_CALL_OPTIONS.temperature,
+    maxOutputTokens: JA_DIALOG_EXTRACT_CALL_OPTIONS.maxOutputTokens,
+  });
+}
+
+/**
+ * 호출 C(일본어) — 대화 학습 해설(§4). 사진 없는 텍스트 호출이다. 전사(호출 B/병합 결과)를 받아 총평·잘한 점·
+ * 고칠 점·어휘·연습을 만든다. 실패해도 전사는 남는다(best-effort) — 라우트가 coaching:null로 저장하고 "다시 만들기"로 채운다.
+ */
+export async function coachJaDialog(input: {
+  focusKo: string | null;
+  turns: readonly JaDialogTurn[];
+}): Promise<JaDialogCoaching> {
+  return callWithSchema({
+    call: JA_DIALOG_COACH_CALL_OPTIONS.call,
+    system: JA_DIALOG_COACH_SYSTEM_PROMPT,
+    user: [textPart(buildJaDialogCoachUserMessage(input.focusKo, input.turns))],
+    jsonSchema: JA_DIALOG_COACHING_JSON_SCHEMA,
+    zodSchema: jaDialogCoachingSchema,
+    temperature: JA_DIALOG_COACH_CALL_OPTIONS.temperature,
+    maxOutputTokens: JA_DIALOG_COACH_CALL_OPTIONS.maxOutputTokens,
   });
 }
 

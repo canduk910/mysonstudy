@@ -1,0 +1,144 @@
+/* 한자 카드 (아빠의 일본어 JK) — 다리(한자·한국음·음독) 중심. 토큰 재사용. */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.bridgeCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 20px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-card);
+  background: var(--accent-soft);
+}
+.bridge {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.kanji {
+  font-size: 56px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--ink);
+}
+.dash {
+  color: var(--ink-3);
+  font-size: 24px;
+}
+.ko {
+  font-size: 32px;
+  font-weight: 800;
+  color: var(--accent-ink);
+}
+.on {
+  font-size: 30px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.koHint {
+  margin: 0;
+  color: var(--accent-ink);
+  font-size: var(--fs-vocab-example);
+}
+.speak {
+  flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.noInfo {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 18px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-card);
+}
+
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+.row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+.label {
+  flex: 0 0 48px;
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+}
+.value {
+  margin: 0;
+  font-size: 20px;
+  color: var(--ink);
+}
+.dim {
+  color: var(--ink-3);
+}
+.kunNote {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-box);
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg));
+  color: var(--ink-2);
+  line-height: 1.6;
+}
+
+.words {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.wordList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.wordRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--surface);
+}
+.wordLink {
+  font-size: 18px;
+  color: var(--ink);
+  text-decoration: none;
+}
+.wordLink:hover {
+  text-decoration: underline;
+}

@@ -30,7 +30,7 @@ export default function JapaneseHubPage() {
         </div>
         <h1 className="t-book-title mt-4">🗾 아빠의 일본어</h1>
         <p className="t-lead mt-1">
-          JLPT 단어장으로 어휘를 쌓고, 듀오링고 대화를 찍어 복습해요. 두 가지는 따로따로 써도 돼요.
+          JLPT 단어장으로 어휘를 쌓고, 듀오링고 대화를 찍어 복습하고, 모은 한자를 한국 한자음으로 익혀요. 따로따로 써도 돼요.
         </p>
       </header>
 
@@ -52,6 +52,17 @@ export default function JapaneseHubPage() {
           <span className="u-entry-title">대화 복습</span>
           <span className="u-entry-desc">
             듀오링고 대화 스크린샷을 찍으면 전사하고, 잘한 점·고칠 점·어휘를 짚어 복습하게 해줘요.
+          </span>
+        </Link>
+
+        {/* 한자 — 단어장에서 파생되지만 화면은 독립(§12-1). 아랫줄 full-width로 두 기능과 시각 구분. */}
+        <Link href="/japanese/kanji" className="u-entry u-entry-secondary sm:col-span-2">
+          <span className="u-entry-icon" aria-hidden>
+            🈳
+          </span>
+          <span className="u-entry-title">한자</span>
+          <span className="u-entry-desc">
+            단어장에서 모은 한자를 한국 한자음을 다리 삼아 익혀요. 음독·훈독·뜻과 한자 시험이 있어요.
           </span>
         </Link>
       </div>

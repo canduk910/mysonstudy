@@ -1,44 +1,57 @@
 /**
- * 대화 복습 목록 `/japanese/dialog` — **J0 플레이스홀더**. (스펙 §8)
+ * 대화 복습 목록 `/japanese/dialog` (아빠의 일본어 J3, §8) — 서버 컴포넌트.
  *
- * ⚠️ 임시 화면이다. 허브(`/japanese`)의 링크가 404로 떨어지지 않게 "준비 중"만 보여준다.
- * **J3에서 이 파일을 실제 목록 화면으로 갈아끼운다**(듀오링고 스크린샷 N장 → 호출 B 전사·병합 → 저장·목록·상세,
- * J4에서 호출 C 해설이 상세에 붙는다). J0에는 AI·저장·기능이 없다 — 이 파일은 링크 대상만 채운다.
+ * J0 플레이스홀더를 실제 목록으로 교체했다. `getStore()`를 직접 읽어 줄에 필요한 것만 넘긴다(전사 전문은 무겁다).
  */
 
 import type { Metadata } from "next";
 import Link from "next/link";
+import JaDialogLibraryView, { type JaDialogLibraryItem } from "@/components/ja-dialog-library-view";
+import { getStore } from "@/lib/store";
+
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "대화 복습 — 아빠의 일본어",
+  description: "듀오링고 대화를 찍어 전사·해설로 복습해요.",
 };
 
-export default function JapaneseDialogPlaceholderPage() {
+const LIST_LIMIT = 500;
+
+export default async function JaDialogLibraryPage() {
+  const stored = await getStore().listJaDialogs(LIST_LIMIT);
+  const items: JaDialogLibraryItem[] = stored.map((d) => ({
+    id: d.id,
+    titleKo: d.titleKo,
+    createdAt: d.createdAt,
+    turnCount: d.turns.length,
+    hasCoaching: d.coaching !== null,
+    partial: d.partial,
+    sortIndex: d.sortIndex,
+  }));
+  // 정렬 규칙(서재·단어장과 동일) — sortIndex null 먼저(최신 위), 그다음 sortIndex 오름차순.
+  items.sort((a, b) => {
+    const aNull = a.sortIndex == null;
+    const bNull = b.sortIndex == null;
+    if (aNull && bNull) return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0;
+    if (aNull) return -1;
+    if (bNull) return 1;
+    return a.sortIndex! - b.sortIndex!;
+  });
+
   return (
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
-      <header className="mb-6">
+      <header className="mb-8">
         <div className="flex items-center justify-between gap-3">
           <Link href="/japanese" className="u-navbtn">
             ← 아빠의 일본어
           </Link>
         </div>
         <h1 className="t-book-title mt-4">💬 대화 복습</h1>
+        <p className="t-lead mt-1">듀오링고 대화 스크린샷을 찍어 전사하고, 잘한 점·고칠 점·어휘로 복습해요.</p>
       </header>
 
-      <section className="u-card" style={{ padding: "2rem 1.25rem", textAlign: "center" }}>
-        <p style={{ fontSize: "2.5rem", margin: 0 }} aria-hidden>
-          🛠️
-        </p>
-        <h2 className="t-section-title mt-2">곧 만나요</h2>
-        <p className="t-lead mt-2">
-          듀오링고 대화 스크린샷을 찍어 전사하고 복습하는 기능을 준비하고 있어요. 조금만 기다려 주세요.
-        </p>
-        <div className="mt-6 flex flex-wrap justify-center gap-2">
-          <Link href="/japanese" className="u-btn u-btn-primary">
-            <span aria-hidden>🗾</span> 아빠의 일본어로
-          </Link>
-        </div>
-      </section>
+      <JaDialogLibraryView items={items} />
     </main>
   );
 }

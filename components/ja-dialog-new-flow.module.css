@@ -1,0 +1,120 @@
+/* 대화 복습 만들기 흐름 (아빠의 일본어 J3·J4). 토큰 재사용. */
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.pickBtn {
+  min-height: 52px;
+  cursor: pointer;
+}
+.thumbs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.thumb {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+.thumbImg {
+  width: 100%;
+  height: 120px;
+  object-fit: cover;
+  border-radius: var(--radius-chip);
+  background: var(--surface-2);
+}
+.thumbBtns {
+  display: flex;
+  gap: 6px;
+}
+.thumbBtn {
+  flex: 1 1 auto;
+  min-height: 36px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+  cursor: pointer;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.actions > .u-btn {
+  flex: 1 1 auto;
+  min-height: 52px;
+}
+.warn {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-box);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: var(--fs-vocab-example);
+}
+.note {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+}
+.empty {
+  margin: 0;
+  padding: 16px;
+  text-align: center;
+  color: var(--ink-3);
+}
+.coachBox {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-card);
+}
+.coachIdle {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+.titleLabel {
+  display: block;
+  margin-top: 4px;
+  font-weight: 700;
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+}
+.titleInput {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 700;
+}
+.err {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-vocab-example);
+}

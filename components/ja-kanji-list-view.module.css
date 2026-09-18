@@ -1,0 +1,109 @@
+/* 한자 목록 (아빠의 일본어 JK) — 수집·정보만들기. 토큰 재사용. */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.hanNote {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-box);
+  color: var(--ink-2);
+  line-height: 1.6;
+}
+.empty {
+  margin: 0;
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--ink-3);
+}
+.enrichRow {
+  display: flex;
+}
+.enrichRow > .u-btn {
+  flex: 1 1 auto;
+  min-height: 48px;
+}
+.msg {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+}
+.msgError {
+  color: var(--danger);
+}
+
+.list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+@media (min-width: 480px) {
+  .list {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  color: var(--ink);
+}
+.card:hover {
+  border-color: var(--accent);
+}
+.cardDim {
+  opacity: 0.62;
+}
+.kanji {
+  flex: 0 0 auto;
+  font-size: 40px;
+  font-weight: 800;
+  line-height: 1;
+}
+.info {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.bridge {
+  font-size: 16px;
+  color: var(--ink);
+}
+.bridge b {
+  color: var(--accent-ink);
+}
+.meaning {
+  color: var(--ink-2);
+}
+.noInfo {
+  font-size: 15px;
+  color: var(--ink-3);
+  font-style: italic;
+}
+.count {
+  font-size: var(--fs-meta-chip);
+  color: var(--ink-3);
+}
+.speak {
+  flex: 0 0 auto;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  font-size: 17px;
+  cursor: pointer;
+}

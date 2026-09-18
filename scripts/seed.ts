@@ -671,6 +671,11 @@ async function main() {
     jaVocabBooks: [],
     // 일본어 시험 세션(J2)도 같은 이유로 빈 배열.
     jaQuizzes: [],
+    // 한자 정보·한자 시험(JK)도 같은 이유로 빈 배열.
+    jaKanji: [],
+    jaKanjiQuizzes: [],
+    // 대화 복습(J3)도 같은 이유로 빈 배열.
+    jaDialogs: [],
   };
 
   await mergeDbForSeed(db);

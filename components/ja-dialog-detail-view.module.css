@@ -1,0 +1,66 @@
+/* 대화 복습 상세 (아빠의 일본어 J3·J4·J5). 토큰 재사용. */
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.titleRow {
+  min-width: 0;
+}
+.titleView {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.titleEdit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.titleInput {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 700;
+}
+.titleBtns {
+  display: flex;
+  gap: 8px;
+}
+.err {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-vocab-example);
+}
+.warn {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-vocab-example);
+}
+.coachSection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.coachHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.noCoach {
+  margin: 0;
+  padding: 16px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-box);
+  color: var(--ink-3);
+  text-align: center;
+}

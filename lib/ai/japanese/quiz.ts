@@ -24,13 +24,21 @@ import type { VocabQuizRecord } from "../../store";
 // 모드 (§6-1·§7-3)
 // ---------------------------------------------------------------------------
 
-/** 콘텐츠 4모드 — 실제 문제를 만드는 축(§6-1). */
+/** 단어 콘텐츠 4모드 — 단어장 엔트리로 만드는 축(§6-1). */
 export const JA_QUIZ_CONTENT_MODES = ["ko-to-word", "kanji-to-kana", "word-to-ko", "cloze"] as const;
 export type JaQuizContentMode = (typeof JA_QUIZ_CONTENT_MODES)[number];
 
-/** 저장 레코드의 mode 축 — 4모드 + 오답복습(§7-3). 집계는 모드별로 가른다(§6-2). */
+/** 단어 저장 레코드의 mode 축 — 단어 4모드 + 오답복습(§7-3). 집계는 모드별로 가른다(§6-2). */
 export const JA_QUIZ_MODES = [...JA_QUIZ_CONTENT_MODES, "wrong-review"] as const;
 export type JaQuizMode = (typeof JA_QUIZ_MODES)[number];
+
+/**
+ * 한자 축 2모드 — 한자 정보(JaKanjiInfo)로 만든다(§12-4). **JA_QUIZ_MODES와 별도 축**이다(단어 라벨 Record를
+ * 깨지 않게). 집계(aggregateJaStatsByMode)는 mode 문자열로 가르므로, 한자 세션도 자기 버킷으로 들어가 단어
+ * 모드 통계와 섞이지 않는다(모드 무오염, §6-2). 한자 시험 세션 레코드는 이 mode를 쓴다(§12-4 scope:"kanji").
+ */
+export const JA_KANJI_QUIZ_MODES = ["kanji-to-on", "kanji-to-meaning"] as const;
+export type JaKanjiQuizMode = (typeof JA_KANJI_QUIZ_MODES)[number];
 
 // ---------------------------------------------------------------------------
 // 입력 최소 타입 (JaVocabEntry가 구조적으로 만족)
@@ -170,14 +178,89 @@ export function buildJaQuizQuestions(
 }
 
 // ---------------------------------------------------------------------------
+// 한자 시험 2모드 (§12-4) — 한자 정보(JaKanjiInfo)로 만든다. 단어 시험과 같은 buildChoices·question shape.
+// ---------------------------------------------------------------------------
+
+/** 한자 시험이 읽는 최소 shape(JaKanjiInfo가 구조적으로 만족). */
+export interface JaKanjiQuizSource {
+  kanji: string;
+  onyomi: readonly string[];
+  meaningKo: string;
+}
+
+/** 한자 문항 — word 자리에 한자를 담아 채점·기록 키로 쓴다(단어 시험과 같은 규약). */
+export interface JaKanjiQuizQuestion {
+  mode: JaKanjiQuizMode;
+  /** 채점·기록 키(한자 문자) */
+  word: string;
+  prompt: string;
+  answer: string;
+  choices: string[];
+}
+
+export interface JaKanjiQuizBuildOptions {
+  modes?: readonly JaKanjiQuizMode[];
+  count?: number;
+  rng?: Rng;
+}
+
+function buildKanjiOne(
+  mode: JaKanjiQuizMode,
+  item: JaKanjiQuizSource,
+  items: readonly JaKanjiQuizSource[],
+  count: number,
+  rng: Rng,
+): JaKanjiQuizQuestion | null {
+  if (mode === "kanji-to-on") {
+    // 음독 없는 한자(훈독만)는 제외 — 가나 단어를 kanji-to-kana에서 빼는 것과 같은 규칙(§12-4)
+    if (item.onyomi.length === 0) return null;
+    const answer = item.onyomi[0];
+    const pool = items.flatMap((k) => k.onyomi); // 다른 한자의 음독(정답은 buildChoices가 배제·중복 제거)
+    const choices = buildChoices(answer, pool, count, rng);
+    return { mode, word: item.kanji, prompt: item.kanji, answer, choices };
+  }
+  // kanji-to-meaning
+  if (item.meaningKo.trim() === "") return null;
+  const choices = buildChoices(item.meaningKo, items.map((k) => k.meaningKo), count, rng);
+  return { mode, word: item.kanji, prompt: item.kanji, answer: item.meaningKo, choices };
+}
+
+/**
+ * 한자 시험 문항을 조립한다(§12-4). 각 한자 × 요청 모드마다 문항을 만들고(음독 없는 한자의 kanji-to-on은 skip),
+ * 문항 순서를 1회 셔플한다. 보기는 buildChoices가 이미 셔플한다.
+ */
+export function buildJaKanjiQuizQuestions(
+  items: readonly JaKanjiQuizSource[],
+  options: JaKanjiQuizBuildOptions = {},
+): { questions: JaKanjiQuizQuestion[]; skipped: number } {
+  const modes = options.modes ?? JA_KANJI_QUIZ_MODES;
+  const count = options.count ?? DEFAULT_CHOICE_COUNT;
+  const rng = options.rng ?? Math.random;
+
+  const questions: JaKanjiQuizQuestion[] = [];
+  let skipped = 0;
+  for (const item of items) {
+    for (const mode of modes) {
+      const q = buildKanjiOne(mode, item, items, count, rng);
+      if (q) questions.push(q);
+      else skipped += 1;
+    }
+  }
+  return { questions: shuffle(questions, rng), skipped };
+}
+
+// ---------------------------------------------------------------------------
 // 모드별 숙련도·복습 (§6-2) — 영어 순수 함수를 모드별로 갈라 호출하는 얇은 헬퍼
 // ---------------------------------------------------------------------------
 
-/** 집계·복습이 읽는 시험 세션 최소 타입(JaQuizRecord가 구조적으로 만족). */
+/**
+ * 집계·복습이 읽는 시험 세션 최소 타입(JaQuizRecord가 구조적으로 만족).
+ * mode는 단어 모드·한자 모드 어느 쪽이든 받는다 — 집계는 문자열로 가르므로 두 축이 한 함수에서 안전히 분리된다.
+ */
 export interface JaQuizSessionLike {
   id: string;
   bookId: string;
-  mode: JaQuizMode;
+  mode: JaQuizMode | JaKanjiQuizMode;
   startedAt: string;
   finishedAt: string | null;
   items: readonly { word: string; correct: boolean; answered: boolean | null }[];
@@ -225,7 +308,7 @@ export function aggregateJaStatsByMode(
  */
 export function buildJaReviewCandidatesByMode(
   quizzes: readonly JaQuizSessionLike[],
-  mode: JaQuizMode,
+  mode: JaQuizMode | JaKanjiQuizMode,
 ): ReviewCandidate[] {
   return buildReviewCandidates(toVocabQuizRecords(quizzes.filter((q) => q.mode === mode)));
 }

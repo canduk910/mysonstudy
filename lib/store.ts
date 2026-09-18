@@ -34,13 +34,20 @@ import type { Explanation } from "./ai/math/schemas";
 // 값으로 끌고 오지만, 타입만 가져오면 빌드에서 지워져 저장 계층이 AI 모듈에 묶이지 않는다.
 import type { VocabEntry, VocabMeaning, VocabRelated } from "./ai/english/vocabbook-schemas";
 import { normalizeRelated } from "./ai/english/vocabbook-schemas";
-// 아빠의 일본어 J1/J2 — 완성형 단어 항목·레벨 타입(**타입만** import). 값 정규화는 ai-engineer의 단일 정의처를 쓴다.
-import type { JaVocabEntry, JlptLevel } from "./ai/japanese/schemas";
+// 아빠의 일본어 J1/J2/J3 — 완성형 단어 항목·레벨·대화 타입(**타입만** import). 값 정규화는 ai-engineer의 단일 정의처를 쓴다.
+import type {
+  JaVocabEntry,
+  JlptLevel,
+  JaDialogTurn,
+  JaDialogCoaching,
+  JaToken,
+  JaDialogFeedback,
+} from "./ai/japanese/schemas";
 // 저장 방어 정규화 단일 정의처(lib/ai/japanese/vocab.ts) — store가 이 헬퍼를 호출한다(인계 #1, 영어 normalizeRelated 관용구).
 // 순수 함수라 값 import여도 저장 계층이 OpenAI에 묶이지 않는다(isVocabBookEnriched·normalizeRelated와 같은 갈래).
 import { normalizeJaVocabEntry } from "./ai/japanese/vocab";
-// 시험 모드 유니온(J2) — 단일 정의처(lib/ai/japanese/quiz.ts). **타입만** import(재정의 금지, 인계 #2).
-import type { JaQuizMode } from "./ai/japanese/quiz";
+// 시험 모드 유니온(J2·JK) — 단일 정의처(lib/ai/japanese/quiz.ts). **타입만** import(재정의 금지).
+import type { JaQuizMode, JaKanjiQuizMode } from "./ai/japanese/quiz";
 // enriched 재계산의 단일 정의처(V8). 순수 함수라(타입만 import) 값으로 끌어와도 저장 계층이
 // openai/client에 묶이지 않는다 — appendVocabEntry가 새 단어를 붙일 때 enriched를 다시 굳힌다.
 import { isVocabBookEnriched } from "./ai/english/vocabbook-enrich";
@@ -326,6 +333,72 @@ export interface JaQuizRecord {
 }
 
 /**
+ * 한자 정보 레코드 (아빠의 일본어 JK, §12-3). 단어장에서 **파생**되지만 **별도 컬렉션**이다 — 단어장을 지워도
+ * 한자 정보는 남는다(다른 단어장에서 또 쓰인다). `deleteJaKanji`는 두지 않는다(수집 파생물, §12-3). 한자가 든
+ * 단어 목록은 저장하지 않는다(읽을 때 단어장에서 계산). `kanji`가 조회·중복 키.
+ */
+export interface JaKanjiRecord {
+  id: string;
+  /** 한자 한 글자 — 조회·upsert 키 */
+  kanji: string;
+  /** 한국 한자음 한 글자(다리). 한국에서 안 쓰는 한자(국자 등)면 null */
+  koReading: string | null;
+  /** 음독(히라가나) — 실제 쓰이는 것만 */
+  onyomi: string[];
+  /** 훈독(히라가나 사전형). 없으면 빈 배열 */
+  kunyomi: string[];
+  /** 한국어 뜻(짧게) */
+  meaningKo: string;
+  model: string;
+  createdAt: string; // ISO 8601
+}
+
+/**
+ * 한자 시험 세션 (JK, §12-4). **단어 시험(JaQuizRecord)과 별도 컬렉션**이라 집계가 섞이지 않는다(모드 무오염).
+ * 단어장이 아니라 전역 한자 풀 대상이라 `bookId` 대신 `scope:"kanji"`. mode는 단일 정의처 `JaKanjiQuizMode`(재정의 금지).
+ * items의 `word` 자리에 **한자 문자**가 들어간다(채점·집계 키, buildJaKanjiQuizQuestions 규약).
+ */
+export interface JaKanjiQuizRecord {
+  id: string;
+  scope: "kanji";
+  mode: JaKanjiQuizMode;
+  startedAt: string;
+  finishedAt: string | null;
+  items: JaQuizItem[];
+}
+
+/**
+ * 듀오링고 대화 복습 레코드 (아빠의 일본어 §7-2). **전사가 본체, 해설은 부수 효과** — 호출 C가 실패해도
+ * `coaching: null`로 저장하고 화면에서 "해설 다시 만들기"로 채운다. **사진 원본은 저장하지 않는다**(SPEC §1) —
+ * 기록에 남는 것은 전사된 텍스트(turns)뿐. sortIndex는 목록 수동 정렬(단어장과 같은 규약).
+ */
+export interface JaDialogRecord {
+  id: string;
+  /** 화면 이름 — 판독에 제목이 없어 사용자가 정하거나 focusKo로 채운다 */
+  titleKo: string;
+  /** 이 대화의 학습 주제(첫 화면에 있을 수 있다). 없으면 null */
+  focusKo: string | null;
+  /** 전사된 발화들(호출 B 병합 결과). 본체 */
+  turns: JaDialogTurn[];
+  /** 학습 해설(호출 C). 실패·미생성이면 null(전사는 그대로 남는다) */
+  coaching: JaDialogCoaching | null;
+  /** 판독에 쓴 사진 수 */
+  photoCount: number;
+  /** 사진 밖으로 잘려 일부만 판독됐으면 true */
+  partial: boolean;
+  model: string;
+  createdAt: string; // ISO 8601
+  /** 목록 수동 정렬 인덱스 — 미정렬은 null(맨 위). 생성부는 null로 시작. */
+  sortIndex: number | null;
+}
+
+/** 대화에서 모은 단어 담기 결과 (J5, §7-5). appendVocabEntry와 같은 규약. */
+export interface AppendJaVocabResult {
+  record: JaVocabBookRecord | null;
+  appended: boolean;
+}
+
+/**
  * 단어 1개 추가 결과 (V8 더블탭 담기). "성공 = 그 단어가 이제 이 단어장에 있다"로 읽는다.
  * - `record: null`  → 없는 단어장(404). 담을 곳이 없다.
  * - `appended:true` → 새로 붙였다(record는 갱신본).
@@ -420,6 +493,12 @@ export type NewVocabBook = Omit<VocabBookRecord, "id" | "createdAt" | "sortIndex
 export type NewJaVocabBook = Omit<JaVocabBookRecord, "id" | "createdAt" | "sortIndex">;
 /** 일본어 시험 세션 저장 입력 — id는 스토어가 매긴다(NewVocabQuiz와 같은 규약). */
 export type NewJaQuiz = Omit<JaQuizRecord, "id">;
+/** 한자 정보 저장 입력 — id·createdAt은 스토어가 매긴다(kanji가 upsert 키). */
+export type NewJaKanji = Omit<JaKanjiRecord, "id" | "createdAt">;
+/** 한자 시험 세션 저장 입력 — id는 스토어가 매긴다. */
+export type NewJaKanjiQuiz = Omit<JaKanjiQuizRecord, "id">;
+/** 대화 복습 저장 입력 — id·createdAt·sortIndex는 스토어가 매긴다(NewJaVocabBook과 같은 규약). */
+export type NewJaDialog = Omit<JaDialogRecord, "id" | "createdAt" | "sortIndex">;
 /** 시험 세션 저장 입력 — id는 스토어가 매긴다. startedAt/finishedAt은 클라이언트가 정한 값 그대로 */
 export type NewVocabQuiz = Omit<VocabQuizRecord, "id">;
 
@@ -614,6 +693,47 @@ export interface StudyStore {
   addJaQuiz(input: NewJaQuiz): Promise<JaQuizRecord>;
   /** 해당 단어장의 모든 시험 세션 — startedAt 오름차순(streak가 이 순서를 읽는다, 영어 규약). */
   listJaQuizzes(bookId: string): Promise<JaQuizRecord[]>;
+
+  // ---- jaKanji · jaKanjiQuizzes — 한자 단위 학습 (JK, §12-3·§12-4) ----
+  // 한자 정보는 단어장 파생물이라 **별도 컬렉션**, 삭제 메서드 없음(§12-3). 시험도 별도 컬렉션(모드 무오염).
+  /**
+   * 한자 정보 여러 개 저장(호출 D 결과). **kanji 기준 insert-only** — 이미 있는 한자는 덮어쓰지 않고 건너뛴다(§12-2 불변).
+   * 정상 경로는 enrich가 "정보 없는 한자만" 보내지만, 동시 요청(race)까지 저장 계층에서 막는다(영어 "정의 불변"과 같은 자리).
+   * append 전용이라 prod-guard 없음. **새로 추가한(=실제로 채운) 한자 수만** 돌려준다(이미 있던 건 제외 — filled를 사실대로).
+   */
+  saveJaKanji(records: NewJaKanji[]): Promise<number>;
+  /** 저장된 한자 정보 전체(전역, createdAt 오름차순). 목록·시험·카드가 읽는다. */
+  listJaKanji(): Promise<JaKanjiRecord[]>;
+  /** 한자 시험 세션 한 판 저장. append 전용이라 prod-guard 없음. */
+  addJaKanjiQuiz(input: NewJaKanjiQuiz): Promise<JaKanjiQuizRecord>;
+  /** 모든 한자 시험 세션 — startedAt 오름차순(집계가 이 순서를 읽는다). 전역 scope라 필터 없음. */
+  listJaKanjiQuizzes(): Promise<JaKanjiQuizRecord[]>;
+
+  // ---- jaDialogs — 듀오링고 대화 복습 (J3~J5, §7-2·§7-5) ----
+  createJaDialog(input: NewJaDialog): Promise<JaDialogRecord>;
+  getJaDialog(id: string): Promise<JaDialogRecord | null>;
+  /** 최신순. limit 생략이면 전체(가족용 규모). */
+  listJaDialogs(limit?: number): Promise<JaDialogRecord[]>;
+  /** 삭제 — 딸린 것 없음. **삭제라 prod-guard**(assertDestructiveAllowed). 지웠으면 {ok:true}, 없으면 {ok:false}. */
+  deleteJaDialog(id: string): Promise<DeleteJaVocabBookResult>;
+  /** 목록 수동 정렬 — reorderBooks의 대화판. 수정이라 prod-guard 무관. */
+  reorderJaDialogs(orderedIds: string[]): Promise<void>;
+  /** 화면 이름(titleKo)만 바꾼다. turns·coaching은 불변. 수정이라 prod-guard 무관. */
+  updateJaDialogTitle(id: string, titleKo: string): Promise<JaDialogRecord | null>;
+  /** 해설(coaching)만 갈아끼운다(호출 C 재생성). 전사·제목은 불변. 없는 id면 null. 수정이라 prod-guard 무관. */
+  updateJaDialogCoaching(id: string, coaching: JaDialogCoaching): Promise<JaDialogRecord | null>;
+
+  // ---- 대화에서 모은 단어 (J5, §7-5) — kind:"collected" 일본어 단어장 ----
+  /**
+   * "대화에서 모은 단어" 단어장을 얻거나(없으면) 만든다. **kind:"collected"** 단일 단어장으로 식별한다
+   * (JLPT 단어장과 섞지 않는다 — 영어 getOrCreateCollectedVocabBook 관용구). 생성이라 prod-guard 무관.
+   */
+  getOrCreateJaCollectedVocabBook(): Promise<JaVocabBookRecord>;
+  /**
+   * 단어 1개를 그 단어장에 덧붙인다(J5 담기). **같은 kana가 이미 있으면 붙이지 않는다**(중복은 appended:false).
+   * **collected 단어장에만** 쓴다 — JLPT 단어장에 append 금지(§7-5, 라우트가 대상을 collected로 강제). 수정이라 prod-guard 무관.
+   */
+  appendJaVocabEntry(id: string, entry: JaVocabEntry): Promise<AppendJaVocabResult>;
 }
 
 /**
@@ -636,13 +756,16 @@ export interface DbShape {
   vocabQuizzes: VocabQuizRecord[];
   jaVocabBooks: JaVocabBookRecord[];
   jaQuizzes: JaQuizRecord[];
+  jaKanji: JaKanjiRecord[];
+  jaKanjiQuizzes: JaKanjiQuizRecord[];
+  jaDialogs: JaDialogRecord[];
 }
 
 const DB_DIR = path.join(process.cwd(), "data");
 const DB_PATH = path.join(DB_DIR, "db.json");
 
 function emptyDb(): DbShape {
-  return { books: [], cards: [], readings: [], explanations: [], vocabBooks: [], vocabQuizzes: [], jaVocabBooks: [], jaQuizzes: [] };
+  return { books: [], cards: [], readings: [], explanations: [], vocabBooks: [], vocabQuizzes: [], jaVocabBooks: [], jaQuizzes: [], jaKanji: [], jaKanjiQuizzes: [], jaDialogs: [] };
 }
 
 /**
@@ -689,6 +812,14 @@ async function readDb(): Promise<DbShape> {
         ...q,
         items: (q.items ?? []).map(normalizeJaQuizItem),
       })),
+      // JK 이전 db.json엔 이 두 키가 없다 — 같은 하위호환(없으면 빈 배열). 각 레코드는 normalize로 방어.
+      jaKanji: (parsed.jaKanji ?? []).map((k) => normalizeJaKanji(k as JaKanjiRecord)),
+      jaKanjiQuizzes: (parsed.jaKanjiQuizzes ?? []).map((q) => ({
+        ...q,
+        items: (q.items ?? []).map(normalizeJaQuizItem),
+      })),
+      // J3 이전 db.json엔 이 키가 없다 — 같은 하위호환(없으면 빈 배열). 각 레코드는 normalizeJaDialogRecord로 방어.
+      jaDialogs: (parsed.jaDialogs ?? []).map((d) => normalizeJaDialogRecord(d as JaDialogRecord)),
     };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyDb();
@@ -714,6 +845,11 @@ export function normalizeTitleAuthorKey(title: string, author: string): string {
 
 function byCreatedAtDesc(a: { createdAt: string }, b: { createdAt: string }): number {
   return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0;
+}
+
+/** createdAt 오름차순(오래된 순 = 수집 순서). 한자 목록이 이 순서로 뜬다(JK). */
+function byCreatedAtAsc(a: { createdAt: string }, b: { createdAt: string }): number {
+  return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
 }
 
 /** 시험 세션 정렬 — startedAt 오름차순(오래된 순 = 시간 순서). V5 streak 계산이 이 순서를 읽는다 */
@@ -954,6 +1090,65 @@ export function normalizeJaQuizItem(item: Partial<JaQuizItem>): JaQuizItem {
     word: String(item.word ?? ""),
     correct: item.correct === true,
     answered: item.answered === true ? true : item.answered === false ? false : null,
+  };
+}
+
+/**
+ * 한자 정보 레코드 방어 정규화(JK, §12-3) — undefined를 정한 값으로 조인다(Firestore 거부 방어). 값을 손보지
+ * 않고 "없는 것을 없음"으로만 적는다. 두 백엔드 공유 단일 정의처(normalizeJaVocabBook과 같은 자리).
+ */
+export function normalizeJaKanji(k: Partial<JaKanjiRecord>): JaKanjiRecord {
+  return {
+    id: k.id ?? "",
+    kanji: String(k.kanji ?? ""),
+    koReading: typeof k.koReading === "string" ? k.koReading : null,
+    onyomi: Array.isArray(k.onyomi) ? k.onyomi.map((s) => String(s)) : [],
+    kunyomi: Array.isArray(k.kunyomi) ? k.kunyomi.map((s) => String(s)) : [],
+    meaningKo: String(k.meaningKo ?? ""),
+    model: String(k.model ?? ""),
+    createdAt: k.createdAt ?? new Date(0).toISOString(),
+  };
+}
+
+/** "대화에서 모은 단어" 단어장 이름·식별. kind:"collected"가 마커다(제목은 사용자가 안 바꾸지만 kind로 찾는다). */
+export const JA_COLLECTED_VOCAB_TITLE_KO = "대화에서 모은 단어";
+
+function normalizeJaToken2(t: unknown): JaToken {
+  const o = (t ?? {}) as Partial<JaToken>;
+  return { surface: String(o.surface ?? ""), reading: typeof o.reading === "string" ? o.reading : null };
+}
+function normalizeJaFeedback(fb: unknown): JaDialogFeedback | null {
+  if (fb == null) return null;
+  const o = fb as Partial<JaDialogFeedback>;
+  return { kind: o.kind === "praise" ? "praise" : "tip", textKo: String(o.textKo ?? "") };
+}
+function normalizeJaDialogTurn(t: unknown): JaDialogTurn {
+  const o = (t ?? {}) as Partial<JaDialogTurn>;
+  const speaker = o.speaker === "partner" || o.speaker === "me" ? o.speaker : "unknown";
+  return {
+    speaker,
+    ja: String(o.ja ?? ""),
+    tokens: Array.isArray(o.tokens) ? o.tokens.map(normalizeJaToken2) : [],
+    feedback: normalizeJaFeedback(o.feedback),
+  };
+}
+
+/**
+ * 대화 복습 레코드 방어 정규화 (§7-2) — undefined를 정한 값으로 조인다(Firestore 거부 방어). turns는 깊게 조이고,
+ * coaching은 zod가 이미 검증한 호출 C 출력이라 **있으면 그대로, 없으면 null**로 둔다(두 백엔드 공유 단일 정의처).
+ */
+export function normalizeJaDialogRecord(d: Partial<JaDialogRecord>): JaDialogRecord {
+  return {
+    id: d.id ?? "",
+    titleKo: String(d.titleKo ?? ""),
+    focusKo: typeof d.focusKo === "string" ? d.focusKo : null,
+    turns: Array.isArray(d.turns) ? d.turns.map(normalizeJaDialogTurn) : [],
+    coaching: d.coaching ?? null,
+    photoCount: typeof d.photoCount === "number" ? d.photoCount : 0,
+    partial: d.partial === true,
+    model: String(d.model ?? ""),
+    createdAt: d.createdAt ?? new Date(0).toISOString(),
+    sortIndex: d.sortIndex ?? null,
   };
 }
 
@@ -1419,6 +1614,158 @@ class JsonFileStore implements BookCardStore {
       .map((q) => ({ ...q, items: (q.items ?? []).map(normalizeJaQuizItem) }))
       .sort(byStartedAtAsc);
   }
+
+  // ---- jaKanji · jaKanjiQuizzes (JK) ----
+
+  async saveJaKanji(records: NewJaKanji[]): Promise<number> {
+    const now = new Date().toISOString();
+    return this.mutate((db) => {
+      let added = 0;
+      for (const rec of records) {
+        const normalized = normalizeJaKanji({ ...rec, id: randomUUID(), createdAt: now });
+        const idx = db.jaKanji.findIndex((k) => k.kanji === normalized.kanji);
+        if (idx >= 0) {
+          // **이미 있는 한자는 덮어쓰지 않는다**(§12-2 불변). 시험(kanji-to-on·kanji-to-meaning)이
+          // 저장된 음독·뜻에 매달리므로, 재생성 때마다 값이 바뀌면 외운 것과 문제가 어긋난다.
+          // 정상 경로는 selectKanjiToEnrich가 이미 걸러 주지만, 동시 요청(race)까지 저장 계층에서 막는다.
+          // 영어 단어장의 "정의 불변"과 같은 자리. 덮어쓰기가 필요하면 사람이 고치는 길만 둔다.
+          continue;
+        }
+        db.jaKanji.push(normalized);
+        added += 1;
+      }
+      return added;
+    });
+  }
+
+  async listJaKanji(): Promise<JaKanjiRecord[]> {
+    const db = await readDb();
+    return [...db.jaKanji].map(normalizeJaKanji).sort(byCreatedAtAsc);
+  }
+
+  async addJaKanjiQuiz(input: NewJaKanjiQuiz): Promise<JaKanjiQuizRecord> {
+    const record: JaKanjiQuizRecord = {
+      ...input,
+      items: input.items.map(normalizeJaQuizItem),
+      id: randomUUID(),
+    };
+    return this.mutate((db) => {
+      db.jaKanjiQuizzes.push(record);
+      return record;
+    });
+  }
+
+  async listJaKanjiQuizzes(): Promise<JaKanjiQuizRecord[]> {
+    const db = await readDb();
+    return db.jaKanjiQuizzes
+      .map((q) => ({ ...q, items: (q.items ?? []).map(normalizeJaQuizItem) }))
+      .sort(byStartedAtAsc);
+  }
+
+  // ---- jaDialogs (J3~J5) ----
+
+  async createJaDialog(input: NewJaDialog): Promise<JaDialogRecord> {
+    const record = normalizeJaDialogRecord({
+      ...(input as JaDialogRecord),
+      sortIndex: null,
+      id: randomUUID(),
+      createdAt: new Date().toISOString(),
+    });
+    return this.mutate((db) => {
+      db.jaDialogs.push(record);
+      return record;
+    });
+  }
+
+  async getJaDialog(id: string): Promise<JaDialogRecord | null> {
+    const db = await readDb();
+    const found = db.jaDialogs.find((d) => d.id === id);
+    return found ? normalizeJaDialogRecord(found) : null;
+  }
+
+  async listJaDialogs(limit?: number): Promise<JaDialogRecord[]> {
+    const db = await readDb();
+    const sorted = [...db.jaDialogs].sort(byCreatedAtDesc);
+    return (limit == null ? sorted : sorted.slice(0, limit)).map(normalizeJaDialogRecord);
+  }
+
+  async deleteJaDialog(id: string): Promise<DeleteJaVocabBookResult> {
+    // prod-guard는 firestore(실데이터)에만 건다 — 파일 백엔드는 로컬이라 안전(deleteJaVocabBook 선례). 딸린 것 없음.
+    return this.mutate((db) => {
+      const before = db.jaDialogs.length;
+      db.jaDialogs = db.jaDialogs.filter((d) => d.id !== id);
+      return { ok: db.jaDialogs.length < before };
+    });
+  }
+
+  async reorderJaDialogs(orderedIds: string[]): Promise<void> {
+    const rank = new Map(orderedIds.map((id, i) => [id, i]));
+    await this.mutate((db) => {
+      for (const d of db.jaDialogs) {
+        const idx = rank.get(d.id);
+        if (idx !== undefined) d.sortIndex = idx;
+      }
+    });
+  }
+
+  async updateJaDialogTitle(id: string, titleKo: string): Promise<JaDialogRecord | null> {
+    return this.mutate((db) => {
+      const d = db.jaDialogs.find((x) => x.id === id);
+      if (!d) return null;
+      d.titleKo = titleKo;
+      return normalizeJaDialogRecord(d);
+    });
+  }
+
+  async updateJaDialogCoaching(id: string, coaching: JaDialogCoaching): Promise<JaDialogRecord | null> {
+    return this.mutate((db) => {
+      const d = db.jaDialogs.find((x) => x.id === id);
+      if (!d) return null;
+      d.coaching = coaching;
+      return normalizeJaDialogRecord(d);
+    });
+  }
+
+  // ---- 대화에서 모은 단어 (J5) ----
+
+  async getOrCreateJaCollectedVocabBook(): Promise<JaVocabBookRecord> {
+    const db0 = await readDb();
+    const existing = db0.jaVocabBooks.find((v) => v.kind === "collected");
+    if (existing) return normalizeJaVocabBook(existing);
+    return this.mutate((db) => {
+      const again = db.jaVocabBooks.find((v) => v.kind === "collected");
+      if (again) return normalizeJaVocabBook(again);
+      const record = normalizeJaVocabBook({
+        id: randomUUID(),
+        titleKo: JA_COLLECTED_VOCAB_TITLE_KO,
+        kind: "collected",
+        entries: [],
+        levels: [],
+        topic: null,
+        model: "",
+        createdAt: new Date().toISOString(),
+        sortIndex: null,
+      });
+      db.jaVocabBooks.push(record);
+      return record;
+    });
+  }
+
+  async appendJaVocabEntry(id: string, entry: JaVocabEntry): Promise<AppendJaVocabResult> {
+    const incoming = normalizeJaVocabEntry(entry);
+    const key = incoming.kana.trim();
+    return this.mutate((db) => {
+      const book = db.jaVocabBooks.find((v) => v.id === id);
+      if (!book) return { record: null, appended: false };
+      const existing = (book.entries ?? []).map(normalizeJaVocabEntry);
+      // 중복(같은 kana) — 이미 있으면 붙이지 않는다(§7-5)
+      if (key !== "" && existing.some((e) => e.kana.trim() === key)) {
+        return { record: normalizeJaVocabBook({ ...book, entries: existing }), appended: false };
+      }
+      book.entries = [...existing, incoming];
+      return { record: normalizeJaVocabBook(book), appended: true };
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1493,5 +1840,8 @@ export async function mergeDbForSeed(seed: DbShape): Promise<void> {
     vocabQuizzes: mergeById(cur.vocabQuizzes, seed.vocabQuizzes),
     jaVocabBooks: mergeById(cur.jaVocabBooks, seed.jaVocabBooks),
     jaQuizzes: mergeById(cur.jaQuizzes, seed.jaQuizzes),
+    jaKanji: mergeById(cur.jaKanji, seed.jaKanji),
+    jaKanjiQuizzes: mergeById(cur.jaKanjiQuizzes, seed.jaKanjiQuizzes),
+    jaDialogs: mergeById(cur.jaDialogs, seed.jaDialogs),
   });
 }

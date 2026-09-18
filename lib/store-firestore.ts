@@ -25,17 +25,29 @@ import {
   type DocumentData,
   type Firestore,
 } from "firebase-admin/firestore";
+import { normalizeJaVocabEntry } from "./ai/japanese/vocab";
+import type { JaDialogCoaching, JaVocabEntry } from "./ai/japanese/schemas";
 import {
   applyVocabLink,
+  normalizeJaDialogRecord,
+  normalizeJaKanji,
   normalizeJaQuizItem,
   normalizeJaVocabBook,
   normalizeProblem,
   normalizeTitleAuthorKey,
   normalizeVocabEntry,
   normalizeVocabQuizItem,
+  JA_COLLECTED_VOCAB_TITLE_KO,
+  type AppendJaVocabResult,
   type DeleteJaVocabBookResult,
+  type JaDialogRecord,
+  type JaKanjiQuizRecord,
+  type JaKanjiRecord,
   type JaQuizRecord,
   type JaVocabBookRecord,
+  type NewJaDialog,
+  type NewJaKanji,
+  type NewJaKanjiQuiz,
   type NewJaQuiz,
   type NewJaVocabBook,
   type LegacyOrNewVocabEntry,
@@ -258,6 +270,10 @@ function toVocabBook(id: string, d: DocumentData): VocabBookRecord {
 function byCreatedAtDesc(a: { createdAt: string }, b: { createdAt: string }): number {
   return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0;
 }
+/** createdAt 오름차순(수집 순서) — 한자 목록(JK). 파일 백엔드와 같은 규약. */
+function byCreatedAtAsc(a: { createdAt: string }, b: { createdAt: string }): number {
+  return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+}
 
 /**
  * 일본어 단어장 읽기 방어 변환 (아빠의 일본어 §7-1) — `toCard`가 content를 다루듯 통째로 담되, 파일 백엔드와
@@ -265,6 +281,28 @@ function byCreatedAtDesc(a: { createdAt: string }, b: { createdAt: string }): nu
  */
 function toJaVocabBook(id: string, d: DocumentData): JaVocabBookRecord {
   return normalizeJaVocabBook({ ...(d as JaVocabBookRecord), id, createdAt: toIso(d.createdAt) });
+}
+
+/** 대화 복습 읽기 방어 변환(J3) — normalizeJaDialogRecord로 조인다(파일 백엔드와 같은 규약). */
+function toJaDialog(id: string, d: DocumentData): JaDialogRecord {
+  return normalizeJaDialogRecord({ ...(d as JaDialogRecord), id, createdAt: toIso(d.createdAt) });
+}
+
+/** 한자 정보 읽기 방어 변환(JK) — normalizeJaKanji로 조인다(파일 백엔드와 같은 규약). */
+function toJaKanji(id: string, d: DocumentData): JaKanjiRecord {
+  return normalizeJaKanji({ ...(d as JaKanjiRecord), id, createdAt: toIso(d.createdAt) });
+}
+
+/** 한자 시험 세션 읽기 방어 변환(JK) — items는 normalizeJaQuizItem으로 조인다. */
+function toJaKanjiQuiz(id: string, d: DocumentData): JaKanjiQuizRecord {
+  return {
+    id,
+    scope: "kanji",
+    mode: d.mode as JaKanjiQuizRecord["mode"],
+    startedAt: toIso(d.startedAt),
+    finishedAt: toNullable(d.finishedAt as string | null),
+    items: Array.isArray(d.items) ? d.items.map(normalizeJaQuizItem) : [],
+  };
 }
 
 /** 일본어 시험 세션 읽기 방어 변환(J2) — items는 normalizeJaQuizItem으로 조인다(파일 백엔드와 같은 규약, toVocabQuiz 선례). */
@@ -343,6 +381,15 @@ export class FirestoreStore implements StudyStore {
   }
   private jaQuizzes(): CollectionReference {
     return getDb().collection("jaQuizzes");
+  }
+  private jaKanji(): CollectionReference {
+    return getDb().collection("jaKanji");
+  }
+  private jaKanjiQuizzes(): CollectionReference {
+    return getDb().collection("jaKanjiQuizzes");
+  }
+  private jaDialogs(): CollectionReference {
+    return getDb().collection("jaDialogs");
   }
 
   async createBook(input: NewBook): Promise<BookRecord> {
@@ -839,5 +886,142 @@ export class FirestoreStore implements StudyStore {
     // where + orderBy(다른 필드)는 복합 인덱스 필요 — 필터만 쿼리, 정렬은 메모리(listVocabQuizzes 규약).
     const snap = await this.jaQuizzes().where("bookId", "==", bookId).get();
     return snap.docs.map((d) => toJaQuiz(d.id, d.data())).sort(byStartedAtAsc);
+  }
+
+  // ---- jaKanji · jaKanjiQuizzes (JK) ----
+
+  async saveJaKanji(records: NewJaKanji[]): Promise<number> {
+    if (records.length === 0) return 0;
+    // 기존 한자 문자 → 문서 참조 맵(전역 소규모라 한 번에 읽는다). **이미 있는 한자는 건너뛴다**(§12-2 불변).
+    const existing = await this.jaKanji().get();
+    const byKanji = new Map(existing.docs.map((d) => [String(d.data().kanji ?? ""), d.ref] as const));
+    const now = new Date().toISOString();
+    const db = getDb();
+    let added = 0;
+    // BATCH_LIMIT 단위로 쓴다(가족용 규모엔 사실상 1배치).
+    for (let i = 0; i < records.length; i += BATCH_LIMIT) {
+      const batch = db.batch();
+      for (const rec of records.slice(i, i + BATCH_LIMIT)) {
+        const norm = normalizeJaKanji({ ...rec, id: "x", createdAt: now });
+        const { id: _id, ...data } = norm;
+        // 이미 있으면 **덮어쓰지 않는다** — 시험이 저장된 음독·뜻에 매달리므로 값이 바뀌면
+        // 외운 것과 문제가 어긋난다(파일 백엔드와 같은 규약, 영어 "정의 불변"과 같은 자리).
+        if (byKanji.has(norm.kanji)) continue;
+        batch.set(this.jaKanji().doc(), data); // 새 문서
+        added += 1;
+      }
+      await batch.commit();
+    }
+    return added;
+  }
+
+  async listJaKanji(): Promise<JaKanjiRecord[]> {
+    const snap = await this.jaKanji().get();
+    return snap.docs.map((d) => toJaKanji(d.id, d.data())).sort(byCreatedAtAsc);
+  }
+
+  async addJaKanjiQuiz(input: NewJaKanjiQuiz): Promise<JaKanjiQuizRecord> {
+    const ref = this.jaKanjiQuizzes().doc();
+    const record: JaKanjiQuizRecord = { ...input, items: input.items.map(normalizeJaQuizItem), id: ref.id };
+    const { id: _id, ...data } = record;
+    await ref.set(data);
+    return record;
+  }
+
+  async listJaKanjiQuizzes(): Promise<JaKanjiQuizRecord[]> {
+    const snap = await this.jaKanjiQuizzes().get();
+    return snap.docs.map((d) => toJaKanjiQuiz(d.id, d.data())).sort(byStartedAtAsc);
+  }
+
+  // ---- jaDialogs (J3~J5) ----
+
+  async createJaDialog(input: NewJaDialog): Promise<JaDialogRecord> {
+    const ref = this.jaDialogs().doc();
+    const record = normalizeJaDialogRecord({ ...(input as JaDialogRecord), sortIndex: null, id: ref.id, createdAt: new Date().toISOString() });
+    const { id: _id, ...data } = record;
+    await ref.set(data);
+    return record;
+  }
+
+  async getJaDialog(id: string): Promise<JaDialogRecord | null> {
+    const snap = await this.jaDialogs().doc(id).get();
+    return snap.exists ? toJaDialog(snap.id, snap.data()!) : null;
+  }
+
+  async listJaDialogs(limit?: number): Promise<JaDialogRecord[]> {
+    const base = this.jaDialogs().orderBy("createdAt", "desc");
+    const snap = await (limit == null ? base : base.limit(limit)).get();
+    return snap.docs.map((d) => toJaDialog(d.id, d.data()));
+  }
+
+  async deleteJaDialog(id: string): Promise<DeleteJaVocabBookResult> {
+    assertDestructiveAllowed("deleteJaVocabBook"); // 대화도 같은 파괴적 op 이름으로 묶어 막는다(딸린 것 없음)
+    const ref = this.jaDialogs().doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return { ok: false };
+    await ref.delete();
+    return { ok: true };
+  }
+
+  async reorderJaDialogs(orderedIds: string[]): Promise<void> {
+    const db = getDb();
+    for (let i = 0; i < orderedIds.length; i += BATCH_LIMIT) {
+      const batch = db.batch();
+      for (let j = i; j < Math.min(i + BATCH_LIMIT, orderedIds.length); j++) {
+        batch.update(this.jaDialogs().doc(orderedIds[j]), { sortIndex: j });
+      }
+      await batch.commit();
+    }
+  }
+
+  async updateJaDialogTitle(id: string, titleKo: string): Promise<JaDialogRecord | null> {
+    const ref = this.jaDialogs().doc(id);
+    if (!(await ref.get()).exists) return null;
+    await ref.update({ titleKo });
+    const updated = await ref.get();
+    return toJaDialog(updated.id, updated.data()!);
+  }
+
+  async updateJaDialogCoaching(id: string, coaching: JaDialogCoaching): Promise<JaDialogRecord | null> {
+    const ref = this.jaDialogs().doc(id);
+    if (!(await ref.get()).exists) return null;
+    // 해설만 갈아끼운다 — 전사·제목은 그대로. undefined 거부 방어는 normalizeJaDialogRecord가 읽을 때 한다.
+    await ref.update({ coaching });
+    const updated = await ref.get();
+    return toJaDialog(updated.id, updated.data()!);
+  }
+
+  // ---- 대화에서 모은 단어 (J5) ----
+
+  async getOrCreateJaCollectedVocabBook(): Promise<JaVocabBookRecord> {
+    const snap = await this.jaVocabBooks().where("kind", "==", "collected").get();
+    if (!snap.empty) {
+      // 가장 먼저 만든 것을 정본으로(경합 최소화, 가족용 규모)
+      const books = snap.docs.map((d) => toJaVocabBook(d.id, d.data())).sort(byCreatedAtAsc);
+      return books[0];
+    }
+    return this.createJaVocabBook({
+      titleKo: JA_COLLECTED_VOCAB_TITLE_KO,
+      kind: "collected",
+      entries: [],
+      levels: [],
+      topic: null,
+      model: "",
+    });
+  }
+
+  async appendJaVocabEntry(id: string, entry: JaVocabEntry): Promise<AppendJaVocabResult> {
+    const ref = this.jaVocabBooks().doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return { record: null, appended: false };
+    const current = toJaVocabBook(snap.id, snap.data()!);
+    const key = entry.kana.trim();
+    if (key !== "" && current.entries.some((e) => e.kana.trim() === key)) {
+      return { record: current, appended: false };
+    }
+    const nextEntries = [...current.entries, entry].map(normalizeJaVocabEntry);
+    await ref.update({ entries: nextEntries });
+    const updated = await ref.get();
+    return { record: toJaVocabBook(updated.id, updated.data()!), appended: true };
   }
 }

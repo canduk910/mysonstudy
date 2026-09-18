@@ -1,0 +1,120 @@
+/* 대화 학습 해설 (아빠의 일본어 J4·J5). 토큰 재사용. */
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.h {
+  margin: 0 0 8px;
+  font-size: var(--fs-section-title);
+  font-weight: 700;
+  color: var(--ink);
+}
+.summary {
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-card);
+  background: var(--accent-soft);
+}
+.summaryText {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.6;
+}
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.good,
+.fix,
+.item,
+.practice {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+.quote,
+.fixBetter {
+  font-size: 18px;
+  color: var(--ink);
+}
+.fixOrig {
+  font-size: 17px;
+  color: var(--ink-3);
+  text-decoration: line-through;
+}
+.arrow {
+  color: var(--accent-ink);
+  font-weight: 800;
+}
+.why {
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.5;
+}
+.grammar {
+  margin-top: 2px;
+  color: var(--ink-3);
+  font-size: var(--fs-meta-chip);
+}
+.itemMain {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.itemWord {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--ink);
+}
+.itemMeaning {
+  color: var(--ink-2);
+  font-size: 16px;
+}
+.itemUsage {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-vocab-example);
+}
+.speak {
+  min-width: 36px;
+  min-height: 36px;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  font-size: 16px;
+  cursor: pointer;
+}
+.itemAdd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.added {
+  color: var(--accent-ink);
+  font-weight: 700;
+  font-size: var(--fs-vocab-example);
+}
+.err {
+  color: var(--danger);
+  font-size: var(--fs-meta-chip);
+}
+.practiceJa {
+  font-size: 18px;
+  color: var(--ink);
+}
+.practiceKo {
+  color: var(--ink-3);
+  font-size: var(--fs-vocab-example);
+}

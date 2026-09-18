@@ -367,3 +367,386 @@ export function resolveJaGlyph(entry: { imageEmoji?: string | null; word: string
   const letter = Array.from(entry.word.trim())[0] ?? "?";
   return { kind: "letter", letter };
 }
+
+// ===========================================================================
+// 호출 D — 한자 정보 생성 (§12-2). 단어장에서 파생된 한자에 한국 한자음·음독·훈독·뜻을 채운다.
+// 이미 정보가 있는 한자는 요청에 넣지 않는다(불변 규약, kanji.ts가 선별). 요청 밖 한자는 코드가 버린다.
+// ===========================================================================
+
+/** 한 번에 정보를 채우는 한자 수(§12-2 "10자씩 배치"). */
+export const JA_KANJI_BATCH_SIZE = 10;
+/** 음독·훈독 각 최대 개수(§12-2-3 "각 0~3개"). */
+export const JA_KANJI_READINGS_MAX = 3;
+/** 한자 뜻 길이 상한(§12-2-3 "1~20자"). */
+export const JA_KANJI_MEANING_KO_MAX = 20;
+/** 호출 D 입력에 실어 보내는 한자당 예시 단어 수 상한(맥락). */
+export const JA_KANJI_SAMPLE_WORDS_MAX = 5;
+
+/** 한 글자(코드포인트 1개)이고 한자인가 — kanji 필드 검증용. */
+function isSingleKanji(s: string): boolean {
+  return Array.from(s).length === 1 && isAllKanji(s);
+}
+/** 한 글자(코드포인트 1개)이고 한글 음절인가 — koReading 검증용. */
+function isSingleHangul(s: string): boolean {
+  return Array.from(s).length === 1 && /[가-힣]/.test(s);
+}
+
+/**
+ * 호출 D가 한자 하나에 대해 내는 정보(= 저장 레코드 본체, §12-3의 id/model/createdAt 제외).
+ * koReading: 한국 한자음 한 글자(約→약). 한국에서 안 쓰는 한자는 null. onyomi/kunyomi: 히라가나. meaningKo: 한국어 뜻.
+ */
+export interface JaKanjiInfo {
+  kanji: string;
+  koReading: string | null;
+  onyomi: string[];
+  kunyomi: string[];
+  meaningKo: string;
+}
+
+/** 호출 D의 전체 출력(배치). */
+export interface JaKanjiInfoGeneration {
+  items: JaKanjiInfo[];
+}
+
+// --- 호출 D JSON Schema (§12-2-2 원문) ---
+export const JA_KANJI_INFO_JSON_SCHEMA: StrictJsonSchema = {
+  name: "ja_kanji_info",
+  strict: true,
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["items"],
+    properties: {
+      items: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["kanji", "koReading", "onyomi", "kunyomi", "meaningKo"],
+          properties: {
+            kanji: { type: "string", description: "한자 한 글자" },
+            koReading: { type: ["string", "null"], description: "한국 한자음 한 글자. 없으면 null" },
+            onyomi: { type: "array", items: { type: "string" }, description: "음독(히라가나)" },
+            kunyomi: { type: "array", items: { type: "string" }, description: "훈독(히라가나, 사전형)" },
+            meaningKo: { type: "string", description: "한국어 뜻(짧게)" },
+          },
+        },
+      },
+    },
+  },
+};
+
+// --- 호출 D zod (§12-2-3) ---
+const jaKanjiInfoSchema = z
+  .object({
+    kanji: z.string().trim(),
+    koReading: z.string().trim().nullable(),
+    onyomi: z.array(z.string().trim().min(1)).max(JA_KANJI_READINGS_MAX),
+    kunyomi: z.array(z.string().trim().min(1)).max(JA_KANJI_READINGS_MAX),
+    meaningKo: z.string().trim().min(1).max(JA_KANJI_MEANING_KO_MAX),
+  })
+  .superRefine((k, ctx) => {
+    // kanji는 한자 한 글자
+    if (!isSingleKanji(k.kanji)) {
+      ctx.addIssue({ code: "custom", path: ["kanji"], message: "kanji는 한자 한 글자여야 합니다" });
+    }
+    // koReading은 한글 한 글자이거나 null
+    if (k.koReading !== null && !isSingleHangul(k.koReading)) {
+      ctx.addIssue({ code: "custom", path: ["koReading"], message: "koReading은 한글 한 글자이거나 null이어야 합니다" });
+    }
+    // onyomi·kunyomi는 히라가나만
+    k.onyomi.forEach((o, i) => {
+      if (!isHiraganaOnly(o)) ctx.addIssue({ code: "custom", path: ["onyomi", i], message: "onyomi는 히라가나만" });
+    });
+    k.kunyomi.forEach((o, i) => {
+      if (!isHiraganaOnly(o)) ctx.addIssue({ code: "custom", path: ["kunyomi", i], message: "kunyomi는 히라가나만" });
+    });
+    // meaningKo는 한글 포함
+    if (!hasHangul(k.meaningKo)) {
+      ctx.addIssue({ code: "custom", path: ["meaningKo"], message: "meaningKo에는 한글이 있어야 합니다" });
+    }
+  });
+
+/**
+ * 호출 D 결과의 zod. 형식만 검증한다 — "요청한 한자만" 필터·"빠진 한자 보고"는 후처리(kanji.ts)가 한다.
+ * items 상한은 방어값(배치 10이지만 모델이 dup/여분을 낼 수 있어 넉넉히; 여분은 후처리가 버린다).
+ */
+export const jaKanjiInfoGenerationSchema = z.object({
+  items: z.array(jaKanjiInfoSchema).min(1).max(50),
+});
+
+// ===========================================================================
+// 호출 B — 대화문 전사 (vision, §3) / 호출 C — 대화 학습 해설 (§4)
+// 토큰 무결성(§2-4)·jaTokenSchema·jaExampleSchema를 그대로 재사용한다(같은 파일).
+// ===========================================================================
+
+/** 일본 문자(히라가나·가타카나·한자)를 하나라도 포함하는가 — 일본어 필드 검증용(§4-4). */
+function hasJapanese(s: string): boolean {
+  return /[぀-ゟ゠-ヿ一-鿿㐀-䶿々]/.test(s);
+}
+/** 토큰 surface를 이으면 원문과 같은가 — 토큰 무결성(§2-4). */
+function tokensJoinEqual(tokens: readonly JaToken[], text: string): boolean {
+  return tokens.map((t) => t.surface).join("") === text;
+}
+
+/** 대화 배치 크기 — 스크린샷을 이 단위로 나눠 호출한다(§3-4). */
+export const JA_DIALOG_BATCH_SIZE = 4;
+/** 호출 C 개수 상한(§4-4). */
+export const JA_DIALOG_GOODS_MAX = 6;
+export const JA_DIALOG_FIXES_MAX = 8;
+export const JA_DIALOG_ITEMS_MIN = 2;
+export const JA_DIALOG_ITEMS_MAX = 8;
+export const JA_DIALOG_PRACTICE_MIN = 1;
+export const JA_DIALOG_PRACTICE_MAX = 5;
+/** 텍스트 길이 방어 상한 */
+export const JA_DIALOG_TEXT_MAX = 400;
+
+export const JA_DIALOG_SPEAKERS = ["partner", "me", "unknown"] as const;
+export type JaDialogSpeaker = (typeof JA_DIALOG_SPEAKERS)[number];
+export const JA_DIALOG_FEEDBACK_KINDS = ["praise", "tip"] as const;
+export type JaDialogFeedbackKind = (typeof JA_DIALOG_FEEDBACK_KINDS)[number];
+
+// --- 호출 B 타입 (§3) ---
+export interface JaDialogFeedback {
+  kind: JaDialogFeedbackKind;
+  textKo: string;
+}
+export interface JaDialogTurn {
+  speaker: JaDialogSpeaker;
+  ja: string;
+  tokens: JaToken[];
+  feedback: JaDialogFeedback | null;
+}
+export interface JaDialogExtraction {
+  focusKo: string | null;
+  turns: JaDialogTurn[];
+  partial: boolean;
+}
+
+// --- 호출 C 타입 (§4) ---
+export interface JaDialogGood {
+  quoteJa: string;
+  whyKo: string;
+}
+export interface JaDialogFix {
+  originalJa: string;
+  betterJa: string;
+  whyKo: string;
+  grammarKo: string | null;
+}
+/** 해설이 뽑은 학습 어휘 — J5에서 단어장(collected)으로 담기 위해 word/kana/meaningKo/example 모양을 호출 A entry와 맞춘다(§4-4). */
+export interface JaDialogItem {
+  word: string;
+  kana: string;
+  meaningKo: string;
+  usageKo: string;
+  example: JaExample;
+  wordTokens: JaToken[];
+}
+export interface JaDialogCoaching {
+  summaryKo: string;
+  goods: JaDialogGood[];
+  fixes: JaDialogFix[];
+  items: JaDialogItem[];
+  practice: JaExample[];
+}
+
+// --- 호출 B JSON Schema (§3-3 원문) ---
+export const JA_DIALOG_EXTRACTION_JSON_SCHEMA: StrictJsonSchema = {
+  name: "ja_dialog_extraction",
+  strict: true,
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["focusKo", "turns", "partial"],
+    properties: {
+      focusKo: { type: ["string", "null"], description: "상단 학습 요점(한국어). 없으면 null" },
+      turns: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["speaker", "ja", "tokens", "feedback"],
+          properties: {
+            speaker: { type: "string", enum: ["partner", "me", "unknown"] },
+            ja: { type: "string", description: "발화 원문(일본어)" },
+            tokens: { $ref: "#/$defs/tokens" },
+            feedback: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              required: ["kind", "textKo"],
+              properties: {
+                kind: { type: "string", enum: ["praise", "tip"] },
+                textKo: { type: "string", description: "듀오링고가 보여준 피드백 원문" },
+              },
+            },
+          },
+        },
+      },
+      partial: { type: "boolean", description: "잘려서 못 읽은 부분이 있으면 true" },
+    },
+    $defs: {
+      tokens: {
+        type: "array",
+        description: "후리가나 토큰 — surface를 이어 붙이면 원문이 된다",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["surface", "reading"],
+          properties: {
+            surface: { type: "string" },
+            reading: { type: ["string", "null"], description: "한자일 때만 히라가나 읽기, 아니면 null" },
+          },
+        },
+      },
+    },
+  },
+};
+
+// --- 호출 C JSON Schema (§4-3 원문) ---
+export const JA_DIALOG_COACHING_JSON_SCHEMA: StrictJsonSchema = {
+  name: "ja_dialog_coaching",
+  strict: true,
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["summaryKo", "goods", "fixes", "items", "practice"],
+    properties: {
+      summaryKo: { type: "string", description: "이번 대화 총평 2~3문장(한국어)" },
+      goods: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["quoteJa", "whyKo"],
+          properties: { quoteJa: { type: "string" }, whyKo: { type: "string" } },
+        },
+      },
+      fixes: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["originalJa", "betterJa", "whyKo", "grammarKo"],
+          properties: {
+            originalJa: { type: "string" },
+            betterJa: { type: "string" },
+            whyKo: { type: "string" },
+            grammarKo: { type: ["string", "null"], description: "관련 문법 이름. 없으면 null" },
+          },
+        },
+      },
+      items: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["word", "kana", "meaningKo", "usageKo", "example", "wordTokens"],
+          properties: {
+            word: { type: "string" },
+            kana: { type: "string" },
+            meaningKo: { type: "string" },
+            usageKo: { type: "string" },
+            example: { $ref: "#/$defs/example" },
+            wordTokens: { $ref: "#/$defs/tokens" },
+          },
+        },
+      },
+      practice: {
+        type: "array",
+        items: { $ref: "#/$defs/example" },
+      },
+    },
+    $defs: {
+      example: {
+        type: "object",
+        additionalProperties: false,
+        required: ["ja", "ko", "tokens"],
+        properties: { ja: { type: "string" }, ko: { type: "string" }, tokens: { $ref: "#/$defs/tokens" } },
+      },
+      tokens: {
+        type: "array",
+        description: "후리가나 토큰 — surface를 이어 붙이면 원문이 된다",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["surface", "reading"],
+          properties: {
+            surface: { type: "string" },
+            reading: { type: ["string", "null"], description: "한자일 때만 히라가나 읽기, 아니면 null" },
+          },
+        },
+      },
+    },
+  },
+};
+
+// --- 호출 B zod (§3-4) ---
+const jaDialogTurnSchema = z
+  .object({
+    speaker: z.enum(JA_DIALOG_SPEAKERS),
+    ja: z.string().trim().min(1).max(JA_DIALOG_TEXT_MAX),
+    tokens: z.array(jaTokenSchema),
+    feedback: z
+      .object({ kind: z.enum(JA_DIALOG_FEEDBACK_KINDS), textKo: z.string().trim().min(1).max(JA_DIALOG_TEXT_MAX) })
+      .nullable(),
+  })
+  .superRefine((t, ctx) => {
+    if (!tokensJoinEqual(t.tokens, t.ja)) {
+      ctx.addIssue({ code: "custom", path: ["tokens"], message: "tokens.surface를 이으면 ja와 정확히 같아야 합니다" });
+    }
+  });
+
+export const jaDialogExtractionSchema = z.object({
+  focusKo: z.string().trim().min(1).max(JA_DIALOG_TEXT_MAX).nullable(),
+  turns: z.array(jaDialogTurnSchema).min(1),
+  partial: z.boolean(),
+});
+
+// --- 호출 C zod (§4-4) ---
+const jaDialogItemSchema = z
+  .object({
+    word: z.string().trim().min(1).max(JA_WORD_MAX),
+    kana: z.string().trim().min(1).max(JA_KANA_MAX),
+    meaningKo: z.string().trim().min(1).max(JA_MEANING_KO_MAX),
+    usageKo: z.string().trim().min(1).max(JA_DIALOG_TEXT_MAX),
+    example: jaExampleSchema,
+    wordTokens: z.array(jaTokenSchema),
+  })
+  .superRefine((it, ctx) => {
+    if (!isHiraganaOnly(it.kana)) ctx.addIssue({ code: "custom", path: ["kana"], message: "kana는 히라가나만" });
+    if (!hasHangul(it.meaningKo)) ctx.addIssue({ code: "custom", path: ["meaningKo"], message: "meaningKo에는 한글이 있어야 합니다" });
+    if (!hasHangul(it.usageKo)) ctx.addIssue({ code: "custom", path: ["usageKo"], message: "usageKo에는 한글이 있어야 합니다" });
+    if (!hasHangul(it.example.ko)) ctx.addIssue({ code: "custom", path: ["example", "ko"], message: "example.ko에는 한글이 있어야 합니다" });
+    if (!tokensJoinEqual(it.wordTokens, it.word)) ctx.addIssue({ code: "custom", path: ["wordTokens"], message: "wordTokens.surface를 이으면 word와 같아야 합니다" });
+    if (!tokensJoinEqual(it.example.tokens, it.example.ja)) ctx.addIssue({ code: "custom", path: ["example", "tokens"], message: "example.tokens.surface를 이으면 example.ja와 같아야 합니다" });
+  });
+
+const jaExampleWithIntegrity = jaExampleSchema.superRefine((ex, ctx) => {
+  if (!hasHangul(ex.ko)) ctx.addIssue({ code: "custom", path: ["ko"], message: "ko에는 한글이 있어야 합니다" });
+  if (!tokensJoinEqual(ex.tokens, ex.ja)) ctx.addIssue({ code: "custom", path: ["tokens"], message: "tokens.surface를 이으면 ja와 같아야 합니다" });
+});
+
+export const jaDialogCoachingSchema = z.object({
+  summaryKo: z.string().trim().min(1).max(JA_DIALOG_TEXT_MAX * 2).refine(hasHangul, { message: "summaryKo에는 한글이 있어야 합니다" }),
+  goods: z
+    .array(
+      z.object({
+        quoteJa: z.string().trim().min(1).max(JA_DIALOG_TEXT_MAX).refine(hasJapanese, { message: "quoteJa에는 일본 문자가 있어야 합니다" }),
+        whyKo: z.string().trim().min(1).max(JA_DIALOG_TEXT_MAX).refine(hasHangul, { message: "whyKo에는 한글이 있어야 합니다" }),
+      }),
+    )
+    .max(JA_DIALOG_GOODS_MAX),
+  fixes: z
+    .array(
+      z.object({
+        originalJa: z.string().trim().min(1).max(JA_DIALOG_TEXT_MAX).refine(hasJapanese, { message: "originalJa에는 일본 문자가 있어야 합니다" }),
+        betterJa: z.string().trim().min(1).max(JA_DIALOG_TEXT_MAX).refine(hasJapanese, { message: "betterJa에는 일본 문자가 있어야 합니다" }),
+        whyKo: z.string().trim().min(1).max(JA_DIALOG_TEXT_MAX).refine(hasHangul, { message: "whyKo에는 한글이 있어야 합니다" }),
+        grammarKo: z.string().trim().min(1).max(JA_DIALOG_TEXT_MAX).nullable(),
+      }),
+    )
+    .max(JA_DIALOG_FIXES_MAX),
+  items: z.array(jaDialogItemSchema).min(JA_DIALOG_ITEMS_MIN).max(JA_DIALOG_ITEMS_MAX),
+  practice: z.array(jaExampleWithIntegrity).min(JA_DIALOG_PRACTICE_MIN).max(JA_DIALOG_PRACTICE_MAX),
+});
