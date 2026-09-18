@@ -24,7 +24,8 @@ export type DestructiveOp =
   | "deleteBook"
   | "deleteCard"
   | "deleteExplanation"
-  | "deleteVocabBook";
+  | "deleteVocabBook"
+  | "deleteJaVocabBook";
 
 export class ProdGuardError extends Error {
   readonly code = "prod_guard";

@@ -1,0 +1,209 @@
+/* JLPT 단어장 만들기 흐름 (아빠의 일본어 J1) — 폼 + 검토. 성인용, 토큰 재사용. */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.handle {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+
+/* 레벨 버튼 */
+.levelGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.levelBtn {
+  flex: 1 1 auto;
+  min-width: 64px;
+  min-height: 48px;
+  font-size: 18px;
+  font-weight: 700;
+}
+.countHint {
+  margin: 2px 0 0;
+}
+
+/* 주제·꼭넣을단어 칩 */
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.topicChip {
+  min-height: 36px;
+  cursor: pointer;
+}
+.topicChipOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+.includeBad {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.includeMark {
+  margin-left: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  opacity: 0.8;
+}
+
+.textInput,
+.textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: 16px;
+  font-family: inherit;
+}
+.textInput {
+  min-height: 44px;
+}
+.textarea {
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.actions > .u-btn {
+  flex: 1 1 auto;
+  min-height: 52px;
+}
+
+/* 공통 안내 */
+.error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-vocab-example);
+}
+.warn {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-box);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: var(--fs-vocab-example);
+}
+.note {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+}
+.empty {
+  margin: 0;
+  padding: 16px;
+  text-align: center;
+  color: var(--ink-3);
+}
+
+/* 검토 목록 */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+.wordRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.word {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--ink);
+}
+.levelChip {
+  margin-left: auto;
+}
+.speak {
+  flex: 0 0 auto;
+  min-width: 38px;
+  min-height: 38px;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  font-size: 17px;
+  cursor: pointer;
+}
+.pos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+}
+.meaning {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+}
+.example {
+  margin: 4px 0 0;
+  color: var(--ink-2);
+  font-size: 15px;
+  line-height: 1.6;
+}
+.exampleKo {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-3);
+}
+
+/* 제목 입력 */
+.titleLabel {
+  display: block;
+  margin-top: 4px;
+  font-weight: 700;
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+}
+.titleInput {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 700;
+}

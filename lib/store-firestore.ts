@@ -27,10 +27,14 @@ import {
 } from "firebase-admin/firestore";
 import {
   applyVocabLink,
+  normalizeJaVocabBook,
   normalizeProblem,
   normalizeTitleAuthorKey,
   normalizeVocabEntry,
   normalizeVocabQuizItem,
+  type DeleteJaVocabBookResult,
+  type JaVocabBookRecord,
+  type NewJaVocabBook,
   type LegacyOrNewVocabEntry,
   type AppendVocabEntryResult,
   type VocabLinkInput,
@@ -252,6 +256,14 @@ function byCreatedAtDesc(a: { createdAt: string }, b: { createdAt: string }): nu
   return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0;
 }
 
+/**
+ * 일본어 단어장 읽기 방어 변환 (아빠의 일본어 §7-1) — `toCard`가 content를 다루듯 통째로 담되, 파일 백엔드와
+ * **같은 함수**(normalizeJaVocabBook)를 한 번 더 태운다(두 백엔드가 안 갈리게). createdAt은 toIso로 조인다.
+ */
+function toJaVocabBook(id: string, d: DocumentData): JaVocabBookRecord {
+  return normalizeJaVocabBook({ ...(d as JaVocabBookRecord), id, createdAt: toIso(d.createdAt) });
+}
+
 /** 시험 세션 정렬 — startedAt 오름차순(오래된 순). 파일 백엔드와 같은 규약(V5 streak가 이 순서를 읽는다) */
 function byStartedAtAsc(a: { startedAt: string }, b: { startedAt: string }): number {
   return a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : 0;
@@ -308,6 +320,9 @@ export class FirestoreStore implements StudyStore {
   }
   private vocabQuizzes(): CollectionReference {
     return getDb().collection("vocabQuizzes");
+  }
+  private jaVocabBooks(): CollectionReference {
+    return getDb().collection("jaVocabBooks");
   }
 
   async createBook(input: NewBook): Promise<BookRecord> {
@@ -716,5 +731,64 @@ export class FirestoreStore implements StudyStore {
     // 가족용 규모라 컬렉션 전체를 읽어도 문제 없다(listVocabBooks가 전체를 읽는 것과 같은 판단).
     const snap = await this.vocabQuizzes().get();
     return snap.docs.map((d) => toVocabQuiz(d.id, d.data())).sort(byStartedAtAsc);
+  }
+
+  // ---- jaVocabBooks — 아빠의 일본어 JLPT 단어장 (J1, §7-1) ----
+
+  async createJaVocabBook(input: NewJaVocabBook): Promise<JaVocabBookRecord> {
+    const ref = this.jaVocabBooks().doc();
+    // 저장 계층이 마지막 관문 — normalizeJaVocabBook으로 undefined를 조인다(Firestore 거부 방어). 신규는 sortIndex null.
+    const record = normalizeJaVocabBook({
+      ...(input as JaVocabBookRecord),
+      sortIndex: null,
+      id: ref.id,
+      createdAt: new Date().toISOString(),
+    });
+    const { id: _id, ...data } = record; // 문서 ID가 곧 id — 본문에 중복 저장하지 않는다
+    await ref.set(data);
+    return record;
+  }
+
+  async getJaVocabBook(id: string): Promise<JaVocabBookRecord | null> {
+    const snap = await this.jaVocabBooks().doc(id).get();
+    return snap.exists ? toJaVocabBook(snap.id, snap.data()!) : null;
+  }
+
+  async listJaVocabBooks(limit?: number): Promise<JaVocabBookRecord[]> {
+    const base = this.jaVocabBooks().orderBy("createdAt", "desc");
+    const snap = await (limit == null ? base : base.limit(limit)).get();
+    return snap.docs.map((d) => toJaVocabBook(d.id, d.data()));
+  }
+
+  async deleteJaVocabBook(id: string): Promise<DeleteJaVocabBookResult> {
+    // 개발 환경에서 실데이터를 지우는 것을 막는다(2026-08-17 사고). 연쇄 대상 없음(J2 미도입) — deleteExplanation 모양.
+    assertDestructiveAllowed("deleteJaVocabBook");
+    const ref = this.jaVocabBooks().doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return { ok: false };
+    await ref.delete();
+    return { ok: true };
+  }
+
+  async reorderJaVocabBooks(orderedIds: string[]): Promise<void> {
+    // reorderVocabBooks의 일본어판 — BATCH_LIMIT 단위 batch.update. 수정이라 prod-guard 무관.
+    const db = getDb();
+    for (let i = 0; i < orderedIds.length; i += BATCH_LIMIT) {
+      const batch = db.batch();
+      for (let j = i; j < Math.min(i + BATCH_LIMIT, orderedIds.length); j++) {
+        batch.update(this.jaVocabBooks().doc(orderedIds[j]), { sortIndex: j });
+      }
+      await batch.commit();
+    }
+  }
+
+  async updateJaVocabBookTitle(id: string, titleKo: string): Promise<JaVocabBookRecord | null> {
+    // titleKo 한 필드만 update — entries·levels·topic은 문서에 그대로 남는다. 수정이라 prod-guard 무관.
+    const ref = this.jaVocabBooks().doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return null;
+    await ref.update({ titleKo });
+    const updated = await ref.get();
+    return toJaVocabBook(updated.id, updated.data()!);
   }
 }

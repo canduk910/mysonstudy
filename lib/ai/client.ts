@@ -69,6 +69,18 @@ import {
   type VocabEntry,
 } from "./english/vocabbook-schemas";
 import { buildEnrichRequestItems } from "./english/vocabbook-enrich";
+import {
+  JA_VOCAB_CALL_OPTIONS,
+  JA_VOCAB_SYSTEM_PROMPT,
+  buildJaVocabUserMessage,
+  type JaExcludeItem,
+} from "./japanese/prompts";
+import {
+  JA_VOCAB_GENERATION_JSON_SCHEMA,
+  jaVocabGenerationSchema,
+  type JaVocabGeneration,
+  type JlptLevel,
+} from "./japanese/schemas";
 
 /**
  * OPENAI_MODEL 미설정 시 기본 모델.
@@ -389,6 +401,40 @@ export async function suggestRelatedWords(input: {
     maxOutputTokens: RELATED_SUGGEST_CALL_OPTIONS.maxOutputTokens,
   });
   return { candidates: postprocessRelatedCandidates(candidates, word) };
+}
+
+/**
+ * 호출 A(일본어) — JLPT 단어 생성(§2). 사진 없는 텍스트 단일 호출이다. **레벨 1개분**을 만든다
+ * (레벨 여러 개면 app-builder가 planIncludeDistribution으로 나눠 이 함수를 병렬로 부른다 — client에 과목/레벨 분기 없음).
+ * 반환은 레벨 태깅 전의 모델 출력(JaVocabGeneration)이다. 제외 재필터·중복 접기·레벨 태깅·부분 성공은
+ * app-builder가 lib/ai/japanese/vocab.ts의 applyVocabPostprocess로 수행한다(그 단계가 exclude·include·level을 안다).
+ */
+export async function generateJapaneseVocab(input: {
+  level: JlptLevel;
+  topic: string | null;
+  include: readonly string[];
+  exclude: readonly JaExcludeItem[];
+  count: number;
+}): Promise<JaVocabGeneration> {
+  return callWithSchema({
+    call: JA_VOCAB_CALL_OPTIONS.call,
+    system: JA_VOCAB_SYSTEM_PROMPT,
+    user: [
+      textPart(
+        buildJaVocabUserMessage({
+          level: input.level,
+          topic: input.topic,
+          count: input.count,
+          include: input.include,
+          exclude: input.exclude,
+        }),
+      ),
+    ],
+    jsonSchema: JA_VOCAB_GENERATION_JSON_SCHEMA,
+    zodSchema: jaVocabGenerationSchema,
+    temperature: JA_VOCAB_CALL_OPTIONS.temperature,
+    maxOutputTokens: JA_VOCAB_CALL_OPTIONS.maxOutputTokens,
+  });
 }
 
 // ---------------------------------------------------------------------------

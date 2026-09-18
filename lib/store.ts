@@ -34,6 +34,14 @@ import type { Explanation } from "./ai/math/schemas";
 // 값으로 끌고 오지만, 타입만 가져오면 빌드에서 지워져 저장 계층이 AI 모듈에 묶이지 않는다.
 import type { VocabEntry, VocabMeaning, VocabRelated } from "./ai/english/vocabbook-schemas";
 import { normalizeRelated } from "./ai/english/vocabbook-schemas";
+// 아빠의 일본어 J1 — 완성형 단어 항목·레벨·토큰·예문 타입(**타입만** import, 빌드에서 지워져 저장 계층이 AI에 안 묶인다).
+import type {
+  JaVocabEntry,
+  JaExample,
+  JaToken,
+  JaPos,
+  JlptLevel,
+} from "./ai/japanese/schemas";
 // enriched 재계산의 단일 정의처(V8). 순수 함수라(타입만 import) 값으로 끌어와도 저장 계층이
 // openai/client에 묶이지 않는다 — appendVocabEntry가 새 단어를 붙일 때 enriched를 다시 굳힌다.
 import { isVocabBookEnriched } from "./ai/english/vocabbook-enrich";
@@ -268,6 +276,30 @@ export interface DeleteVocabBookResult {
 }
 
 /**
+ * 일본어 JLPT 단어장 레코드 (아빠의 일본어 §7-1). **전부 필수 nullable — 선택(?) 키 금지**(store 규약).
+ * - `kind`: "jlpt"(호출 A 생성분) 또는 "collected"(대화에서 모은 단어, J5). JLPT 단어장과 섞지 않는다(§7-5).
+ * - `levels`: 이 단어장이 다루는 레벨들(collected면 빈 배열). `topic`: 주제(없으면 null).
+ * - `entries`: 후처리(applyVocabPostprocess) 완료된 저장용 항목. `model`: 생성 모델 id.
+ */
+export interface JaVocabBookRecord {
+  id: string;
+  titleKo: string;
+  kind: "jlpt" | "collected";
+  entries: JaVocabEntry[];
+  levels: JlptLevel[];
+  topic: string | null;
+  model: string;
+  createdAt: string; // ISO 8601
+  /** 목록 수동 정렬 인덱스 — 서재와 같은 규약. 미정렬은 null(맨 위 블록). 생성부는 항상 null로 시작. */
+  sortIndex: number | null;
+}
+
+/** 일본어 단어장 삭제 결과 — deleteVocabBook과 같은 규약 */
+export interface DeleteJaVocabBookResult {
+  ok: boolean;
+}
+
+/**
  * 단어 1개 추가 결과 (V8 더블탭 담기). "성공 = 그 단어가 이제 이 단어장에 있다"로 읽는다.
  * - `record: null`  → 없는 단어장(404). 담을 곳이 없다.
  * - `appended:true` → 새로 붙였다(record는 갱신본).
@@ -358,6 +390,8 @@ export type NewReading = Omit<ReadingRecord, "id">;
 // sortIndex는 스토어가 매긴다(NewBook과 같은 규약) — 생성 시 null, 이후 reorder<X>로만 값이 박힌다.
 export type NewExplanation = Omit<ExplanationRecord, "id" | "createdAt" | "sortIndex">;
 export type NewVocabBook = Omit<VocabBookRecord, "id" | "createdAt" | "sortIndex">;
+/** 일본어 단어장 생성 입력 — id·createdAt·sortIndex는 스토어가 매긴다(NewVocabBook과 같은 규약). */
+export type NewJaVocabBook = Omit<JaVocabBookRecord, "id" | "createdAt" | "sortIndex">;
 /** 시험 세션 저장 입력 — id는 스토어가 매긴다. startedAt/finishedAt은 클라이언트가 정한 값 그대로 */
 export type NewVocabQuiz = Omit<VocabQuizRecord, "id">;
 
@@ -528,6 +562,23 @@ export interface StudyStore {
    * bookId별 상대 순서는 전역 정렬 안에서 보존된다(같은 규약: 순서가 streak의 뜻).
    */
   listAllVocabQuizzes(): Promise<VocabQuizRecord[]>;
+
+  // ---- jaVocabBooks — 아빠의 일본어 JLPT 단어장 (J1, japanese.md §7-1) ----
+  // explanations·vocabBooks와 같은 규약: 백엔드가 하나라 인터페이스를 쪼개지 않고 여기에 더한다. J1은 6개
+  // (create/get/list/delete/reorder/rename)만 — 시험(J2)·대화(J3)는 다음 단계라 여기에 넣지 않는다.
+  createJaVocabBook(input: NewJaVocabBook): Promise<JaVocabBookRecord>;
+  getJaVocabBook(id: string): Promise<JaVocabBookRecord | null>;
+  /** 최신순. limit 생략이면 전체(가족용 규모) */
+  listJaVocabBooks(limit?: number): Promise<JaVocabBookRecord[]>;
+  /**
+   * 단어장 1개 삭제 — 시험(J2) 미도입이라 연쇄 대상이 없다. **삭제라 prod-guard를 건다**
+   * (assertDestructiveAllowed("deleteJaVocabBook")). 지웠으면 {ok:true}, 없는 id면 {ok:false}. 404는 라우트 몫.
+   */
+  deleteJaVocabBook(id: string): Promise<DeleteJaVocabBookResult>;
+  /** 목록 수동 정렬 — reorderBooks의 일본어판(같은 규약). 목록에 없는 것은 불간섭. 수정이라 prod-guard 무관. */
+  reorderJaVocabBooks(orderedIds: string[]): Promise<void>;
+  /** 화면 이름(titleKo)만 바꾼다(상세 인라인 편집). entries·levels·topic은 불변. 수정이라 prod-guard 무관. */
+  updateJaVocabBookTitle(id: string, titleKo: string): Promise<JaVocabBookRecord | null>;
 }
 
 /**
@@ -548,13 +599,14 @@ export interface DbShape {
   explanations: ExplanationRecord[];
   vocabBooks: VocabBookRecord[];
   vocabQuizzes: VocabQuizRecord[];
+  jaVocabBooks: JaVocabBookRecord[];
 }
 
 const DB_DIR = path.join(process.cwd(), "data");
 const DB_PATH = path.join(DB_DIR, "db.json");
 
 function emptyDb(): DbShape {
-  return { books: [], cards: [], readings: [], explanations: [], vocabBooks: [], vocabQuizzes: [] };
+  return { books: [], cards: [], readings: [], explanations: [], vocabBooks: [], vocabQuizzes: [], jaVocabBooks: [] };
 }
 
 /**
@@ -591,6 +643,11 @@ async function readDb(): Promise<DbShape> {
       vocabBooks: (parsed.vocabBooks ?? []).map((v) => ({ ...v, sortIndex: v.sortIndex ?? null })),
       // V4 이전 db.json에는 이 키가 없다 — 같은 하위호환(없으면 빈 배열)
       vocabQuizzes: parsed.vocabQuizzes ?? [],
+      // 아빠의 일본어 J1 이전 db.json엔 이 키가 없다 — 같은 하위호환(없으면 빈 배열). 각 레코드는
+      // normalizeJaVocabBook으로 누락 키(sortIndex·topic 등)를 채운다(옛 문서 방어). get/list도 다시 태운다.
+      jaVocabBooks: (parsed.jaVocabBooks ?? []).map((v) =>
+        normalizeJaVocabBook(v as JaVocabBookRecord),
+      ),
     };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyDb();
@@ -816,6 +873,63 @@ export function applyVocabLink(
     return { ...e, meanings };
   });
   return { status: "ok", entries: next };
+}
+
+// ---------------------------------------------------------------------------
+// 일본어 단어장 저장 방어 정규화 (아빠의 일본어 J1) — undefined를 정한 값(null·빈 배열·"")으로 조인다.
+// **두 백엔드가 같은 것을 저장하도록 여기서만 정의한다**(normalizeVocabEntry와 같은 자리·이유). 값을
+// 손보지 않는다 — 표기·읽기·예문은 생성 결과라 다듬으면 원문이 바뀐다. 오직 "없는 것을 없음으로 적는" 정규화만.
+// 옛/손입력 문서(누락 키)도 이 함수를 거치면 타입 계약(전부 필수 nullable)을 만족한다.
+// ---------------------------------------------------------------------------
+
+function normalizeJaToken(t: unknown): JaToken {
+  const o = (t ?? {}) as Partial<JaToken>;
+  return {
+    surface: String(o.surface ?? ""),
+    reading: typeof o.reading === "string" ? o.reading : null,
+  };
+}
+
+function normalizeJaExample(e: unknown): JaExample {
+  const o = (e ?? {}) as Partial<JaExample>;
+  return {
+    ja: String(o.ja ?? ""),
+    ko: String(o.ko ?? ""),
+    tokens: Array.isArray(o.tokens) ? o.tokens.map(normalizeJaToken) : [],
+  };
+}
+
+/** 일본어 단어 항목 하나 방어 정규화. level은 JlptLevel 또는 null(collected·손입력). */
+export function normalizeJaVocabEntry(entry: unknown): JaVocabEntry {
+  const e = (entry ?? {}) as Partial<JaVocabEntry>;
+  return {
+    word: String(e.word ?? ""),
+    kana: String(e.kana ?? ""),
+    wordTokens: Array.isArray(e.wordTokens) ? e.wordTokens.map(normalizeJaToken) : [],
+    pos: Array.isArray(e.pos) ? (e.pos.filter((p) => typeof p === "string") as JaPos[]) : [],
+    meaningsKo: Array.isArray(e.meaningsKo) ? e.meaningsKo.map((m) => String(m)) : [],
+    example: normalizeJaExample(e.example),
+    level: (e.level ?? null) as JlptLevel | null,
+  };
+}
+
+/**
+ * 일본어 단어장 레코드 방어 정규화 (§7-1). 읽기(get/list·readDb)·쓰기(create) 경로가 모두 이걸 태운다.
+ * kind는 "collected"만 명시 인정(그 밖은 "jlpt"), levels·entries는 배열 보장, topic·sortIndex는 nullable.
+ */
+export function normalizeJaVocabBook(book: JaVocabBookRecord): JaVocabBookRecord {
+  const b = book as Partial<JaVocabBookRecord>;
+  return {
+    id: b.id ?? "",
+    titleKo: String(b.titleKo ?? ""),
+    kind: b.kind === "collected" ? "collected" : "jlpt",
+    entries: Array.isArray(b.entries) ? b.entries.map(normalizeJaVocabEntry) : [],
+    levels: Array.isArray(b.levels) ? (b.levels.filter((l) => typeof l === "string") as JlptLevel[]) : [],
+    topic: b.topic ?? null,
+    model: String(b.model ?? ""),
+    createdAt: b.createdAt ?? new Date(0).toISOString(),
+    sortIndex: b.sortIndex ?? null,
+  };
 }
 
 class JsonFileStore implements BookCardStore {
@@ -1197,6 +1311,64 @@ class JsonFileStore implements BookCardStore {
       .map((q) => ({ ...q, items: (q.items ?? []).map(normalizeVocabQuizItem) }))
       .sort(byStartedAtAsc);
   }
+
+  // ---- jaVocabBooks — 아빠의 일본어 JLPT 단어장 (J1) ----
+
+  async createJaVocabBook(input: NewJaVocabBook): Promise<JaVocabBookRecord> {
+    const record: JaVocabBookRecord = normalizeJaVocabBook({
+      ...input,
+      sortIndex: null, // 신규는 미정렬(맨 위) — reorder로만 값이 박힌다
+      id: randomUUID(),
+      createdAt: new Date().toISOString(),
+    } as JaVocabBookRecord);
+    return this.mutate((db) => {
+      db.jaVocabBooks.push(record);
+      return record;
+    });
+  }
+
+  async getJaVocabBook(id: string): Promise<JaVocabBookRecord | null> {
+    const db = await readDb();
+    const found = db.jaVocabBooks.find((v) => v.id === id);
+    return found ? normalizeJaVocabBook(found) : null;
+  }
+
+  async listJaVocabBooks(limit?: number): Promise<JaVocabBookRecord[]> {
+    const db = await readDb();
+    const sorted = [...db.jaVocabBooks].sort(byCreatedAtDesc);
+    const sliced = limit == null ? sorted : sorted.slice(0, limit);
+    return sliced.map(normalizeJaVocabBook);
+  }
+
+  async deleteJaVocabBook(id: string): Promise<DeleteJaVocabBookResult> {
+    // prod-guard는 firestore(실데이터) 백엔드에만 건다 — 파일 백엔드는 로컬이라 안전(deleteVocabBook 선례).
+    return this.mutate((db) => {
+      const before = db.jaVocabBooks.length;
+      db.jaVocabBooks = db.jaVocabBooks.filter((v) => v.id !== id);
+      return { ok: db.jaVocabBooks.length < before };
+    });
+  }
+
+  async reorderJaVocabBooks(orderedIds: string[]): Promise<void> {
+    // reorderBooks의 일본어판(같은 규약). 넘긴 순서대로 0..n, 목록에 없는 단어장은 불간섭. 수정이라 prod-guard 무관.
+    const rank = new Map(orderedIds.map((id, i) => [id, i]));
+    await this.mutate((db) => {
+      for (const v of db.jaVocabBooks) {
+        const idx = rank.get(v.id);
+        if (idx !== undefined) v.sortIndex = idx;
+      }
+    });
+  }
+
+  async updateJaVocabBookTitle(id: string, titleKo: string): Promise<JaVocabBookRecord | null> {
+    // titleKo 한 필드만 갈아끼운다 — entries·levels·topic은 손대지 않는다. 수정이라 prod-guard 무관.
+    return this.mutate((db) => {
+      const book = db.jaVocabBooks.find((v) => v.id === id);
+      if (!book) return null;
+      book.titleKo = titleKo;
+      return normalizeJaVocabBook(book);
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1269,5 +1441,6 @@ export async function mergeDbForSeed(seed: DbShape): Promise<void> {
     explanations: mergeById(cur.explanations, seed.explanations),
     vocabBooks: mergeById(cur.vocabBooks, seed.vocabBooks),
     vocabQuizzes: mergeById(cur.vocabQuizzes, seed.vocabQuizzes),
+    jaVocabBooks: mergeById(cur.jaVocabBooks, seed.jaVocabBooks),
   });
 }

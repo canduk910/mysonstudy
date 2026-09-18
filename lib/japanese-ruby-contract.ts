@@ -1,27 +1,20 @@
 /**
- * lib/japanese-ruby-contract.ts — 후리가나 토큰 타입 (아빠의 일본어, 스펙 §5)
+ * lib/japanese-ruby-contract.ts — 후리가나 토큰 타입 재수출 (아빠의 일본어, 스펙 §5)
  *
- * **타입만 있는 모듈이다**(값 export 0). 후리가나 렌더 헬퍼(`components/ja-ruby.tsx`, 클라이언트에서도 쓰인다)와
- * 앞으로의 AI 스키마가 같은 `JaToken` 정의를 보게 하는 단일 정의처다. 값 export가 없으므로 어느 컴포넌트가
- * import해도 클라이언트 번들에 새는 것이 없다(`lib/ai/*`를 클라이언트에서 import하지 않는 경계 규약과 같은 취지).
+ * **타입만 있는 모듈이다**(값 export 0). 후리가나 렌더 헬퍼(`components/ja-ruby.tsx`, 클라이언트에서도 쓰인다)가
+ * `lib/ai/japanese/schemas.ts`의 `JaToken` 정의를 **타입 전용 경로**로 보게 하는 통로다.
  *
- * ── J1에서 옮길 것 (TODO) ─────────────────────────────────────────────────────
- * J0(스캐폴딩) 시점엔 아직 `lib/ai/japanese/schemas.ts`가 없다. J1에서 호출 A/B/C 스키마를 만들 때 이 `JaToken`을
- * **`lib/ai/japanese/schemas.ts`로 옮기고** 여기서는 그 타입을 재수출(`export type { JaToken } from …`)하거나 이 파일을
- * 지운다 — **단, `ja-ruby.tsx`(클라이언트)가 `lib/ai/*`의 값을 끌어오지 않도록** 타입 전용 경로를 유지할 것.
- * 지금 헬퍼가 이 파일을 보게 해 두면, J1에서 import 한 줄만 바꾸면 된다.
+ * ── J1에서 옮겼다 ─────────────────────────────────────────────────────────────
+ * J0 시점엔 여기에 `JaToken`을 임시로 정의해 뒀다. J1에서 호출 A 스키마를 만들며 정의를
+ * `lib/ai/japanese/schemas.ts`로 옮기고, 여기서는 **타입 전용 재수출**만 한다. `export type { … } from …`은
+ * 컴파일 시 완전히 지워지므로(`isolatedModules`), `ja-ruby.tsx`(클라이언트)가 이 파일을 import해도
+ * `lib/ai/*`의 값(zod 등)이 클라이언트 번들에 새지 않는다 — 경계 규약 유지.
  *
  * ── 규약 (§5) ────────────────────────────────────────────────────────────────
- * - 문자열 안에 루비를 끼워 넣지 않는다(`漢字(かんじ)` 금지 — 검색·TTS·비교를 망친다). 토큰 배열로 받는다.
- * - `surface`를 순서대로 이어 붙이면 원문과 정확히 같다(AI 쪽 zod가 강제, J1).
+ * - 문자열 안에 루비를 끼워 넣지 않는다(`漢字(かんじ)` 금지). 토큰 배열로 받는다.
+ * - `surface`를 순서대로 이어 붙이면 원문과 정확히 같다(AI 쪽 zod가 강제, §2-4).
  * - `reading`은 그 토큰이 한자를 포함할 때만 히라가나로 채운다. 가나·숫자·기호는 `null`.
  * - TTS는 `surface` 원문을 읽는다(`ja-JP`). 루비(reading)를 읽히지 않는다.
  */
 
-/** 후리가나 토큰 하나 — 표기(surface)와 그 위 독음(reading, 한자 포함 시에만). */
-export interface JaToken {
-  /** 원문 표기 조각(한자·가나·숫자·기호). 순서대로 이으면 원문과 같다 */
-  surface: string;
-  /** 히라가나 독음 — surface에 한자가 있을 때만. 없으면 null(루비를 달지 않는다) */
-  reading: string | null;
-}
+export type { JaToken } from "@/lib/ai/japanese/schemas";
