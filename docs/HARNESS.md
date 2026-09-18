@@ -22,6 +22,7 @@
 |---|---|---|---|---|
 | **영어 (북카드)** | [`docs/harness/english.md`](./harness/english.md) | `lib/ai/english/` | `scripts/eval-english.ts` | `npm run eval:english` |
 | **수학 (수학코치)** | `docs/harness/math.md` | `lib/ai/math/` *(구현 중)* | `scripts/eval-math.ts` *(구현 중)* | `eval:math` *(구현 중)* |
+| **일본어 (아빠의 일본어)** | `docs/harness/japanese.md` | `lib/ai/japanese/` *(예정)* | `scripts/eval-japanese.ts` *(예정)* | `eval:japanese` *(예정)* |
 
 앱 전체 명세는 [`docs/SPEC.md`](./SPEC.md), 디자인 원본은 `design/`에 있습니다.
 
@@ -74,10 +75,13 @@
 lib/ai/client.ts          # 공통 래퍼 + OpenAI 클라이언트 — 과목 공유
 lib/ai/english/           # 영어 전용 프롬프트·스키마
 lib/ai/math/              # 수학 전용 프롬프트·스키마 (예정)
+lib/ai/japanese/          # 일본어 전용 프롬프트·스키마 (예정)
 scripts/eval-english.ts   # 영어 평가 하네스
 scripts/eval-math.ts      # 수학 평가 하네스 (예정)
+scripts/eval-japanese.ts  # 일본어 평가 하네스 (예정)
 docs/harness/english.md   # 영어 스펙 (단일 진실 원천)
 docs/harness/math.md      # 수학 스펙
+docs/harness/japanese.md  # 일본어 스펙
 ```
 
 ## 4. 운영 규칙
