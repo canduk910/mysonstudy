@@ -73,14 +73,18 @@ export default function JaQuizRunner({
   useEffect(() => setStartedAt(new Date().toISOString()), []);
   useEffect(() => () => stopSpeaking(), []);
 
-  // 새 문항마다 문제를 자동 낭독 — kanji-to-kana는 표기(word)를 읽어야 자연스럽고, 다른 모드도 표제어를 들려준다.
+  /*
+   * **문제를 자동 낭독하지 않는다.** 표제어를 읽어 주면 그게 곧 정답인 모드가 있다:
+   * - kanji-to-kana: 出口를 읽으면 정답(でぐち)을 그대로 말해 버린다.
+   * - cloze: 문장이 아니라 표제어를 읽어 빈칸의 답을 알려 준다.
+   * 후리가나를 화면에서 가려도 소리로 새면 시험이 성립하지 않는다(실기기에서 발견).
+   * 발음은 **답을 고른 뒤 피드백에서** 들려준다 — 확인은 되고 시험은 안 망가진다.
+   * 문항이 바뀔 때 이전 재생만 끊는다.
+   */
   useEffect(() => {
-    if (phase !== "quiz") return;
-    const q = questions[current];
-    if (!q) return;
-    speakJa(q.word);
+    stopSpeaking();
     return () => stopSpeaking();
-  }, [current, phase, questions]);
+  }, [current, phase]);
 
   const total = questions.length;
   const answeredCount = answers.filter((a) => a !== null).length;
@@ -251,11 +255,13 @@ export default function JaQuizRunner({
           <p className={s.promptText} lang={promptIsJa ? "ja" : "ko"}>
             {q.prompt}
           </p>
-          {promptIsJa && (
-            <button type="button" className={s.speaker} onClick={() => speakJa(q.word)} aria-label="문제 듣기" title="듣기">
-              🔊
-            </button>
-          )}
+          {/*
+           * **문제에는 듣기 버튼을 두지 않는다.** 후리가나를 가려도 소리로 새기 때문이다:
+           * - kanji-to-kana: 出口를 읽어 주면 그게 곧 정답(でぐち)이다.
+           * - cloze: 읽어 주던 대상이 문장이 아니라 표제어라 정답을 그대로 말해 버렸다.
+           * 발음은 **정답을 고른 뒤 피드백에서** 들려준다(확인은 되고 시험은 안 망가진다).
+           * 듣기 연습이 필요하면 문제 자체가 소리를 요구하는 모드를 따로 두는 쪽이 옳다.
+           */}
         </div>
       </div>
 
