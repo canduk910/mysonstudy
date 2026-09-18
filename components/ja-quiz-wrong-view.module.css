@@ -1,0 +1,94 @@
+/* 일본어 오답노트 (아빠의 일본어 J2) — 모드 탭 + 오답 목록. 토큰 재사용. */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 6px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  font-weight: 700;
+  cursor: pointer;
+}
+.tabOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.tabCount {
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: var(--bg);
+  font-size: 12px;
+  text-align: center;
+}
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.empty {
+  margin: 0;
+  padding: 20px 8px;
+  text-align: center;
+  color: var(--ink-3);
+}
+.actions {
+  display: flex;
+}
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+.word {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--ink);
+}
+.kana {
+  color: var(--ink-3);
+  font-size: var(--fs-vocab-example);
+}
+.meaning {
+  color: var(--ink-2);
+  font-size: 15px;
+}
+.wrongChip {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: var(--radius-chip);
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg));
+  color: var(--danger);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+}

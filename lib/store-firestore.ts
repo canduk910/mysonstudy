@@ -27,13 +27,16 @@ import {
 } from "firebase-admin/firestore";
 import {
   applyVocabLink,
+  normalizeJaQuizItem,
   normalizeJaVocabBook,
   normalizeProblem,
   normalizeTitleAuthorKey,
   normalizeVocabEntry,
   normalizeVocabQuizItem,
   type DeleteJaVocabBookResult,
+  type JaQuizRecord,
   type JaVocabBookRecord,
+  type NewJaQuiz,
   type NewJaVocabBook,
   type LegacyOrNewVocabEntry,
   type AppendVocabEntryResult,
@@ -264,6 +267,20 @@ function toJaVocabBook(id: string, d: DocumentData): JaVocabBookRecord {
   return normalizeJaVocabBook({ ...(d as JaVocabBookRecord), id, createdAt: toIso(d.createdAt) });
 }
 
+/** 일본어 시험 세션 읽기 방어 변환(J2) — items는 normalizeJaQuizItem으로 조인다(파일 백엔드와 같은 규약, toVocabQuiz 선례). */
+function toJaQuiz(id: string, d: DocumentData): JaQuizRecord {
+  const items = Array.isArray(d.items) ? d.items.map(normalizeJaQuizItem) : [];
+  return {
+    id,
+    bookId: String(d.bookId ?? ""),
+    // 미지값(옛/손입력)은 안전 폴백 없이 그대로 — JaQuizMode 유효성은 저장 라우트 zod가 보장한다.
+    mode: d.mode as JaQuizRecord["mode"],
+    startedAt: toIso(d.startedAt),
+    finishedAt: toNullable(d.finishedAt as string | null),
+    items,
+  };
+}
+
 /** 시험 세션 정렬 — startedAt 오름차순(오래된 순). 파일 백엔드와 같은 규약(V5 streak가 이 순서를 읽는다) */
 function byStartedAtAsc(a: { startedAt: string }, b: { startedAt: string }): number {
   return a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : 0;
@@ -323,6 +340,9 @@ export class FirestoreStore implements StudyStore {
   }
   private jaVocabBooks(): CollectionReference {
     return getDb().collection("jaVocabBooks");
+  }
+  private jaQuizzes(): CollectionReference {
+    return getDb().collection("jaQuizzes");
   }
 
   async createBook(input: NewBook): Promise<BookRecord> {
@@ -761,12 +781,21 @@ export class FirestoreStore implements StudyStore {
   }
 
   async deleteJaVocabBook(id: string): Promise<DeleteJaVocabBookResult> {
-    // 개발 환경에서 실데이터를 지우는 것을 막는다(2026-08-17 사고). 연쇄 대상 없음(J2 미도입) — deleteExplanation 모양.
+    // 개발 환경에서 실데이터를 지우는 것을 막는다(2026-08-17 사고).
     assertDestructiveAllowed("deleteJaVocabBook");
     const ref = this.jaVocabBooks().doc(id);
     const snap = await ref.get();
     if (!snap.exists) return { ok: false };
-    await ref.delete();
+    // 그 단어장의 시험 세션(J2)까지 함께 지운다(영어 deleteVocabBook 규약). 단어장 문서를 마지막에 지워
+    // 중간 실패 시 "단어장 없는 유령 세션"이 남지 않게 한다. where 필터만 쿼리, BATCH_LIMIT 단위 삭제.
+    const quizSnap = await this.jaQuizzes().where("bookId", "==", id).get();
+    const refs = [...quizSnap.docs.map((d) => d.ref), ref];
+    const db = getDb();
+    for (let i = 0; i < refs.length; i += BATCH_LIMIT) {
+      const batch = db.batch();
+      for (const r of refs.slice(i, i + BATCH_LIMIT)) batch.delete(r);
+      await batch.commit();
+    }
     return { ok: true };
   }
 
@@ -790,5 +819,25 @@ export class FirestoreStore implements StudyStore {
     await ref.update({ titleKo });
     const updated = await ref.get();
     return toJaVocabBook(updated.id, updated.data()!);
+  }
+
+  // ---- jaQuizzes (J2) ----
+
+  async addJaQuiz(input: NewJaQuiz): Promise<JaQuizRecord> {
+    const ref = this.jaQuizzes().doc();
+    const record: JaQuizRecord = {
+      ...input,
+      items: input.items.map(normalizeJaQuizItem), // 저장 계층 마지막 관문(파일 백엔드와 동일 정규화)
+      id: ref.id,
+    };
+    const { id: _id, ...data } = record; // 문서 ID가 곧 id — 본문에 중복 저장하지 않는다
+    await ref.set(data);
+    return record;
+  }
+
+  async listJaQuizzes(bookId: string): Promise<JaQuizRecord[]> {
+    // where + orderBy(다른 필드)는 복합 인덱스 필요 — 필터만 쿼리, 정렬은 메모리(listVocabQuizzes 규약).
+    const snap = await this.jaQuizzes().where("bookId", "==", bookId).get();
+    return snap.docs.map((d) => toJaQuiz(d.id, d.data())).sort(byStartedAtAsc);
   }
 }

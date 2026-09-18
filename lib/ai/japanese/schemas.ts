@@ -107,6 +107,8 @@ export interface JaVocabGenEntry {
   meaningsKo: string[];
   example: JaExample;
   wordTokens: JaToken[];
+  /** 그 단어를 한눈에 떠올리게 하는 이모지 1개. 추상어·문법어는 null (호출 A가 함께 낸다 — 별도 보강 호출 없음) */
+  imageEmoji: string | null;
 }
 
 /** 호출 A의 전체 출력 (레벨 1개분). */
@@ -125,6 +127,8 @@ export interface JaVocabEntry {
   pos: JaPos[];
   meaningsKo: string[];
   example: JaExample;
+  /** 그 단어를 나타내는 이모지 1개(호출 A 산출). 없으면 null → 화면은 resolveJaGlyph로 첫 글자 배지 폴백 */
+  imageEmoji: string | null;
   level: JlptLevel | null;
 }
 
@@ -147,10 +151,11 @@ export const JA_VOCAB_GENERATION_JSON_SCHEMA: StrictJsonSchema = {
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["word", "kana", "pos", "meaningsKo", "example", "wordTokens"],
+          required: ["word", "kana", "pos", "meaningsKo", "example", "wordTokens", "imageEmoji"],
           properties: {
             word: { type: "string", description: "표기(한자가 있으면 한자)" },
             kana: { type: "string", description: "전체 읽기 — 히라가나만" },
+            imageEmoji: { type: ["string", "null"], description: "그 단어를 나타내는 이모지 1개. 추상어·문법어면 null" },
             pos: {
               type: "array",
               items: {
@@ -219,6 +224,21 @@ function hasHangul(s: string): boolean {
   return /[가-힣]/.test(s);
 }
 
+/** 이모지 문자열 최대 길이 — ZWJ 시퀀스(가족 이모지 등)도 UTF-16으로는 여러 코드유닛이라 방어 상한. 실제 "1개"는 자소 검사가 담당. */
+export const JA_IMAGE_EMOJI_MAX = 32;
+
+/** 자소(grapheme) 개수 — 이모지 "1개" 판정용. Intl.Segmenter가 ZWJ 시퀀스·변형 선택자를 1로 센다. */
+function graphemeCount(s: string): number {
+  try {
+    const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+    let n = 0;
+    for (const _ of seg.segment(s)) n++;
+    return n;
+  } catch {
+    return Array.from(s).length; // 폴백: 코드포인트 수
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 호출 A — zod 이중 검증 (스펙 §2-4)
 // JSON Schema가 못 잡는 것: 개수, 표제어 중복, 히라가나 전용, 한글 포함, 예문 길이, 토큰 무결성.
@@ -270,11 +290,21 @@ const jaVocabGenEntrySchema = z
     meaningsKo: z.array(z.string().trim().min(1).max(JA_MEANING_KO_MAX)).min(1).max(JA_MEANINGS_MAX),
     example: jaExampleSchema,
     wordTokens: z.array(jaTokenSchema),
+    imageEmoji: z.string().trim().min(1).max(JA_IMAGE_EMOJI_MAX).nullable(),
   })
   .superRefine((e, ctx) => {
     // kana는 히라가나만
     if (!isHiraganaOnly(e.kana)) {
       ctx.addIssue({ code: "custom", path: ["kana"], message: "kana는 히라가나만 (가타카나·한자·로마자 거부)" });
+    }
+    // imageEmoji가 null이 아니면 이모지 정확히 1개(그림문자)여야 한다 — 글자·여러 개 거부(§작업1)
+    if (e.imageEmoji !== null) {
+      if (graphemeCount(e.imageEmoji) !== 1) {
+        ctx.addIssue({ code: "custom", path: ["imageEmoji"], message: "imageEmoji는 정확히 1개여야 합니다 (여러 개 이어 붙이지 마세요)" });
+      }
+      if (!/\p{Extended_Pictographic}/u.test(e.imageEmoji)) {
+        ctx.addIssue({ code: "custom", path: ["imageEmoji"], message: "imageEmoji는 이모지(그림문자)여야 합니다 (글자·숫자·문장부호 거부)" });
+      }
     }
     // 뜻은 한글을 포함해야 한다(일본어만 온 경우 거부)
     e.meaningsKo.forEach((m, i) => {
@@ -314,3 +344,26 @@ export const jaVocabGenerationSchema = z
       seen.add(key);
     });
   });
+
+// ---------------------------------------------------------------------------
+// 그림 우선순위 — resolveJaGlyph (영어 resolveVocabImage 관용구)
+// 단어 그림을 고르는 곳이 여러 화면(표·시험)에 흩어지면 반드시 어긋난다. 여기 한 곳만 판정한다.
+// imageEmoji가 있으면 이모지, 없으면 표기(word) 첫 글자(한자) 배지로 떨어뜨려 UI가 빈자리를 안 만든다.
+// ---------------------------------------------------------------------------
+
+export type JaGlyph =
+  | { kind: "emoji"; emoji: string }
+  | { kind: "letter"; letter: string };
+
+/**
+ * 단어의 그림을 우선순위대로 고른다: imageEmoji > 표기 첫 글자 배지.
+ * 폴백(첫 글자)은 화면이 아니라 여기서 정한다 — 이모지 유무 판정이 화면마다 갈리지 않게(영어 resolveVocabImage와 같은 이유).
+ * `imageEmoji`는 느슨하게 받는다(구 레코드는 이 필드가 undefined일 수 있다 — 저장 정규화가 늦어도 화면이 안 깨지게).
+ */
+export function resolveJaGlyph(entry: { imageEmoji?: string | null; word: string }): JaGlyph {
+  if (entry.imageEmoji && entry.imageEmoji.trim() !== "") {
+    return { kind: "emoji", emoji: entry.imageEmoji };
+  }
+  const letter = Array.from(entry.word.trim())[0] ?? "?";
+  return { kind: "letter", letter };
+}

@@ -142,7 +142,7 @@ export function applyVocabPostprocess(input: JaVocabPostprocessInput): JaVocabPo
   }
   const folded = order.map((k) => byKana.get(k)!);
 
-  // 4) 레벨 태깅
+  // 4) 레벨 태깅 (imageEmoji는 호출 A가 낸 값을 그대로 실어 나른다 — §작업1)
   const entries: JaVocabEntry[] = folded.map((e) => ({
     word: e.word,
     kana: e.kana,
@@ -150,6 +150,7 @@ export function applyVocabPostprocess(input: JaVocabPostprocessInput): JaVocabPo
     pos: e.pos,
     meaningsKo: e.meaningsKo,
     example: e.example,
+    imageEmoji: e.imageEmoji,
     level: input.level,
   }));
 
@@ -164,5 +165,32 @@ export function applyVocabPostprocess(input: JaVocabPostprocessInput): JaVocabPo
     entries,
     filteredCount: originalCount - entries.length,
     missingIncludes,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 저장 방어 정규화 — normalizeJaVocabEntry (하위호환)
+// 이미 저장된 단어장에는 imageEmoji가 없다(호출 A 이모지는 J2에서 추가). 읽기/쓰기 경로에서 이 헬퍼로
+// undefined를 정한 값으로 조인다(Firestore가 undefined 거부). **store.ts는 app-builder가 이 헬퍼를 호출**한다
+// — 값 정규화를 여기 한 곳에만 두어(영어 normalizeRelated 관용구) store와 어긋나지 않게 한다.
+// ---------------------------------------------------------------------------
+
+/** normalizeJaVocabEntry가 받는 느슨한 입력 — 구 레코드는 imageEmoji가 없을 수 있다. */
+export type LegacyOrNewJaVocabEntry = Partial<JaVocabEntry>;
+
+/**
+ * 저장·읽기 직전 방어 정규화. undefined를 정한 값으로 조이고, 구 레코드에 없는 imageEmoji는 null로 채운다.
+ * 값을 손보지 않는다 — 없는 것을 없음(null·빈 배열)으로 적을 뿐이다(정렬·병합은 이미 끝났다).
+ */
+export function normalizeJaVocabEntry(entry: LegacyOrNewJaVocabEntry): JaVocabEntry {
+  return {
+    word: entry.word ?? "",
+    kana: entry.kana ?? "",
+    wordTokens: entry.wordTokens ?? [],
+    pos: entry.pos ?? [],
+    meaningsKo: entry.meaningsKo ?? [],
+    example: entry.example ?? { ja: "", ko: "", tokens: [] },
+    imageEmoji: entry.imageEmoji ?? null, // 구 레코드(이모지 없음) → null 폴백
+    level: entry.level ?? null,
   };
 }

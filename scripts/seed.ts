@@ -669,6 +669,8 @@ async function main() {
     vocabQuizzes: [],
     // 일본어 단어장(J1)도 같은 이유로 빈 배열 — DbShape 필수 키라 빠뜨리면 tsc가 막는다.
     jaVocabBooks: [],
+    // 일본어 시험 세션(J2)도 같은 이유로 빈 배열.
+    jaQuizzes: [],
   };
 
   await mergeDbForSeed(db);

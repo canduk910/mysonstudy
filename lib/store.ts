@@ -34,14 +34,13 @@ import type { Explanation } from "./ai/math/schemas";
 // 값으로 끌고 오지만, 타입만 가져오면 빌드에서 지워져 저장 계층이 AI 모듈에 묶이지 않는다.
 import type { VocabEntry, VocabMeaning, VocabRelated } from "./ai/english/vocabbook-schemas";
 import { normalizeRelated } from "./ai/english/vocabbook-schemas";
-// 아빠의 일본어 J1 — 완성형 단어 항목·레벨·토큰·예문 타입(**타입만** import, 빌드에서 지워져 저장 계층이 AI에 안 묶인다).
-import type {
-  JaVocabEntry,
-  JaExample,
-  JaToken,
-  JaPos,
-  JlptLevel,
-} from "./ai/japanese/schemas";
+// 아빠의 일본어 J1/J2 — 완성형 단어 항목·레벨 타입(**타입만** import). 값 정규화는 ai-engineer의 단일 정의처를 쓴다.
+import type { JaVocabEntry, JlptLevel } from "./ai/japanese/schemas";
+// 저장 방어 정규화 단일 정의처(lib/ai/japanese/vocab.ts) — store가 이 헬퍼를 호출한다(인계 #1, 영어 normalizeRelated 관용구).
+// 순수 함수라 값 import여도 저장 계층이 OpenAI에 묶이지 않는다(isVocabBookEnriched·normalizeRelated와 같은 갈래).
+import { normalizeJaVocabEntry } from "./ai/japanese/vocab";
+// 시험 모드 유니온(J2) — 단일 정의처(lib/ai/japanese/quiz.ts). **타입만** import(재정의 금지, 인계 #2).
+import type { JaQuizMode } from "./ai/japanese/quiz";
 // enriched 재계산의 단일 정의처(V8). 순수 함수라(타입만 import) 값으로 끌어와도 저장 계층이
 // openai/client에 묶이지 않는다 — appendVocabEntry가 새 단어를 붙일 때 enriched를 다시 굳힌다.
 import { isVocabBookEnriched } from "./ai/english/vocabbook-enrich";
@@ -300,6 +299,33 @@ export interface DeleteJaVocabBookResult {
 }
 
 /**
+ * 일본어 시험 문항 결과 하나 (J2, §7-3). 영어 `VocabQuizItem`과 같은 3상태(맞힘/틀림/미응답).
+ * `word`는 엔트리 정체(표기) — 모드가 달라도 채점·집계는 word로 잇는다.
+ */
+export interface JaQuizItem {
+  word: string;
+  correct: boolean;
+  /** 답을 골랐으면 true, 이 세션에서 답 못 했으면(그만하기) null */
+  answered: boolean | null;
+}
+
+/**
+ * 일본어 시험 세션 한 판 (J2, §7-3). **영어 `VocabQuizRecord`와 컬렉션이 분리된다**(영어 집계에 일본어가 섞이면 안 된다).
+ * `mode`는 그 세션의 **콘텐츠 모드**(집계를 모드별로 가르는 축, §6-2) — 타입은 단일 정의처 `JaQuizMode`(재정의 금지, 인계 #2).
+ * 시험 활동은 이 컬렉션에 append로만 쌓인다(수정·삭제 API 없음 — 단어장 삭제 시 연쇄 삭제만).
+ */
+export interface JaQuizRecord {
+  id: string;
+  /** 어느 단어장인가 — JaVocabBookRecord.id */
+  bookId: string;
+  mode: JaQuizMode;
+  startedAt: string; // ISO 8601
+  /** 끝까지 풀면 ISO, "그만하기" 중단이면 null */
+  finishedAt: string | null;
+  items: JaQuizItem[];
+}
+
+/**
  * 단어 1개 추가 결과 (V8 더블탭 담기). "성공 = 그 단어가 이제 이 단어장에 있다"로 읽는다.
  * - `record: null`  → 없는 단어장(404). 담을 곳이 없다.
  * - `appended:true` → 새로 붙였다(record는 갱신본).
@@ -392,6 +418,8 @@ export type NewExplanation = Omit<ExplanationRecord, "id" | "createdAt" | "sortI
 export type NewVocabBook = Omit<VocabBookRecord, "id" | "createdAt" | "sortIndex">;
 /** 일본어 단어장 생성 입력 — id·createdAt·sortIndex는 스토어가 매긴다(NewVocabBook과 같은 규약). */
 export type NewJaVocabBook = Omit<JaVocabBookRecord, "id" | "createdAt" | "sortIndex">;
+/** 일본어 시험 세션 저장 입력 — id는 스토어가 매긴다(NewVocabQuiz와 같은 규약). */
+export type NewJaQuiz = Omit<JaQuizRecord, "id">;
 /** 시험 세션 저장 입력 — id는 스토어가 매긴다. startedAt/finishedAt은 클라이언트가 정한 값 그대로 */
 export type NewVocabQuiz = Omit<VocabQuizRecord, "id">;
 
@@ -579,6 +607,13 @@ export interface StudyStore {
   reorderJaVocabBooks(orderedIds: string[]): Promise<void>;
   /** 화면 이름(titleKo)만 바꾼다(상세 인라인 편집). entries·levels·topic은 불변. 수정이라 prod-guard 무관. */
   updateJaVocabBookTitle(id: string, titleKo: string): Promise<JaVocabBookRecord | null>;
+
+  // ---- jaQuizzes — 일본어 시험 세션 (J2, §7-3) ----
+  // 영어 vocabQuizzes와 **컬렉션 분리**(집계가 섞이면 안 된다). append(저장)와 조회(list)만 — 수정·삭제 API 없음.
+  /** 시험 세션 한 판 저장(완료·부분 결과 모두). append 전용이라 prod-guard 없음. */
+  addJaQuiz(input: NewJaQuiz): Promise<JaQuizRecord>;
+  /** 해당 단어장의 모든 시험 세션 — startedAt 오름차순(streak가 이 순서를 읽는다, 영어 규약). */
+  listJaQuizzes(bookId: string): Promise<JaQuizRecord[]>;
 }
 
 /**
@@ -600,13 +635,14 @@ export interface DbShape {
   vocabBooks: VocabBookRecord[];
   vocabQuizzes: VocabQuizRecord[];
   jaVocabBooks: JaVocabBookRecord[];
+  jaQuizzes: JaQuizRecord[];
 }
 
 const DB_DIR = path.join(process.cwd(), "data");
 const DB_PATH = path.join(DB_DIR, "db.json");
 
 function emptyDb(): DbShape {
-  return { books: [], cards: [], readings: [], explanations: [], vocabBooks: [], vocabQuizzes: [], jaVocabBooks: [] };
+  return { books: [], cards: [], readings: [], explanations: [], vocabBooks: [], vocabQuizzes: [], jaVocabBooks: [], jaQuizzes: [] };
 }
 
 /**
@@ -648,6 +684,11 @@ async function readDb(): Promise<DbShape> {
       jaVocabBooks: (parsed.jaVocabBooks ?? []).map((v) =>
         normalizeJaVocabBook(v as JaVocabBookRecord),
       ),
+      // J2 이전 db.json엔 이 키가 없다 — 같은 하위호환(없으면 빈 배열). items는 normalizeJaQuizItem으로 방어.
+      jaQuizzes: (parsed.jaQuizzes ?? []).map((q) => ({
+        ...q,
+        items: (q.items ?? []).map(normalizeJaQuizItem),
+      })),
     };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyDb();
@@ -882,36 +923,8 @@ export function applyVocabLink(
 // 옛/손입력 문서(누락 키)도 이 함수를 거치면 타입 계약(전부 필수 nullable)을 만족한다.
 // ---------------------------------------------------------------------------
 
-function normalizeJaToken(t: unknown): JaToken {
-  const o = (t ?? {}) as Partial<JaToken>;
-  return {
-    surface: String(o.surface ?? ""),
-    reading: typeof o.reading === "string" ? o.reading : null,
-  };
-}
-
-function normalizeJaExample(e: unknown): JaExample {
-  const o = (e ?? {}) as Partial<JaExample>;
-  return {
-    ja: String(o.ja ?? ""),
-    ko: String(o.ko ?? ""),
-    tokens: Array.isArray(o.tokens) ? o.tokens.map(normalizeJaToken) : [],
-  };
-}
-
-/** 일본어 단어 항목 하나 방어 정규화. level은 JlptLevel 또는 null(collected·손입력). */
-export function normalizeJaVocabEntry(entry: unknown): JaVocabEntry {
-  const e = (entry ?? {}) as Partial<JaVocabEntry>;
-  return {
-    word: String(e.word ?? ""),
-    kana: String(e.kana ?? ""),
-    wordTokens: Array.isArray(e.wordTokens) ? e.wordTokens.map(normalizeJaToken) : [],
-    pos: Array.isArray(e.pos) ? (e.pos.filter((p) => typeof p === "string") as JaPos[]) : [],
-    meaningsKo: Array.isArray(e.meaningsKo) ? e.meaningsKo.map((m) => String(m)) : [],
-    example: normalizeJaExample(e.example),
-    level: (e.level ?? null) as JlptLevel | null,
-  };
-}
+// 단어 항목 방어 정규화(normalizeJaVocabEntry)는 **lib/ai/japanese/vocab.ts 단일 정의처**를 쓴다(위 import, 인계 #1).
+// imageEmoji 하위호환(구 레코드 → null)도 그 함수가 담당한다 — store가 따로 인라인 fill하지 않는다.
 
 /**
  * 일본어 단어장 레코드 방어 정규화 (§7-1). 읽기(get/list·readDb)·쓰기(create) 경로가 모두 이걸 태운다.
@@ -929,6 +942,18 @@ export function normalizeJaVocabBook(book: JaVocabBookRecord): JaVocabBookRecord
     model: String(b.model ?? ""),
     createdAt: b.createdAt ?? new Date(0).toISOString(),
     sortIndex: b.sortIndex ?? null,
+  };
+}
+
+/**
+ * 일본어 시험 문항 하나 방어 정규화 — undefined를 정한 값으로 조인다(Firestore 거부 방어). 영어
+ * `normalizeVocabQuizItem`과 같은 규약: `answered`는 세 상태(true/false/null) 유지, `correct`는 boolean으로 굳힌다.
+ */
+export function normalizeJaQuizItem(item: Partial<JaQuizItem>): JaQuizItem {
+  return {
+    word: String(item.word ?? ""),
+    correct: item.correct === true,
+    answered: item.answered === true ? true : item.answered === false ? false : null,
   };
 }
 
@@ -1342,10 +1367,13 @@ class JsonFileStore implements BookCardStore {
 
   async deleteJaVocabBook(id: string): Promise<DeleteJaVocabBookResult> {
     // prod-guard는 firestore(실데이터) 백엔드에만 건다 — 파일 백엔드는 로컬이라 안전(deleteVocabBook 선례).
+    // 단어장과 그 시험 세션(J2)을 한 mutate 안에서 함께 지운다 — 유령 세션이 남지 않게(영어 deleteVocabBook 규약).
     return this.mutate((db) => {
       const before = db.jaVocabBooks.length;
       db.jaVocabBooks = db.jaVocabBooks.filter((v) => v.id !== id);
-      return { ok: db.jaVocabBooks.length < before };
+      const ok = db.jaVocabBooks.length < before;
+      if (ok) db.jaQuizzes = db.jaQuizzes.filter((q) => q.bookId !== id);
+      return { ok };
     });
   }
 
@@ -1368,6 +1396,28 @@ class JsonFileStore implements BookCardStore {
       book.titleKo = titleKo;
       return normalizeJaVocabBook(book);
     });
+  }
+
+  // ---- jaQuizzes (J2) ----
+
+  async addJaQuiz(input: NewJaQuiz): Promise<JaQuizRecord> {
+    const record: JaQuizRecord = {
+      ...input,
+      items: input.items.map(normalizeJaQuizItem), // firestore와 같은 정규화(두 백엔드 동일)
+      id: randomUUID(),
+    };
+    return this.mutate((db) => {
+      db.jaQuizzes.push(record);
+      return record;
+    });
+  }
+
+  async listJaQuizzes(bookId: string): Promise<JaQuizRecord[]> {
+    const db = await readDb();
+    return db.jaQuizzes
+      .filter((q) => q.bookId === bookId)
+      .map((q) => ({ ...q, items: (q.items ?? []).map(normalizeJaQuizItem) }))
+      .sort(byStartedAtAsc);
   }
 }
 
@@ -1442,5 +1492,6 @@ export async function mergeDbForSeed(seed: DbShape): Promise<void> {
     vocabBooks: mergeById(cur.vocabBooks, seed.vocabBooks),
     vocabQuizzes: mergeById(cur.vocabQuizzes, seed.vocabQuizzes),
     jaVocabBooks: mergeById(cur.jaVocabBooks, seed.jaVocabBooks),
+    jaQuizzes: mergeById(cur.jaQuizzes, seed.jaQuizzes),
   });
 }

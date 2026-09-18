@@ -162,6 +162,10 @@ scripts/eval-japanese.ts          ← 오프라인 검증 + spec-sync + (게이�
 - reading은 그 토큰의 surface가 한자만으로 이뤄졌을 때만 히라가나로 채운다. 가나·숫자·기호가 섞인 토큰에는 reading을 붙이지 않는다(null).
 - 오쿠리가나와 활용 어미는 한자 토큰과 분리해 별도 토큰으로 내고 그 토큰의 reading은 null로 둔다. 한 단어를 통째로 묶어 전체 읽기를 달지 않는다. 예: 促す → 促(うなが) + す(null), 食べる → 食(た) + べる(null), 大きい → 大(おお) + きい(null).
 
+[이모지]
+- 각 단어에 그 뜻을 한눈에 떠올리게 하는 이모지 하나(imageEmoji)를 고른다. 이모지는 딱 1개다 — 여러 개를 이어 붙이지 않는다.
+- 눈에 보이는 사물·동작이면 어울리는 이모지를 고른다. 추상어나 문법어(조사·접속사 등)처럼 어울리는 이모지가 없으면 null로 둔다. 억지로 고르지 않는다.
+
 [금지]
 - 사전 원문을 복사했다고 주장하거나 출처를 표기하지 않는다. 설명 문장이나 마크다운을 쓰지 않는다.
 - 지정된 JSON 스키마 외의 텍스트를 내지 않는다.
@@ -198,10 +202,11 @@ HARNESS §1 규약: 전 필드 `required`, 모든 객체 `additionalProperties: 
         "items": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["word", "kana", "pos", "meaningsKo", "example", "wordTokens"],
+          "required": ["word", "kana", "pos", "meaningsKo", "example", "wordTokens", "imageEmoji"],
           "properties": {
             "word":       { "type": "string", "description": "표기(한자가 있으면 한자)" },
             "kana":       { "type": "string", "description": "전체 읽기 — 히라가나만" },
+            "imageEmoji": { "type": ["string", "null"], "description": "그 단어를 나타내는 이모지 1개. 추상어·문법어면 null" },
             "pos":        { "type": "array", "items": { "type": "string", "enum": ["명사","동사(자)","동사(타)","い형용사","な형용사","부사","조사","접속사","감동사","표현"] } },
             "meaningsKo": { "type": "array", "items": { "type": "string" } },
             "example": {
@@ -498,6 +503,7 @@ interface JaVocabEntry {
   pos: JaPos[];              // 일본어 품사
   meaningsKo: string[];
   example: { ja: string; ko: string; tokens: JaToken[] };
+  imageEmoji: string | null; // 그 단어를 나타내는 이모지 1개(호출 A 산출). 없으면 null → resolveJaGlyph가 첫 글자 배지로 폴백
   level: JlptLevel | null;   // "N1".."N5" — 호출 A 생성분은 코드가 붙인다(§2-4).
                              // 대화에서 담은 단어는 레벨을 모르므로 null(추정시키지 않는다)
 }

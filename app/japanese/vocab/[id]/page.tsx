@@ -9,6 +9,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import JaVocabDetailView from "@/components/ja-vocab-detail-view";
+import { resolveJaGlyph } from "@/lib/ai/japanese/schemas";
 import { isRenderableJaVocabBook } from "@/lib/japanese-record";
 import { getStore } from "@/lib/store";
 
@@ -49,6 +50,8 @@ export default async function JaVocabDetailPage({ params }: DetailPageProps) {
         levels={record.levels}
         topic={record.topic}
         entries={record.entries}
+        // 글리프는 서버에서 계산해 내려준다(값 resolveJaGlyph는 lib/ai에 남고, 화면엔 JaGlyph 타입만 간다 — 번들 경계 §10)
+        glyphs={record.entries.map((e) => resolveJaGlyph(e))}
       />
     </main>
   );

@@ -1,0 +1,241 @@
+/* 일본어 시험 진행 화면 (아빠의 일본어 J2) — 성인용. 토큰 재사용, 영어 시험 화면 관용구. */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.topRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.counter {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+.progressTrack {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.progressFill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+.skipped {
+  margin: 0;
+  color: var(--ink-3);
+}
+
+/* 문제 */
+.prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+.promptLabel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+}
+.modeBadge {
+  padding: 2px 8px;
+  border-radius: var(--radius-chip);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  border: 1px solid var(--accent);
+  font-weight: 700;
+}
+.promptBody {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.promptText {
+  flex: 1;
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--ink);
+  line-height: 1.4;
+  word-break: keep-all;
+}
+.speaker {
+  flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  font-size: 18px;
+  cursor: pointer;
+}
+.speaker:hover {
+  border-color: var(--line-strong);
+}
+
+/* 5지선다 */
+.choices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 52px;
+  padding: 10px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 19px;
+  text-align: left;
+  cursor: pointer;
+}
+.choice:disabled {
+  cursor: default;
+}
+.choiceText {
+  min-width: 0;
+  word-break: break-word;
+}
+.choiceCorrect {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+.choiceWrong {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg));
+  color: var(--danger);
+}
+.choiceDim {
+  opacity: 0.5;
+}
+.mark {
+  flex: 0 0 auto;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+/* 피드백 */
+.feedback {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: var(--radius-box);
+  border: 1px solid var(--line);
+}
+.feedbackCorrect {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.feedbackWrong {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg));
+}
+.feedbackHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.feedbackText {
+  font-weight: 700;
+  color: var(--ink);
+}
+.feedbackEntry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+.feedbackWord {
+  font-size: 24px;
+  font-weight: 800;
+  color: var(--ink);
+}
+.feedbackKana {
+  color: var(--ink-3);
+  font-size: var(--fs-vocab-example);
+}
+.feedbackMeaning {
+  color: var(--ink-2);
+  font-size: 16px;
+}
+.hint {
+  margin: 0;
+  text-align: center;
+}
+
+/* 하단 액션 */
+.actions {
+  display: flex;
+  gap: 10px;
+}
+.actions > .u-btn {
+  flex: 1 1 auto;
+  min-height: 52px;
+}
+
+/* 결과 */
+.results {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 16px;
+  text-align: center;
+}
+.scoreBig {
+  margin: 4px 0;
+  font-size: 48px;
+  font-weight: 800;
+  color: var(--accent-ink);
+  font-variant-numeric: tabular-nums;
+}
+.scoreSlash {
+  color: var(--ink-3);
+}
+.saveMsg {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+}
+.saveMsgError {
+  color: var(--danger);
+}
+.retryBtn {
+  margin-left: 8px;
+  text-decoration: underline;
+  color: var(--accent-ink);
+  cursor: pointer;
+  background: none;
+  border: none;
+  font: inherit;
+}
+.resultActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 8px;
+}

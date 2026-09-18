@@ -1,4 +1,4 @@
-/* 일본어 단어장 상세 (아빠의 일본어 J1) — 성인 학습자용, 정보 밀도 우선. 토큰 재사용. */
+/* 일본어 단어장 상세 (아빠의 일본어 J1 + 표/카드 보기) — 성인 학습자용, 정보 밀도 우선. 토큰 재사용. */
 
 .wrap {
   display: flex;
@@ -6,6 +6,7 @@
   gap: 14px;
 }
 
+/* 제목 + 인라인 수정 */
 .titleRow {
   min-width: 0;
 }
@@ -42,6 +43,21 @@
   font-size: var(--fs-vocab-example);
 }
 
+/* 표/카드 토글 툴바 */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.modeGroup {
+  display: flex;
+  gap: 8px;
+}
+.modeBtn {
+  min-width: 72px;
+}
+
 .metaRow {
   display: flex;
   align-items: center;
@@ -50,6 +66,7 @@
   gap: 8px;
 }
 
+/* ── 표 모드 목록 ───────────────────────────────────────────────────────────── */
 .list {
   display: flex;
   flex-direction: column;
@@ -58,7 +75,7 @@
   padding: 0;
   list-style: none;
 }
-.card {
+.entry {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -68,6 +85,103 @@
   background: var(--surface);
 }
 
+/* ── 카드 모드 전면 오버레이 (100dvh flex 컬럼, 영어 단어장 관용구) ───────────── */
+.cardOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100dvh; /* dvh — 모바일 주소창 접힘에도 프레임이 안 튄다 */
+  z-index: 20;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+.cardInner {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 48rem;
+  margin: 0 auto;
+  flex: 1;
+  min-height: 0; /* 자식(스크롤러)이 내용보다 작아질 수 있어야 내부 스크롤이 산다 */
+  display: flex;
+  flex-direction: column;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+}
+.cardChrome {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 8px;
+}
+.chromeRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.chromeRow2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.chromeTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.backBtn {
+  flex: none;
+}
+.titleText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hintText {
+  flex: none;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 세로 scroll-snap 스크롤러 — 오버레이 100dvh → inner flex → scroller flex:1 사슬이 프레임 높이를 만든다 */
+.scroller {
+  flex: 1;
+  min-height: 0;
+  scroll-snap-type: y mandatory;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  -webkit-overflow-scrolling: touch;
+}
+.cardFrame {
+  scroll-snap-align: start;
+  box-sizing: border-box;
+  min-height: 100%; /* 한 화면 = 단어 하나 */
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 24px 20px 28px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  overflow-y: auto; /* 뜻·예문이 많으면 카드 안에서 스크롤 */
+}
+.cardFrame:last-child {
+  border-bottom: none;
+}
+.cardIndex {
+  align-self: flex-start;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 엔트리 본문(표·카드 공용) ─────────────────────────────────────────────── */
 .wordRow {
   display: flex;
   align-items: center;
@@ -79,8 +193,48 @@
   font-weight: 800;
   color: var(--ink);
 }
+/* 카드 모드는 후리가나를 크게 — 한 화면 하나라 시원하게 */
+.cardWord {
+  font-size: 40px;
+  font-weight: 800;
+  color: var(--ink);
+}
 .levelChip {
   margin-left: auto;
+}
+
+/* 단어 글리프(이모지 또는 표기 첫 글자 배지) — resolveJaGlyph 결과. 표=작게, 카드=크게(영어 glyphLg/Sm 관용구). */
+.glyph {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.glyphSm {
+  width: 32px;
+  height: 32px;
+  font-size: 20px;
+  border-radius: var(--radius-chip);
+}
+.glyphLg {
+  width: 64px;
+  height: 64px;
+  font-size: 40px;
+  border-radius: var(--radius-box);
+}
+/* 이모지는 배경 없이 그대로 */
+.glyphEmoji {
+  background: transparent;
+}
+/* 첫 글자 폴백은 accent 톤 배지로(빈자리 방지) */
+.glyphLetter {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 800;
+}
+.glyphLg.glyphLetter {
+  font-size: 32px;
 }
 .speak {
   flex: 0 0 auto;
@@ -126,7 +280,6 @@
   color: var(--ink-3);
   font-variant-numeric: tabular-nums;
 }
-
 .example {
   margin-top: 6px;
   padding: 10px 12px;

@@ -11,10 +11,47 @@
  * props로 내려보낸다 — 이 파일에 값 import를 넣지 않는다.
  */
 
-import type { JlptLevel, JaPos, JaVocabEntry, JaToken } from "@/lib/ai/japanese/schemas";
+import type { JlptLevel, JaPos, JaVocabEntry, JaToken, JaGlyph } from "@/lib/ai/japanese/schemas";
+import type { JaQuizMode, JaQuizContentMode, JaQuizQuestion } from "@/lib/ai/japanese/quiz";
 
 // 타입 전용 재수출 — 화면(클라)이 lib/ai를 직접 import하지 않고 이 통로로 타입만 본다.
-export type { JlptLevel, JaPos, JaVocabEntry, JaToken };
+// JaGlyph는 서버(page.tsx)가 resolveJaGlyph(값)로 계산해 props로 내려주고, 화면은 이 타입으로 받아 그린다
+// (값 resolveJaGlyph는 lib/ai에 남는다 — 클라 번들 경계 유지). JaQuiz* 타입도 같은 통로로 화면에 준다.
+export type { JlptLevel, JaPos, JaVocabEntry, JaToken, JaGlyph };
+export type { JaQuizMode, JaQuizContentMode, JaQuizQuestion };
+
+// ===========================================================================
+// 시험 (J2, §6) — 모드 한글 라벨 + 세션 저장 계약
+// ===========================================================================
+
+/**
+ * 시험 모드 → 한글 라벨(배지·탭·안내 단일 정의처). 값 상수라 lib/ai에 의존하지 않아 클라가 직접 import해도 안전.
+ * 콘텐츠 4모드 + wrong-review. 화면은 이 라벨로 종류를 보여준다(§6-1 표와 같은 뜻).
+ */
+export const JA_QUIZ_MODE_LABELS_KO: Record<JaQuizMode, string> = {
+  "ko-to-word": "뜻→표기",
+  "kanji-to-kana": "한자→읽기",
+  "word-to-ko": "표기→뜻",
+  cloze: "빈칸 채우기",
+  "wrong-review": "오답복습",
+};
+
+/** 세션 저장 요청 — 한 콘텐츠 모드분(혼합 세션은 화면이 모드별로 갈라 여러 번 보낸다, §6-2 무오염). */
+export interface JaQuizSubmitRequest {
+  mode: JaQuizMode;
+  startedAt: string;
+  finishedAt: string | null;
+  items: { word: string; correct: boolean; answered: boolean | null }[];
+}
+
+export type JaQuizSubmitResponse =
+  | { ok: true; id: string }
+  | {
+      ok: false;
+      error: "invalid_input" | "vocabbook_not_found" | "save_failed";
+      messageKo: string;
+      issues?: { path: string; message: string }[];
+    };
 
 // ===========================================================================
 // 생성 — `POST /api/japanese/vocab/generate` (호출 A, 레벨별 병렬)

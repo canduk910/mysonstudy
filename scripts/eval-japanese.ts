@@ -18,6 +18,7 @@ import {
   JA_VOCAB_TOPIC_PRESETS,
   JLPT_LEVELS,
   jaVocabGenerationSchema,
+  resolveJaGlyph,
   type JaToken,
   type JaVocabGenEntry,
 } from "../lib/ai/japanese/schemas";
@@ -31,6 +32,13 @@ import {
   normalizeJaWord,
   planIncludeDistribution,
 } from "../lib/ai/japanese/vocab";
+import {
+  aggregateJaStatsByMode,
+  buildJaQuizQuestions,
+  buildJaReviewCandidatesByMode,
+  type JaQuizSessionLike,
+  type JaQuizSourceEntry,
+} from "../lib/ai/japanese/quiz";
 import {
   checkSpecSync,
   extractSpecBlocks,
@@ -96,6 +104,7 @@ function genEntry(over: Partial<JaVocabGenEntry> = {}): JaVocabGenEntry {
       tokens: [tok("本", "ほん"), tok("を"), tok("読", "よ"), tok("む"), tok("。")],
     },
     wordTokens: [tok("本", "ほん")],
+    imageEmoji: "📖",
     ...over,
   };
 }
@@ -455,6 +464,162 @@ function runJsonSchemaSyncChecks(): CheckResult[] {
 }
 
 // ---------------------------------------------------------------------------
+// 이모지 (§작업1) — zod 통과/거부 + resolveJaGlyph 우선순위
+// ---------------------------------------------------------------------------
+
+function runEmojiChecks(): CheckResult[] {
+  const results: CheckResult[] = [];
+  const book = "이모지(호출 A)";
+  const add = (check: string, pass: boolean, detail: string) => results.push({ book, check, pass, detail });
+
+  const one = (imageEmoji: unknown) => jaVocabGenerationSchema.safeParse({ entries: [{ ...genEntry(), imageEmoji }] }).success;
+
+  add("zod 통과: 이모지 1개(📖)", one("📖"), "통과");
+  add("zod 통과: null(추상어·문법어)", one(null), "통과");
+  add("zod 통과: 변형 선택자 포함 1자(❤️)", one("❤️"), "통과");
+  add("zod 거부: 글자(本)", !one("本"), "거부");
+  add("zod 거부: 로마자(A)", !one("A"), "거부");
+  add("zod 거부: 이모지 2개(📖📚)", !one("📖📚"), "거부");
+  add("zod 거부: 빈 문자열", !one(""), "거부");
+
+  // resolveJaGlyph 우선순위: 이모지 > 첫 글자 배지
+  {
+    const g1 = resolveJaGlyph({ word: "本", imageEmoji: "📖" });
+    const g2 = resolveJaGlyph({ word: "本", imageEmoji: null });
+    const g3 = resolveJaGlyph({ word: "食べる" }); // imageEmoji 없음(구 레코드) → 첫 글자
+    const ok = g1.kind === "emoji" && g1.emoji === "📖" && g2.kind === "letter" && g2.letter === "本" && g3.kind === "letter" && g3.letter === "食";
+    add("resolveJaGlyph: 이모지 > 첫 글자 배지(null·undefined 폴백)", ok, `g1=${JSON.stringify(g1)} g2=${JSON.stringify(g2)} g3=${JSON.stringify(g3)}`);
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// 시험 4모드 (§6-1) — buildJaQuizQuestions
+// ---------------------------------------------------------------------------
+
+/** 결정적 rng — 셔플 결과를 고정해 값으로 단언한다. */
+function makeRng(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+/** 시험 픽스처 — 명사 5개(같은 품사 충분) + 동사 1개 + 가나 단어 1개. genEntry가 JaQuizSourceEntry를 구조적으로 만족. */
+function quizEntries(): JaQuizSourceEntry[] {
+  return [
+    genEntry({ word: "本", kana: "ほん", pos: ["명사"], meaningsKo: ["책"], example: { ja: "本を読む。", ko: "책을 읽는다.", tokens: [tok("本", "ほん"), tok("を"), tok("読", "よ"), tok("む"), tok("。")] } }),
+    genEntry({ word: "水", kana: "みず", pos: ["명사"], meaningsKo: ["물"], example: { ja: "水を飲む。", ko: "물을 마신다.", tokens: [tok("水", "みず"), tok("を"), tok("飲", "の"), tok("む"), tok("。")] } }),
+    genEntry({ word: "山", kana: "やま", pos: ["명사"], meaningsKo: ["산"], example: { ja: "山に登る。", ko: "산에 오른다.", tokens: [tok("山", "やま"), tok("に"), tok("登", "のぼ"), tok("る"), tok("。")] } }),
+    genEntry({ word: "川", kana: "かわ", pos: ["명사"], meaningsKo: ["강"], example: { ja: "川が流れる。", ko: "강이 흐른다.", tokens: [tok("川", "かわ"), tok("が"), tok("流", "なが"), tok("れる"), tok("。")] } }),
+    genEntry({ word: "空", kana: "そら", pos: ["명사"], meaningsKo: ["하늘"], example: { ja: "空を見る。", ko: "하늘을 본다.", tokens: [tok("空", "そら"), tok("を"), tok("見", "み"), tok("る"), tok("。")] } }),
+    genEntry({ word: "見る", kana: "みる", pos: ["동사(타)"], meaningsKo: ["보다"], example: { ja: "映画を見る。", ko: "영화를 본다.", tokens: [tok("映画", "えいが"), tok("を"), tok("見", "み"), tok("る"), tok("。")] } }),
+    genEntry({ word: "すし", kana: "すし", pos: ["명사"], meaningsKo: ["초밥"], example: { ja: "すしを食べる。", ko: "초밥을 먹는다.", tokens: [tok("すし"), tok("を"), tok("食", "た"), tok("べる"), tok("。")] } }),
+  ];
+}
+
+function runQuizChecks(): CheckResult[] {
+  const results: CheckResult[] = [];
+  const book = "시험 4모드(§6-1)";
+  const add = (check: string, pass: boolean, detail: string) => results.push({ book, check, pass, detail });
+  const entries = quizEntries();
+  const posByWord = new Map(entries.map((e) => [e.word, e.pos] as const));
+
+  // 전 모드: 정답 포함 · 보기 전부 상이 · 개수 5(단어장 충분)
+  {
+    const { questions } = buildJaQuizQuestions(entries, { count: 5, rng: makeRng(7) });
+    const ok = questions.every((q) => q.choices.includes(q.answer) && new Set(q.choices).size === q.choices.length && q.choices.length === 5);
+    add("전 모드: 정답 포함·보기 전부 상이·5개", ok, `문항=${questions.length}`);
+  }
+
+  // kanji-to-kana: 가나 단어(すし·word===kana)·동사 아닌 가나… 한자 없는 단어는 안 나온다
+  {
+    const { questions } = buildJaQuizQuestions(entries, { modes: ["kanji-to-kana"], count: 5, rng: makeRng(11) });
+    const words = questions.map((q) => q.word);
+    // 本·水·山·川·空·見る = 6개(한자 포함), すし 제외
+    const ok = questions.every((q) => q.mode === "kanji-to-kana") && !words.includes("すし") && questions.length === 6 && questions.every((q) => q.answer !== q.prompt);
+    add("kanji-to-kana: 가나 단어(すし) 제외·정답=읽기", ok, `출제=[${words.join(",")}] (기대 6개, すし 없음)`);
+  }
+
+  // ko-to-word: 문제=뜻, 정답=표기
+  {
+    const { questions } = buildJaQuizQuestions(entries, { modes: ["ko-to-word"], count: 5, rng: makeRng(3) });
+    const q = questions.find((x) => x.word === "本");
+    add("ko-to-word: 문제=뜻·정답=표기", q?.prompt === "책" && q?.answer === "本" && (q?.choices.includes("本") ?? false), `q=${JSON.stringify(q)}`);
+  }
+
+  // word-to-ko: 문제=표기+읽기, 정답=뜻
+  {
+    const { questions } = buildJaQuizQuestions(entries, { modes: ["word-to-ko"], count: 5, rng: makeRng(5) });
+    const q = questions.find((x) => x.word === "本");
+    add("word-to-ko: 문제=표기(읽기)·정답=뜻", q?.prompt === "本(ほん)" && q?.answer === "책", `q=${JSON.stringify(q)}`);
+  }
+
+  // cloze: 표제어를 ___로 1회 치환, 표제어 미포함 예문은 미출제
+  {
+    const { questions } = buildJaQuizQuestions(entries, { modes: ["cloze"], count: 5, rng: makeRng(9) });
+    const q = questions.find((x) => x.word === "本");
+    const clozeOk = q?.prompt === "___を読む。" && !q.prompt.includes("本") && q.answer === "本";
+    add("cloze: 표기 기준 ___ 1회 치환·정답=표기", !!clozeOk, `prompt=${q?.prompt}`);
+
+    // 같은 품사 오답 우선 — 명사 cloze의 오답은 전부 명사(명사 4개로 충분)
+    const distractors = (q?.choices ?? []).filter((c) => c !== "本");
+    const allNoun = distractors.length > 0 && distractors.every((w) => posByWord.get(w)?.includes("명사"));
+    add("cloze: 같은 품사(명사) 오답 우선", allNoun, `오답=[${distractors.join(",")}]`);
+  }
+
+  // 미출제 보고 — kanji-to-kana만 요청하면 가나 단어 すし 1개가 skip
+  {
+    const { skipped } = buildJaQuizQuestions([genEntry({ word: "すし", kana: "すし", example: { ja: "すしを食べる。", ko: "초밥.", tokens: [tok("すし"), tok("を"), tok("食", "た"), tok("べる"), tok("。")] } })], { modes: ["kanji-to-kana"], count: 5, rng: makeRng(1) });
+    add("미출제 보고: 가나 단어의 kanji-to-kana는 skip 카운트", skipped === 1, `skipped=${skipped}`);
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// 모드별 숙련도 분리 회귀 가드 (§6-2) — 반례로 잠근다
+// 값으로 못박는다: aggregateJaStatsByMode가 모드별로 안 가르면(합치면) 아래 값이 어긋나 FAIL.
+// ---------------------------------------------------------------------------
+
+function runQuizModeSeparationChecks(): CheckResult[] {
+  const results: CheckResult[] = [];
+  const book = "모드 분리(§6-2)";
+  const add = (check: string, pass: boolean, detail: string) => results.push({ book, check, pass, detail });
+
+  const session = (mode: JaQuizSessionLike["mode"], startedAt: string, items: JaQuizSessionLike["items"]): JaQuizSessionLike => ({
+    id: startedAt, bookId: "b1", mode, startedAt, finishedAt: startedAt, items,
+  });
+
+  // 本: kanji-to-kana에서 틀림(독음 모름), ko-to-word에서 맞음(뜻 앎) — 두 통계가 섞이면 안 된다
+  const quizzes = [
+    session("ko-to-word", "2026-09-18T01:00:00.000Z", [{ word: "本", correct: true, answered: true }]),
+    session("kanji-to-kana", "2026-09-18T02:00:00.000Z", [{ word: "本", correct: false, answered: true }]),
+  ];
+
+  {
+    const byMode = aggregateJaStatsByMode(quizzes);
+    const ko = byMode["ko-to-word"]?.["本"];
+    const kk = byMode["kanji-to-kana"]?.["本"];
+    // 무오염: ko-to-word는 total1·wrong0·streak1(뜻 앎), kanji-to-kana는 total1·wrong1·streak0(독음 모름)
+    const ok = ko?.total === 1 && ko?.wrong === 0 && ko?.streak === 1 && kk?.total === 1 && kk?.wrong === 1 && kk?.streak === 0;
+    add("aggregateJaStatsByMode: 뜻(정답)·독음(오답)이 안 섞임", ok, `ko=${JSON.stringify(ko)} kk=${JSON.stringify(kk)}`);
+  }
+
+  {
+    // 복습도 모드별: kanji-to-kana 복습엔 本이 오답 후보로, ko-to-word 복습엔 오답 아님
+    const kkReview = buildJaReviewCandidatesByMode(quizzes, "kanji-to-kana").find((c) => c.word === "本");
+    const koReview = buildJaReviewCandidatesByMode(quizzes, "ko-to-word").find((c) => c.word === "本");
+    const ok = kkReview?.wrong === 1 && koReview?.wrong === 0;
+    add("buildJaReviewCandidatesByMode: 모드별 오답이 안 섞임", ok, `kk=${JSON.stringify(kkReview)} ko=${JSON.stringify(koReview)}`);
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
 // 본체
 // ---------------------------------------------------------------------------
 
@@ -463,9 +628,12 @@ async function main(): Promise<void> {
   all.push(...runConstantChecks());
   all.push(...runZodChecks());
   all.push(...runOkuriganaChecks());
+  all.push(...runEmojiChecks());
   all.push(...runPostprocessChecks());
   all.push(...runPlanChecks());
   all.push(...runUserMessageChecks());
+  all.push(...runQuizChecks());
+  all.push(...runQuizModeSeparationChecks());
   all.push(...runSpecSyncChecks());
   all.push(...runJsonSchemaSyncChecks());
 
