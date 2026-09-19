@@ -15,7 +15,8 @@
  */
 
 import Link from "next/link";
-import { speak } from "@/lib/speech";
+import { useEffect } from "react";
+import { prefetchSpeech, speak } from "@/lib/speech";
 import { MASTERY_STREAK } from "@/lib/vocab-mastery";
 import s from "./vocab-wrong-all-view.module.css";
 
@@ -49,6 +50,8 @@ interface VocabWrongAllViewProps {
 }
 
 export default function VocabWrongAllView({ groups, totalOpen }: VocabWrongAllViewProps) {
+  // 모든 DAY의 오답 단어 🔊를 미리 받아 둔다(상한은 speech.ts가 건다).
+  useEffect(() => prefetchSpeech(groups.flatMap((g) => g.words.map((w) => w.word)), "en-US"), [groups]);
   return (
     <div className={s.wrap}>
       <div className={s.summary}>

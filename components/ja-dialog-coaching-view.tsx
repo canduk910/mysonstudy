@@ -6,9 +6,9 @@
  */
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import JaRuby from "@/components/ja-ruby";
-import { speak } from "@/lib/speech";
+import { prefetchSpeech, speak } from "@/lib/speech";
 import type { JaDialogAddWordResponse, JaDialogCoaching } from "@/lib/japanese-dialog-contract";
 import s from "./ja-dialog-coaching-view.module.css";
 
@@ -28,6 +28,16 @@ export default function JaDialogCoachingView({
 }) {
   const router = useRouter();
   const [addStates, setAddStates] = useState<Record<number, AddState>>({});
+
+  // 어휘·연습문장 🔊가 즉시 나게 미리 받아 둔다(부모는 turns만 받으므로 여기 것은 따로).
+  useEffect(
+    () =>
+      prefetchSpeech(
+        [...coaching.items.map((i) => i.word), ...coaching.practice.map((p) => p.ja)],
+        "ja-JP",
+      ),
+    [coaching],
+  );
 
   async function addWord(itemIndex: number) {
     if (!dialogId) return;

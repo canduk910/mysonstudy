@@ -19,7 +19,7 @@ import {
   type StorySource,
 } from "@/lib/ai/english/schemas";
 // 발음 재생은 lib/speech.ts가 단일 정의처다 (lang·rate 다이얼이 화면마다 갈리지 않도록).
-import { speak } from "@/lib/speech";
+import { prefetchSpeech, speak } from "@/lib/speech";
 import type { BookRecord, CardRecord, ReadingRecord } from "@/lib/store";
 // 챕터 리더(호출 F, §9) — 목차+자막이 있을 때만 스스로를 그린다(없으면 null → 회귀 0).
 import ChapterReaderSection from "./chapter-reader";
@@ -434,6 +434,10 @@ export default function CardView({
   const [regenError, setRegenError] = useState<string | null>(null);
 
   const c = card.content;
+
+  // 단어 🔊가 즉시 나게 미리 받아 둔다(합성이 1.3초라 캐시 적중만이 지연을 없앤다).
+  // 은우가 매일 쓰는 화면이라 여기 지연이 제일 크게 느껴진다.
+  useEffect(() => prefetchSpeech(c.vocab.map((v) => v.word), "en-US"), [c.vocab]);
   // 픽션/논픽션 = 색조가 아니라 같은 파랑의 명도 차이 (DESIGN §2).
   // globals.css의 테마 스코프 클래스가 --accent를 갈아끼우므로, 카드 안의
   // 컬러바·STEP 배지·칩·질문 태그가 한 번에 따라온다. 칩 라벨을 함께 표시해

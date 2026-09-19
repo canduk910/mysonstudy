@@ -12,10 +12,22 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { synthesizeSpeech } from "@/lib/tts";
+import { resolveTtsModel, resolveTtsVoice, synthesizeSpeech } from "@/lib/tts";
 import { TTS_LANGS, TTS_SPEED_MAX, TTS_SPEED_MIN, TTS_TEXT_MAX_CHARS } from "@/lib/tts-shared";
 
 export const runtime = "nodejs";
+
+/**
+ * GET /api/tts — 현재 합성 설정(voice·model)만 알려준다. OpenAI를 부르지 않는다(env만 읽음, 키 없어도 200).
+ * 클라이언트 영속 캐시(IndexedDB)가 이 값을 **지문**으로 삼아, 음성·모델이 바뀌면 옛 오디오를 통째로 비운다
+ * (옛 목소리가 섞여 나오지 않게, §16). 비용·실호출 0.
+ */
+export async function GET() {
+  return NextResponse.json(
+    { voice: resolveTtsVoice(), model: resolveTtsModel() },
+    { headers: { "cache-control": "no-store" } },
+  );
+}
 
 const bodySchema = z.object({
   text: z.string().trim().min(1, "읽을 내용이 없어요").max(TTS_TEXT_MAX_CHARS),

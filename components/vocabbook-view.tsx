@@ -158,8 +158,20 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz 
   ).length;
   const fullyEnriched = remainingToEnrich === 0; // EN·KO 둘 다 완료 — 보강 버튼·안내 숨김 기준
   const hasAnyDefinition = entries.some((e) => e.definitionEn !== null);
-  // 프리페치(§16): 화면에 보이는 단어 발음을 미리 캐시에 채운다 → 🔊 첫 재생 지연 제거. 화면 이탈 시 자동 중단.
-  useEffect(() => prefetchSpeech(entries.map((e) => e.word), "en-US"), [entries]);
+  // 프리페치(§16): 🔊가 달린 모든 텍스트(단어·예문·정의)를 미리 캐시 → 첫 재생 지연 제거. 화면 이탈 시 자동 중단.
+  // 우선순위: 단어(가장 자주) → 예문 → 정의. 상한(PREFETCH_MAX_ITEMS)에 걸리면 앞쪽이 먼저 덮인다.
+  useEffect(
+    () =>
+      prefetchSpeech(
+        [
+          ...entries.map((e) => e.word),
+          ...entries.flatMap((e) => e.examples.map((x) => x.en)),
+          ...entries.map((e) => e.definitionEn ?? ""),
+        ],
+        "en-US",
+      ),
+    [entries],
+  );
 
   async function runEnrich() {
     if (enrichPhase === "loading") return; // 중복 클릭 방어

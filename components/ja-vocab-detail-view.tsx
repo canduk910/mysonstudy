@@ -163,8 +163,12 @@ export default function JaVocabDetailView({
   const [viewMode, setViewMode] = useState<ViewMode>("table"); // 초기 렌더는 항상 표(hydration 일치)
   const [activeIndex, setActiveIndex] = useState(0);
   const scrollerRef = useRef<HTMLDivElement>(null);
-  // 프리페치(§16): 화면에 보이는 단어(표기)를 미리 캐시 → 🔊 첫 재생 지연 제거. 화면 이탈 시 자동 중단.
-  useEffect(() => prefetchSpeech(entries.map((e) => e.word), "ja-JP"), [entries]);
+  // 프리페치(§16): 🔊가 달린 모든 텍스트(단어·예문)를 미리 캐시 → 첫 재생 지연 제거. 우선순위: 단어 → 예문.
+  // (정의는 🔊가 없어 대상 아님.) 화면 이탈 시 자동 중단.
+  useEffect(
+    () => prefetchSpeech([...entries.map((e) => e.word), ...entries.map((e) => e.example.ja)], "ja-JP"),
+    [entries],
+  );
 
   // 제목 인라인 수정
   const [editing, setEditing] = useState(false);

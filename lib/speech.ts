@@ -16,6 +16,22 @@
  */
 
 import { isTtsLang, TTS_TEXT_MAX_CHARS } from "./tts-shared";
+import { setTtsFingerprintProvider, ttsCacheGet, ttsCachePut } from "./tts-cache";
+
+// 영속 캐시(IndexedDB)가 옛 목소리를 내지 않도록, 현재 voice|model을 **지문**으로 공급한다.
+// GET /api/tts는 env만 읽어(OpenAI 안 부름·키 불필요) 지문을 준다. 여기선 공급자만 꽂고, 실제 호출은 캐시가 지연 실행.
+if (typeof window !== "undefined") {
+  setTtsFingerprintProvider(async () => {
+    try {
+      const res = await fetch("/api/tts", { method: "GET" });
+      if (!res.ok) return null;
+      const cfg = (await res.json()) as { voice?: string; model?: string };
+      return cfg.voice && cfg.model ? `${cfg.voice}|${cfg.model}` : null;
+    } catch {
+      return null;
+    }
+  });
+}
 
 /** 발음 언어 **기본값** — 영어 원서용이라 미국식. `speak(text, lang)`으로 화면이 다른 언어를 넘길 수 있다
  *  (일본어=`ja-JP`, J1에서 사용). 인자를 생략하면 이 값이라 기존 영어 화면은 동작이 100% 그대로다. */
@@ -383,7 +399,14 @@ function canUseCloud(lang: string, text: string): boolean {
 async function getAudioBlob(text: string, lang: string, speed: number, signal?: AbortSignal): Promise<Blob> {
   const key = `${lang}:${speed}:${text}`;
   const cached = cloudCache.get(key);
-  if (cached) return cached; // ← 캐시 히트: 네트워크 0 (프리페치의 목적)
+  if (cached) return cached; // 1차(메모리) 히트: 네트워크 0
+
+  // 2차(IndexedDB) 히트: 앱을 닫았다 열어도 산다 → 재합성·재요금 없음. IDB 불가면 null(조용히 통과).
+  const persisted = await ttsCacheGet(key);
+  if (persisted) {
+    cloudCache.set(key, persisted); // 1차로 승격
+    return persisted;
+  }
 
   const res = await fetch("/api/tts", {
     method: "POST",
@@ -395,11 +418,12 @@ async function getAudioBlob(text: string, lang: string, speed: number, signal?: 
   const blob = await res.blob();
   if (blob.size === 0) throw new Error("tts empty");
 
-  cloudCache.set(key, blob);
+  cloudCache.set(key, blob); // 1차
   if (cloudCache.size > CLOUD_CACHE_MAX) {
     const oldest = cloudCache.keys().next().value;
     if (oldest !== undefined) cloudCache.delete(oldest);
   }
+  void ttsCachePut(key, blob); // 2차(best-effort, 비동기) — 실패해도 재생엔 지장 없음
   return blob;
 }
 
@@ -494,8 +518,12 @@ async function playViaCloud(text: string, lang: string, speed: number, token: nu
 /**
  * 한 번에 미리 받을 **최대 개수**(비용 가드). 프리페치는 안 누를 음성까지 합성하므로 상한이 없으면
  * 비용·대역폭이 샌다. 화면에 보이는 것 위주로 이 수만큼만 채운다. 상한은 여기 한 곳에만 둔다.
+ *
+ * 30→90: 프리페치 대상을 단어뿐 아니라 **예문·정의**까지 넓혔다(엔트리당 최대 3배). 30단어 단어장이면
+ * 단어30+예문+정의 ≈ 90 — 한 단어장의 🔊 버튼을 한 번에 덮는다. 각 항목은 **영속 캐시** 덕에 평생 1회만
+ * 합성되므로(다음부터 IDB 적중) 상한을 올린 추가 비용은 첫 방문 1회로 그친다. 동시성은 2로 그대로(레이트 배려).
  */
-export const PREFETCH_MAX_ITEMS = 30;
+export const PREFETCH_MAX_ITEMS = 90;
 /** 프리페치 동시성 — 낮게. 서버·OpenAI 레이트·Cloud Run 동시성을 배려해 한 번에 이만큼만 나눠 보낸다. */
 const PREFETCH_CONCURRENCY = 2;
 
@@ -614,4 +642,9 @@ export function speakSequence(words: string[], lang: string = TTS_LANG): void {
 /** 재생 중인 발음을 멈춘다 (화면 이탈·다음 문제로 넘어갈 때). 클라우드·기기 재생 모두 멈춘다. */
 export function stopSpeaking(): void {
   cancelPlayback();
+}
+
+/** 테스트 전용 — 1차(메모리) 캐시를 비운다(새 세션 모사: 2차 IDB가 살아나는지 검증). */
+export function __clearTtsMemoryCache(): void {
+  cloudCache.clear();
 }

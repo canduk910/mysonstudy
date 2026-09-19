@@ -21,8 +21,8 @@
  */
 
 import Link from "next/link";
-import { useState } from "react";
-import { speak, stopSpeaking } from "@/lib/speech";
+import { useEffect, useState } from "react";
+import { prefetchSpeech, speak, stopSpeaking } from "@/lib/speech";
 import { MASTERY_STREAK } from "@/lib/vocab-mastery";
 import s from "./vocab-wrong-view.module.css";
 
@@ -69,6 +69,8 @@ interface VocabWrongViewProps {
 
 export default function VocabWrongView({ id, titleKo, dayLabel, rows, hasQuizzes }: VocabWrongViewProps) {
   const [filter, setFilter] = useState<FilterKey>(hasQuizzes ? "wrong" : "all");
+  // 오답노트의 🔊가 즉시 나게 단어를 미리 받아 둔다(합성은 1.3초라 캐시 적중이 유일한 길).
+  useEffect(() => prefetchSpeech(rows.map((r) => r.word), "en-US"), [rows]);
 
   const wrongOpenCount = rows.filter(isWrongOpen).length;
   const unseenCount = rows.filter(isUnseen).length;
