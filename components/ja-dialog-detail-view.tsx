@@ -5,8 +5,9 @@
  * 말풍선(JaDialogTranscript) → 총평·잘한 점·고칠 점·어휘(담기 J5)·연습(JaDialogCoachingView). 제목 인라인 수정, "해설 다시 만들기".
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { prefetchSpeech } from "@/lib/speech";
 import JaDialogTranscript from "@/components/ja-dialog-transcript";
 import JaDialogCoachingView from "@/components/ja-dialog-coaching-view";
 import {
@@ -34,6 +35,8 @@ export default function JaDialogDetailView({
   partial: boolean;
 }) {
   const router = useRouter();
+  // 프리페치(§16): 말풍선 문장들의 발음을 미리 캐시 → 🔊 첫 재생 지연 제거. 화면 이탈 시 자동 중단.
+  useEffect(() => prefetchSpeech(turns.map((t) => t.ja), "ja-JP"), [turns]);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(titleKo);
   const [saving, setSaving] = useState(false);

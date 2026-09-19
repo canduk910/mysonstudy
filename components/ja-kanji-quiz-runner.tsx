@@ -10,7 +10,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { speak, stopSpeaking } from "@/lib/speech";
+import { prefetchSpeech, speak, stopSpeaking } from "@/lib/speech";
 import {
   JA_KANJI_QUIZ_MODE_LABELS_KO,
   type JaKanjiQuizMode,
@@ -57,6 +57,8 @@ export default function JaKanjiQuizRunner({
 
   useEffect(() => setStartedAt(new Date().toISOString()), []);
   useEffect(() => () => stopSpeaking(), []);
+  // 프리페치(§16): 문제 한자들의 발음을 미리 캐시 → 정답 피드백이 즉시 소리 난다.
+  useEffect(() => prefetchSpeech(questions.map((q) => q.word), "ja-JP"), [questions]);
   useEffect(() => {
     if (phase !== "quiz") return;
     const q = questions[current];

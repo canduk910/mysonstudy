@@ -47,6 +47,7 @@ import {
 } from "../lib/ai/japanese/kanji";
 import {
   applyVocabPostprocess,
+  normalizeJaVocabEntry,
   normalizeJaWord,
   planIncludeDistribution,
 } from "../lib/ai/japanese/vocab";
@@ -111,9 +112,11 @@ function printTable(results: CheckResult[]): void {
 
 const tok = (surface: string, reading: string | null = null): JaToken => ({ surface, reading });
 
-/** 유효한 호출 A entry(레벨 없음). 필요한 필드만 덮어쓴다. 기본값은 zod를 통과한다. */
+/** 유효한 호출 A entry(레벨 없음). 필요한 필드만 덮어쓴다. 기본값은 zod를 통과한다.
+ *  definitionTokens는 over가 명시하지 않으면 최종 definitionJa에서 자동 파생한다(정의를 override해도 무결성이 유지되게).
+ *  자동 파생은 정의 전체를 reading:null 토큰 1개로 담는다(무결성 통과 — 정의 한자에 읽기가 없는 것도 스키마상 유효). */
 function genEntry(over: Partial<JaVocabGenEntry> = {}): JaVocabGenEntry {
-  return {
+  const base: JaVocabGenEntry = {
     word: "本",
     kana: "ほん",
     pos: ["명사"],
@@ -125,8 +128,14 @@ function genEntry(over: Partial<JaVocabGenEntry> = {}): JaVocabGenEntry {
     },
     wordTokens: [tok("本", "ほん")],
     imageEmoji: "📖",
+    definitionJa: "ページがたくさんあって、よむもの。",
+    definitionTokens: null,
     ...over,
   };
+  if (over.definitionTokens === undefined) {
+    base.definitionTokens = base.definitionJa === null ? null : [tok(base.definitionJa)];
+  }
+  return base;
 }
 
 // ---------------------------------------------------------------------------
@@ -176,6 +185,40 @@ function runZodChecks(): CheckResult[] {
     const rejected = !jaVocabGenerationSchema.safeParse(rc.input).success;
     add(`거부: ${rc.name}`, rejected, rejected ? "거부됨" : "통과되면 안 됨");
   }
+
+  // 일일정의(definitionJa) — null 허용·일본문자·표제어 미포함·길이(§작업1). definitionTokens는 값에 맞춰 일관 파생.
+  const oneDef = (definitionJa: unknown) => {
+    const definitionTokens = typeof definitionJa === "string" ? [tok(definitionJa)] : null;
+    return jaVocabGenerationSchema.safeParse({ entries: [{ ...genEntry(), definitionJa, definitionTokens }] }).success;
+  };
+  add("definitionJa 통과: null(쉽게 못 풀면)", oneDef(null), "통과");
+  add("definitionJa 통과: 일본어 정의(표제어 미포함)", oneDef("ページがたくさんあって、よむもの。"), "통과");
+  // P0 회귀 가드 — 짧은 정의가 더 좋은 출력이다. 15자 하한을 강제하면 N5 생성이 throw됐다(min 4로 낮춤).
+  add("definitionJa 통과: 짧은 정의(7자, 出口→外に出るところ 급)", oneDef("よむための かみ。"), "통과");
+  add("definitionJa 통과: 아주 짧은 정의(4자, 水→のむもの 급)", oneDef("のむもの"), "통과");
+  add("definitionJa 거부: 표제어(本) 포함(정답 노출)", !oneDef("本はよむものです。とてもたのしい。"), "거부");
+  add("definitionJa 거부: 3자 이하(너무 짧음)", !oneDef("みず"), "거부");
+  add("definitionJa 거부: 일본 문자 없음", !oneDef("a thing for reading many pages."), "거부");
+
+  // definitionTokens — 후리가나 토큰(§작업: 정의에도 루비). 무결성·오쿠리가나 분리·null 일관성
+  const defEntry = (over: Partial<JaVocabGenEntry>) => jaVocabGenerationSchema.safeParse({ entries: [genEntry(over)] }).success;
+  add("definitionTokens 통과: 한자에 읽기(外に出るところ, 出口)", defEntry({
+    word: "出口", kana: "でぐち", wordTokens: [tok("出", "で"), tok("口", "ぐち")],
+    definitionJa: "外に出るところ",
+    definitionTokens: [tok("外", "そと"), tok("に"), tok("出", "で"), tok("る"), tok("と"), tok("こ"), tok("ろ")],
+  }), "통과");
+  add("definitionTokens 거부: 무결성 위반(이으면 definitionJa와 다름)", !defEntry({
+    definitionJa: "そとに出るところ", definitionTokens: [tok("水", "みず")],
+  }), "거부");
+  add("definitionTokens 거부: 오쿠리가나 묶음(出る에 reading)", !defEntry({
+    definitionJa: "そとに出る。", definitionTokens: [tok("そとに"), tok("出る", "でる"), tok("。")],
+  }), "거부");
+  add("definitionTokens 거부: definitionJa null인데 토큰 있음(고아)", !defEntry({
+    definitionJa: null, definitionTokens: [tok("あ")],
+  }), "거부");
+  add("definitionTokens 거부: definitionJa 있는데 토큰 null", !defEntry({
+    definitionJa: "のむもの", definitionTokens: null,
+  }), "거부");
 
   return results;
 }
@@ -232,6 +275,28 @@ function runOkuriganaChecks(): CheckResult[] {
   {
     const input = { entries: [genEntry({ word: "広がった", kana: "ひろがった", pos: ["동사(자)"], meaningsKo: ["넓어졌다"], wordTokens: [tok("広がった", "ひろがった")], example: { ja: "空が広がった。", ko: "하늘이 넓어졌다.", tokens: [tok("空", "そら"), tok("が"), tok("広", "ひろ"), tok("がった"), tok("。")] } })] };
     add("거부: 활용형 묶음(広がった(ひろがった))", !jaVocabGenerationSchema.safeParse(input).success, "묶음이면 거부되어야 함");
+  }
+
+  // 통과 2 — 숙어 묶기(目標→目標(もくひょう) 한 토큰). 한자 덩어리는 묶는다(§5 규칙, zod가 허용).
+  {
+    const ok = jaVocabGenerationSchema.safeParse({
+      entries: [
+        genEntry({
+          word: "目標", kana: "もくひょう", pos: ["명사"], meaningsKo: ["목표"],
+          wordTokens: [tok("目標", "もくひょう")], // 目·標로 쪼개지 않고 한 덩어리
+          example: { ja: "目標を立てる。", ko: "목표를 세운다.", tokens: [tok("目標", "もくひょう"), tok("を"), tok("立", "た"), tok("てる"), tok("。")] },
+          definitionJa: "やりたいこと。", definitionTokens: [tok("やりたいこと。")],
+        }),
+        // 気持ち — 숙어(気持)는 묶고 오쿠리가나(ち)는 분리. 두 규칙이 한 단어에서 함께.
+        genEntry({
+          word: "気持ち", kana: "きもち", pos: ["명사"], meaningsKo: ["기분"],
+          wordTokens: [tok("気持", "きも"), tok("ち")],
+          example: { ja: "気持ちがいい。", ko: "기분이 좋다.", tokens: [tok("気持", "きも"), tok("ち"), tok("がいい"), tok("。")] },
+          definitionJa: "こころのようす。", definitionTokens: [tok("こころのようす。")],
+        }),
+      ],
+    }).success;
+    add("통과: 숙어 묶기(目標(もくひょう) 한 토큰) + 気持(きも)+ち 분리 공존", ok, "통과");
   }
 
   return results;
@@ -308,6 +373,14 @@ function runPostprocessChecks(): CheckResult[] {
   {
     const r = applyVocabPostprocess({ entries: [hon], level: "N3", include: [], exclude: [{ word: "本", kana: "ほん" }] });
     add("부분 성공: 다 걸러져도 성공(빈 배열·filtered 보고)", r.entries.length === 0 && r.filteredCount === 1, `남은=${r.entries.length} filtered=${r.filteredCount}`);
+  }
+
+  // 하위호환: 구 레코드(imageEmoji·definitionJa 없음)를 normalizeJaVocabEntry가 null로 채운다(§작업3)
+  {
+    const legacy = { word: "本", kana: "ほん", wordTokens: [tok("本", "ほん")], pos: ["명사" as const], meaningsKo: ["책"], example: { ja: "本を読む。", ko: "책을 읽는다.", tokens: [tok("本", "ほん")] } };
+    const n = normalizeJaVocabEntry(legacy);
+    const ok = n.imageEmoji === null && n.definitionJa === null && n.definitionTokens === null && n.level === null && n.word === "本";
+    add("하위호환: normalizeJaVocabEntry가 imageEmoji·definitionJa·definitionTokens·level을 null로 채움", ok, `imageEmoji=${n.imageEmoji} definitionJa=${n.definitionJa} definitionTokens=${n.definitionTokens} level=${n.level}`);
   }
 
   return results;
@@ -633,6 +706,27 @@ function runQuizChecks(): CheckResult[] {
     const distractors = (q?.choices ?? []).filter((c) => c !== "本");
     const allNoun = distractors.length > 0 && distractors.every((w) => posByWord.get(w)?.includes("명사"));
     add("cloze: 같은 품사(명사) 오답 우선", allNoun, `오답=[${distractors.join(",")}]`);
+  }
+
+  // def-to-word: 문제=일일정의, 정답=표기. definitionJa null인 단어는 출제 제외(skip). 정의에 표제어 없음(듣기 안전)
+  {
+    const defEntries = [
+      genEntry({ word: "本", kana: "ほん", definitionJa: "ページがたくさんあって、よむもの。" }),
+      genEntry({ word: "水", kana: "みず", definitionJa: "のむための、つめたいもの。" }),
+      genEntry({ word: "山", kana: "やま", definitionJa: null }), // 정의 없음 → 제외
+    ];
+    const { questions, skipped } = buildJaQuizQuestions(defEntries, { modes: ["def-to-word"], count: 5, rng: makeRng(6) });
+    const q = questions.find((x) => x.word === "本");
+    const ok =
+      questions.length === 2 && // 山 제외
+      skipped === 1 &&
+      !questions.some((x) => x.word === "山") &&
+      q?.prompt === "ページがたくさんあって、よむもの。" &&
+      q?.answer === "本" &&
+      (q?.choices.includes("本") ?? false) &&
+      questions.every((x) => x.choices.includes(x.answer) && new Set(x.choices).size === x.choices.length) &&
+      questions.every((x) => !x.prompt.includes(x.answer)); // 정의에 정답 표기 없음(듣기 안전)
+    add("def-to-word: 문제=정의·정답=표기·null 제외(skip)·정답 미노출", ok, `출제=${questions.length}(기대 2) skip=${skipped}`);
   }
 
   // 미출제 보고 — kanji-to-kana만 요청하면 가나 단어 すし 1개가 skip

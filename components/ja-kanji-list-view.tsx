@@ -7,8 +7,8 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
-import { speak } from "@/lib/speech";
+import { useEffect, useState } from "react";
+import { prefetchSpeech, speak } from "@/lib/speech";
 import type { JaKanjiEnrichResponse, JaKanjiListItem } from "@/lib/japanese-kanji-contract";
 import s from "./ja-kanji-list-view.module.css";
 
@@ -18,6 +18,8 @@ export default function JaKanjiListView({ items }: { items: JaKanjiListItem[] })
   const [message, setMessage] = useState<string | null>(null);
 
   const missingInfo = items.filter((it) => !it.hasInfo).length;
+  // 프리페치(§16): 목록에 보이는 한자 발음을 미리 캐시 → 🔊 첫 재생 지연 제거.
+  useEffect(() => prefetchSpeech(items.map((it) => it.kanji), "ja-JP"), [items]);
 
   async function enrich() {
     if (phase === "loading") return;

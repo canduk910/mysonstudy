@@ -33,6 +33,7 @@ export const JA_QUIZ_MODE_LABELS_KO: Record<JaQuizMode, string> = {
   "kanji-to-kana": "한자→읽기",
   "word-to-ko": "표기→뜻",
   cloze: "빈칸 채우기",
+  "def-to-word": "일일정의→표기",
   "wrong-review": "오답복습",
 };
 

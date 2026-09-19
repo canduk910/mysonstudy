@@ -301,3 +301,25 @@
   font-size: var(--fs-vocab-example);
   line-height: 1.5;
 }
+
+/* 일일정의(일본어 뜻풀이) — 한국어 뜻(meaningsKo)·예문과 시각적으로 구분(좌측 액센트 바). lang="ja"는 JSX에서. */
+.definition {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-box);
+  background: var(--accent-soft);
+}
+.definitionLabel {
+  flex: none;
+  font-size: var(--fs-vocab-example);
+  font-weight: 700;
+  color: var(--accent-ink);
+}
+.definitionText {
+  color: var(--ink);
+  font-size: var(--fs-vocab-example);
+}

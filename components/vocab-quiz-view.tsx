@@ -36,7 +36,7 @@ import {
   type VocabQuizMode,
 } from "@/lib/vocab-quiz";
 import type { ReviewQuestion } from "@/lib/vocab-review";
-import { speak, stopSpeaking } from "@/lib/speech";
+import { prefetchSpeech, speak, stopSpeaking } from "@/lib/speech";
 import type { VocabQuizItem } from "@/lib/store";
 import type { VocabQuizSubmitRequest, VocabQuizSubmitResponse } from "@/lib/vocab-quiz-contract";
 import s from "./vocab-quiz-view.module.css";
@@ -188,6 +188,12 @@ export default function VocabQuizView({
     speak(promptSpeechOf(q)); // def:정의(EN) · 관계:표제어 promptWord(EN)
     return () => stopSpeaking();
   }, [current, phase, questions]);
+
+  // 프리페치(§16): 다음 문항에서 읽을 것(문제 발음 + 정답 단어)을 미리 캐시 → 정답 피드백이 즉시 소리 난다.
+  useEffect(() => {
+    if (!questions) return;
+    return prefetchSpeech(questions.flatMap((q) => [promptSpeechOf(q), correctAnswerOf(q)]), "en-US");
+  }, [questions]);
 
   // 아직 문제 조립 전 — 짧은 준비 화면(hydration 일치용: 서버·첫 클라 렌더가 모두 이 화면)
   if (!questions) {

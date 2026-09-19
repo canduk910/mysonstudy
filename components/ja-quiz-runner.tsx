@@ -19,7 +19,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import JaRuby from "@/components/ja-ruby";
-import { speak, stopSpeaking } from "@/lib/speech";
+import { prefetchSpeech, speak, stopSpeaking } from "@/lib/speech";
 import {
   JA_QUIZ_MODE_LABELS_KO,
   type JaQuizContentMode,
@@ -85,6 +85,9 @@ export default function JaQuizRunner({
     stopSpeaking();
     return () => stopSpeaking();
   }, [current, phase]);
+
+  // 정답 피드백 발음이 즉시 나게 세션 표제어를 미리 받아 둔다(재생은 안 한다 — 문제 낭독 금지는 위 규약 그대로).
+  useEffect(() => prefetchSpeech(questions.map((q) => q.word), "ja-JP"), [questions]);
 
   const total = questions.length;
   const answeredCount = answers.filter((a) => a !== null).length;
@@ -248,13 +251,20 @@ export default function JaQuizRunner({
               ? "이 뜻의 표기는?"
               : q.mode === "word-to-ko"
                 ? "이 단어의 뜻은?"
-                : "빈칸에 들어갈 표기는?"}
+                : q.mode === "def-to-word"
+                  ? "이 뜻풀이의 단어는?"
+                  : "빈칸에 들어갈 표기는?"}
         </p>
         <div className={s.promptBody}>
-          {/* 문제는 평문(후리가나 없음) — kanji-to-kana에서도 읽기가 노출되지 않는다 */}
-          <p className={s.promptText} lang={promptIsJa ? "ja" : "ko"}>
-            {q.prompt}
-          </p>
+          {/* 문제는 평문(후리가나 없음) — kanji-to-kana에서도 읽기가 노출되지 않는다.
+              단 def-to-word만 예외: 정의엔 표제어가 없어 루비를 달아도 정답이 안 샌다(quiz.ts 규약). */}
+          {q.mode === "def-to-word" && entry?.definitionTokens ? (
+            <JaRuby tokens={entry.definitionTokens} as="div" className={s.promptText} />
+          ) : (
+            <p className={s.promptText} lang={promptIsJa ? "ja" : "ko"}>
+              {q.prompt}
+            </p>
+          )}
           {/*
            * **문제에는 듣기 버튼을 두지 않는다.** 후리가나를 가려도 소리로 새기 때문이다:
            * - kanji-to-kana: 出口를 읽어 주면 그게 곧 정답(でぐち)이다.

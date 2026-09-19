@@ -24,8 +24,12 @@ import type { VocabQuizRecord } from "../../store";
 // 모드 (§6-1·§7-3)
 // ---------------------------------------------------------------------------
 
-/** 단어 콘텐츠 4모드 — 단어장 엔트리로 만드는 축(§6-1). */
-export const JA_QUIZ_CONTENT_MODES = ["ko-to-word", "kanji-to-kana", "word-to-ko", "cloze"] as const;
+/**
+ * 단어 콘텐츠 5모드 — 단어장 엔트리로 만드는 축(§6-1 4모드 + def-to-word 일일정의).
+ * `def-to-word`(문제=일본어 정의 definitionJa, 정답=word)는 **정의에 표제어가 없어 문제를 소리로 읽어도
+ * 정답이 새지 않는다** — 화면이 이 모드에만 듣기를 붙일 수 있다(다른 모드는 문제에 답이 보인다).
+ */
+export const JA_QUIZ_CONTENT_MODES = ["ko-to-word", "kanji-to-kana", "word-to-ko", "cloze", "def-to-word"] as const;
 export type JaQuizContentMode = (typeof JA_QUIZ_CONTENT_MODES)[number];
 
 /** 단어 저장 레코드의 mode 축 — 단어 4모드 + 오답복습(§7-3). 집계는 모드별로 가른다(§6-2). */
@@ -50,6 +54,8 @@ export interface JaQuizSourceEntry {
   meaningsKo: readonly string[];
   pos: readonly string[];
   example: { ja: string };
+  /** 일일정의(일본어 뜻풀이). def-to-word 문제. null이면 그 모드 출제 제외 */
+  definitionJa: string | null;
 }
 
 /** 시험 문항 하나 — 어느 모드든 word(엔트리 정체)로 채점·기록한다(JaQuizRecord.items의 word). */
@@ -136,6 +142,13 @@ function buildOne(
       if (answer.trim() === "") return null;
       const choices = buildChoices(answer, entries.map((e) => meaningText(e)), count, rng);
       return { mode, word: entry.word, prompt: `${entry.word}(${entry.kana})`, answer, choices };
+    }
+    case "def-to-word": {
+      // 일일정의가 있는 단어만 출제(§작업2). 정의에 표제어가 없어 문제를 소리로 읽어도, **루비를 달아도** 정답이 안 샌다
+      // — 화면은 이 모드에만 정의를 ja-ruby로(entry.definitionTokens) 렌더·낭독해도 된다(다른 4모드는 문제에 답이 보인다).
+      if (entry.definitionJa === null || entry.definitionJa.trim() === "") return null;
+      const choices = buildChoices(entry.word, entries.map((e) => e.word), count, rng);
+      return { mode, word: entry.word, prompt: entry.definitionJa, answer: entry.word, choices };
     }
     case "cloze": {
       // 예문에 표제어가 실제로 포함될 때만 출제(zod가 보장하지만 코드에서도 확인, §6-1)

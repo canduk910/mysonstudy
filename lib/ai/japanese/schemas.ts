@@ -84,6 +84,11 @@ export const JA_EXAMPLE_JA_MIN = 5;
 export const JA_EXAMPLE_JA_MAX = 60;
 /** 예문 한국어 번역 길이 상한 (방어) */
 export const JA_EXAMPLE_KO_MAX = 120;
+/** 일일정의(definitionJa) 길이 — 짧고 쉬운 정의가 이 기능에선 더 좋은 출력이다(N5 出口→「外に出るところ」7자, 水→「のむもの」4자).
+ *  하한을 15로 두면 모델이 정의를 억지로 늘려 "표제어보다 쉽게"와 충돌하고 재요청 실패로 생성 전체가 throw됐다(P0).
+ *  그래서 min 4로 낮춘다. max 60은 유지. */
+export const JA_DEFINITION_JA_MIN = 4;
+export const JA_DEFINITION_JA_MAX = 60;
 
 // ---------------------------------------------------------------------------
 // TypeScript 타입 — 데이터 모델 (§7-1)
@@ -109,6 +114,10 @@ export interface JaVocabGenEntry {
   wordTokens: JaToken[];
   /** 그 단어를 한눈에 떠올리게 하는 이모지 1개. 추상어·문법어는 null (호출 A가 함께 낸다 — 별도 보강 호출 없음) */
   imageEmoji: string | null;
+  /** 일일정의 — 그 단어를 일본어로 짧게 풀이한 한 문장(평문). 표제어를 포함하지 않는다(정답 노출 금지). 쉽게 못 풀면 null. */
+  definitionJa: string | null;
+  /** 일일정의의 후리가나 토큰(§5). surface를 이으면 definitionJa와 같다. definitionJa가 null이면 null. 평문(definitionJa)은 TTS·시험 텍스트, 토큰은 루비 렌더용(example의 {ja,tokens} 패턴). */
+  definitionTokens: JaToken[] | null;
 }
 
 /** 호출 A의 전체 출력 (레벨 1개분). */
@@ -129,6 +138,10 @@ export interface JaVocabEntry {
   example: JaExample;
   /** 그 단어를 나타내는 이모지 1개(호출 A 산출). 없으면 null → 화면은 resolveJaGlyph로 첫 글자 배지 폴백 */
   imageEmoji: string | null;
+  /** 일일정의(일본어 뜻풀이 한 문장, 호출 A 산출). 표제어 미포함. 없으면 null(구 레코드도 null 폴백). def-to-word 시험 문제로 쓴다(평문). */
+  definitionJa: string | null;
+  /** 일일정의의 후리가나 토큰(§5). 화면이 루비로 렌더. definitionJa가 null이면 null. 구 레코드는 normalizeJaVocabEntry가 null로 채운다. */
+  definitionTokens: JaToken[] | null;
   level: JlptLevel | null;
 }
 
@@ -151,11 +164,25 @@ export const JA_VOCAB_GENERATION_JSON_SCHEMA: StrictJsonSchema = {
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["word", "kana", "pos", "meaningsKo", "example", "wordTokens", "imageEmoji"],
+          required: ["word", "kana", "pos", "meaningsKo", "example", "wordTokens", "imageEmoji", "definitionJa", "definitionTokens"],
           properties: {
             word: { type: "string", description: "표기(한자가 있으면 한자)" },
             kana: { type: "string", description: "전체 읽기 — 히라가나만" },
             imageEmoji: { type: ["string", "null"], description: "그 단어를 나타내는 이모지 1개. 추상어·문법어면 null" },
+            definitionJa: { type: ["string", "null"], description: "일본어 뜻풀이 한 문장(표제어 미포함). 쉽게 못 풀면 null" },
+            definitionTokens: {
+              type: ["array", "null"],
+              description: "definitionJa의 후리가나 토큰. surface를 이으면 definitionJa와 같다. definitionJa가 null이면 null",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["surface", "reading"],
+                properties: {
+                  surface: { type: "string" },
+                  reading: { type: ["string", "null"], description: "한자일 때만 히라가나 읽기, 아니면 null" },
+                },
+              },
+            },
             pos: {
               type: "array",
               items: {
@@ -251,6 +278,9 @@ function graphemeCount(s: string): number {
  *     그런 토큰은 한자 토큰과 오쿠리가나 토큰으로 갈라 내야 하고, 오쿠리가나 쪽은 reading이 null이어야 한다.
  * (b) 한자만인 토큰의 reading은 히라가나여야 한다(아니면 거부).
  * (c) 한자가 전혀 없는 토큰(가나·숫자·기호)에 reading이 붙어 있으면 null로 정리한다(거부 아님 — 의미를 해치지 않는다).
+ *
+ * 숙어 묶기(目標→目標(もくひょう))는 **프롬프트 규칙이지 zod 규칙이 아니다** — 목標를 目(もく)+標(ひょう)로 쪼갠 것도
+ * 두 토큰 다 한자만이라 형식상 유효해 코드로 막을 수 없다(§5). zod는 여기(reading은 한자 토큰에만)까지만 강제한다.
  */
 const jaTokenSchema = z
   .object({
@@ -291,11 +321,31 @@ const jaVocabGenEntrySchema = z
     example: jaExampleSchema,
     wordTokens: z.array(jaTokenSchema),
     imageEmoji: z.string().trim().min(1).max(JA_IMAGE_EMOJI_MAX).nullable(),
+    definitionJa: z.string().trim().min(JA_DEFINITION_JA_MIN).max(JA_DEFINITION_JA_MAX).nullable(),
+    definitionTokens: z.array(jaTokenSchema).nullable(),
   })
   .superRefine((e, ctx) => {
     // kana는 히라가나만
     if (!isHiraganaOnly(e.kana)) {
       ctx.addIssue({ code: "custom", path: ["kana"], message: "kana는 히라가나만 (가타카나·한자·로마자 거부)" });
+    }
+    // 일일정의(definitionJa)가 null이 아니면: 일본 문자 포함 + 표제어(word)를 포함하지 않음(정답 노출 금지, §작업1)
+    if (e.definitionJa !== null) {
+      if (!hasJapanese(e.definitionJa)) {
+        ctx.addIssue({ code: "custom", path: ["definitionJa"], message: "definitionJa에는 일본 문자가 있어야 합니다" });
+      }
+      if (e.definitionJa.includes(e.word)) {
+        ctx.addIssue({ code: "custom", path: ["definitionJa"], message: "definitionJa에 표제어(word)를 그대로 넣을 수 없습니다 (정답 노출)" });
+      }
+      // 정의가 있으면 후리가나 토큰도 있어야 하고, surface를 이으면 definitionJa와 정확히 같아야 한다(무결성)
+      if (e.definitionTokens === null) {
+        ctx.addIssue({ code: "custom", path: ["definitionTokens"], message: "definitionJa가 있으면 definitionTokens도 있어야 합니다" });
+      } else if (e.definitionTokens.map((t) => t.surface).join("") !== e.definitionJa) {
+        ctx.addIssue({ code: "custom", path: ["definitionTokens"], message: "definitionTokens.surface를 이으면 definitionJa와 정확히 같아야 합니다" });
+      }
+    } else if (e.definitionTokens !== null) {
+      // 정의가 null이면 토큰도 null(고아 토큰 금지)
+      ctx.addIssue({ code: "custom", path: ["definitionTokens"], message: "definitionJa가 null이면 definitionTokens도 null이어야 합니다" });
     }
     // imageEmoji가 null이 아니면 이모지 정확히 1개(그림문자)여야 한다 — 글자·여러 개 거부(§작업1)
     if (e.imageEmoji !== null) {

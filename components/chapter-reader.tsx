@@ -32,10 +32,11 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { WHOLE_TRANSCRIPT_TITLE, type Chapter } from "@/lib/ai/english/schemas";
 import type { CollectedAddWordResponse } from "@/lib/collected-vocab-contract";
 import { lockBodyScroll } from "@/lib/scroll-lock";
-import { speak, speakSequence } from "@/lib/speech";
+import { prefetchSpeech, speak, speakSequence } from "@/lib/speech";
 import type { WordMeaningResponse } from "@/lib/word-meaning-contract";
 import s from "./chapter-reader.module.css";
 import TtsSpeedControl from "./tts-speed-control";
+import TtsEngineControl from "./tts-engine-control";
 
 /** 더블탭으로 인정하는 두 번째 탭까지의 최대 간격(ms). PC dblclick·모바일 연속 탭 모두 이 창 안(V8과 같은 값). */
 const DOUBLE_TAP_MS = 300;
@@ -340,6 +341,8 @@ function Reader({
   // selected가 범위를 벗어나지 않게(챕터 수가 바뀌는 경우 대비) 안전하게 좁힌다
   const active = chapters[Math.min(selected, chapters.length - 1)] ?? chapters[0];
   const matchedCount = useMemo(() => chapters.filter((ch) => ch.matched).length, [chapters]);
+  // 프리페치(§16): **현재 챕터**의 문장 발음만 미리 캐시(안 읽을 챕터는 제외). 챕터 바뀌면 새로 채우고 이전 건 중단.
+  useEffect(() => prefetchSpeech(active.sentences.map((sent) => sent.en), "en-US"), [active]);
 
   // 목차 없이 자막만 있으면 "전체" 단일 챕터 하나로 온다 — 챕터 목록·제목 없이 문장을 바로 보여준다.
   // (실제 목차가 1챕터인 책은 제목이 있으므로 "전체"로 오판하지 않게 제목까지 확인한다.)
@@ -357,6 +360,8 @@ function Reader({
 
       {/* 읽어주기 속도 — 전역 하나(lib/speech.ts). 여기서 바꾸면 단어장·시험 낭독까지 같이 바뀐다. */}
       <TtsSpeedControl />
+      {/* 영어 발음 엔진(클라우드/기기) — 전역 하나(언어별). 미리듣기로 비교 후 고른다(§16). */}
+      <TtsEngineControl lang="en-US" />
 
       {/* 챕터 목록 — 가로 스크롤 탭. matched 아닌 챕터는 흐리게. 단일 "전체" 챕터면 목록 생략 */}
       {!single && (

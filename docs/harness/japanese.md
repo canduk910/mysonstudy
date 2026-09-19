@@ -111,6 +111,7 @@ scripts/eval-japanese.ts          ← 오프라인 검증 + spec-sync + (게이�
 10. **예문**: 각 단어마다 **일본어 예문 1개 + 한국어 번역 1개**. 예문은 그 레벨 학습자가 읽을 수 있는 길이(15~30자 정도)이고, 표제어를 자연스럽게 포함한다. **그 레벨보다 훨씬 어려운 문법을 예문에 넣지 않는다.**
 11. **후리가나(§5 규약)**: 표기·예문의 **모든 한자**에 읽기를 붙인다. 한자가 아닌 부분(가나·숫자·기호)에는 읽기를 붙이지 않는다(`reading: null`).
 12. **금지**: 사전 원문 복사 주장·출처 표기·설명 문장·마크다운. 지정된 JSON 스키마 외 텍스트 금지.
+13. **일일정의(`definitionJa`)**: 그 단어를 **일본어로** 짧고 쉽게(1문장, 길어도 60자 이내) 풀이한다. **짧을수록 좋다** — 하한을 두지 않는다(出口→「外に出るところ」·水→「のむもの」). **표제어보다 쉬운 말**로 그 레벨 학습자가 아는 어휘만 쓴다. 표제어를 정의에 그대로 넣지 않는다(정답 노출). 쉽게 못 풀면 `null`(N5·N4는 null이 많아도 정상). 정의의 모든 한자에도 읽기를 붙인다(`definitionTokens`, §5 토큰 규약 — 표기·예문과 같은 방식). definitionJa가 null이면 definitionTokens도 null.
 
 프롬프트 원문(구현: `JA_VOCAB_SYSTEM_PROMPT`):
 
@@ -160,11 +161,19 @@ scripts/eval-japanese.ts          ← 오프라인 검증 + spec-sync + (게이�
 - 표기(word)와 예문(example.ja)의 모든 한자에 읽기를 붙인다. 후리가나는 문자열 안에 끼워 넣지 말고 토큰 배열로 낸다.
 - 각 토큰은 surface(표기 조각)와 reading(히라가나 읽기)을 갖는다. surface를 순서대로 이어 붙이면 원문과 정확히 같아야 한다.
 - reading은 그 토큰의 surface가 한자만으로 이뤄졌을 때만 히라가나로 채운다. 가나·숫자·기호가 섞인 토큰에는 reading을 붙이지 않는다(null).
-- 오쿠리가나와 활용 어미는 한자 토큰과 분리해 별도 토큰으로 내고 그 토큰의 reading은 null로 둔다. 한 단어를 통째로 묶어 전체 읽기를 달지 않는다. 예: 促す → 促(うなが) + す(null), 食べる → 食(た) + べる(null), 大きい → 大(おお) + きい(null).
+- 한자가 연달아 붙어 한 낱말(숙어)을 이루면 그 한자들을 한 토큰으로 묶고 읽기를 한 번에 단다. 예: 目標 → 目標(もくひょう)(目·標로 쪼개지 않는다), 変化 → 変化(へんか), 相手 → 相手(あいて), 最後 → 最後(さいご).
+- 오쿠리가나와 활용 어미의 가나는 한자 토큰과 분리해 별도 토큰으로 내고 그 토큰의 reading은 null로 둔다. 예: 気持ち → 気持(きも) + ち(null), 促す → 促(うなが) + す(null), 食べる → 食(た) + べる(null), 大きい → 大(おお) + きい(null). 즉 한자 덩어리는 묶되, 가나는 분리한다.
 
 [이모지]
 - 각 단어에 그 뜻을 한눈에 떠올리게 하는 이모지 하나(imageEmoji)를 고른다. 이모지는 딱 1개다 — 여러 개를 이어 붙이지 않는다.
 - 눈에 보이는 사물·동작이면 어울리는 이모지를 고른다. 추상어나 문법어(조사·접속사 등)처럼 어울리는 이모지가 없으면 null로 둔다. 억지로 고르지 않는다.
+
+[일일정의(definitionJa) — 일본어 뜻풀이]
+- 그 단어를 일본어로 짧고 쉽게 한 문장으로 풀이한다(길어도 60자 이내). 짧아도 좋다 — 짧고 쉬운 정의가 더 좋다(예: 出口 →「外に出るところ」, 水 →「のむもの」). 억지로 늘리지 않는다.
+- 표제어보다 쉬운 말로 쓴다. 그 레벨 학습자가 아는 어휘·문법만 쓴다 — 표제어보다 어려운 단어를 정의에 쓰면 학습이 안 된다.
+- 표제어(word)를 정의 안에 그대로 넣지 않는다. 그 단어를 모르는 사람이 뜻을 짐작할 수 있게 풀어 쓴다.
+- 쉬운 말로 풀 수 없으면 null로 둔다. 억지로 쓰지 않는다(N5·N4는 null이 많아도 정상이다).
+- 정의의 모든 한자에도 읽기를 붙인다(definitionTokens, §5 토큰 규약 — 표기·예문과 같은 방식). surface를 이으면 definitionJa와 정확히 같아야 한다. definitionJa가 null이면 definitionTokens도 null로 둔다.
 
 [금지]
 - 사전 원문을 복사했다고 주장하거나 출처를 표기하지 않는다. 설명 문장이나 마크다운을 쓰지 않는다.
@@ -202,11 +211,25 @@ HARNESS §1 규약: 전 필드 `required`, 모든 객체 `additionalProperties: 
         "items": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["word", "kana", "pos", "meaningsKo", "example", "wordTokens", "imageEmoji"],
+          "required": ["word", "kana", "pos", "meaningsKo", "example", "wordTokens", "imageEmoji", "definitionJa", "definitionTokens"],
           "properties": {
             "word":       { "type": "string", "description": "표기(한자가 있으면 한자)" },
             "kana":       { "type": "string", "description": "전체 읽기 — 히라가나만" },
             "imageEmoji": { "type": ["string", "null"], "description": "그 단어를 나타내는 이모지 1개. 추상어·문법어면 null" },
+            "definitionJa": { "type": ["string", "null"], "description": "일본어 뜻풀이 한 문장(표제어 미포함). 쉽게 못 풀면 null" },
+            "definitionTokens": {
+              "type": ["array", "null"],
+              "description": "definitionJa의 후리가나 토큰. surface를 이으면 definitionJa와 같다. definitionJa가 null이면 null",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["surface", "reading"],
+                "properties": {
+                  "surface": { "type": "string" },
+                  "reading": { "type": ["string", "null"], "description": "한자일 때만 히라가나 읽기, 아니면 null" }
+                }
+              }
+            },
             "pos":        { "type": "array", "items": { "type": "string", "enum": ["명사","동사(자)","동사(타)","い형용사","な형용사","부사","조사","접속사","감동사","표현"] } },
             "meaningsKo": { "type": "array", "items": { "type": "string" } },
             "example": {
@@ -524,7 +547,9 @@ interface JaToken { surface: string; reading: string | null }
 ```
 
 - `surface`를 순서대로 이어 붙이면 **원문과 정확히 같다**(zod가 강제, §2-4).
-- `reading`은 그 토큰이 한자를 포함할 때만 히라가나로 채운다. 가나·숫자·기호는 `null`.
+- `reading`은 그 토큰의 `surface`가 **한자만으로 이뤄졌을 때만** 히라가나로 채운다. 가나·숫자·기호가 섞인 토큰은 `null`.
+- **숙어는 한 덩어리로 묶는다.** 한자가 연달아 붙어 한 낱말(숙어)을 이루면 그 한자들을 **한 토큰**으로 묶고 읽기를 한 번에 단다(`目標`→`目標(もくひょう)`, `変化`→`変化(へんか)`) — `目(もく)`+`標(ひょう)`처럼 글자별로 쪼개지 않는다. 이유: 화면 루비 모양을 **낱말 단위로 일관**되게 하기 위함이다. 글자별 음독 학습은 §12 한자 카드가 맡으므로 역할이 갈린다.
+- **가나(오쿠리가나·활용 어미)는 분리한다.** 한자 토큰에 가나를 섞지 않는다(`気持ち`→`気持(きも)`+`ち`, `食べる`→`食(た)`+`べる`). 즉 "**한자 덩어리는 묶되, 가나는 분리**"가 하나의 일관 규칙이다. (zod는 "reading이 있는 토큰의 surface는 한자만"까지만 강제한다 — 숙어를 쪼갠 것도 형식상 유효하므로 묶기는 **프롬프트 규칙**이다.)
 - 렌더: `reading !== null`이면 `<ruby>{surface}<rt>{reading}</rt></ruby>`, 아니면 그냥 텍스트. 렌더 헬퍼는 **한 곳**(`components/ja-ruby.tsx`)에만 둔다 — 화면마다 복사하면 반드시 갈린다(`resolveVocabImage`·`lib/speech.ts` 선례).
 - **TTS는 `surface` 원문을 읽는다**(`ja-JP`). 루비를 읽히면 안 된다. `lib/speech.ts`의 `TTS_LANG`이 `en-US` 고정이므로 **언어 인자를 받도록 확장**한다(기본값은 기존 동작 유지 — 영어 화면 회귀 0).
 
@@ -569,6 +594,8 @@ interface JaVocabEntry {
   meaningsKo: string[];
   example: { ja: string; ko: string; tokens: JaToken[] };
   imageEmoji: string | null; // 그 단어를 나타내는 이모지 1개(호출 A 산출). 없으면 null → resolveJaGlyph가 첫 글자 배지로 폴백
+  definitionJa: string | null; // 일일정의(일본어 뜻풀이 한 문장, 호출 A 산출). 표제어 미포함. 없으면 null. def-to-word 시험 문제로 쓴다(평문)
+  definitionTokens: JaToken[] | null; // 일일정의의 후리가나 토큰(§5). 화면이 루비로 렌더. definitionJa가 null이면 null
   level: JlptLevel | null;   // "N1".."N5" — 호출 A 생성분은 코드가 붙인다(§2-4).
                              // 대화에서 담은 단어는 레벨을 모르므로 null(추정시키지 않는다)
 }

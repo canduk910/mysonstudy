@@ -31,6 +31,8 @@ npm run dev    # http://localhost:3100 (다른 로컬 프로젝트와의 포트 
 |---|---|---|
 | `OPENAI_API_KEY` | AI 생성 시 필수 | 서버 전용. 표지 판독(vision)·카드 생성에 사용. 없으면 시드 데모만 가능 |
 | `OPENAI_MODEL` | 선택 | 기본값 `gpt-5.5` — 비전 입력 + Structured Outputs + Responses API를 모두 지원하는 최신 모델(OpenAI 공식 문서 2026-08 확인). 스냅샷 고정이 필요하면 `gpt-5.5-2026-04-23` 지정 |
+| `OPENAI_TTS_MODEL` | 선택 | 클라우드 발음(§16)용 TTS 모델. 기본값 `gpt-4o-mini-tts` — 기기 음성보다 자연스러운 최신 TTS. 스냅샷 고정은 `gpt-4o-mini-tts-2025-12-15`. 미설정이어도 기본값으로 동작(별도 설정 불필요) |
+| `OPENAI_TTS_VOICE` | 선택 | 발음 음성. 기본값 `alloy`(en-US·ja-JP 한 음성 공용). 더 따뜻한 톤은 `nova`·`coral`·`sage` 등으로 교체. `OPENAI_API_KEY`가 없으면 자동으로 기기 음성으로 폴백 |
 | `GOOGLE_BOOKS_API_KEY` | 선택 | 책 식별(ISBN·소개글·썸네일)용. 없으면 무키 호출(쿼터 낮음) — 실패 시 Open Library로 자동 폴백 |
 | `SUPADATA_API_KEY` | 선택 | 서버 전용. 고른 유튜브 낭독 영상의 자막을 가져와 카드·챕터 리더의 근거로 사용(없으면 자막 grounding만 비활성, 기본 카드 생성은 정상) |
 | `YOUTUBE_API_KEY` | 선택 | 서버 전용. 책 제목·저자로 낭독 영상 후보를 검색(YouTube Data API v3). 없으면 낭독 영상 자동 검색만 비활성 |

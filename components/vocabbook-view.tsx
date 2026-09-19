@@ -35,7 +35,7 @@ import {
   type VocabRelated,
 } from "@/lib/ai/english/vocabbook-schemas";
 import { lockBodyScroll } from "@/lib/scroll-lock";
-import { speak, speakSequence, stopSpeaking } from "@/lib/speech";
+import { prefetchSpeech, speak, speakSequence, stopSpeaking } from "@/lib/speech";
 import type { VocabAddWordResponse } from "@/lib/vocab-add-word-contract";
 import type { VocabEnrichResponse } from "@/lib/vocab-enrich-contract";
 import type {
@@ -48,6 +48,7 @@ import type {
   VocabSuggestRelatedResponse,
 } from "@/lib/vocab-link-contract";
 import TtsSpeedControl from "./tts-speed-control";
+import TtsEngineControl from "./tts-engine-control";
 import s from "./vocabbook-view.module.css";
 
 const VIEW_MODE_KEY = "vocab-view-mode";
@@ -157,6 +158,8 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz 
   ).length;
   const fullyEnriched = remainingToEnrich === 0; // EN·KO 둘 다 완료 — 보강 버튼·안내 숨김 기준
   const hasAnyDefinition = entries.some((e) => e.definitionEn !== null);
+  // 프리페치(§16): 화면에 보이는 단어 발음을 미리 캐시에 채운다 → 🔊 첫 재생 지연 제거. 화면 이탈 시 자동 중단.
+  useEffect(() => prefetchSpeech(entries.map((e) => e.word), "en-US"), [entries]);
 
   async function runEnrich() {
     if (enrichPhase === "loading") return; // 중복 클릭 방어
@@ -348,6 +351,8 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz 
           {enrichButton}
           {/* 읽어주기 속도 — 전역 하나(lib/speech.ts). 단어·예문 낭독과 시험 자동낭독에 함께 적용된다. */}
           <TtsSpeedControl />
+          {/* 영어 발음 엔진(클라우드/기기) — 전역 하나(언어별). 미리듣기로 비교 후 고른다(§16). */}
+          <TtsEngineControl lang="en-US" />
         </div>
         {/* 정의 불변을 문구로도 드러낸다 — "다시 만들기"가 이미 있는 정의를 안 건드림을 안내 */}
         {fullyEnriched ? null : (

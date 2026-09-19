@@ -11,6 +11,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import type { JaVocabEntry } from "@/lib/ai/japanese/schemas";
+import { normalizeJaVocabEntry } from "@/lib/ai/japanese/vocab";
 import type { JaDialogAddWordResponse } from "@/lib/japanese-dialog-contract";
 import { getStore } from "@/lib/store";
 
@@ -45,17 +46,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return json({ ok: false, error: "invalid_input", messageKo: "그 어휘를 찾지 못했어요. 화면을 새로고침해 주세요." }, 400);
   }
 
-  // JaDialogItem → JaVocabEntry (§7-5 매핑). pos·imageEmoji·level은 collected 단어라 비운다.
-  const entry: JaVocabEntry = {
+  // JaDialogItem → JaVocabEntry (§7-5 매핑).
+  // pos·level·호출 A가 붙이는 값(이모지·일일정의)은 대화에서 담은 단어에 없다 — 검증할 수 없는 값을
+  // 지어내지 않는다(§2-4 원칙). **빠진 필드는 normalizeJaVocabEntry가 채운다** — 여기서 필드를 일일이
+  // 나열하면 스키마에 필드가 늘 때마다 이 라우트가 컴파일 에러로 깨진다(실제로 imageEmoji·definitionJa·
+  // definitionTokens 세 번 겪었다). 정규화 한 곳만 따라가게 둔다.
+  const entry: JaVocabEntry = normalizeJaVocabEntry({
     word: item.word,
     kana: item.kana,
     wordTokens: item.wordTokens,
     pos: [],
     meaningsKo: [item.meaningKo],
     example: item.example,
-    imageEmoji: null,
-    level: null,
-  };
+  });
 
   try {
     // 대상은 collected 정본뿐 — JLPT 단어장에 닿을 경로가 없다(§7-5).

@@ -19,8 +19,9 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import JaRuby from "@/components/ja-ruby";
 import TtsSpeedControl from "@/components/tts-speed-control";
+import TtsEngineControl from "@/components/tts-engine-control";
 import { lockBodyScroll } from "@/lib/scroll-lock";
-import { speak, stopSpeaking } from "@/lib/speech";
+import { prefetchSpeech, speak, stopSpeaking } from "@/lib/speech";
 import { JA_TITLE_MAX, type JaVocabEntry, type JlptLevel, type JaGlyph } from "@/lib/japanese-vocab-contract";
 import type { JaVocabRenameResponse } from "@/lib/japanese-vocab-contract";
 import s from "./ja-vocab-detail-view.module.css";
@@ -99,6 +100,22 @@ function JaEntryContent({ entry: e, glyph, variant }: { entry: JaVocabEntry; gly
         </ol>
       )}
 
+      {/* 일일정의(일본어 뜻풀이) — meaningsKo(한국어)와 구분. definitionTokens 있으면 루비, 없으면 평문 폴백. null이면 자리 비움. */}
+      {(e.definitionTokens || e.definitionJa) && (
+        <div className={s.definition}>
+          <span className={s.definitionLabel} aria-hidden>
+            뜻풀이
+          </span>
+          {e.definitionTokens ? (
+            <JaRuby tokens={e.definitionTokens} className={s.definitionText} />
+          ) : (
+            <span className={s.definitionText} lang="ja">
+              {e.definitionJa}
+            </span>
+          )}
+        </div>
+      )}
+
       {e.example.ja && (
         <div className={s.example}>
           <div className={s.exampleHead}>
@@ -146,6 +163,8 @@ export default function JaVocabDetailView({
   const [viewMode, setViewMode] = useState<ViewMode>("table"); // 초기 렌더는 항상 표(hydration 일치)
   const [activeIndex, setActiveIndex] = useState(0);
   const scrollerRef = useRef<HTMLDivElement>(null);
+  // 프리페치(§16): 화면에 보이는 단어(표기)를 미리 캐시 → 🔊 첫 재생 지연 제거. 화면 이탈 시 자동 중단.
+  useEffect(() => prefetchSpeech(entries.map((e) => e.word), "ja-JP"), [entries]);
 
   // 제목 인라인 수정
   const [editing, setEditing] = useState(false);
@@ -323,6 +342,7 @@ export default function JaVocabDetailView({
           <span aria-hidden>📊</span> 시험 기록
         </Link>
         <TtsSpeedControl />
+        <TtsEngineControl lang="ja-JP" />
       </div>
 
       <div className={s.metaRow}>
@@ -365,6 +385,7 @@ export default function JaVocabDetailView({
           </div>
           <div className={s.chromeRow2}>
             <TtsSpeedControl />
+            <TtsEngineControl lang="ja-JP" />
             <span className={`t-caption ${s.hintText}`} aria-live="polite">
               {activeIndex + 1} / {entries.length}
             </span>

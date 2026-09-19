@@ -7,7 +7,8 @@
  */
 
 import Link from "next/link";
-import { speak } from "@/lib/speech";
+import { useEffect } from "react";
+import { prefetchSpeech, speak } from "@/lib/speech";
 import type { JaKanjiCardData } from "@/lib/japanese-kanji-contract";
 import s from "./ja-kanji-card-view.module.css";
 
@@ -17,6 +18,8 @@ function speakJa(text: string) {
 
 export default function JaKanjiCardView({ data }: { data: JaKanjiCardData }) {
   const bridgeOn = data.onyomi[0] ?? null;
+  // 프리페치(§16): 한자 + 이 한자가 든 단어들의 발음을 미리 캐시 → 🔊 첫 재생 지연 제거.
+  useEffect(() => prefetchSpeech([data.kanji, ...data.words.map((w) => w.word)], "ja-JP"), [data]);
 
   return (
     <div className={s.wrap}>

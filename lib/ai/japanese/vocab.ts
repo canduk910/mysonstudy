@@ -151,6 +151,8 @@ export function applyVocabPostprocess(input: JaVocabPostprocessInput): JaVocabPo
     meaningsKo: e.meaningsKo,
     example: e.example,
     imageEmoji: e.imageEmoji,
+    definitionJa: e.definitionJa,
+    definitionTokens: e.definitionTokens,
     level: input.level,
   }));
 
@@ -191,6 +193,8 @@ export function normalizeJaVocabEntry(entry: LegacyOrNewJaVocabEntry): JaVocabEn
     meaningsKo: entry.meaningsKo ?? [],
     example: entry.example ?? { ja: "", ko: "", tokens: [] },
     imageEmoji: entry.imageEmoji ?? null, // 구 레코드(이모지 없음) → null 폴백
+    definitionJa: entry.definitionJa ?? null, // 구 레코드(일일정의 없음) → null 폴백(하위호환)
+    definitionTokens: entry.definitionTokens ?? null, // 구 레코드(정의 토큰 없음) → null 폴백(하위호환)
     level: entry.level ?? null,
   };
 }
