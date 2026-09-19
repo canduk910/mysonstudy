@@ -142,6 +142,166 @@ function cloudSpeed(): number {
   return TTS_CLOUD_SPEEDS[idx] ?? 1.0;
 }
 
+// ───────────────────────── 기기 음성 품질 선택 (device 엔진) ─────────────────────────
+//
+// 문제(§16): 지금까지 utterance.lang만 정하고 voice를 안 정해 브라우저가 기본(대개 compact 저품질)을 골랐다.
+// 기기에 더 좋은 음성이 있어도 안 쓰였다. 그래서 그 언어 음성을 **품질 순으로 정렬해 가장 좋은 것**을 지정한다.
+// 순위 규칙은 여기 한 곳에만 둔다(화면이 제 판단을 하지 않게).
+
+/** 이벤트 — voiceschanged로 음성 목록이 채워지거나 사용자가 음성을 고르면 설정 UI가 다시 그리도록 쏜다. */
+export const TTS_VOICES_EVENT = "eunwoo:tts-voices";
+/** 수동 선택 음성 localStorage 키 접두어(언어 베이스별): `tts-voice-en`·`tts-voice-ja`. 값은 voiceURI. */
+const TTS_VOICE_KEY_PREFIX = "tts-voice-";
+
+/** 순위·표시에 필요한 최소 음성 형태(SpeechSynthesisVoice가 이를 만족). 순수 함수 테스트용으로 분리. */
+export interface VoiceLike {
+  voiceURI: string;
+  name: string;
+  lang: string;
+  localService?: boolean;
+}
+
+/** 효과음·참신성 음성(en-US에 잔뜩) — 후보에서 제외. Apple eloquence(URI)·클래식 노벨티(이름). */
+const NOVELTY_VOICE_NAMES = new Set(
+  [
+    "bad news", "good news", "bells", "bubbles", "boing", "trinoids", "whisper", "wobble",
+    "zarvox", "jester", "organ", "pipe organ", "cellos", "superstar", "bahh", "deranged", "hysterical",
+  ].map((n) => n.toLowerCase()),
+);
+
+function isNoveltyVoice(v: VoiceLike): boolean {
+  const uri = (v.voiceURI ?? "").toLowerCase();
+  if (uri.includes("eloquence")) return true; // com.apple.eloquence.* (Eddy·Flo·Grandma…)
+  return NOVELTY_VOICE_NAMES.has((v.name ?? "").trim().toLowerCase());
+}
+
+/** voiceURI·name에서 품질 토큰을 뽑는다(대소문자 무시). 없으면 null. */
+function voiceTokenTier(v: VoiceLike): "premium" | "enhanced" | "network" | "compact" | "local" | null {
+  const s = `${v.voiceURI ?? ""} ${v.name ?? ""}`.toLowerCase();
+  if (s.includes("premium")) return "premium"; // Apple 최상
+  if (s.includes("enhanced")) return "enhanced"; // Apple 고품질
+  if (s.includes("network")) return "network"; // Google/Android 서버 합성
+  if (s.includes("compact")) return "compact"; // Apple 저품질
+  if (s.includes("local")) return "local"; // Android 온디바이스
+  return null;
+}
+
+const VOICE_TIER_SCORE: Record<string, number> = { premium: 100, enhanced: 90, network: 80, local: 40, compact: 20 };
+
+/** 품질 점수(높을수록 좋음). 토큰 없으면 서버합성(localService=false)을 약간 우대. */
+function voiceScore(v: VoiceLike): number {
+  const tier = voiceTokenTier(v);
+  if (tier) return VOICE_TIER_SCORE[tier];
+  return v.localService === false ? 55 : 50;
+}
+
+/** 화면 표시용 품질 라벨(예: "enhanced"·"compact"·"기본"). */
+export function voiceQualityLabel(v: VoiceLike): string {
+  return voiceTokenTier(v) ?? "기본";
+}
+
+/**
+ * 그 언어 음성만 골라 **품질 순으로 정렬**(효과음 제외). 순수 함수 — DOM 없이 테스트 가능.
+ * 동점은 원래 목록 순서 유지(안정 정렬).
+ */
+export function rankVoicesForLang<T extends VoiceLike>(voices: readonly T[], lang: string): T[] {
+  const base = langBase(lang).toLowerCase();
+  return voices
+    .filter((v) => (v.lang ?? "").toLowerCase().replace("_", "-").startsWith(base))
+    .filter((v) => !isNoveltyVoice(v))
+    .map((v, i) => ({ v, i, score: voiceScore(v) }))
+    .sort((a, b) => b.score - a.score || a.i - b.i)
+    .map((x) => x.v);
+}
+
+// ── 음성 목록 캐시 + voiceschanged (Chrome·Android는 처음에 빈 배열을 준다) ──
+let voicesCache: SpeechSynthesisVoice[] = [];
+let voicesListenerAttached = false;
+
+function ensureVoicesLoaded(): SpeechSynthesisVoice[] {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) return [];
+  const now = window.speechSynthesis.getVoices();
+  if (now && now.length > 0) voicesCache = now;
+  if (!voicesListenerAttached && typeof window.speechSynthesis.addEventListener === "function") {
+    voicesListenerAttached = true;
+    window.speechSynthesis.addEventListener("voiceschanged", () => {
+      const v = window.speechSynthesis.getVoices();
+      if (v && v.length > 0) voicesCache = v;
+      try {
+        window.dispatchEvent(new CustomEvent(TTS_VOICES_EVENT)); // 설정 UI가 다시 그린다
+      } catch {
+        /* noop */
+      }
+    });
+  }
+  return voicesCache;
+}
+
+function candidatesForLang(lang: string): SpeechSynthesisVoice[] {
+  return rankVoicesForLang(ensureVoicesLoaded(), lang);
+}
+
+/** 사용자가 고른 음성 voiceURI(없으면 null=자동). */
+export function getSelectedVoiceURI(lang: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(TTS_VOICE_KEY_PREFIX + langBase(lang));
+  } catch {
+    return null;
+  }
+}
+
+/** 음성을 고른다. null이면 자동(추천)으로 되돌린다. 설정 UI가 다시 그리도록 이벤트를 쏜다. */
+export function setSelectedVoice(lang: string, voiceURI: string | null): void {
+  if (typeof window === "undefined") return;
+  const key = TTS_VOICE_KEY_PREFIX + langBase(lang);
+  try {
+    if (voiceURI) window.localStorage.setItem(key, voiceURI);
+    else window.localStorage.removeItem?.(key);
+  } catch {
+    /* noop */
+  }
+  try {
+    window.dispatchEvent(new CustomEvent(TTS_VOICES_EVENT));
+  } catch {
+    /* noop */
+  }
+}
+
+/**
+ * 이 언어에 실제로 쓸 음성. 저장된 선택이 이 기기에 있으면 그걸, 없으면(기기 교체 등) **조용히 자동(최상위)**으로.
+ * 후보가 없으면 null → 브라우저 기본에 맡긴다(폴백, 에러 없음).
+ */
+function resolveVoice(lang: string): SpeechSynthesisVoice | null {
+  const ranked = candidatesForLang(lang);
+  if (ranked.length === 0) return null;
+  const savedURI = getSelectedVoiceURI(lang);
+  if (savedURI) {
+    const match = ranked.find((v) => v.voiceURI === savedURI);
+    if (match) return match;
+    // 저장돼 있지만 이 기기엔 없음 → 자동으로 폴백(아래)
+  }
+  return ranked[0];
+}
+
+/** 설정 UI용 음성 옵션. */
+export interface VoiceOption {
+  voiceURI: string;
+  name: string;
+  quality: string;
+}
+
+/** 그 언어의 음성 목록(품질 순, 효과음 제외) — 설정 드롭다운용. */
+export function listVoicesForLang(lang: string): VoiceOption[] {
+  return candidatesForLang(lang).map((v) => ({ voiceURI: v.voiceURI, name: v.name, quality: voiceQualityLabel(v) }));
+}
+
+/** 지금 이 언어가 실제로 쓸 음성의 이름·품질(진단 표시 "현재: Kyoko (compact)"). 없으면 null. */
+export function getCurrentVoiceInfo(lang: string): VoiceOption | null {
+  const v = resolveVoice(lang);
+  return v ? { voiceURI: v.voiceURI, name: v.name, quality: voiceQualityLabel(v) } : null;
+}
+
 /**
  * 이 브라우저가 **기기 음성(폴백)**을 지원하는가. 클라우드 TTS는 이것과 무관하게 `<audio>`로 재생된다.
  * SSR(window 없음)에서도 안전하게 false를 돌려준다.
@@ -304,6 +464,8 @@ function fallbackDevice(text: string, lang: string, token: number): void {
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = lang;
     utterance.rate = getTtsRate();
+    const voice = resolveVoice(lang); // 고품질 음성 자동/수동 선택(§16) — 없으면 브라우저 기본
+    if (voice) utterance.voice = voice;
     window.speechSynthesis.speak(utterance);
   } catch {
     /* noop — 조용히 무음(에러 화면 금지) */
