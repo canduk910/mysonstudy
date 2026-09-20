@@ -5,6 +5,7 @@
  * 요약(응시 횟수·평균 점수·최근) + 세션 목록(모드 배지·점수·중단·문항별 O/X). 표시만(집계는 읽을 때 계산).
  */
 
+import { formatKst } from "@/lib/kst";
 import { JA_QUIZ_MODE_LABELS_KO, type JaQuizMode } from "@/lib/japanese-vocab-contract";
 import s from "./ja-quiz-history-view.module.css";
 
@@ -16,14 +17,7 @@ export interface JaHistorySession {
   items: { word: string; correct: boolean; answered: boolean | null }[];
 }
 
-/** ISO(UTC) → "YYYY.MM.DD HH:MM"(KST 고정 UTC+9, 로케일·TZ DB 미사용 → hydration 안전). */
-function formatKst(iso: string): string {
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return iso;
-  const d = new Date(t + 9 * 60 * 60 * 1000);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getUTCFullYear()}.${p(d.getUTCMonth() + 1)}.${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
-}
+// KST 날짜·시각 표시는 lib/kst.ts의 단일 정의처를 쓴다(§17-2 — 스트릭과 같은 날짜 규칙).
 
 function scoreOf(items: JaHistorySession["items"]): { correct: number; answered: number } {
   let correct = 0;

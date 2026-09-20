@@ -20,6 +20,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import JaRuby from "@/components/ja-ruby";
 import { prefetchSpeech, speak, stopSpeaking } from "@/lib/speech";
+import { STREAK_REFRESH_EVENT } from "@/lib/streak";
 import {
   JA_QUIZ_MODE_LABELS_KO,
   type JaQuizContentMode,
@@ -122,6 +123,7 @@ export default function JaQuizRunner({
       const failed = results.find((d) => !d.ok);
       if (!failed) {
         setSaveState("saved");
+        window.dispatchEvent(new CustomEvent(STREAK_REFRESH_EVENT)); // 스트릭 헤드라인 즉시 갱신(§17-4)
         setSaveMsg(complete ? "시험 결과를 저장했어요!" : "여기까지 푼 결과를 저장했어요.");
       } else {
         setSaveState("error");

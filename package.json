@@ -10,7 +10,8 @@
     "seed": "tsx scripts/seed.ts",
     "eval:english": "tsx scripts/eval-english.ts",
     "eval:math": "tsx scripts/eval-math.ts",
-    "eval:japanese": "tsx scripts/eval-japanese.ts"
+    "eval:japanese": "tsx scripts/eval-japanese.ts",
+    "eval:streak": "tsx scripts/eval-streak.ts"
   },
   "dependencies": {
     "firebase-admin": "^14.2.0",

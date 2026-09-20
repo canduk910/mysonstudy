@@ -887,6 +887,11 @@ export class FirestoreStore implements StudyStore {
     const snap = await this.jaQuizzes().where("bookId", "==", bookId).get();
     return snap.docs.map((d) => toJaQuiz(d.id, d.data())).sort(byStartedAtAsc);
   }
+  async listAllJaQuizzes(): Promise<JaQuizRecord[]> {
+    // 전역 조회(where 없음) — 정렬은 메모리에서 startedAt 오름차순. 가족용 규모라 전체를 읽어도 된다(listAllVocabQuizzes 규약).
+    const snap = await this.jaQuizzes().get();
+    return snap.docs.map((d) => toJaQuiz(d.id, d.data())).sort(byStartedAtAsc);
+  }
 
   // ---- jaKanji · jaKanjiQuizzes (JK) ----
 

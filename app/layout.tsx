@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import StreakHeadline from "@/components/streak-headline";
 import VersionWatch from "@/components/version-watch";
 import "./globals.css";
 
@@ -23,6 +24,9 @@ export default function RootLayout({
           문서 흐름 끝에서 자기 자리를 만들어야 페이지 마지막 줄을 가리지 않는다.
           (새 배포 감지: components/version-watch.tsx) */}
       <body className="min-h-screen antialiased">
+        {/* 학습 스트릭 헤드라인 — body 최상단, {children} 앞(§17-4). sticky top-0·z:15라 카드 오버레이(z:20)가 덮는다.
+            VersionWatch는 여전히 **마지막 자식**이어야 하므로 그 앞에 두지 않는다. */}
+        <StreakHeadline />
         {children}
         <VersionWatch />
       </body>

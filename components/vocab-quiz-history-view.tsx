@@ -10,6 +10,7 @@
  * 화면 A(이 단어장)와 B(전체)가 같은 컴포넌트를 쓴다 — B는 `scope="all"`이라 각 줄에 단어장 라벨을 덧붙인다.
  */
 
+import { formatKst } from "@/lib/kst";
 import { VOCAB_QUIZ_MODE_LABELS_KO, type VocabQuizMode } from "@/lib/vocab-quiz";
 import s from "./vocab-quiz-history-view.module.css";
 
@@ -38,17 +39,7 @@ interface VocabQuizHistoryViewProps {
   scope: "book" | "all";
 }
 
-/**
- * ISO(UTC) → "YYYY.MM.DD HH:MM"(KST). KST는 UTC+9 고정(서머타임 없음)이라 epoch에 9시간을 더해
- * getUTC*로 벽시계를 뽑는다 — **로케일·타임존 DB를 안 써서 서버·클라 렌더가 반드시 같다**(hydration 안전).
- */
-function formatKst(iso: string): string {
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return iso;
-  const d = new Date(t + 9 * 60 * 60 * 1000);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getUTCFullYear()}.${p(d.getUTCMonth() + 1)}.${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
-}
+// KST 날짜·시각 표시는 lib/kst.ts의 단일 정의처를 쓴다(§17-2 — 스트릭과 같은 날짜 규칙).
 
 /** 세션 점수 계산 — answered===true만 채점 대상(미응답은 분모에서 뺀다). correct는 그때만 뜻이 있다. */
 function scoreOf(items: QuizHistoryItem[]): { correct: number; answered: number } {

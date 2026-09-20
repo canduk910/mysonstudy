@@ -693,6 +693,8 @@ export interface StudyStore {
   addJaQuiz(input: NewJaQuiz): Promise<JaQuizRecord>;
   /** 해당 단어장의 모든 시험 세션 — startedAt 오름차순(streak가 이 순서를 읽는다, 영어 규약). */
   listJaQuizzes(bookId: string): Promise<JaQuizRecord[]>;
+  /** 전역 일본어 시험 세션 전체 — startedAt 오름차순. 스트릭(§17)이 사람별로 접는다. bookId 필터 없음. */
+  listAllJaQuizzes(): Promise<JaQuizRecord[]>;
 
   // ---- jaKanji · jaKanjiQuizzes — 한자 단위 학습 (JK, §12-3·§12-4) ----
   // 한자 정보는 단어장 파생물이라 **별도 컬렉션**, 삭제 메서드 없음(§12-3). 시험도 별도 컬렉션(모드 무오염).
@@ -1611,6 +1613,14 @@ class JsonFileStore implements BookCardStore {
     const db = await readDb();
     return db.jaQuizzes
       .filter((q) => q.bookId === bookId)
+      .map((q) => ({ ...q, items: (q.items ?? []).map(normalizeJaQuizItem) }))
+      .sort(byStartedAtAsc);
+  }
+
+  async listAllJaQuizzes(): Promise<JaQuizRecord[]> {
+    // bookId 필터만 뺀 listJaQuizzes — 전역 startedAt 오름차순(스트릭이 사람별로 접는다, listAllVocabQuizzes 규약).
+    const db = await readDb();
+    return db.jaQuizzes
       .map((q) => ({ ...q, items: (q.items ?? []).map(normalizeJaQuizItem) }))
       .sort(byStartedAtAsc);
   }

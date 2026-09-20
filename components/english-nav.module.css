@@ -61,7 +61,8 @@
   align-items: center;
   gap: 10px;
   position: sticky;
-  top: 0;
+  /* 스트릭 헤드라인(sticky top:0, 높이 --streak-h)이 위에 있으므로 그만큼 내려 붙어 겹치지 않게 한다(§17-4). */
+  top: var(--streak-h, 0);
   z-index: 10;
   padding: 8px 12px;
   background: var(--bg);

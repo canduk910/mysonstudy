@@ -20,6 +20,7 @@ import {
 } from "@/lib/ai/english/schemas";
 // 발음 재생은 lib/speech.ts가 단일 정의처다 (lang·rate 다이얼이 화면마다 갈리지 않도록).
 import { prefetchSpeech, speak } from "@/lib/speech";
+import { deviceDateString } from "@/lib/kst";
 import type { BookRecord, CardRecord, ReadingRecord } from "@/lib/store";
 // 챕터 리더(호출 F, §9) — 목차+자막이 있을 때만 스스로를 그린다(없으면 null → 회귀 0).
 import ChapterReaderSection from "./chapter-reader";
@@ -112,12 +113,6 @@ function ReadingGuide({ scenes }: { scenes: SceneDigestItem[] }) {
   );
 }
 
-/** 사용자 로컬 달력 기준 오늘 (YYYY-MM-DD) — 읽은 '날'의 기준은 브라우저 쪽이다 */
-function localDateString(d = new Date()): string {
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${d.getFullYear()}-${m}-${day}`;
-}
 
 /**
  * "오늘 읽었어요" 읽음 기록 (M3, SPEC §4-3) — 별점(1~5, 선택)과 함께 POST /api/readings.
@@ -139,7 +134,7 @@ function ReadingLog({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setToday(localDateString());
+    setToday(deviceDateString());
   }, []);
 
   const todayReading = today
@@ -151,7 +146,7 @@ function ReadingLog({
     setError(null);
     // 클릭 시점의 로컬 날짜를 한 번만 계산해 POST와 today 갱신에 함께 쓴다.
     // 자정을 넘긴 스테일 화면에서도 성공 시 '오늘' 기준이 현재 날짜로 맞춰진다 (QA F1).
-    const d = localDateString();
+    const d = deviceDateString();
     try {
       const res = await fetch("/api/readings", {
         method: "POST",
