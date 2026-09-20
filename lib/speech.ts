@@ -25,8 +25,10 @@ if (typeof window !== "undefined") {
     try {
       const res = await fetch("/api/tts", { method: "GET" });
       if (!res.ok) return null;
-      const cfg = (await res.json()) as { voice?: string; model?: string };
-      return cfg.voice && cfg.model ? `${cfg.voice}|${cfg.model}` : null;
+      const cfg = (await res.json()) as { voice?: string; model?: string; instructions?: number };
+      // 지시 버전까지 지문에 넣는다 — 낭독 지시(언어·억양)가 바뀌면 옛 오디오를 비워야 한다.
+      // 안 그러면 중국어로 합성돼 캐시된 단어가 계속 중국어로 들린다(실사용에서 발견).
+      return cfg.voice && cfg.model ? `${cfg.voice}|${cfg.model}|i${cfg.instructions ?? 0}` : null;
     } catch {
       return null;
     }

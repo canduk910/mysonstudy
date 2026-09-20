@@ -56,10 +56,42 @@ function getTtsClient(): OpenAI {
 
 export interface SynthesizeInput {
   text: string;
-  /** 검증·로깅용. 합성 언어는 모델이 텍스트로 자동 판별하므로 API에 따로 넘기지 않는다(한 음성 규약). */
+  /**
+   * 합성 언어. **반드시 모델에 알려야 한다**(아래 `TTS_INSTRUCTIONS`).
+   *
+   * 예전에는 "모델이 텍스트로 자동 판별한다"고 보고 안 넘겼는데 **틀린 가정이었다** — 일본어 단어는
+   * `約束`·`目標`처럼 한자만인 경우가 많고, 한자 카드는 아예 한 글자(`学`)다. 이런 텍스트는 중국어와
+   * 구분이 안 돼서 **중국어 발음으로 읽혔다**(실사용에서 발견). 기기 음성은 `utterance.lang`을 주므로
+   * 같은 사고가 없었다. 언어는 추측에 맡길 값이 아니다.
+   */
   lang: TtsLang;
   speed: number;
 }
+
+/**
+ * 언어별 낭독 지시. `gpt-4o-mini-tts`는 `instructions`로 말투를 조절할 수 있어, 여기에 **언어를 못박고**
+ * 학습용 낭독 톤까지 함께 준다(교사가 예문을 읽어 주듯 또박또박).
+ *
+ * 일본어는 피치 액센트가 뜻을 가르므로(橋/箸) 표준어 억양을 명시한다 — 기기의 일본어 전용 음성이
+ * 더 자연스럽게 들렸던 이유가 억양이었다.
+ */
+/**
+ * 낭독 지시 버전. **지시를 고치면 이 값을 올려라.**
+ *
+ * 영속 캐시(IndexedDB)의 지문에 들어간다 — 지시가 바뀌면 옛 오디오가 통째로 비워진다. 이게 없으면
+ * 언어 지시를 고쳐도 **이미 중국어로 합성돼 캐시된 단어는 계속 중국어로 들린다**(음성·모델이 그대로라
+ * 지문이 안 바뀌므로). 발음이 달라지는 변경은 반드시 이 버전을 올려야 사용자에게 반영된다.
+ */
+export const TTS_INSTRUCTIONS_VERSION = 2;
+
+const TTS_INSTRUCTIONS: Record<TtsLang, string> = {
+  "ja-JP":
+    "Read the text in Japanese. The text is Japanese, never Chinese — read kanji with their Japanese readings. " +
+    "Use natural standard-Tokyo pitch accent. Speak calmly and clearly, like a language teacher reading an example for a learner.",
+  "en-US":
+    "Read the text in English with a natural American accent. " +
+    "Speak clearly and warmly, like a teacher reading a word or sentence for a young learner.",
+};
 
 export interface SynthesizedAudio {
   audio: Buffer;
@@ -72,13 +104,15 @@ export interface SynthesizedAudio {
  * 텍스트 → mp3 오디오 바이트. 실패는 throw(라우트가 500으로 잡고, 클라이언트는 기기 음성으로 폴백).
  * mp3는 어디서나 `<audio>`로 재생되고 용량이 작다(§16-1).
  */
-export async function synthesizeSpeech({ text, speed }: SynthesizeInput): Promise<SynthesizedAudio> {
+export async function synthesizeSpeech({ text, speed, lang }: SynthesizeInput): Promise<SynthesizedAudio> {
   const model = resolveTtsModel();
   const voice = resolveTtsVoice();
   const res = await getTtsClient().audio.speech.create({
     model,
     voice,
     input: text,
+    // 언어를 지시로 못박는다 — 안 주면 한자 텍스트를 중국어로 읽는다(위 SynthesizeInput.lang 주석).
+    instructions: TTS_INSTRUCTIONS[lang],
     response_format: "mp3",
     speed: clampTtsSpeed(speed),
   });

@@ -12,7 +12,7 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { resolveTtsModel, resolveTtsVoice, synthesizeSpeech } from "@/lib/tts";
+import { resolveTtsModel, resolveTtsVoice, synthesizeSpeech, TTS_INSTRUCTIONS_VERSION } from "@/lib/tts";
 import { TTS_LANGS, TTS_SPEED_MAX, TTS_SPEED_MIN, TTS_TEXT_MAX_CHARS } from "@/lib/tts-shared";
 
 export const runtime = "nodejs";
@@ -24,7 +24,7 @@ export const runtime = "nodejs";
  */
 export async function GET() {
   return NextResponse.json(
-    { voice: resolveTtsVoice(), model: resolveTtsModel() },
+    { voice: resolveTtsVoice(), model: resolveTtsModel(), instructions: TTS_INSTRUCTIONS_VERSION },
     { headers: { "cache-control": "no-store" } },
   );
 }
