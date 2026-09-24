@@ -87,7 +87,7 @@
 
 **사이트워드 특칙.** zod와 eval이 각자 목록 리터럴을 갖고 있으면, 값이 지금 같더라도 실패로 판정한다. 두 목록은 반드시 언젠가 어긋난다. 정상 상태는 `SIGHT_WORDS`(73개)가 schemas.ts 한 곳에서 export되고 eval이 `SIGHT_WORD_SET`을 import하는 것이다. 스펙 §5의 목록과는 손으로 대조한다(spec-sync 대상이 아니다).
 
-**알려진 스펙 모순.** AR<2 픽션은 질문 6개인데 필수 유형은 7종이다. 픽스처가 이 경로를 커버하지 않는다. 발견을 다시 올릴 필요는 없지만, AR<2나 질문 유형이 바뀐 변경을 검증할 때는 이 조합을 확인 항목에 넣는다.
+**AR<2 픽션 필수 유형(2026-09-25 해소).** 질문이 6개라 필수 7종을 다 넣을 수 없던 모순을, 사용자 결정으로 **AR<2 픽션은 인과를 빼고 6종**(인물·사건·감정·예측·결말·나와연결)으로 풀었다(§3-1 `[questions]`, `CARD_SYSTEM_PROMPT` 바이트 일치). 필수 유형은 여전히 프롬프트에만 있고 zod·eval에는 없다 — 픽스처가 이 경로를 커버하지 않으므로, AR<2나 질문 유형이 바뀐 변경을 검증할 때는 AR 1점대 픽션 임시 메타데이터로 1회 스팟 체크를 확인 항목에 넣는다.
 
 ### C — 단어장 판독 `vocab_extraction` (§7)
 
@@ -129,7 +129,7 @@
 
 | 제약 | 프롬프트 §9-1 | JSON Schema §9-3 | zod `makeChapterizationSchema` / 후처리 | eval |
 |---|---|---|---|---|
-| 챕터 1~40 | — | — | ✔ `CHAPTERIZE_MAX_CHAPTERS` | 41 거부 |
+| 챕터 1~40 | — | — | ✔ `CHAPTERIZE_MAX_CHAPTERS` · 입력 쪽은 `prepareChapterTitles`가 40개 이하로 묶는다(§9-2) | 41 거부 · 준비 전 120개 echo 거부 / 준비 후 40개 echo 통과 · 40·41·120 묶기 경계 · 같은 제목 40·80개의 " (n)" · 리더 정리 불변식 |
 | 챕터당 문장 ≤ 120 · 전체 ≤ 600 | — | — | ✔ | 챕터당 초과 거부 · 전체 초과 ⚠ 반례 없음 |
 | matched ⟺ sentences 채움 | ✔ | — | ✔ | 2건 |
 | en 한글 없음 · ko 한글 있음 | ✔ | — | ✔ | 2건 |
@@ -162,10 +162,10 @@
 
 ## 3. 스펙 준수 체크리스트
 
-- [ ] 오프라인 eval이 전부 PASS — `OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npx tsx scripts/eval-english.ts`. 2026-09-24 기준 153항목이다. 항목이 줄었으면 그것도 보고한다(점검이 조용히 빠진 것일 수 있다).
+- [ ] 오프라인 eval이 전부 PASS — `OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npx tsx scripts/eval-english.ts`. 2026-09-25 기준 176항목이다(목차 제목 준비 §9-2 23항목 — 처음 11항목에 접두어 정규식 반례·멱등·겹침 " (n)"·표시 불변식·리더 배선 12항목 추가). 항목이 줄었으면 그것도 보고한다(점검이 조용히 빠진 것일 수 있다).
 - [ ] spec-sync 11개(block 8 + inline 3)가 PASS. `lib/ai/english/`의 모든 `*_SYSTEM_PROMPT`·`*_USER_TEXT` 상수가 `scripts/eval-english.ts`의 `SPEC_SYNC_TARGETS`에 등록돼 있는지도 대조한다. 등록되지 않은 상수는 대조에서 조용히 빠진다.
 - [ ] JSON Schema 8개를 스펙 §2-3·§2A-3·§3-3·§7-3·§8-3·§9-3·§10-3·§11-3과 **손으로** diff한다(spec-sync 대상이 아니다). 전 필드 required, 모든 객체 `additionalProperties:false`, 개수·길이 키 부재. `grep -n "minItems\|maxItems\|minLength\|maxLength" lib/ai/english/*.ts`의 결과가 전부 주석이어야 한다(2026-09-24 기준 3줄 — 두 파일의 머리주석과 schemas.ts `storyOutlineKo` 옆 주석).
-- [ ] 호출 옵션이 스펙과 같다. 스펙 §1 표는 A·A′·B·C만 싣고 있으니(머리말도 "4종"으로 낡았다) 나머지는 각 절에서 대조한다.
+- [ ] 호출 옵션이 스펙과 같다. 스펙 §1 표가 8개 호출(A·A′·B·C·D·F·G·H) 전부의 temperature·출력 한도·옵션 상수를 싣는다 — **해소(2026-09-25)**: 전에는 A·A′·B·C만 싣고 머리말이 "4종"이었다. D·F·G·H는 §1 표와 각 절(§8-6·§9-6·§10-5·§11-6) 둘 다와 대조한다.
 
 | 호출 | 스펙 | 코드 상수 (파일) | 값 |
 |---|---|---|---|
@@ -173,16 +173,16 @@
 | A′ | §1 | `PAGES_CALL_OPTIONS` (client.ts) | 0.3 / 4,000 |
 | B | §1 | `CARD_CALL_OPTIONS` (client.ts) | 0.7 / 6,000 |
 | C | §1 | `VOCAB_EXTRACT_CALL_OPTIONS` (vocabbook-prompts.ts) | 0 / 16,000 |
-| D | §8-6 | `VOCAB_ENRICH_CALL_OPTIONS` (vocabbook-prompts.ts) | 0.7 / 8,000 |
-| F | §9-6 | `CHAPTERIZE_CALL_OPTIONS` (client.ts) | 0 / 16,000 |
-| G | §10-5 | `WORD_MEANING_CALL_OPTIONS` (prompts.ts) | 0 / 600 |
-| H | §11-6 | `RELATED_SUGGEST_CALL_OPTIONS` (vocabbook-prompts.ts) | 0.3 / 800 |
+| D | §1 · §8-6 | `VOCAB_ENRICH_CALL_OPTIONS` (vocabbook-prompts.ts) | 0.7 / 8,000 |
+| F | §1 · §9-6 | `CHAPTERIZE_CALL_OPTIONS` (client.ts) | 0 / 16,000 |
+| G | §1 · §10-5 | `WORD_MEANING_CALL_OPTIONS` (prompts.ts) | 0 / 600 |
+| H | §1 · §11-6 | `RELATED_SUGGEST_CALL_OPTIONS` (vocabbook-prompts.ts) | 0.3 / 800 |
 
 - [ ] 모델 ID가 env에서 온다. `grep -rn '"gpt-' lib app scripts components`는 정확히 2곳이어야 한다 — `DEFAULT_OPENAI_MODEL`(client.ts, SPEC §2가 허용한 `OPENAI_MODEL` 미설정 시 기본값)과 `DEFAULT_TTS_MODEL`(lib/tts.ts, SPEC §11). 그 밖의 출현은 하드코딩 결함이다.
 - [ ] `callWithSchema`: 재요청 정확히 1회(원래 메시지 + assistant 원문 + "다음 검증 오류를 고쳐 다시 출력해: …") → 재실패 시 throw. 로그 `{ call, model, inputTokens, outputTokens, ms }`가 `finally`에서 성공·실패 무관하게 찍히고, 재요청 토큰이 합산된다. 로그 라벨은 8종이다: extract·pages·card·vocab-extract·vocab-enrich·chapterize·word-meaning·related-suggest.
 - [ ] temperature 거부 폴백: 400 + param temperature면 모델을 `modelsRejectingTemperature`에 기억하고 파라미터 없이 재호출한다. 이 폴백이 zod 재요청 횟수에 섞이지 않는지 본다.
 - [ ] eval 픽스처가 SPEC §12와 같다(Wolves·Pooh 9필드). `package.json`에 `"eval:english": "tsx scripts/eval-english.ts"`.
-- [ ] 스펙 §5와 코드가 어긋난 알려진 지점: 스펙은 `EVAL_TRANSCRIPT=1`을 "자막 카드 1회 추가"라고 쓰지만 코드에서는 게이트들이 서로 배타적으로 return한다(기본 카드 대체). 게이트 실행은 오프라인 결과를 판정에 넣지 않는다. 결함이 아니라 문서 갱신 요청으로 올린다.
+- [ ] 스펙 §5의 실호출 수 서술이 코드 `main`과 같다 — **해소(2026-09-25)**: 전에는 `EVAL_TRANSCRIPT=1`을 "자막 카드 1회 추가"라고 썼다. 지금 스펙은 게이트 4종(`EVAL_TRANSCRIPT`→`EVAL_CHAPTERS`→`EVAL_VOCAB`→`EVAL_WORDMEANING` 순, 처음 켜진 하나)이 서로 배타적이고 기본 카드 3회를 **대체**하며, 게이트 실행은 오프라인 결과를 판정에 넣지 않는다고 적는다. 게이트를 더하거나 순서를 바꾼 변경이면 §5와 다시 대조하고, 어긋나면 결함이 아니라 문서 갱신 요청으로 올린다.
 
 ## 4. 경계면 체크리스트 — 라우트 ↔ 화면
 
@@ -207,13 +207,13 @@
 
 - [ ] `/api/youtube-search`(`lib/youtube-search.ts`, `YOUTUBE_API_KEY`): 후보 최대 3개(`TOP_N`). 키 없음·결과 0·오류·타임아웃은 200 `{ ok:false, error, messageKo }`(비치명).
 - [ ] **사람이 고르는가.** `fireReadaloudSearch`는 후보가 1개 이상이면 멈춰서 부모의 탭을 기다리고, 0개·오류일 때만 1.2초 뒤 `resolveReadaloud(null)`로 표지 기준 진행한다. 첫 후보를 자동으로 넘기는 코드가 생겼다면 P1이다(SPEC §14-1 — 엉뚱한 책 grounding은 카드와 챕터를 조용히 전부 오염시킨다).
-- [ ] 자막 fetch는 `/api/card` 안에서만 한다(`fetchYoutubeTranscript`, `SUPADATA_API_KEY`, 서버 전용). throw하지 않고 `{ ok:false, reason }`(no_key·invalid_url·no_transcript·api_error·timeout·network·empty)을 돌려준다. 실패하면 카드는 표지 기준으로 만들어지고 `transcriptNotice`가 화면에 뜬다. `lib/youtube-transcript.ts` 머리주석이 가리키는 `app/api/transcript/route.ts`는 존재하지 않는다(낡은 주석).
+- [ ] 자막 fetch는 `/api/card` 안에서만 한다(`fetchYoutubeTranscript`, `SUPADATA_API_KEY`, 서버 전용). throw하지 않고 `{ ok:false, reason }`(no_key·invalid_url·no_transcript·api_error·timeout·network·empty)을 돌려준다. 실패하면 카드는 표지 기준으로 만들어지고 `transcriptNotice`가 화면에 뜬다. `lib/youtube-transcript.ts` 머리주석이 호출처를 `app/api/card/route.ts` 하나로 적는다 — **해소(2026-09-25)**: 전에는 존재하지 않는 `app/api/transcript/route.ts`를 가리켰다.
 - [ ] 자막은 `BookRecord.transcript`에 내부 근거로 저장되고 화면에는 보이지 않는다. 로그에 자막 본문이 찍히지 않는다.
 
 ### 4-4. 챕터 리더 (`/api/chapterize` ↔ `components/chapter-reader.tsx`, home-create의 best-effort 호출)
 
 - [ ] 버튼 노출과 라우트가 같은 판정 `canChapterizeBook`(lib/store.ts, 자막 존재)을 쓴다. 자막 없음 → 400 `not_chapterizable`(재시도 버튼이 아니다). 재요청 소진 → 500 ai_failed.
-- [ ] 목차 제목은 `sceneKind === "toc"`일 때 `sceneDigest[].labelKo`에서 온다. 두 경계를 확인한다. (1) A′ 프롬프트는 목차 labelKo를 "3장: Pooh와 꿀단지"처럼 쓰라고 하는데, F는 이것을 영어 챕터 제목(titleEn)으로 받는다 — 챕터 리더에 이 문자열이 그대로 뜬다. (2) 목차 장면은 최대 `MAX_SCENE_DIGEST_ITEMS` 120개까지 오지만 F zod는 `CHAPTERIZE_MAX_CHAPTERS` 40개까지만 받고, 라우트는 제목 수를 자르지 않는다 — 41장 이상 목차는 재요청 뒤 500이 될 수 있다. 실측하고 판정한다.
+- [ ] 목차 제목은 `sceneKind === "toc"`일 때 `sceneDigest[].labelKo`에서 와서 **`prepareChapterTitles`(schemas.ts, 스펙 §9-2 "목차 제목 준비")를 거쳐** F로 간다. 두 경계는 **해소(2026-09-25)**됐다. (1) A′ 목차 labelKo("3장: Pooh와 꿀단지")의 서수 접두어를 떼서 넘기고, 번호는 챕터 리더 탭(`i + 1`) 한 곳에서만 보인다. 떼고 나서 겹치면 접두어를 되살리지 않고 " (n)"을 붙인다("1장: 아침"·"5장: 아침" → "아침"·"아침 (2)"). chapter-reader는 **모든** 레코드에 같은 정리(`cleanChapterTitles` — 접두어 떼기 + 겹침 " (n)")를 해서 표시하지만, 새 레코드엔 지울 접두어도 겹침도 없어 그대로 보인다(준비한 제목은 이 정리의 고정점). 모양이 바뀌는 것은 접두어가 붙은 채 저장된 옛 레코드뿐이고, 서버가 같은 목차로 지금 만들 제목과 같게 보인다. 회귀 신호: 리더가 `stripChapterOrdinalPrefix`를 제목마다 따로 부르거나, 서버가 충돌 때 원문(접두어)을 되살리면 "1장: 아침"~"40장: 아침" 목차의 탭 40개가 전부 "아침"으로 뜬다(QA found-defects_1 F2). 접두어 정규식의 지원 범위(숫자 1~3자리·로마 숫자 1~99·영어 수사 1~99, 겹친 접두어는 끝까지, 못 떼는 모양은 원문)는 스펙 §9-2 3단계가 정의처다. (2) 목차가 40개를 넘으면 인접 제목을 `ceil(n/40)`개씩 `" / "`로 묶어 40개 이하로 넘긴다(41→21, 120→40, 자르지 않음). 확인할 것: 라우트가 labelKo를 `prepareChapterTitles` 없이 F에 넘기면 회귀다(P1 — 목차 41개 이상인 책의 챕터화가 통째로 실패한다). eval "목차 제목 준비(§9-2)" 23항목(불변식·옛 레코드 표시·리더 배선 포함)이 PASS인지, 묶음이 생기면 라우트가 `{ call:"chapterize", bookId, tocTitleCount, groupSize, chapterTitleCount }` 경고를 남기는지 본다. **남은 공백(프롬프트 소관)**: A′ labelKo의 제목 부분이 영어 원제가 아니라 우리말 번역이나 혼용("Pooh와 꿀단지")일 수 있어서, 접두어를 떼도 탭 제목이 한국어로 뜰 수 있다. F는 받은 제목을 echo할 뿐이라 원제로 되돌리지 못한다.
 - [ ] `droppedSentenceCount > 0`이면 라우트가 `{ call:"chapterize", bookId, droppedSentenceCount, truncated }`를 경고로 남긴다. 챕터는 `updateBookEvidence`로 book에만 얹는다(카드는 건드리지 않는다).
 - [ ] 목차 없음 → `WHOLE_TRANSCRIPT_TITLE`("전체") 한 블록. chapter-reader가 같은 상수로 분기한다.
 

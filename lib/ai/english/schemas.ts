@@ -822,6 +822,203 @@ export function resolveChapterTitles(chapterTitles: readonly string[]): string[]
   return titles.length > 0 ? titles : [WHOLE_TRANSCRIPT_TITLE];
 }
 
+// ---------------------------------------------------------------------------
+// 목차 제목 준비 (HARNESS §9-2 "목차 제목 준비") — /api/chapterize가 호출 F 앞에서 부르고,
+// 챕터 리더(components/chapter-reader.tsx)가 저장된 제목을 표시할 때 같은 정리(cleanChapterTitles)를 한다.
+//
+// 목차 제목의 출처는 호출 A′(toc 모드)의 sceneDigest[].labelKo다. 이 값을 그대로 F에 넘기면 두
+// 경계가 어긋난다:
+//  (1) 개수 — A′ 장면은 MAX_SCENE_DIGEST_ITEMS(120)개까지 오는데 F zod는 CHAPTERIZE_MAX_CHAPTERS
+//      (40)개까지만 받는다. 목차가 40개를 넘으면 모델이 제목을 다 echo하는 순간 zod가 거부하고,
+//      재요청 뒤 throw → 챕터화가 통째로 실패한다.
+//  (2) 모양 — A′ 프롬프트는 목차 labelKo를 "3장: Pooh와 꿀단지"처럼 서수를 붙여 쓰라고 한다(§2A-1).
+//      F는 받은 제목을 titleEn에 그대로 echo하고, 챕터 리더는 탭에 번호(i+1)를 따로 붙이므로
+//      "3 · 3장: Pooh와 꿀단지"처럼 번호가 두 번 뜬다.
+//
+// 표시 일관성 — 저장 shape에는 "언제 만든 레코드인가" 표식이 없어서, 리더는 모든 레코드에 같은 정리를
+// 한다. 그래서 서버가 준비한 제목은 그 정리의 **고정점**이어야 한다: 접두어가 남지 않고(겹친 접두어도
+// 끝까지 뗀다) 서로 다르다(겹치면 접두어를 되살리지 않고 " (n)"). 새 레코드엔 지울 접두어도 겹침도 없어
+// 리더의 정리가 아무것도 바꾸지 않고, 옛 레코드(접두어가 붙은 채 저장된 titleEn)만 서버가 같은 목차로
+// 지금 만들 제목과 같은 모양으로 보인다. eval "목차 제목 준비(§9-2)"의 불변식 항목이 이 고정점을 잠근다.
+// ---------------------------------------------------------------------------
+
+/**
+ * 영어 수사 1~99 — One~Nineteen, Twenty~Ninety, 합성 수사 "Twenty-One"·"Twenty One"·"Twenty–One".
+ * 합성 수사를 먼저 시도해 통째로 뗀다 — 앞 낱말만 떼면 "Chapter Twenty-One: X"가 "One: X"가 된다.
+ * 이 밖의 수사("Hundred", "the First")는 접두어로 보지 않는다(원문 유지).
+ */
+const CHAPTER_NUMBER_WORD =
+  String.raw`(?:(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[-‐–\s](?:one|two|three|four|five|six|seven|eight|nine))?` +
+  String.raw`|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|ten|one|two|three|four|five|six|seven|eight|nine)`;
+/**
+ * 로마 숫자 1~99(I~XCIX) — 십의 자리 XC(90)·XL(40)·L?X{0,3}(0~30·50~80), 일의 자리 IX·IV·V?I{0,3}.
+ * 전방탐색은 빈 매치를 막는다. 대소문자는 패턴 플래그가 정한다(UPPER는 "Chapter" 없는 맨 로마 숫자용).
+ */
+const ROMAN_1_TO_99 = String.raw`(?=[ivxlc])(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})`;
+const ROMAN_1_TO_99_UPPER = String.raw`(?=[IVXLC])(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})`;
+/**
+ * 서수 뒤의 구분자.
+ * - 콜론·마침표·괄호·가운뎃점·쉼표 — 바로 뒤가 숫자면 구분자가 아니다("Chapter 1.5", "3:10").
+ * - 엔·엠 대시 — 붙여 써도 된다("Chapter 7—Waiting").
+ * - 하이픈 — 앞이나 뒤에 공백이 있어야 구분자다. 붙은 하이픈은 합성어다("3-D", "Twenty-Something").
+ * - 또는 공백만, 또는 끝(접두어만 있는 값 — 아래에서 원문을 지킨다).
+ */
+const CHAPTER_PREFIX_SEP = String.raw`(?:\s*[:.)\]·,](?!\d)\s*|\s*[–—]\s*|\s+[-‐]\s*|[-‐]\s+|\s+|$)`;
+
+/**
+ * 제목 앞의 서수 접두어 패턴(앞의 것부터 시도, 처음 맞은 것 하나로 판정). 각 패턴은 **구분자까지**
+ * 먹어야 한다 — "3장면"·"101 Dalmatians"·"1.5 Meters"·"3:10 to Yuma"·"3-D Glasses"·"Chi Chi"·
+ * "L.A. Story"처럼 숫자·약어·로마 숫자 글자로 시작하는 진짜 제목을 건드리지 않기 위해서다.
+ * 지원 범위: 숫자 1~3자리, 로마 숫자 1~99, 영어 수사 1~99. "Part 3" 같은 다른 낱말은 접두어로 보지 않는다.
+ */
+const CHAPTER_ORDINAL_PREFIXES: readonly RegExp[] = [
+  // 한국어 — "3장:", "3장 ", "3장:꿀", "제3장", "제 3 장 -"
+  new RegExp(String.raw`^(?:제\s*)?\d{1,3}\s*장${CHAPTER_PREFIX_SEP}`, "u"),
+  // 한국어 음차 — "챕터 3:", "챕터3."
+  new RegExp(String.raw`^챕터\s*\d{1,3}${CHAPTER_PREFIX_SEP}`, "u"),
+  // 영어 숫자 — "Chapter 3:", "Chapter3.", "Chap. 3 -", "Ch. 3", "Ch 3:", "Chapter 7—Waiting"
+  // (약어는 마침표나 공백이 있어야 한다 — "Chi")
+  new RegExp(String.raw`^(?:chapter\s*|chap\.\s*|ch(?:\.\s*|\s+))\d{1,3}${CHAPTER_PREFIX_SEP}`, "iu"),
+  // 영어 로마 숫자(1~99)·수사(1~99) — "Chapter XLIV:", "Chapter Twenty-One -" (숫자와 달리 공백이 반드시 있어야 한다)
+  new RegExp(String.raw`^(?:chapter|chap\.|ch\.)\s+(?:${ROMAN_1_TO_99}|${CHAPTER_NUMBER_WORD})${CHAPTER_PREFIX_SEP}`, "iu"),
+  // 맨 로마 숫자 — "IV. Rabbit's House", "XII: …", "(IV) …". 대문자만, 구분자(. : ) ]) 뒤 공백 필수
+  // ("L.A. Story"·"I Spy"·"VIP"를 지킨다. "IV.Rabbit"처럼 붙여 쓴 것은 떼지 않는다)
+  new RegExp(String.raw`^\(?${ROMAN_1_TO_99_UPPER}\s*[.:)\]]\s+`, "u"),
+  // 번호만 — "3.", "3)", "(3)", "3 -", "1.Pooh", "3:Stuck", "7—Waiting". 공백만은 구분자가 아니고
+  // ("101 Dalmatians"), 구분자 바로 뒤 숫자는 안 되고("1.5 Meters"·"3:10 to Yuma"), 하이픈은 공백이 있어야 한다("3-D")
+  /^\(?\d{1,3}(?:\s*[.:)\]](?!\d)\s*|\s*[–—]\s*|\s+[-‐]\s*|[-‐]\s+)/u,
+];
+
+/**
+ * 떼고 남은 것이 제목 본문으로 시작하는가 — 글자·숫자로, 또는 여는 따옴표 하나 뒤 글자·숫자로.
+ * "("·"/"·"…"·기호로 시작하면 본문이 아니다: 특히 "(2)"는 겹침 번호, "/ …"는 묶음 구분자라서
+ * 앱이 붙인 것이다("3장 (2)", "Chapter 1 / Chapter 2"를 "(2)"·"/ Chapter 2"로 만들지 않는다).
+ */
+const CHAPTER_TITLE_BODY_START = /^["'“‘«「『《〈¿¡]?[\p{L}\p{N}]/u;
+
+/**
+ * 제목 앞의 서수 접두어("3장:", "제3장", "Chapter 3:", "Chapter XLIV:", "Chapter Twenty-One:", "IV.",
+ * "Ch. 3", "3.", "1.Pooh" 등)를 떼어 낸다.
+ * - 겹친 접두어는 본문이 남는 동안 끝까지 뗀다("3장: Chapter 3: The Honey Pot" → "The Honey Pot").
+ *   그래서 멱등이다 — 한 번 정리한 제목을 다시 넣어도 같다(리더가 새 레코드에 같은 정리를 해도 그대로인 전제).
+ * - 떼고 남은 것이 본문으로 시작하지 않으면(비었거나 "(2)"·"/ …"·기호) 그 겹에서 멈추고 남은 제목을 그대로
+ *   돌려준다 — "Chapter 3"·"3장:"을 빈 제목으로 만들지 않고, "3장: Chapter 3"은 "Chapter 3"에서 멈춘다.
+ * - 패턴에 맞지 않으면(못 떼는 모양) 원문 그대로다. 잘못 떼는 것보다 번호가 두 번 보이는 쪽이 낫다.
+ */
+export function stripChapterOrdinalPrefix(title: string): string {
+  let current = title.trim();
+  for (;;) {
+    let match: RegExpExecArray | null = null;
+    for (const pattern of CHAPTER_ORDINAL_PREFIXES) {
+      match = pattern.exec(current);
+      if (match) break;
+    }
+    if (!match) return current;
+    const rest = current.slice(match[0].length).trim();
+    if (!CHAPTER_TITLE_BODY_START.test(rest)) return current;
+    current = rest; // 매번 줄어들기만 하므로 끝난다
+  }
+}
+
+/** titleEn zod 상한(CHAPTER_TITLE_MAX, UTF-16 길이)에 맞춘다 — 넘으면 코드포인트 경계에서 잘라 "…"를 붙인다 */
+function capChapterTitle(title: string, max: number = CHAPTER_TITLE_MAX): string {
+  if (title.length <= max) return title;
+  let out = "";
+  for (const ch of title) {
+    if (out.length + ch.length > max - 1) break;
+    out += ch;
+  }
+  return `${out.trimEnd()}…`;
+}
+
+/**
+ * 정규화 키(normalizeTitleForMatch)가 아직 안 쓰인 제목을 고른다. 쓰였으면 " (2)", " (3)"…을 붙인다
+ * (상한을 넘으면 앞을 줄여 접미사 자리를 만든다). **접두어를 되살리지 않는다** — 되살린 "2장: 아침"은
+ * 리더가 표시할 때 다시 떼서 화면에서 "아침"끼리 겹친다. F zod가 titleEn 중복을 거부하므로(§9-4)
+ * 넘기는 제목은 유일해야 한다.
+ */
+function pickUniqueChapterTitle(base: string, seen: ReadonlySet<string>): string {
+  if (!seen.has(normalizeTitleForMatch(base))) return base;
+  for (let n = 2; ; n++) {
+    const suffix = ` (${n})`;
+    const candidate = `${capChapterTitle(base, CHAPTER_TITLE_MAX - suffix.length)}${suffix}`;
+    if (!seen.has(normalizeTitleForMatch(candidate))) return candidate;
+  }
+}
+
+/**
+ * 챕터 제목 목록 정리 — 순서대로 제목마다 서수 접두어를 떼고(`stripChapterOrdinalPrefix`, 200자 상한),
+ * 앞 제목과 겹치면 " (n)"을 붙인다. 같은 함수를 두 곳이 쓴다:
+ * - 서버: `prepareChapterTitles` 3단계 — 호출 F에 넘길 제목을 만든다.
+ * - 챕터 리더: 저장된 titleEn을 표시할 때. 리더는 **모든** 레코드에 이 정리를 한다. 새 레코드는 이 함수의
+ *   결과(40개를 넘었으면 그것을 묶은 것)를 그대로 저장한 것이라 지울 접두어도 겹침도 없어 바뀌지 않는다.
+ *   옛 레코드(접두어가 붙은 채 저장된 titleEn)만 서버가 같은 목차로 지금 만들 제목과 같은 모양으로 보인다.
+ * 고정점이 성립하는 이유: 접두어 떼기가 멱등이고, " (n)"·" / "가 붙은 제목은 떼고 남은 것이 "("·"/"로
+ * 시작하므로 다시 벗기지 않는다.
+ */
+export function cleanChapterTitles(titles: readonly string[]): string[] {
+  const seen = new Set<string>();
+  return titles.map((title) => {
+    const pick = pickUniqueChapterTitle(capChapterTitle(stripChapterOrdinalPrefix(title)), seen);
+    seen.add(normalizeTitleForMatch(pick));
+    return pick;
+  });
+}
+
+/** 목차가 40개를 넘을 때 인접 제목을 이을 구분자 */
+export const CHAPTER_TITLE_GROUP_JOINER = " / ";
+
+export interface PreparedChapterTitles {
+  /** 호출 F에 넘길 제목 — 0~CHAPTERIZE_MAX_CHAPTERS개, 각각 유일·CHAPTER_TITLE_MAX 이하·cleanChapterTitles의 고정점 */
+  titles: string[];
+  /** 트림·빈 값·완전 중복을 걸러 낸 뒤의 목차 제목 수 (묶기 전) */
+  sourceCount: number;
+  /** 몇 개씩 묶었는가 — 1이면 묶지 않았다 */
+  groupSize: number;
+}
+
+/**
+ * 목차 제목 준비 (HARNESS §9-2) — 순수 함수. /api/chapterize가 호출 F 앞에서 부르고 eval이 반례로 본다.
+ *
+ * 1. 트림·연속 공백 1칸·빈 값 제거.
+ * 2. 완전 중복 제거 — 같은 목차 사진을 두 번 찍어 같은 labelKo가 두 번 온 경우. 앞의 것만 남긴다.
+ * 3. `cleanChapterTitles` — 서수 접두어를 떼고(겹친 접두어도 끝까지, 번호는 챕터 리더 탭이 따로 붙인다),
+ *    떼고 나서 앞 제목과 겹치면("1장: 아침"·"5장: 아침") " (n)"을 붙인다 → "아침"·"아침 (2)".
+ * 4. 40개(CHAPTERIZE_MAX_CHAPTERS) 초과면 **인접 제목을 순서대로 묶는다** — ceil(n/40)개씩
+ *    `CHAPTER_TITLE_GROUP_JOINER`(" / ")로 잇는다. 뒤를 잘라 내면 뒤 챕터의 자막이 앞 챕터에 섞이거나
+ *    통째로 사라지므로 자르지 않는다. 묶은 제목이 CHAPTER_TITLE_MAX를 넘으면 "…"로 줄이고, 줄여서
+ *    겹치면 같은 " (n)"을 붙인다.
+ *
+ * 결과 제목은 `cleanChapterTitles`의 고정점이다 — 챕터 리더가 표시할 때 같은 정리를 해도 바뀌지 않는다.
+ * 목차가 없거나 전부 빈 값이면 빈 배열을 돌려준다 → chapterizeTranscript가 "전체" 단일 챕터로 바꾼다.
+ */
+export function prepareChapterTitles(rawTitles: readonly string[]): PreparedChapterTitles {
+  const seenRaw = new Set<string>();
+  const distinct: string[] = [];
+  for (const raw of rawTitles) {
+    const trimmed = raw.replace(/\s+/g, " ").trim();
+    if (trimmed === "") continue;
+    const rawKey = normalizeTitleForMatch(trimmed);
+    if (seenRaw.has(rawKey)) continue;
+    seenRaw.add(rawKey);
+    distinct.push(trimmed);
+  }
+  const cleaned = cleanChapterTitles(distinct);
+
+  const groupSize = Math.max(1, Math.ceil(cleaned.length / CHAPTERIZE_MAX_CHAPTERS));
+  if (groupSize === 1) return { titles: cleaned, sourceCount: cleaned.length, groupSize };
+
+  const seenGroup = new Set<string>();
+  const titles: string[] = [];
+  for (let i = 0; i < cleaned.length; i += groupSize) {
+    const joined = capChapterTitle(cleaned.slice(i, i + groupSize).join(CHAPTER_TITLE_GROUP_JOINER));
+    const pick = pickUniqueChapterTitle(joined, seenGroup);
+    seenGroup.add(normalizeTitleForMatch(pick));
+    titles.push(pick);
+  }
+  return { titles, sourceCount: cleaned.length, groupSize };
+}
+
 export const CHAPTERIZATION_JSON_SCHEMA: StrictJsonSchema = {
   name: "chapterization",
   strict: true,

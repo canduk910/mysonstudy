@@ -6,8 +6,9 @@
  * 어긋나는 환각을 막는 게 목적이다(docs/harness/english.md §1 grounding).
  *
  * ⚠️ 서버 전용. `SUPADATA_API_KEY`(비밀)를 읽으므로 **클라이언트 컴포넌트에서 import 금지**.
- *   `app/api/transcript/route.ts`와 `app/api/card/route.ts`(둘 다 route handler = 서버)만
- *   쓴다. `lib/ai/*`를 import하지 않는다(AI 모듈과 분리 — client.ts 무영향).
+ *   호출처는 `app/api/card/route.ts`(route handler = 서버) 하나다 — 카드 생성 요청에 `youtubeUrl`이
+ *   오면 그 안에서 자막을 받아 호출 B 근거로 싣고 book에 보관한다(별도 자막 라우트는 없다).
+ *   `lib/ai/*`를 import하지 않는다(AI 모듈과 분리 — client.ts 무영향).
  *
  * graceful 원칙: **절대 throw로 호출 라우트를 죽이지 않는다.** 키 없음·잘못된 URL·자막 없음·
  *   네트워크/API 오류·시간 초과를 전부 `{ ok:false, reason, messageKo }`로 되돌린다. 자막은

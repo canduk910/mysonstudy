@@ -29,7 +29,7 @@
 
 import { useRouter } from "next/navigation";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { WHOLE_TRANSCRIPT_TITLE, type Chapter } from "@/lib/ai/english/schemas";
+import { WHOLE_TRANSCRIPT_TITLE, cleanChapterTitles, type Chapter } from "@/lib/ai/english/schemas";
 import type { CollectedAddWordResponse } from "@/lib/collected-vocab-contract";
 import { lockBodyScroll } from "@/lib/scroll-lock";
 import { prefetchSpeech, speak, speakSequence } from "@/lib/speech";
@@ -339,8 +339,13 @@ function Reader({
 }) {
   const [selected, setSelected] = useState(() => firstMatchedIndex(chapters));
   // selected가 범위를 벗어나지 않게(챕터 수가 바뀌는 경우 대비) 안전하게 좁힌다
-  const active = chapters[Math.min(selected, chapters.length - 1)] ?? chapters[0];
+  const activeIndex = Math.max(0, Math.min(selected, chapters.length - 1));
+  const active = chapters[activeIndex] ?? chapters[0];
   const matchedCount = useMemo(() => chapters.filter((ch) => ch.matched).length, [chapters]);
+  // 탭·헤딩에 보일 제목 — 서버가 호출 F 앞에서 쓰는 것과 같은 정리(cleanChapterTitles, §9-2)를 모든 레코드에
+  // 한다. 새 레코드는 이미 정리된 제목이라 그대로 보이고, 접두어("3장:")가 붙은 채 저장된 옛 레코드만
+  // 접두어가 떨어지고 겹치면 " (n)"이 붙는다 — 서버가 같은 목차로 지금 만들 제목과 같은 모양이다.
+  const shownTitles = useMemo(() => cleanChapterTitles(chapters.map((ch) => ch.titleEn)), [chapters]);
   // 프리페치(§16): **현재 챕터**의 문장 발음만 미리 캐시(안 읽을 챕터는 제외). 챕터 바뀌면 새로 채우고 이전 건 중단.
   useEffect(() => prefetchSpeech(active.sentences.map((sent) => sent.en), "en-US"), [active]);
 
@@ -363,7 +368,9 @@ function Reader({
       {/* 영어 발음 엔진(클라우드/기기) — 전역 하나(언어별). 미리듣기로 비교 후 고른다(§16). */}
       <TtsEngineControl lang="en-US" />
 
-      {/* 챕터 목록 — 가로 스크롤 탭. matched 아닌 챕터는 흐리게. 단일 "전체" 챕터면 목록 생략 */}
+      {/* 챕터 목록 — 가로 스크롤 탭. matched 아닌 챕터는 흐리게. 단일 "전체" 챕터면 목록 생략.
+          번호는 탭의 tabNo(i + 1) 한 곳에서만 보인다. 제목은 shownTitles(위 cleanChapterTitles) — 옛 레코드의
+          서수 접두어가 번호와 겹쳐 두 번 뜨지 않게 하되, 새 레코드의 제목은 바꾸지 않는다. */}
       {!single && (
         <div className={s.tabs} role="tablist" aria-label="챕터 목록">
           {chapters.map((ch, i) => {
@@ -380,7 +387,7 @@ function Reader({
               >
                 <span className={s.tabNo}>{i + 1}</span>
                 <span className={s.tabTitle} lang="en">
-                  {ch.titleEn}
+                  {shownTitles[i]}
                 </span>
                 {dim && <span className={s.tabDimMark}>내용 없음</span>}
               </button>
@@ -393,7 +400,7 @@ function Reader({
       <div className={s.chapterPane}>
         {!single && (
           <h4 className={s.chapterTitle} lang="en">
-            {active.titleEn}
+            {shownTitles[activeIndex]}
           </h4>
         )}
         <ChapterBody chapter={active} />

@@ -12,8 +12,10 @@
  * 코드블록과 글자 단위로 같은지 파일을 읽어서 확인한다(`scripts/spec-sync.ts`).
  */
 
+import { readFileSync } from "node:fs";
 import { chapterizeTranscript, enrichVocab, generateCard, lookupWordMeaning } from "../lib/ai/client";
 import {
+  CHAPTER_TITLE_GROUP_JOINER,
   CHAPTER_TITLE_MAX,
   CHAPTERIZE_MAX_CHAPTERS,
   CHAPTERIZE_MAX_SENTENCES_PER_CHAPTER,
@@ -32,6 +34,7 @@ import {
   WHOLE_TRANSCRIPT_TITLE,
   WORD_MEANING_JSON_SCHEMA,
   WORD_MEANING_KO_MAX,
+  cleanChapterTitles,
   containsHangul,
   countKoreanSentences,
   groundChapters,
@@ -40,10 +43,12 @@ import {
   makeChapterizationSchema,
   makeLearningCardSchema,
   makePageDigestSchema,
+  prepareChapterTitles,
   resolveAllowedStorySource,
   resolveChapterTitles,
   resolveStorySource,
   storyOutlineSentenceRange,
+  stripChapterOrdinalPrefix,
   tokenizeForGrounding,
   truncateTranscriptForChapterize,
   wordMeaningSchema,
@@ -2344,6 +2349,397 @@ function runChapterizeChecks(): CheckResult[] {
     check: "긴 자막 목차없음: 분할 문장 전부 grounded(0개 잘림)",
     pass: longGrounded.droppedSentenceCount === 0 && longGrounded.chapters[0].sentences.length === longChapters.chapters[0].sentences.length,
     detail: `dropped=${longGrounded.droppedSentenceCount} (기대 0), 문장=${longGrounded.chapters[0].sentences.length}`,
+  });
+
+  results.push(...runChapterTitlePrepChecks());
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// 목차 제목 준비(§9-2) 오프라인 점검 — 실호출 0회.
+//
+// /api/chapterize는 A′ 목차 장면의 labelKo를 호출 F에 넘기기 전에 prepareChapterTitles를 거친다.
+// 막는 경계 두 개: (1) A′는 장면을 MAX_SCENE_DIGEST_ITEMS(120)개까지 내는데 F zod는
+// CHAPTERIZE_MAX_CHAPTERS(40)개까지만 받는다 — 그대로 넘기면 목차가 긴 책의 챕터화가 통째로 실패한다.
+// (2) A′ 목차 labelKo는 "3장: Pooh와 꿀단지" 모양이라, 그대로 두면 챕터 리더 탭 번호(i+1)와 겹친다.
+//
+// 표시 일관성(QA found-defects_1 F2): 챕터 리더는 **모든** 레코드에 cleanChapterTitles(같은 정리)를 한다.
+// 새 레코드는 서버가 이미 정리한 제목이라 그대로 보여야 하고(불변식 — 지울 접두어도, 겹치는 제목도 없다),
+// 옛 레코드(접두어가 남은 titleEn)는 서버가 같은 목차로 지금 만들 제목과 똑같이 보여야 한다.
+// 접두어 정규식 반례(F3 — 합성 수사·XL~XLIX·맨 로마 숫자·공백 없는 번호)도 여기서 잠근다.
+// ---------------------------------------------------------------------------
+
+function runChapterTitlePrepChecks(): CheckResult[] {
+  const results: CheckResult[] = [];
+  const book = "목차 제목 준비(§9-2)";
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  /** 표에 넣은 입력 전부 — 멱등성·불변식 점검의 말뭉치로 다시 쓴다 */
+  const stripCorpus: string[] = [];
+  const table = (cases: readonly (readonly [string, string])[]) => {
+    stripCorpus.push(...cases.map(([input]) => input));
+    const bad = cases.filter(([input, want]) => stripChapterOrdinalPrefix(input) !== want);
+    return {
+      pass: bad.length === 0,
+      detail:
+        bad.length === 0
+          ? `${cases.length}종 전부 기대대로`
+          : bad.map(([input, want]) => `${JSON.stringify(input)} → ${JSON.stringify(stripChapterOrdinalPrefix(input))} (기대 ${JSON.stringify(want)})`).join(" · "),
+    };
+  };
+
+  // 서수 접두어 변형 — 떼고 나머지만 남는다
+  results.push({
+    book,
+    check: "서수 접두어 제거: 한국어(3장:·제3장·제 3 장 -·챕터 3:)·영어(Chapter 3:·Ch. 3·Chap. 4 -·Chapter IV:·Chapter One -)·번호(3.·3)·(3)·3 -)",
+    ...table([
+      ["3장: Pooh와 꿀단지", "Pooh와 꿀단지"],
+      ["3장 꿀단지를 찾아서", "꿀단지를 찾아서"],
+      ["제3장 꿀단지", "꿀단지"],
+      ["제 3 장 - Honey", "Honey"],
+      ["챕터 3: 꿀", "꿀"],
+      ["Chapter 3: The Honey Pot", "The Honey Pot"],
+      ["chapter3. Stuck", "Stuck"],
+      ["CHAPTER 12 - Free at Last", "Free at Last"],
+      ["Chapter 7 — Waiting", "Waiting"],
+      ["Ch. 3 Pooh Visits Rabbit", "Pooh Visits Rabbit"],
+      ["Ch 3: Stuck!", "Stuck!"],
+      ["Chap. 4 - Rabbit", "Rabbit"],
+      ["Chapter IV: Rabbit's House", "Rabbit's House"],
+      ["Chapter One - Start", "Start"],
+      ["3. Pooh Visits Rabbit", "Pooh Visits Rabbit"],
+      ["3) Pooh", "Pooh"],
+      ["(3) Pooh", "Pooh"],
+      ["3 - Pooh", "Pooh"],
+      ["  3장:   Stuck!  ", "Stuck!"],
+      ["Chapter 3: \"The Honey Pot\"", "\"The Honey Pot\""],
+    ]),
+  });
+
+  // F3-a: 하이픈·공백 합성 수사는 통째로 뗀다 — 전에는 "Twenty"만 떼서 "One: The Party"가 남았다
+  results.push({
+    book,
+    check: "합성 수사 통째로: Chapter Twenty-One: The Party → The Party (전: One: The Party)·Thirty One·Ninety-Nine",
+    ...table([
+      ["Chapter Twenty-One: The Party", "The Party"],
+      ["CHAPTER TWENTY-TWO - Home Again", "Home Again"],
+      ["Chapter Thirty One: Snow", "Snow"],
+      ["Chapter Ninety-Nine. The End", "The End"],
+      ["Chapter Twenty: Owl", "Owl"],
+      ["Chapter Seventeen: Eeyore", "Eeyore"],
+    ]),
+  });
+
+  // F3-b: 로마 숫자 40~49(XL~XLIX)와 90~99(XC~XCIX) — 전에는 l?x{0,3} 순서라 XL을 표현하지 못했다
+  results.push({
+    book,
+    check: "로마 숫자 XL~XLIX·XC~XCIX·LXXXIX: Chapter XLIV: Owl's House → Owl's House",
+    ...table([
+      ["Chapter XL: Forty Winks", "Forty Winks"],
+      ["Chapter XLIV: Owl's House", "Owl's House"],
+      ["Chapter XLIX. The Last Party", "The Last Party"],
+      ["Chapter XC - Ninety", "Ninety"],
+      ["Chapter XCIX: Almost Done", "Almost Done"],
+      ["Chapter LXXXIX: Eighty-Nine", "Eighty-Nine"],
+    ]),
+  });
+
+  // F3-c: "Chapter" 없이 앞에 붙은 로마 숫자 — 구분자(. : ) ]) 뒤 공백까지 있어야 뗀다("L.A. Story" 보존)
+  results.push({
+    book,
+    check: "맨 로마 숫자: IV. Rabbit's House·XII. The Flood·XLII: Pooh Sticks·(IV) Rabbit·I. In Which…",
+    ...table([
+      ["IV. Rabbit's House", "Rabbit's House"],
+      ["XII. The Flood", "The Flood"],
+      ["XLII: Pooh Sticks", "Pooh Sticks"],
+      ["(IV) Rabbit", "Rabbit"],
+      ["I. In Which We Meet Pooh", "In Which We Meet Pooh"],
+    ]),
+  });
+
+  // F3-d: 공백 없는 번호 — 구분자 바로 뒤가 숫자가 아니면 뗀다(1.5·3:10은 보존). 하이픈은 공백이 있어야 구분자
+  results.push({
+    book,
+    check: "공백 없는 번호: 1.Pooh·12.Owl's House·3:Stuck·3)Pooh·7—Waiting·Chapter 7—Waiting·3장:꿀",
+    ...table([
+      ["1.Pooh", "Pooh"],
+      ["12.Owl's House", "Owl's House"],
+      ["3:Stuck", "Stuck"],
+      ["3)Pooh", "Pooh"],
+      ["7—Waiting", "Waiting"],
+      ["Chapter 7—Waiting", "Waiting"],
+      ["3장:꿀", "꿀"],
+    ]),
+  });
+
+  // 겹친 접두어는 본문이 남는 동안 끝까지 뗀다 — 그래야 서버 준비값에 리더가 같은 정리를 해도 그대로다
+  results.push({
+    book,
+    check: "겹친 접두어 끝까지: 3장: Chapter 3: The Honey Pot → The Honey Pot · 3장: Chapter 3 → Chapter 3(본문 없는 겹에서 멈춤)",
+    ...table([
+      ["3장: Chapter 3: The Honey Pot", "The Honey Pot"],
+      ["Chapter 3: 3장: 꿀", "꿀"],
+      ["1. Chapter One: Start", "Start"],
+      ["3장: Chapter 3", "Chapter 3"],
+    ]),
+  });
+
+  // 숫자·약어로 시작하는 진짜 제목은 건드리지 않는다 — 구분자까지 먹어야 접두어다. 못 떼는 모양은 원문 그대로
+  results.push({
+    book,
+    check:
+      "진짜 제목 보존: 1.5 Meters·3:10 to Yuma·101 Dalmatians·3 Little Pigs·3장면·Chi Chi·Chapter Ivy·Chapters·3-D·Chapter 1.5·L.A. Story·I Spy·VIP·Twenty-Something",
+    ...table([
+      ["1.5 Meters", "1.5 Meters"],
+      ["3:10 to Yuma", "3:10 to Yuma"],
+      ["101 Dalmatians", "101 Dalmatians"],
+      ["3 Little Pigs", "3 Little Pigs"],
+      ["3장면 이야기", "3장면 이야기"],
+      ["Chi Chi's Day", "Chi Chi's Day"],
+      ["Chapter Ivy Grows", "Chapter Ivy Grows"],
+      ["Chapters 3 and 4", "Chapters 3 and 4"],
+      ["Pooh Visits Rabbit", "Pooh Visits Rabbit"],
+      ["3-D Glasses", "3-D Glasses"],
+      ["Chapter 3-D Glasses", "Chapter 3-D Glasses"],
+      ["Chapter 1.5: Interlude", "Chapter 1.5: Interlude"],
+      ["10:30 Bedtime", "10:30 Bedtime"],
+      ["L.A. Story", "L.A. Story"],
+      ["I Spy Pooh", "I Spy Pooh"],
+      ["VIP Party", "VIP Party"],
+      ["Chapter Twenty-Something Blues", "Chapter Twenty-Something Blues"],
+    ]),
+  });
+
+  // 접두어만 있는 값 — 떼면 비므로 원문을 그대로 둔다(빈 제목을 만들지 않는다)
+  results.push({
+    book,
+    check: "접두어만 있는 값은 원문 유지: 3장·3장:·Chapter 3·Chapter IV·Chapter XL·Chapter Twenty-One·Ch. 3·3.·IV.",
+    ...table([
+      ["3장", "3장"],
+      ["3장:", "3장:"],
+      ["Chapter 3", "Chapter 3"],
+      ["Chapter IV", "Chapter IV"],
+      ["Chapter XL", "Chapter XL"],
+      ["Chapter Twenty-One", "Chapter Twenty-One"],
+      ["Ch. 3", "Ch. 3"],
+      ["3.", "3."],
+      ["IV.", "IV."],
+    ]),
+  });
+
+  // 멱등 — 한 번 정리한 제목을 다시 정리해도 같다(리더가 새 레코드에 같은 정리를 해도 바뀌지 않는 전제)
+  const notIdempotent = stripCorpus.filter((t) => {
+    const once = stripChapterOrdinalPrefix(t);
+    return stripChapterOrdinalPrefix(once) !== once;
+  });
+  results.push({
+    book,
+    check: `멱등: 위 표 입력 ${stripCorpus.length}종 전부 strip(strip(x)) = strip(x)`,
+    pass: notIdempotent.length === 0,
+    detail:
+      notIdempotent.length === 0
+        ? `${stripCorpus.length}종 멱등`
+        : notIdempotent
+            .map((t) => `${JSON.stringify(t)} → ${JSON.stringify(stripChapterOrdinalPrefix(t))} → ${JSON.stringify(stripChapterOrdinalPrefix(stripChapterOrdinalPrefix(t)))}`)
+            .join(" · "),
+  });
+
+  // 빈 값·공백 → 빈 배열 → chapterizeTranscript가 "전체" 단일 챕터로 바꾼다
+  const empty = prepareChapterTitles(["", "   ", "\t\n"]);
+  results.push({
+    book,
+    check: `빈 값·공백만 → [] (→ resolveChapterTitles가 ["${WHOLE_TRANSCRIPT_TITLE}"])`,
+    pass: same(empty.titles, []) && empty.groupSize === 1 && same(resolveChapterTitles(empty.titles), [WHOLE_TRANSCRIPT_TITLE]),
+    detail: `titles=${JSON.stringify(empty.titles)} groupSize=${empty.groupSize}`,
+  });
+
+  // 트림·빈 값 제거·접두어 제거가 한 번에 — 접두어만 있는 값은 원문으로 남는다
+  const mixed = prepareChapterTitles(["", " 1장:  Pooh   Visits Rabbit ", "  ", "2장:", "Chapter 3: Stuck!"]);
+  results.push({
+    book,
+    check: "트림·연속 공백·빈 값 제거 + 접두어 제거(접두어만 있는 값은 원문)",
+    pass: same(mixed.titles, ["Pooh Visits Rabbit", "2장:", "Stuck!"]),
+    detail: JSON.stringify(mixed.titles),
+  });
+
+  // 완전 중복(같은 목차 사진을 두 번 찍음)은 버리고, 뗀 뒤에만 겹치는 제목은 " (n)"을 붙인다.
+  // 전에는 접두어를 되살려("5장: 아침") 리더가 그것을 또 떼는 바람에 화면에서 겹쳤다(F2).
+  const dup = prepareChapterTitles(["1장: 아침", "5장: 아침", "1장: 아침"]);
+  results.push({
+    book,
+    check: `완전 중복 제거 · 접두어를 뗀 뒤 겹치면 " (n)" 접미사 — 접두어를 되살리지 않는다(전: ["아침","5장: 아침"])`,
+    pass: same(dup.titles, ["아침", "아침 (2)"]),
+    detail: JSON.stringify(dup.titles),
+  });
+
+  // F2 반례 그대로 — "1장: 아침"~"40장: 아침"이 서버에서도 화면에서도 40개 모두 다르게, 접두어 없이
+  const hasOrdinal = (t: string) => /\d+\s*장\s*[:.]/u.test(t);
+  const t40same = Array.from({ length: CHAPTERIZE_MAX_CHAPTERS }, (_, i) => `${i + 1}장: 아침`);
+  const p40same = prepareChapterTitles(t40same);
+  const want40same = Array.from({ length: CHAPTERIZE_MAX_CHAPTERS }, (_, i) => (i === 0 ? "아침" : `아침 (${i + 1})`));
+  const shown40same = cleanChapterTitles(p40same.titles);
+  results.push({
+    book,
+    check: `같은 제목 ${CHAPTERIZE_MAX_CHAPTERS}개("1장: 아침"~) → 아침·아침 (2)…아침 (40) · 화면도 40개 전부 다름(전: 전부 "아침")`,
+    pass:
+      same(p40same.titles, want40same) &&
+      same(shown40same, want40same) &&
+      new Set(shown40same).size === CHAPTERIZE_MAX_CHAPTERS &&
+      !p40same.titles.some(hasOrdinal),
+    detail: `서버 ${JSON.stringify(p40same.titles.slice(0, 3))}… · 화면 고유 ${new Set(shown40same).size}/${shown40same.length}`,
+  });
+
+  // 묶음에서도 같은 규칙 — "아침 / 2장: 아침"처럼 접두어가 섞이지 않는다
+  const t80same = Array.from({ length: CHAPTERIZE_MAX_CHAPTERS * 2 }, (_, i) => `${i + 1}장: 아침`);
+  const p80same = prepareChapterTitles(t80same);
+  const J = CHAPTER_TITLE_GROUP_JOINER;
+  results.push({
+    book,
+    check: `같은 제목 ${CHAPTERIZE_MAX_CHAPTERS * 2}개 묶음 → "아침${J}아침 (2)"·"아침 (3)${J}아침 (4)"… · 접두어 섞임 0 · 화면 그대로`,
+    pass:
+      p80same.groupSize === 2 &&
+      p80same.titles.length === CHAPTERIZE_MAX_CHAPTERS &&
+      p80same.titles[0] === `아침${J}아침 (2)` &&
+      p80same.titles[1] === `아침 (3)${J}아침 (4)` &&
+      p80same.titles[39] === `아침 (79)${J}아침 (80)` &&
+      !p80same.titles.some(hasOrdinal) &&
+      same(cleanChapterTitles(p80same.titles), p80same.titles),
+    detail: `${JSON.stringify(p80same.titles.slice(0, 2))}… 끝=${JSON.stringify(p80same.titles.at(-1))}`,
+  });
+
+  // 40개 경계 — 딱 40개는 묶지 않는다
+  const t40 = Array.from({ length: CHAPTERIZE_MAX_CHAPTERS }, (_, i) => `${i + 1}장: 제목${i + 1}`);
+  const p40 = prepareChapterTitles(t40);
+  results.push({
+    book,
+    check: `${CHAPTERIZE_MAX_CHAPTERS}개 = 상한: 묶지 않음(접두어만 제거)`,
+    pass: p40.groupSize === 1 && p40.titles.length === CHAPTERIZE_MAX_CHAPTERS && p40.titles.every((t, i) => t === `제목${i + 1}`),
+    detail: `titles=${p40.titles.length} groupSize=${p40.groupSize} 마지막=${JSON.stringify(p40.titles.at(-1))}`,
+  });
+
+  // 41개 — 2개씩 묶어 21개, 순서 보존, 마지막 하나는 홀로
+  const t41 = Array.from({ length: CHAPTERIZE_MAX_CHAPTERS + 1 }, (_, i) => `Chapter ${i + 1}: T${i + 1}`);
+  const p41 = prepareChapterTitles(t41);
+  const flat41 = p41.titles.flatMap((t) => t.split(CHAPTER_TITLE_GROUP_JOINER));
+  results.push({
+    book,
+    check: `${CHAPTERIZE_MAX_CHAPTERS + 1}개 → ceil(41/40)=2개씩 묶어 21개 · 순서 보존 · 유실 0`,
+    pass:
+      p41.groupSize === 2 &&
+      p41.titles.length === 21 &&
+      p41.titles[0] === `T1${CHAPTER_TITLE_GROUP_JOINER}T2` &&
+      p41.titles[20] === "T41" &&
+      same(flat41, Array.from({ length: 41 }, (_, i) => `T${i + 1}`)),
+    detail: `titles=${p41.titles.length} groupSize=${p41.groupSize} 첫=${JSON.stringify(p41.titles[0])} 끝=${JSON.stringify(p41.titles.at(-1))}`,
+  });
+
+  // A′ 상한(120개) — 3개씩 묶어 정확히 40개, 순서 보존
+  const t120 = Array.from({ length: MAX_SCENE_DIGEST_ITEMS }, (_, i) => `${i + 1}. T${i + 1}`);
+  const p120 = prepareChapterTitles(t120);
+  const flat120 = p120.titles.flatMap((t) => t.split(CHAPTER_TITLE_GROUP_JOINER));
+  results.push({
+    book,
+    check: `A′ 상한 ${MAX_SCENE_DIGEST_ITEMS}개 → 3개씩 묶어 ${CHAPTERIZE_MAX_CHAPTERS}개 · 순서 보존 · 유실 0`,
+    pass:
+      p120.groupSize === 3 &&
+      p120.titles.length === CHAPTERIZE_MAX_CHAPTERS &&
+      same(flat120, Array.from({ length: MAX_SCENE_DIGEST_ITEMS }, (_, i) => `T${i + 1}`)),
+    detail: `titles=${p120.titles.length} groupSize=${p120.groupSize} 첫=${JSON.stringify(p120.titles[0])}`,
+  });
+
+  // 긴 labelKo(SCENE_LABEL_KO_MAX)를 3개 묶으면 titleEn 상한을 넘는다 — 줄여서 상한·유일성을 지킨다
+  const longLabels = Array.from({ length: MAX_SCENE_DIGEST_ITEMS }, (_, i) => {
+    const head = `${i + 1}장: `;
+    return `${head}${"가".repeat(SCENE_LABEL_KO_MAX - head.length - String(i).length)}${i}`;
+  });
+  const pLong = prepareChapterTitles(longLabels);
+  results.push({
+    book,
+    check: `묶은 제목이 CHAPTER_TITLE_MAX(${CHAPTER_TITLE_MAX}) 이하 · 서로 유일 · ${CHAPTERIZE_MAX_CHAPTERS}개`,
+    pass:
+      longLabels.every((l) => l.length <= SCENE_LABEL_KO_MAX) &&
+      pLong.titles.length === CHAPTERIZE_MAX_CHAPTERS &&
+      pLong.titles.every((t) => t.length <= CHAPTER_TITLE_MAX) &&
+      new Set(pLong.titles.map((t) => t.toLowerCase())).size === pLong.titles.length,
+    detail: `최장=${Math.max(...pLong.titles.map((t) => t.length))}자, 유일=${new Set(pLong.titles).size}/${pLong.titles.length}`,
+  });
+
+  // 불변식 — 리더는 모든 레코드에 cleanChapterTitles를 하지만, 서버가 준비한 제목(새 레코드)은 바뀌지 않는다.
+  // 접두어만 있는 제목에 " (n)"이나 " / "가 붙어도("3장 (2)", "Chapter 1 / Chapter 2") 다시 떼지 않는다.
+  const invariantCorpora: readonly (readonly [string, readonly string[]])[] = [
+    ["표 입력 전부(묶음)", stripCorpus],
+    ["표 입력 앞 40개", stripCorpus.slice(0, CHAPTERIZE_MAX_CHAPTERS)],
+    ["같은 제목 40", t40same],
+    ["같은 제목 80(묶음)", t80same],
+    ["접두어만+겹침", ["1장: 3장", "3장", "Chapter 3", "3장: Chapter 3", "Ch. 3"]],
+    ["기호 본문+겹침", ["1장: 3장: ★", "3장: ★", "Chapter 1: …", "2. …"]],
+    ["접두어만 41(묶음)", Array.from({ length: CHAPTERIZE_MAX_CHAPTERS + 1 }, (_, i) => `Chapter ${i + 1}`)],
+    ["41·120·긴 labelKo", [...t41, ...t120, ...longLabels]],
+  ];
+  const invariantBad: string[] = [];
+  for (const [label, corpus] of invariantCorpora) {
+    const prepared = prepareChapterTitles(corpus).titles;
+    const shown = cleanChapterTitles(prepared);
+    const i = prepared.findIndex((t, k) => shown[k] !== t || stripChapterOrdinalPrefix(t) !== t);
+    if (i >= 0) {
+      invariantBad.push(`${label}: 서버 ${JSON.stringify(prepared[i])} → 화면 ${JSON.stringify(shown[i])} / strip ${JSON.stringify(stripChapterOrdinalPrefix(prepared[i]))}`);
+    }
+  }
+  results.push({
+    book,
+    check: `불변식: 서버 준비값에 리더 정리(cleanChapterTitles)를 해도 그대로 — 말뭉치 ${invariantCorpora.length}종`,
+    pass: invariantBad.length === 0,
+    detail: invariantBad.length === 0 ? `${invariantCorpora.length}종 전부 화면=서버` : invariantBad.join(" · "),
+  });
+
+  // 옛 레코드(접두어가 남은 titleEn) — 리더 표시가 같은 목차로 서버가 지금 만들 제목과 같다
+  const oldRecord = ["1장: 아침", "2장: 점심", "5장: 아침", "Chapter 4: Stuck!", "3장"];
+  const oldShown = cleanChapterTitles(oldRecord);
+  results.push({
+    book,
+    check: `옛 레코드 표시 = 지금 서버 준비값: ["1장: 아침","2장: 점심","5장: 아침",…] → ["아침","점심","아침 (2)",…] · "${WHOLE_TRANSCRIPT_TITLE}"는 그대로`,
+    pass:
+      same(oldShown, ["아침", "점심", "아침 (2)", "Stuck!", "3장"]) &&
+      same(oldShown, prepareChapterTitles(oldRecord).titles) &&
+      same(cleanChapterTitles([WHOLE_TRANSCRIPT_TITLE]), [WHOLE_TRANSCRIPT_TITLE]),
+    detail: `화면=${JSON.stringify(oldShown)} 서버=${JSON.stringify(prepareChapterTitles(oldRecord).titles)}`,
+  });
+
+  // 직전 준비 규칙(충돌 시 접두어 되살림)으로 저장된 레코드도 화면에서 겹치지 않는다(F2 반례의 저장값)
+  const revived = ["아침", ...Array.from({ length: CHAPTERIZE_MAX_CHAPTERS - 1 }, (_, i) => `${i + 2}장: 아침`)];
+  const revivedShown = cleanChapterTitles(revived);
+  results.push({
+    book,
+    check: `접두어를 되살려 저장된 ${CHAPTERIZE_MAX_CHAPTERS}개(["아침","2장: 아침",…]) → 화면 40개 전부 다름(전: 전부 "아침")`,
+    pass: new Set(revivedShown).size === CHAPTERIZE_MAX_CHAPTERS && same(revivedShown, want40same),
+    detail: `화면 고유 ${new Set(revivedShown).size}/${revivedShown.length} · ${JSON.stringify(revivedShown.slice(0, 3))}…`,
+  });
+
+  // 배선 — 챕터 리더가 표시 제목을 cleanChapterTitles 하나로 만든다. 제목마다 stripChapterOrdinalPrefix를 따로
+  // 부르거나 titleEn을 그대로 그리면 위 불변식·옛 레코드 표시가 화면에 닿지 않는다(순수 함수 점검이 못 보는 틈).
+  const readerSrc = readFileSync(new URL("../components/chapter-reader.tsx", import.meta.url), "utf-8");
+  const readerWiring = {
+    usesClean: /cleanChapterTitles\(/.test(readerSrc),
+    noPerTitleStrip: !readerSrc.includes("stripChapterOrdinalPrefix"),
+    noRawTitle: !/\{\s*\w+\.titleEn\s*\}/.test(readerSrc),
+  };
+  results.push({
+    book,
+    check: "배선: chapter-reader가 탭·헤딩 제목을 cleanChapterTitles로 만든다(제목마다 strip·titleEn 직접 렌더 없음)",
+    pass: readerWiring.usesClean && readerWiring.noPerTitleStrip && readerWiring.noRawTitle,
+    detail: JSON.stringify(readerWiring),
+  });
+
+  // 경계면 — 준비한 제목이면 F zod가 전부 echo를 받는다. 준비 전 120개 그대로면 zod가 거부한다(이번 결함)
+  const echo = (titles: readonly string[]) => ({
+    chapters: titles.map((titleEn) => ({ titleEn, matched: false, sentences: [] })),
+  });
+  const rawSchema = makeChapterizationSchema({ chapterTitles: t120 });
+  const preparedSchema = makeChapterizationSchema({ chapterTitles: pLong.titles });
+  results.push({
+    book,
+    check: `경계면: 준비 전 ${MAX_SCENE_DIGEST_ITEMS}개 echo는 F zod 거부 → 준비 후 ${CHAPTERIZE_MAX_CHAPTERS}개 echo는 통과`,
+    pass: !rawSchema.safeParse(echo(t120)).success && preparedSchema.safeParse(echo(pLong.titles)).success,
+    detail: `raw=${rawSchema.safeParse(echo(t120)).success ? "통과(기대 거부)" : "거부"}, prepared=${preparedSchema.safeParse(echo(pLong.titles)).success ? "통과" : JSON.stringify(preparedSchema.safeParse(echo(pLong.titles)).error?.issues?.slice(0, 2))}`,
   });
 
   return results;
