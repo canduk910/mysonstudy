@@ -20,21 +20,21 @@ import { clampTtsSpeed, type TtsLang } from "./tts-shared";
 export const DEFAULT_TTS_MODEL = "gpt-4o-mini-tts";
 
 /**
- * 기본 음성. **en-US·ja-JP를 한 음성으로** 읽는다 — "한 선생님이 두 언어를 읽어 준다"는 일관성(SPEC "값 하나"
- * 원칙; 화면마다 목소리가 달라지면 앱이 여러 개처럼 느껴진다). gpt-4o-mini-tts는 다국어라 한 음성이 두 언어를
- * 모두 자연스럽게 낸다. `alloy`는 중립·또렷해 아이·부모 공용에 무난하다. 더 따뜻한 톤이 필요하면 env로
+ * 기본 음성. **en-US·ja-JP·ko-KR을 한 음성으로** 읽는다 — "한 선생님이 여러 언어를 읽어 준다"는 일관성(SPEC "값 하나"
+ * 원칙; 화면마다 목소리가 달라지면 앱이 여러 개처럼 느껴진다). gpt-4o-mini-tts는 다국어라 한 음성이 세 언어를
+ * 모두 자연스럽게 낸다(ko-KR은 일본어 해설 듣기 §18·운동 세션 음성 안내 §19-6). `alloy`는 중립·또렷해 아이·부모 공용에 무난하다. 더 따뜻한 톤이 필요하면 env로
  * `nova`·`coral`·`sage` 등으로 바꾼다(품질 프로브에서 코드 변경 없이 A/B 가능).
  */
 export const DEFAULT_TTS_VOICE = "alloy";
 
-/** 실제 쓸 모델 — `OPENAI_TTS_MODEL` 없으면 기본값. */
+/** 실제 쓸 모델 — `OPENAI_TTS_MODEL`이 없거나 비어 있으면 기본값(빈 값이 `""`로 새면 합성이 실패해 조용히 기기 음성만 난다). */
 export function resolveTtsModel(): string {
-  return process.env.OPENAI_TTS_MODEL ?? DEFAULT_TTS_MODEL;
+  return process.env.OPENAI_TTS_MODEL?.trim() || DEFAULT_TTS_MODEL;
 }
 
-/** 실제 쓸 음성 — `OPENAI_TTS_VOICE` 없으면 기본값. */
+/** 실제 쓸 음성 — `OPENAI_TTS_VOICE`가 없거나 비어 있으면 기본값. */
 export function resolveTtsVoice(): string {
-  return process.env.OPENAI_TTS_VOICE ?? DEFAULT_TTS_VOICE;
+  return process.env.OPENAI_TTS_VOICE?.trim() || DEFAULT_TTS_VOICE;
 }
 
 /** 키가 있는가 — 라우트가 501(폴백 신호)을 낼지 판정한다(lib/ai/client.ts와 같은 규약). */

@@ -108,18 +108,22 @@ import {
  */
 export const DEFAULT_OPENAI_MODEL = "gpt-5.5";
 
+/**
+ * 실제 쓸 모델. **빈 값(`OPENAI_MODEL=`)도 미설정으로 본다** — `??`는 빈 문자열을 그대로 통과시켜,
+ * `.env.example`을 그대로 복사하면 모델 ID `""`로 호출이 실패했다. 공백만 있는 값도 같다.
+ */
 export function resolveModel(): string {
-  return process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL;
+  return process.env.OPENAI_MODEL?.trim() || DEFAULT_OPENAI_MODEL;
 }
 
 /**
  * 검산 전용 모델 (수학 §1: "C는 `OPENAI_MODEL_VERIFY`(없으면 `OPENAI_MODEL`)").
  * **심판만 더 강한 모델로 올릴 여지**를 남기려고 env를 따로 둔 것이다 —
  * 답을 독립적으로 다시 푸는 호출은 여기서 품질을 더 사도 값어치가 있다.
- * 미설정 시 일반 모델로 폴백하므로 env 하나로 켜고 끌 수 있다.
+ * 미설정(빈 값 포함) 시 일반 모델로 폴백하므로 env 하나로 켜고 끌 수 있다.
  */
 export function resolveVerifyModel(): string {
-  return process.env.OPENAI_MODEL_VERIFY ?? resolveModel();
+  return process.env.OPENAI_MODEL_VERIFY?.trim() || resolveModel();
 }
 
 let cachedClient: OpenAI | null = null;

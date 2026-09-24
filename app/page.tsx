@@ -55,8 +55,8 @@ export default function SubjectPickerPage() {
           </span>
           <span className="u-entry-title">수학 · 수학코치</span>
           <span className="u-entry-desc">
-            문제를 입력하면 &lsquo;왜 그렇게 푸는지&rsquo;를 탐정 시간 · 되감기 · 다시 재생 3막으로
-            설명해요. 문제집 사진으로 읽어 오는 건 준비 중이에요.
+            문제집 사진을 찍거나 문제를 입력하면 &lsquo;왜 그렇게 푸는지&rsquo;를 탐정 시간 · 되감기 ·
+            다시 재생 3막으로 설명해요. 답은 검산을 거쳐 보여 줘요.
           </span>
         </Link>
 
