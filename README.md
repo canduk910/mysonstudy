@@ -11,7 +11,10 @@
 - **유튜브 낭독 자막으로 카드를 뒷받침**할 수 있습니다 — 책 제목으로 낭독 영상을 자동 검색해 고르면, 그 자막으로 줄거리를 실제 본문에 grounding하고 챕터별 **영어 원문+한글 해석 리더**(단어 더블탭 뜻·발음·"모은 단어" 담기)를 붙입니다. 자막은 우리가 스크래핑하지 않고 Supadata API로 가져옵니다.
 - 별도로 **영어단어장 정복**(교재 사진 판독 → 영영 정의·이모지 → 영단어 5지선다 시험 → 오답노트)이 있습니다. 상세는 `docs/SPEC.md` §14.
 - 그 밖에 **목록 순서변경**(서재·단어장·수학을 관리 모드에서 드래그로 재배치), **읽어주기 속도 조절**(천천히·보통·빠르게), **단어장 유의어·반의어 연결**(AI 추천 후보에서 골라 단어장에 새로 추가·연결하고 관계 문제로 시험)이 있습니다. 상세는 `docs/SPEC.md` §15.
-- 스택: Next.js(App Router, TS) · Tailwind CSS · OpenAI Responses API(Structured Outputs) · Google Books/Open Library · Firestore · Cloud Run · Supadata(자막)·YouTube Data API v3(낭독 영상 검색)
+- 은우 쪽 두 번째 과목 **수학코치** — 문제집 사진(또는 직접 입력)을 넣으면 '왜 그렇게 푸는지'를 3막(탐정 시간·되감기·다시 재생)으로 설명하고, 답은 독립 검산과 맞을 때만 펼치며 어긋나면 접어 둔 채 '보류'로 표시하고, 되감기 플레이어로 장면을 그려 줍니다. 상세는 `docs/harness/math.md`.
+- **아빠 영역**(학습자가 아이가 아니라 아빠) — **아빠의 일본어**: JLPT 단어장(레벨·주제로 AI 생성, 후리가나·시험 5모드(뜻→표기·한자→읽기·표기→뜻·빈칸·일일정의→표기)·오답노트, 한자 시험 2모드), 듀오링고 대화 스크린샷 → 전사·학습 해설(해설을 한국어 설명까지 이어 읽는 **해설 듣기**), 한자 학습(한국 한자음을 다리로). 상세는 `docs/harness/japanese.md`·`docs/SPEC.md` §18. **아빠의 운동**: 러시안 파이터 풀업·푸시업 사다리 — RM을 넣으면 27일 사이클을 계산하고, 오늘 세트·슈퍼세트 세션(휴식 타이머·음성 안내)·실패하면 회복 휴식 하루 뒤 직전에 성공한 Day 목표로 한 번 → 성공하면 실패한 Day 재도전·Day 27 재측정 → 새 사이클 자동 계산. 계산은 **LLM을 쓰지 않는** 순수 엔진입니다(세션 음성 안내만 발음 엔진을 거친다). 상세는 `docs/SPEC.md` §19.
+- 화면 공통: **언어별 발음 엔진**(기본은 영어·한국어 OpenAI TTS, 일본어 기기 음성 — 사용자가 언어별로 바꿀 수 있고, 클라우드가 실패하면 기기 음성으로 조용히 폴백 — §16)과 모든 화면 상단의 **학습 스트릭**(은우 · 아빠 일본어 · 아빠 운동의 연속일을 나란히 — §17).
+- 스택: Next.js(App Router, TS) · Tailwind CSS · OpenAI Responses API(Structured Outputs) · OpenAI TTS(`gpt-4o-mini-tts`) · Google Books/Open Library · Firestore · Cloud Run · Supadata(자막)·YouTube Data API v3(낭독 영상 검색)
 
 ## 1. 로컬 실행
 
@@ -31,14 +34,17 @@ npm run dev    # http://localhost:3100 (다른 로컬 프로젝트와의 포트 
 |---|---|---|
 | `OPENAI_API_KEY` | AI 생성 시 필수 | 서버 전용. 표지 판독(vision)·카드 생성에 사용. 없으면 시드 데모만 가능 |
 | `OPENAI_MODEL` | 선택 | 기본값 `gpt-5.5` — 비전 입력 + Structured Outputs + Responses API를 모두 지원하는 최신 모델(OpenAI 공식 문서 2026-08 확인). 스냅샷 고정이 필요하면 `gpt-5.5-2026-04-23` 지정 |
+| `OPENAI_MODEL_VERIFY` | 선택 | 수학 검산(호출 C) 전용 모델. 비어 있거나 없으면 `OPENAI_MODEL` — 답을 독립적으로 다시 푸는 심판만 더 강한 모델로 올릴 여지(`docs/harness/math.md` §1) |
 | `OPENAI_TTS_MODEL` | 선택 | 클라우드 발음(§16)용 TTS 모델. 기본값 `gpt-4o-mini-tts` — 기기 음성보다 자연스러운 최신 TTS. 스냅샷 고정은 `gpt-4o-mini-tts-2025-12-15`. 미설정이어도 기본값으로 동작(별도 설정 불필요) |
-| `OPENAI_TTS_VOICE` | 선택 | 발음 음성. 기본값 `alloy`(en-US·ja-JP 한 음성 공용). 더 따뜻한 톤은 `nova`·`coral`·`sage` 등으로 교체. `OPENAI_API_KEY`가 없으면 자동으로 기기 음성으로 폴백 |
+| `OPENAI_TTS_VOICE` | 선택 | 발음 음성. 기본값 `alloy`(en-US·ja-JP·ko-KR 한 음성 공용 — ko-KR은 일본어 해설 듣기(§18)와 운동 세션 음성 안내(§19-6)용). 더 따뜻한 톤은 `nova`·`coral`·`sage` 등으로 교체. `OPENAI_API_KEY`가 없으면 자동으로 기기 음성으로 폴백 |
 | `GOOGLE_BOOKS_API_KEY` | 선택 | 책 식별(ISBN·소개글·썸네일)용. 없으면 무키 호출(쿼터 낮음) — 실패 시 Open Library로 자동 폴백 |
 | `SUPADATA_API_KEY` | 선택 | 서버 전용. 고른 유튜브 낭독 영상의 자막을 가져와 카드·챕터 리더의 근거로 사용(없으면 자막 grounding만 비활성, 기본 카드 생성은 정상) |
 | `YOUTUBE_API_KEY` | 선택 | 서버 전용. 책 제목·저자로 낭독 영상 후보를 검색(YouTube Data API v3). 없으면 낭독 영상 자동 검색만 비활성 |
 | `GOOGLE_APPLICATION_CREDENTIALS` | 선택 | 로컬에서 Firestore를 쓸 때 서비스 계정 키 파일 경로. Cloud Run에서는 불필요(서비스 계정 ADC) |
 | `STORE_BACKEND` | 선택 | `firestore` \| `file`. 미설정 시 자동 감지 — GCP 신호(`GOOGLE_APPLICATION_CREDENTIALS`/`K_SERVICE`/`GOOGLE_CLOUD_PROJECT`)가 있으면 firestore, 없으면 file |
 | `APP_PIN` | **배포 시 필수** | 접속 잠금 PIN(숫자 **6~8자리 권장**, 최소 4자리 — 4자리는 경우의 수가 1만뿐이라 짧습니다). 서버 전용. 도메인이 공개돼도 가족 외 접속과 AI 비용 유출을 막습니다. **프로덕션에서 미설정이면 전 요청을 503으로 차단**(fail-closed), 로컬 개발에서 미설정이면 잠금 없이 통과 |
+
+> 선택 변수(`OPENAI_MODEL`·`OPENAI_MODEL_VERIFY`·`OPENAI_TTS_MODEL`·`OPENAI_TTS_VOICE`)는 **비워 두거나(`X=`) 빼면 기본값**이 쓰입니다 — 빈 값·공백도 미설정으로 봅니다(`lib/ai/client.ts` `resolveModel`·`resolveVerifyModel`, `lib/tts.ts`). 2026-09-24 전에는 `??` 폴백이라 `.env.example`을 그대로 복사하면 빈 문자열이 모델 ID로 새어 호출이 실패하거나 발음이 조용히 기기 음성으로만 났습니다.
 
 ## 3. Cloud Run 배포 (서울, 소스 배포)
 
@@ -137,6 +143,8 @@ gcloud run deploy eunwoo-bookcard --source . --region asia-northeast3
 | Firestore 복합 인덱스 회피 | where 필터만 쿼리하고 정렬·정규화 비교는 메모리에서 — 수십 권 규모라 인덱스 배포 마찰을 없애는 쪽이 단순 |
 | `books`의 근거 3필드는 **필수 nullable** | `blurbText`·`sceneKind`·`sceneDigest`를 선택(`?`)이 아니라 필수 nullable로 뒀다 — book을 만드는 곳에서 빠뜨리면 컴파일이 깨져야 근거 유실("다시 생성"이 줄거리를 3~4문장으로 퇴화시키는 사고)을 타입이 막는다 |
 | `updateBookEvidence`만 부분 갱신 | 범용 `updateBook`을 만들지 않고 근거 3필드 전용 패치 메서드만 뒀다 — `/api/pages`가 필요로 하는 유일한 갱신이고, 넘긴 키만 덮어써 빈 값이 기존 근거를 지우지 않는다 |
+| 운동은 사건만 저장, 상태는 재생 | `workoutCycles` 문서에 기록(완료·실패) 사건 배열만 두고 "현재 Day·실패 플래그·누적 볼륨"은 읽을 때 재생으로 계산(SPEC §19-2) — 스트릭과 같은 규약, 저장하면 두 진실이 갈린다. 휴식은 달력이 채우고 운동은 기록이 채운다(운동일은 며칠이 지나도 기다리고, 휴식일은 날짜가 지나면 쉰 것으로 친다) |
+| 저장소 첫 Firestore 트랜잭션 + `rev` | 기록·취소·사이클 시작은 판정 순수 함수(`decide*`)를 파일 스토어는 `mutate` 안, Firestore는 `runTransaction` 안에서 호출해 검증과 쓰기를 한 원자 단위로(§19-4). 동시성 토큰은 사건 개수가 아니라 변경마다 +1되는 `rev` — 개수는 "다른 탭에서 취소 후 재기록"하면 같아져 낡은 탭의 취소가 엉뚱한 사건을 지운다(ABA). 기록 취소·사건 있는 사이클 닫기는 prod-guard 대상(Firestore 백엔드에서만 — 파일 스토어는 가드하지 않는 기존 관용구) |
 
 ### AI·모델
 
@@ -151,6 +159,9 @@ gcloud run deploy eunwoo-bookcard --source . --region asia-northeast3
 | strict 스키마 ↔ 선택 필드 | Structured Outputs strict 모드는 선택 필드를 null 유니온 필수로 요구 — SPEC §6 타입을 `?: T \| null`로 표기해 zod 출력이 그대로 대입되게 함 |
 | 판독 수치의 범위 밖 값은 "미상" 강등 | 오독(예: Lexile "BR40L" → -40)이 400 오류 루프가 되지 않게 클라이언트에서 서버 zod 경계 밖 수치를 null로 정리 → 레벨 추정 경로가 흡수 |
 | 키 없음(501)을 어떤 검증보다 먼저 | 키 없는 로컬 데모에서 어떤 입력이든 동일한 안내를 받게 |
+| 발음 엔진은 언어별 선택, 일본어는 기기 기본 | 청취 비교에서 영어는 클라우드가, 일본어는 기기 음성(Kyoko)이 피치 액센트가 살아 더 자연스러웠다 — 추측하지 않고 언어별로 사용자가 고르게 두고(`lib/speech.ts` `DEFAULT_ENGINE`, SPEC §16-5), 한국어(해설 듣기·운동 음성 안내)는 기기 음성이 해설 속 「は」 같은 일본어 인용을 한국어식으로 읽어 클라우드 기본(§18-3) |
+| 낭독 지시 버전을 올리지 않고 ko-KR 추가 | `TTS_INSTRUCTIONS_VERSION`은 영속 캐시 지문 전체에 걸려, 올리면 이미 캐시된 영어·일본어 오디오가 통째로 비워져 재합성 요금이 난다 — 새 언어 추가는 기존 키와 겹치지 않아 2 유지. 대신 ko 지시를 튜닝하는 날엔 전 언어 캐시 폐기 비용을 감수해야 한다 |
+| 운동 엔진에 AI를 쓰지 않음 | 원안에는 LLM 코치 프롬프트가 있었지만 Day 계산·실패 롤백·재측정은 전부 결정적 규칙 — 같은 입력이면 같은 답이 나와야 하는 상태 기계를 LLM에 맡기면 비용과 오답 위험만 는다. 브리핑·주의사항 문구도 코드가 만든다(§19-0) |
 
 ### 흐름·UX
 
@@ -180,7 +191,10 @@ gcloud run deploy eunwoo-bookcard --source . --region asia-northeast3
 | 읽어주기 속도는 전역 값 하나 | `lib/speech.ts`의 rate를 화면마다 두면 같은 단어가 다른 목소리로 들린다 — `getTtsRate`/`setTtsRate`(localStorage 영속) 하나를 6개 화면이 공유. 컨트롤은 슬라이더가 아니라 3단 분절 버튼(아이+폰 탭 타깃, 세로 스크롤과 드래그 충돌 회피). 기본 0.9라 안 건드리면 기존 동작 그대로 |
 | 유의어 연결은 엔트리 인덱스로 식별, 관계 시험은 별도 mode | 교재 번호 `no`는 손입력 null·중복 가능이라 유일 식별 불가 → 배열 인덱스로 (단어+뜻)을 잇고 저장 매칭은 `word`+`meaningIndex`. 관계 시험 결과는 `VocabQuizRecord{mode:"relation"}` 별도 저장이라 def→word 숙련도·오답노트·졸업에 안 섞인다(오프라인 eval이 반례로 잠금). `VocabRelated.source`로 사용자 연결분만 시험·해제 대상 |
 | 유의어·반의어는 AI 추천에서 골라 신규 추가 | 처음엔 "단어장에 이미 있는 단어"만 연결하게 만들었는데, 그러면 그 유의어·반의어가 단어장에 없으면 고를 수조차 없었다. 그래서 호출 H(추천, harness §11)로 그 뜻에 맞는 실제 후보를 제시하고, 고르면 `/api/english/vocab/[id]/add-related`가 없는 단어면 `appendVocabEntry`→호출 D 자동 보강→연결, 있으면 연결만(중복 0). 보강 실패해도 단어·연결은 유지(연결은 AI 무관). 직접 입력도 병행 |
+| 스트릭은 시험만, KST 고정 | "오늘 읽었어요"·생성 행위는 누르기만 하면 돼 기준이 느슨해진다 — 한 문항이라도 답한 시험 세션만 센다(§17-1). 하루의 경계는 기기 시간대가 아니라 KST(`+9h → getUTC*`, `lib/kst.ts` 단일 정의) — 서버·SSR·클라이언트가 항상 같은 날짜를 낸다 |
+| 운동 스트릭은 "루틴을 지킨 날" | 운동한 날만 세면 계획된 휴식일마다 끊긴다 — 기록일(실패 포함) + 엔진이 정한 휴식·회복·마무리 휴식일 + 재측정한 날을 세고, 운동일을 건너뛰면 끊는다(§17-7). 일본어와 한 스트릭으로 합치지 않는다(운동만 한 날에 일본어가 이어져 보인다). 폰(<640px)에선 `이모지 (사람 이름) 🔥N일`만 — 트랙 이름·"오늘 아직"·라벨은 스크린리더 문구로만 남긴다(흐림이 신호) — 다 펼치면 530~700px라 390px 폰에서 운동 트랙이 화면 밖으로 밀렸다 |
+| 해설 듣기는 탭 안에서 동기 시작 + 재사용 오디오 요소 | iOS Safari는 탭 밖에서 새 `Audio`를 재생하면 막는다 — 이어 읽기 큐는 오디오 요소 하나를 탭 안에서 무음으로 풀어 재사용하고, 다른 🔊를 누르면 옛 큐의 종료 통지가 새 재생보다 먼저 **동기적으로** 온다(UI가 멈춤/재생 상태를 헷갈리지 않게, §18-2). 잠금 화면 연속 재생은 보장하지 않는다 |
 
 ## 6. 개발 하네스
 
-이 저장소는 클로드 코드 하네스로 개발됩니다 — AI 호출 명세(프롬프트·스키마·검증·eval)는 과목별로 `docs/harness/english.md`(영어 북카드)·`docs/harness/math.md`(수학 코치, 예정)에 있고 과목 공통 규약은 `docs/HARNESS.md`, 앱 전체 명세는 `docs/SPEC.md`, 에이전트·스킬 구성은 `.claude/`를 참조하세요.
+이 저장소는 클로드 코드 하네스로 개발됩니다 — AI 호출 명세(프롬프트·스키마·검증·eval)는 과목별로 `docs/harness/english.md`(영어 북카드)·`docs/harness/math.md`(수학코치)·`docs/harness/japanese.md`(아빠의 일본어)에 있고(AI를 쓰지 않는 아빠의 운동은 `docs/SPEC.md` §19) 과목 공통 규약은 `docs/HARNESS.md`, 앱 전체 명세는 `docs/SPEC.md`, 에이전트·스킬 구성은 `.claude/`를 참조하세요.

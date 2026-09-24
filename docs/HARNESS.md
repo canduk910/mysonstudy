@@ -5,14 +5,14 @@
 > **하네스란?** LLM 호출을 감싸는 뼈대입니다 — 프롬프트, 출력 스키마, 검증, 재시도, 로깅을 한 세트로 묶은 것.
 > 말과 마차를 잇는 마구(harness)처럼, 모델의 힘이 정확한 방향으로만 나가게 잡아주는 장치예요.
 
-이 저장소는 과목 둘을 기릅니다 — **영어(북카드)** 와 **수학(수학코치)**. 두 과목은 프롬프트도 스키마도
+이 저장소는 AI를 쓰는 과목 셋을 기릅니다 — **영어(북카드)**, **수학(수학코치)**, **일본어(아빠의 일본어)**. 과목마다 프롬프트도 스키마도
 다르지만 **호출을 감싸는 방식은 같습니다.** 이 문서는 그 공통분모만 담습니다. 프롬프트 원문·출력
 스키마·평가 항목처럼 과목마다 갈리는 것은 전부 과목별 문서에 있습니다.
 
 
 > **절 번호 표기 규칙.** 코드 주석·리포트에 `HARNESS §N`처럼 문서명 없이 적힌 참조는
 > **그 코드가 속한 과목의 스펙**을 가리킨다 — `lib/ai/english/`·`app/api/` 영어 경로면
-> `docs/harness/english.md`, 수학 경로면 `docs/harness/math.md`다. 이 공통 문서를 가리킬
+> `docs/harness/english.md`, 수학 경로면 `docs/harness/math.md`, 일본어 경로(`lib/ai/japanese/`·`app/api/japanese/`)면 `docs/harness/japanese.md`다. 이 공통 문서를 가리킬
 > 때는 반드시 `docs/HARNESS.md §N`처럼 파일명을 함께 적는다. 과목 분리(2026-08-17) 이전에
 > 쓰인 참조가 40곳 이상이라 관례를 유지하는 쪽을 택했다.
 
@@ -21,16 +21,20 @@
 | 과목 | 스펙 | 프롬프트·스키마 | eval | npm 스크립트 |
 |---|---|---|---|---|
 | **영어 (북카드)** | [`docs/harness/english.md`](./harness/english.md) | `lib/ai/english/` | `scripts/eval-english.ts` | `npm run eval:english` |
-| **수학 (수학코치)** | `docs/harness/math.md` | `lib/ai/math/` *(구현 중)* | `scripts/eval-math.ts` *(구현 중)* | `eval:math` *(구현 중)* |
-| **일본어 (아빠의 일본어)** | `docs/harness/japanese.md` | `lib/ai/japanese/` *(예정)* | `scripts/eval-japanese.ts` *(예정)* | `eval:japanese` *(예정)* |
+| **수학 (수학코치)** | [`docs/harness/math.md`](./harness/math.md) | `lib/ai/math/` | `scripts/eval-math.ts` | `npm run eval:math` |
+| **일본어 (아빠의 일본어)** | [`docs/harness/japanese.md`](./harness/japanese.md) | `lib/ai/japanese/` | `scripts/eval-japanese.ts` | `npm run eval:japanese` |
 
 앱 전체 명세는 [`docs/SPEC.md`](./SPEC.md), 디자인 원본은 `design/`에 있습니다.
 
-**작업할 때는 해당 과목의 문서만 읽으세요.** 둘 다 읽으면 컨텍스트만 늘고 프롬프트가 섞입니다.
+**하네스(이 문서의 `callWithSchema()` 규약) 밖에 있는 것 두 종류:**
+- **LLM을 쓰지 않는 기능** — **아빠의 운동**(러시안 파이터 루틴, SPEC §19)은 규칙이 전부 결정적이라 순수 함수 엔진(`lib/workout.ts`)이 하고, 회귀 가드는 오프라인 `npm run eval:workout`입니다. **학습 스트릭**(SPEC §17, `eval:streak`)도 AI가 없습니다.
+- **AI를 쓰지만 Structured Outputs 하네스 밖인 호출** — **클라우드 발음**(SPEC §16·§16-5, `lib/tts.ts`)은 OpenAI 유료 호출이지만 스키마 없는 오디오 호출이라 `callWithSchema()`·zod·재요청·토큰 로그를 거치지 않고, 키 규약(`OPENAI_API_KEY`, 없으면 501 → 기기 음성)만 공유합니다. 대화 해설 **낭독**(SPEC §18)은 일본어 해설 화면의 기능이고, 그 연속 재생 엔진(`speakQueue`)은 과목 공용이며 `eval:speech`가 잠급니다. 운동 세션의 음성 안내도 이 발음 경로를 거칩니다.
+
+**작업할 때는 해당 과목의 문서만 읽으세요.** 여러 과목을 함께 읽으면 컨텍스트만 늘고 프롬프트가 섞입니다.
 
 ## 1. 공통 규약
 
-두 과목의 모든 AI 호출이 예외 없이 지키는 규칙입니다.
+모든 과목의 모든 AI 호출이 예외 없이 지키는 규칙입니다.
 
 - **모든 호출은 서버(route handler·스크립트)에서만.** API 키를 클라이언트에 노출하지 않는다.
   `lib/ai/client.ts`는 `openai`와 키를 건드리므로 클라이언트 컴포넌트에서 import할 수 없다.
@@ -51,7 +55,7 @@
 
 ## 2. 공통 래퍼 — `callWithSchema()`
 
-`lib/ai/client.ts`에 있는 **과목 공유** 모듈입니다. 두 과목이 같은 래퍼를 지나갑니다.
+`lib/ai/client.ts`에 있는 **과목 공유** 모듈입니다. 모든 과목이 같은 래퍼를 지나갑니다.
 
 ```
 입력: { call, system, user, jsonSchema, zodSchema, temperature, maxOutputTokens }
@@ -67,18 +71,18 @@
 - `call` 식별자는 과목별 문서가 정의한다 (영어: `extract`·`pages`·`card`).
 - 출력 한도 도달(`status === "incomplete"`)은 JSON 파싱 실패와 같은 재요청 경로로 보낸다.
 - **과목별 분기를 이 파일에 넣지 않는다.** 분기가 필요하면 호출부에 둔다 —
-  client를 고치면 두 과목이 함께 영향받는다.
+  client를 고치면 모든 과목이 함께 영향받는다.
 
 ## 3. 파일 배치
 
 ```
 lib/ai/client.ts          # 공통 래퍼 + OpenAI 클라이언트 — 과목 공유
 lib/ai/english/           # 영어 전용 프롬프트·스키마
-lib/ai/math/              # 수학 전용 프롬프트·스키마 (예정)
-lib/ai/japanese/          # 일본어 전용 프롬프트·스키마 (예정)
+lib/ai/math/              # 수학 전용 프롬프트·스키마·검산 파이프라인
+lib/ai/japanese/          # 일본어 전용 프롬프트·스키마
 scripts/eval-english.ts   # 영어 평가 하네스
-scripts/eval-math.ts      # 수학 평가 하네스 (예정)
-scripts/eval-japanese.ts  # 일본어 평가 하네스 (예정)
+scripts/eval-math.ts      # 수학 평가 하네스
+scripts/eval-japanese.ts  # 일본어 평가 하네스
 docs/harness/english.md   # 영어 스펙 (단일 진실 원천)
 docs/harness/math.md      # 수학 스펙
 docs/harness/japanese.md  # 일본어 스펙
@@ -93,4 +97,6 @@ docs/harness/japanese.md  # 일본어 스펙
   한 곳만 고치면 "eval은 통과하는데 런타임 검증이 실패"하거나 그 반대가 된다. 다이얼을 바꿀
   때는 정의된 모든 위치를 함께 맞춘다.
 - **프롬프트 수정 → 해당 과목 eval 실행 → 통과 확인 → 커밋.** 이 순서를 지킨다.
-  eval은 실제 OpenAI 호출이 발생하므로 CI가 아니라 수동 실행이고, 비용 승인 없이 반복하지 않는다.
+  **영어·수학 eval의 실호출 경로**는 실제 OpenAI 호출이 발생하므로 CI가 아니라 수동 실행이고, 비용 승인 없이 반복하지 않는다.
+  오프라인 항목(`EVAL_OFFLINE_ONLY=1`)·일본어 eval(현재 오프라인 전용 — 실호출 게이트 `EVAL_JAPANESE`는 자리만)·
+  `eval:speech`·`eval:workout`·`eval:streak`는 실호출이 없어 언제든 돌려도 된다.

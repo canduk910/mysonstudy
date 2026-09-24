@@ -276,7 +276,12 @@ GOOGLE_BOOKS_API_KEY= # 선택. 없으면 무키 호출(저볼륨 가능)
 GOOGLE_APPLICATION_CREDENTIALS= # 로컬 개발용. Cloud Run에서는 서비스 계정 ADC 사용
 SUPADATA_API_KEY=    # 선택(낭독 자막 grounding 시). 서버 전용. 유튜브 자막 fetch(Supadata) — §14-1
 YOUTUBE_API_KEY=     # 선택(낭독 영상 자동 검색 시). 서버 전용. YouTube Data API v3 search — §14-1
+OPENAI_TTS_MODEL=    # 선택. 클라우드 발음 모델, 기본 gpt-4o-mini-tts — §16 (키가 없으면 기기 음성 폴백)
+OPENAI_TTS_VOICE=    # 선택. 발음 음성, 기본 alloy(en-US·ja-JP·ko-KR 한 음성 공용) — §16·§18-3
+OPENAI_MODEL_VERIFY= # 선택. 수학 검산(호출 C) 전용 모델, 없으면 OPENAI_MODEL — docs/harness/math.md §1
 ```
+
+> 선택 변수(모델·검산 모델·TTS 모델·음성)는 **비워 두거나 빼면 기본값**이다 — 빈 값·공백도 미설정으로 본다(`lib/ai/client.ts` `resolveModel`·`resolveVerifyModel`, `lib/tts.ts` `resolveTtsModel`·`resolveTtsVoice`가 `?.trim() ||`로 폴백). 2026-09-24 전에는 `??`라 위 템플릿처럼 `KEY=`를 빈 값으로 남기면 빈 문자열이 그대로 쓰였다(모델 ID `""`로 호출 실패, 발음은 조용히 기기 음성만).
 
 ## 12. 테스트 픽스처 (실물 검증 데이터)
 
@@ -402,6 +407,15 @@ YOUTUBE_API_KEY=     # 선택(낭독 영상 자동 검색 시). 서버 전용. Y
 ### 16-4. 적용 범위
 
 `lib/speech.ts`를 쓰는 **모든 화면**이 자동으로 좋아진다 — 영어(카드 단어·챕터 리더 문장·단어장·시험·오답노트)와 일본어(단어·예문·한자·대화·시험 피드백) 전부. 화면 코드는 바꾸지 않는다.
+
+### 16-5. 이후 보강 — 언어별 엔진 · 기기 음성 품질 · 영속 캐시 (2026-09-19~20, 코드 기준 추가 기록)
+
+§16-1~16-4 이후 실사용 피드백으로 세 가지가 더해졌다. 동작의 진실 원천은 `lib/speech.ts`·`lib/tts-cache.ts`다.
+
+- **엔진은 언어별로 고른다.** 청취 비교에서 영어는 클라우드가, 일본어는 기기 음성(Kyoko)이 피치 액센트가 살아 더 자연스러웠다 — 그래서 언어 베이스마다 `cloud`/`device`를 사용자가 고른다(`localStorage` `tts-engine-{en|ja|ko}`). 기본값 `DEFAULT_ENGINE = { en: "cloud", ja: "device", ko: "cloud" }`(ko는 §18-3). device로 바꾸면 그 언어는 클라우드 호출이 0이다(진행 중 프리페치도 끊는다). 설정 UI는 `components/tts-engine-control.tsx`(단어장·챕터 리더·일본어 단어장·해설 듣기 바).
+- **기기 음성은 품질 순으로 고른다.** `utterance.lang`만 주면 브라우저가 대개 압축(compact) 음성을 잡는다 — 그 언어 음성을 품질 순으로 정렬해 가장 좋은 것을 쓰고(`rankVoicesForLang`), 사용자가 직접 고를 수도 있다(`tts-voice-{lang}`).
+- **합성 오디오는 두 겹으로 캐시한다.** 1차 메모리 Map(세션, 200개), 2차 **IndexedDB 영속 캐시**(`lib/tts-cache.ts` — 앱을 닫았다 열어도 재합성·재요금 없음, LRU 1000개·50MB). 옛 목소리가 섞이지 않게 `GET /api/tts`의 `voice|model|i{지시 버전}`을 **지문**으로 삼아 바뀌면 통째로 비운다(§18-3의 버전 규칙). 지문 조회가 일시 실패하면 세션당 3회까지 다시 시도하고, 그동안은 메모리만 쓴다(§18-2).
+- **프리페치**: 화면에 보이는 문장을 미리 합성해 첫 재생 지연(~1.3초)을 없앤다 — 한 번에 최대 90개, 동시성 2, device 언어는 하지 않는다(`prefetchSpeech`).
 
 ## 17. 학습 스트릭 — 연속 학습일 (2026-09)
 
