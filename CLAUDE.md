@@ -37,6 +37,7 @@
 | 2026-09-02 | 2026-08-25 이후 앱 확장 3종을 문서에 반영: **목록 순서변경**(서재·단어장·수학, 관리모드 드래그+↑↓, 공유 프리미티브 `use-reorder`)·**읽어주기 속도 조절**(전역·localStorage 영속)·**단어장 유의어·반의어 연결 + 관계 문제 시험**을 SPEC §15에 추가, README §5 판단 기록 갱신. 반영 마지막 커밋 `fd3863d` | CLAUDE.md, docs/SPEC.md, README.md | 세 기능이 코드·git에만 있고 제품 문서엔 없었다 — doc-commit 스킬로 동기화 |
 | 2026-09-02 | 유의어·반의어 연결을 **AI 추천 방식으로 재작업** 반영(a7df88e): SPEC §15-3의 진입 문장·상호기록 라우트·연결 UI를 갱신 — 기존 "단어장 내 항목만 나열" 피커가 아니라 호출 H(추천)로 실제 후보 제시 + 신규 추가(자동 보강)·연결. harness §11은 코드와 함께 이미 반영돼 불가침. 반영 마지막 커밋 `a7df88e` | docs/SPEC.md | 연결 대상이 단어장에 없으면 못 고르던 문제를 고쳐 UI·흐름이 §15-3 서술과 어긋났다 |
 | 2026-09-18 | **과목 확장(영어+수학 → +일본어)**: `docs/harness/japanese.md` 신설(호출 A 단어 생성·B 대화 전사·C 학습 해설, 후리가나 토큰 규약, 시험 4모드, 저장 모델, J0~J5 로드맵). HARNESS 과목표·파일배치, CLAUDE.md 하네스 섹션, study-orchestrator 과목 판별 단서 갱신 | docs/harness/japanese.md, docs/HARNESS.md, CLAUDE.md, study-orchestrator | "아빠의 일본어"(JLPT 단어장 + 듀오링고 대화 복습) 요청. 학습자가 아이가 아니라 성인이라 눈높이 규칙이 반대고, 표기/읽기 2축·후리가나 때문에 영어 단어장 스키마를 그대로 못 쓴다 |
+| 2026-09-24 | **아빠 영역 확장**: ① 대화 복습 해설 낭독(SPEC §18 — 일본어 문장 🔊 + 한국어 해설까지 이어 읽는 `speakQueue`, 클라우드 TTS에 `ko-KR` 추가, japanese.md §13 포인터) ② **아빠의 운동**(SPEC §19 — 러시안 파이터 풀업·푸시업 사다리, AI 없는 순수 엔진 `lib/workout.ts` + 사건 재생 상태 기계, `workoutCycles` 컬렉션, `/workout`). eval 2종(`eval:speech`·`eval:workout`, 오프라인) | docs/SPEC.md, docs/harness/japanese.md, CLAUDE.md | 사용자 요청 — 해설을 소리로 복습 + 운동 루틴 자동 추적. 운동은 결정적 규칙이라 LLM 코치 대신 순수 함수로(같은 입력=같은 답, 비용 0) |
 
 <!-- BEGIN:nextjs-agent-rules -->
 

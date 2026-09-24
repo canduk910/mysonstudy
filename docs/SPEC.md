@@ -416,7 +416,8 @@ YOUTUBE_API_KEY=     # 선택(낭독 영상 자동 검색 시). 서버 전용. Y
 | 사람 | 인정되는 활동 | 레코드 |
 |---|---|---|
 | **은우** | 영어 단어장 시험 | `VocabQuizRecord` |
-| **아빠** | 일본어 단어 시험 · 한자 시험 | `JaQuizRecord` · `JaKanjiQuizRecord` |
+| **아빠 · 일본어** | 일본어 단어 시험 · 한자 시험 | `JaQuizRecord` · `JaKanjiQuizRecord` |
+| **아빠 · 운동** (2026-09-24 추가 — §17-7) | 러시안 파이터 루틴을 **지킨 날** | `WorkoutCycleRecord`(§19-4) |
 
 **세지 않는 것**(의도적으로 제외):
 
@@ -481,3 +482,415 @@ interface StreakInfo {
 ### 17-6. eval
 
 순수 함수라 전부 오프라인으로 잠근다: KST 일자 환산(자정 경계·UTC 날짜와 다른 날), 연속 판정(오늘 함/어제까지 함/끊김), 같은 날 중복 세션 접기, **답한 문항 0인 세션 제외**, 최고 기록, 사람별 분리(은우 세션이 아빠 스트릭에 안 섞이는지 — 모드 무오염과 같은 함정).
+
+
+### 17-7. 아빠의 운동 트랙 (2026-09-24)
+
+사용자 요청: **"운동도 상단 스트릭에 구분해서 — 일본어, 운동."** 아빠 칸을 **🗾 일본어**와 **💪 운동** 두 트랙으로 나눠 **각자의 연속 일수**를 보인다. 두 트랙을 한 스트릭으로 합치지 않는다(합치면 운동만 한 날에 일본어 스트릭이 이어져 보인다 — 사람별 분리와 같은 함정).
+
+**무엇을 "지킨 날"로 세는가** — 운동 루틴에는 **계획된 휴식**이 있어 "운동한 날"만 세면 6일마다 끊긴다. 그래서 **루틴을 지킨 날**을 센다:
+
+| 센다 | 이유 |
+|---|---|
+| 운동 사건이 있는 날(`complete`·`fail` 모두) | 실패도 루틴의 일부다 — 정자세 한계까지 한 날 |
+| 엔진이 정한 **휴식·회복 휴식·마무리 휴식** 슬롯 날(오늘까지만) | 쉬라고 한 날에 쉰 것이 루틴을 지킨 것이다 |
+| **재측정을 끝낸 날** — 사건이 있는 사이클이 닫힌 `endedAt` KST 일자(Day 27 completed든, 재측정 안내를 따른 도중 재측정 abandoned든) | 재측정도 루틴의 한 날이다. 앱의 재측정 안내를 따른 날이 "건너뛴 날"로 스트릭을 끊으면 안 된다 |
+
+| 세지 않는다 | |
+|---|---|
+| 운동일에 기록 없이 지난 날 | 건너뛰었다 — **끊긴다** |
+| 재측정일에 RM을 안 넣고 지난 날 | 할 일을 안 했다 |
+| 시작 전(`not_started`) 날, 사이클이 없던 날, 사건 0개로 닫힌 사이클(레거시 정리)의 닫힌 날 | 루틴 밖 |
+| 오늘보다 뒤의 휴식 슬롯 | 아직 오지 않았다 |
+
+- 휴식 슬롯은 **사건 재생 규칙(§19-2)이 정한 것 그대로** 쓴다 — 화면·스트릭이 휴식 규칙을 따로 구현하지 않는다(엔진 `workoutKeptDays(cycles, todayKst)`, `lib/workout.ts`). 슬롯은 다음 사건 날짜 전날, 그 사이클이 닫힌 날, 오늘 중 가장 이른 날에서 자른다(**그날 포함**). 오늘 뒤 날짜의 사건(시계 어긋남)은 세지 않는다. 모든 사이클(중단 포함)의 날을 합집합으로 접는다. 한 날에 이유가 겹치면 라벨은 사건 > 재측정 끝냄 > 휴식 슬롯 순(가장 구체적인 것).
+- **오늘이 휴식 슬롯이면 `doneToday = true`** — "오늘 아직"으로 흐리게 두지 않는다(쉬는 것이 오늘 할 일이다).
+- 연속 판정·최고 기록·"어제까지 살아 있음" 규칙은 §17-3과 **같은 함수**를 쓴다 — 날짜 집합을 받는 코어(`computeStreakFromDays(days, todayKst)`)를 `lib/streak.ts`에서 떼어 내고, 기존 `computeStreak`(세션 → 날짜 집합)은 그 위에 얹는다(동작 불변 — 기존 eval 그대로 통과).
+- `/api/streak` 응답에 `appaWorkout: PersonStreak`을 더한다. 기존 `appa`는 **일본어 트랙 그대로**(호환). 운동 `todayLabel`(짧게): 기록함 → `Day 7 ✓` / 재부여 성공 `Day 5 목표 ✓` / 실패 `Day 7 ✗`, 휴식 → `휴식`, 회복 → `회복 휴식`, 마무리 → `마무리 휴식 2/3`, 재측정 끝낸 날 → `재측정 ✓`. 오늘 안 했으면 null. 일본어 `todayLabel`은 "일본어" 라벨이 앞에 붙으므로 `단어장 · {제목}` / `한자 시험`으로 줄인다.
+- **헤드라인**: `🧒 은우 🔥N일 …` | `🧑 아빠` 아래 두 트랙 `🗾 일본어 🔥N일 …` · `💪 운동 🔥N일 …` — 트랙마다 따로 흐리게/"오늘 아직"/짧은 라벨. 한 줄·고정 높이(`--streak-h`). 긴 라벨은 말줄임.
+- **폰(<640px) 표시 규칙**(e2e 실측: 전부 펼치면 530~700px라 390px 폰에서 💪 운동 트랙이 첫 화면 밖으로 밀렸다): 폰에서는 **`이모지 (사람 이름) 🔥N일`만** 보인다 — `🧒 은우 🔥N일 | 🧑 아빠 🗾 🔥N일 💪 🔥N일`. 트랙 이름·"오늘 아직"·오늘 라벨은 sm 이상에서만 보이고 폰에서는 스크린리더 문구로 남긴다(`max-sm:sr-only`). 아직인 쪽은 **흐림**이 신호다. 은우 칸도 같은 규칙. 사람 이름은 폰에서도 남긴다(🧒·🧑 이모지는 폰에서 거의 같아 보인다). 트랙은 🗾·💪 이모지로 가른다. 가로 스크롤은 남기되 스크롤바는 숨긴다(40px 안에 스크롤바가 생겨 글자가 잘리지 않게).
+- 운동 기록·취소·사이클 시작이 성공하거나 **409**(서버 상태가 이미 바뀜 — 다른 탭에서 이미 기록한 경우 등)면 `STREAK_REFRESH_EVENT`를 쏜다(시험 저장과 같은 즉시 갱신 — 성취감). 헤드라인은 겹친 재조회 중 **마지막 요청의 응답만** 반영한다.
+- eval: `eval:streak`에 코어 분리 회귀(기존 15항목 그대로) + `computeStreakFromDays` 직접 케이스, `eval:workout`에 `workoutKeptDays` — 운동·실패일 포함, 휴식·회복·마무리 휴식 포함, 운동일 건너뜀 → 끊김, 재측정 대기일 제외·재측정 끝낸 날 포함(도중 재측정 abandoned 포함, 사건 0개 사이클 제외), 미래 휴식 제외, 시작 전 제외, 중단 사이클 사건 포함, 두 사이클 합집합, 오늘 휴식이면 doneToday.
+
+## 18. 대화 해설 낭독 — 한국어 해설까지 이어 읽기 (2026-09)
+
+### 18-0. 무엇을 위한 것인가
+
+아빠의 일본어 **대화 복습 해설**(호출 C 결과 — 총평·잘한 점·고칠 점·어휘·다음 연습, `components/ja-dialog-coaching-view.tsx`)은 지금 **어휘 단어에만 🔊가 있다.** 해설의 본체인 한국어 설명과 일본어 인용·고친 문장·연습 문장은 소리로 들을 수 없다.
+
+요청(2026-09-24): **"가이드 해설에도 음성 낭독 기능"**. 그래서 두 가지를 붙인다.
+
+1. **일본어 문장마다 🔊** — 잘한 점 인용(`quoteJa`)·고칠 점의 원문(`originalJa`)과 고친 문장(`betterJa`)·다음 연습(`practice[].ja`). 단어 🔊와 같은 단발 재생(`speak(ja, "ja-JP")`).
+2. **"🎧 해설 듣기" — 해설 전체를 순서대로 이어 읽기.** 한국어 설명은 한국어로, 일본어 문장은 일본어로.
+
+적용 화면은 해설 뷰를 쓰는 **두 곳 모두**다 — 대화 상세(`/japanese/dialog/[id]`)와 새 대화 검토 화면(`/japanese/dialog/new`). 뷰 컴포넌트 하나에 넣으면 둘 다 따라온다.
+
+**기대치(명시)**: 이어 읽기는 **화면을 켠 상태**를 기준으로 한다. iOS Safari는 화면이 잠기거나 앱이 백그라운드로 가면 `speechSynthesis`와 JS 타이머를 멈춘다 — 잠금 화면 연속 재생은 보장하지 않는다(기본 조합에서 일본어가 기기 음성이기 때문). 오디오 요소만 쓰는 "일본어도 클라우드" 설정에서만 이어질 가능성이 있고, 소리 설정에 그 안내를 한 줄 둔다. 오프라인으로 세션을 시작하면 영속 캐시 지문을 못 받아 IDB 캐시를 쓰지 못한다(§16 기존 규약) — 오프라인 재청취는 보장하지 않는다.
+
+### 18-1. 낭독 대본 — 순수 함수로 만든다 (`lib/ja-coaching-script.ts`)
+
+해설 → **대본**(재생할 조각 배열)을 만드는 일은 화면이 아니라 **순수 함수**가 한다. 런타임 import는 `./tts-shared`의 상수뿐, 타입은 `import type`(클라이언트 번들 안전 — `lib/tts.ts`(openai)를 절대 import하지 않는다). 오프라인 eval로 잠근다.
+
+```ts
+interface ScriptPiece {
+  text: string;               // 읽을 텍스트(trim됨, 비어 있지 않음, length ≤ TTS_TEXT_MAX_CHARS)
+  lang: "ko-KR" | "ja-JP";
+  section: "summary" | "goods" | "fixes" | "items" | "practice";
+  item: number | null;        // 하이라이트 대상 카드 번호. 섹션 제목 조각은 null, 총평 본문은 0
+}
+export function buildCoachingScript(c: JaDialogCoaching): ScriptPiece[];
+export function splitForTts(text: string, max: number): string[];
+export function normalizeKoForTts(text: string): string;
+export function coachingJaTexts(c: JaDialogCoaching): string[]; // 프리페치용 일본어 문장 목록
+```
+
+순서(빈 섹션 — 배열이 비었거나 본문 조각이 하나도 안 남는 섹션 — 은 제목까지 통째로 건너뛴다. 각 필드는 `(s ?? "").trim()`, 비면 조각을 만들지 않는다):
+
+| 섹션 | 조각 |
+|---|---|
+| 총평 | ko `총평.` → ko `summaryKo`(item 0) |
+| 잘한 점 | ko `잘한 점.` → 항목 i마다: ja `quoteJa` → ko `whyKo` |
+| 고칠 점 | ko `고칠 점.` → 항목 i마다: ja `originalJa` → (betterJa가 있으면) ko `고치면,` → ja `betterJa` → ko `whyKo` → (있으면) ko `문법: {grammarKo}` |
+| 어휘 | ko `어휘.` → 항목 i마다: ja `word` → ko `meaningKo` → (있으면) ko `usageKo` |
+| 다음 연습 | ko `다음 연습.` → 항목 i마다: ja `ja` → (있으면) ko `ko` |
+
+**한국어 정리(`normalizeKoForTts`)** — 한국어 조각에만, **쪼개기 전에** 적용한다: `→`·`⇒`는 `, `로, `〜`·`～`는 제거, 이모지(Extended_Pictographic)는 제거하고 떨어져 남은 결합 문자(U+FE0F 변형 선택자·U+200D ZWJ·U+20E3 키캡 — `1️⃣`는 숫자만 남는다)도 지운다, 지운 자리에 남은 문장부호 앞 공백은 붙인다(`요 😊.` → `요.`), 연속 공백은 하나로. 일본어 조각은 **정리하지 않는다**(🔊·프리페치의 캐시 키와 글자까지 같아야 캐시가 맞는다).
+
+**쪼개기(`splitForTts`) — 규칙 확정**:
+
+- 길이는 `String.length`(UTF-16)로 잰다 — 서버 zod(`app/api/tts/route.ts`)와 같은 단위.
+- `text.trim().length ≤ max`면 `[text.trim()]` 한 조각(일본어 조각은 거의 전부 여기).
+- 문장 끝: `[.?!]` 뒤에 공백이나 문자열 끝이 올 때(`3.5배`·`N5.x`는 안 자른다), `[。？！]`는 공백이 없어도 끝. 문장 끝 부호 **바로 뒤의 닫는 기호** `」』）)"'’”】`는 앞 조각에 붙인다(`「そうです。」라고` → `」`가 뒤 조각 머리로 가지 않게).
+- **번호 목록 머리**(줄 머리나 공백 뒤 `\d{1,2}.` + 공백 — `1. 첫째`)는 문장 끝이 아니다(번호가 앞 조각 꼬리에 붙지 않게). 강제 자르기도 그 바로 뒤에서 자르지 않는다.
+- 문장 단위로 자른 뒤 **max 이하가 되도록 앞에서부터 탐욕적으로 묶는다.**
+- 한 문장이 max를 넘으면 max 이내 마지막 `, 、 ，` 또는 공백에서, 그것도 없으면 max에서 자르되 **서로게이트 쌍을 쪼개지 않는다**(max < 2에서 둘이 부딪치면 쌍 보존이 길이 상한보다 우선 — 이론상 경계).
+- 불변식(eval로 잠금): 모든 조각이 trim됨·비어 있지 않음·`length ≤ max`, 그리고 `pieces.join("").replace(/\s+/g,"") === text.replace(/\s+/g,"")`(글자 유실·추가 없음). 조각 내부 공백은 건드리지 않는다. 빈·공백 입력 → `[]`. `max < 1`은 방어(1로 취급).
+- 쪼갠 조각은 같은 `section`·`item`을 갖는다.
+
+### 18-2. 연속 재생 엔진 — `lib/speech.ts`에 `speakQueue` 추가
+
+`speak(text, lang)`·`speakSequence`·`stopSpeaking`·`prefetchSpeech`의 **시그니처와 동작은 그대로**(§16-1). 기존 `speak()` 경로는 지금처럼 재생마다 `new Audio`를 쓴다. 새 공개 API:
+
+```ts
+export function speakQueue(
+  items: { text: string; lang: string }[],
+  handlers?: { onItem?: (index: number) => void; onEnd?: (reason: "done" | "stopped") => void },
+): () => void;                       // 반환 = 멈추기 함수
+export function unlockSpeechPlayback(): void; // 탭 핸들러 안에서 동기로 — iOS 재생 잠금 해제(§19 운동 안내도 쓴다)
+```
+
+**정지·종료 계약(가장 중요)**
+
+- 시작 시 `cancelPlayback()`으로 이전 재생(단발·큐)을 끊고 새 세대 토큰을 받는다.
+- 모듈 변수 `activeQueueEnd`를 두고, **`cancelPlayback()`이 토큰을 올린 직후 동기적으로** 활성 큐를 끝낸다(`onEnd("stopped")`). 그래서 다른 🔊(`speak`)·`stopSpeaking()`·새 `speakQueue()`가 오면 옛 큐의 `onEnd("stopped")`는 **그 호출이 반환되기 전에**, 새 큐의 `onItem(0)`보다 **먼저** 온다. 재생 중이던 조각도 즉시 끊긴다.
+- `onEnd`는 **정확히 한 번**(ended 플래그). 끝까지 읽으면 `"done"`. 핸들러 호출은 try/catch로 감싼다. **핸들러 안에서 `speak`/`speakQueue`를 부르지 않는다**(재진입 금지 — 계약).
+- 반환된 멈추기 함수: 이미 끝났으면 no-op. 아직 이 큐의 세대면 `cancelPlayback()`, 이미 다른 재생에 밀렸으면 자기만 정리(`onEnd("stopped")`는 이미 불렸으므로 no-op) — **끝났거나 밀려난 큐의 stop이 그 뒤 시작된 다른 재생을 죽이면 안 된다.**
+- 빈 items(모두 공백): cancel 없이 `onEnd("done")`을 microtask로 한 번 부르고 no-op 함수를 돌려준다.
+- 큐는 조각을 쪼개지 않는다(인덱스 보존). 300자를 넘는 조각은 그 조각만 기기 음성.
+
+**조각 재생**
+
+- 조각마다 그 시점의 엔진(`getTtsEngine(lang)`)을 따른다 — 속도·엔진 변경은 **다음 조각부터** 반영.
+- cloud: 캐시/합성 → 재생. 실패(합성 에러·재생 에러·타임아웃)하면 **그 조각만** 기기 음성. 조각당 cloud 시도 1회, 한 방향 폴백(cloud → device → 건너뜀).
+- **501(키 없음)을 한 번 받으면 이후 조각은 기기 직행**(`cloudOff`) — 로컬·키 미설정에서 조각마다 요청을 되풀이하지 않는다.
+- **합성 대기 타임아웃 8초** — **큐가 그 조각을 기다리기 시작한 시점부터** 잰다(look-ahead가 요청을 먼저 보냈어도, 앞 조각을 재생하는 동안의 시간은 세지 않는다 — 느린 망에서 멀쩡한 합성이 기기 음성으로 떨어지지 않게). 타임아웃은 **대기 쪽 setTimeout**으로만 걸고, 요청은 큐의 AbortController로만(큐가 끝날 때) 끊는다 — 늦게 끝난 합성도 캐시에 남아 재청취에 쓰인다(`AbortSignal.any`·`AbortSignal.timeout`은 iOS 17.4+라 쓰지 않는다). 넘으면 그 조각은 기기 음성.
+- **클라우드 조각 재생 안전 타임아웃**: `ended`가 끝내 안 오면 큐가 멈춘다. 오디오 `duration`이 유한하면 `duration × 1000 + 3초`, 아니면 기기 추정식과 같은 값으로 상한을 두고, 넘으면 그 조각을 끝난 것으로 보고 다음으로 간다(재생 중 소리는 끊는다).
+- 지문 공급자(`GET /api/tts`) fetch에 3초 타임아웃. **타임아웃·네트워크 실패는 그 세션을 영구히 "메모리만"으로 고정하지 않는다** — 이번 조회만 메모리로 처리하고, 다음 캐시 접근에서 다시 시도한다(세션당 조회 시도 총 3회 — 첫 시도 포함, 동시에 몰린 조회는 한 번의 시도를 함께 기다리고, 저장(put)은 조회를 새로 일으키지 않는다. 200인데 본문이 깨진 응답도 일시 실패로 센다. 서버가 명시적으로 지문 없음을 주면 기존대로 메모리만). 그러지 않으면 한 번의 느린 응답이 영어 단어장까지 모든 화면의 영속 캐시를 그 세션 내내 꺼 재합성 요금을 낸다.
+- device: **기다릴 수 있는 기기 재생**(`speakDeviceAwait`) — `onend`/`onerror`로 풀리고, `currentPlayStop`에 등록돼 `cancelPlayback()`이 이벤트를 기다리지 않고 즉시 푼다. utterance는 모듈 변수로 붙잡는다(GC로 `onend`가 사라지는 Chrome 버그). 말하는 중일 때만 `cancel()`한다(조각마다 무조건 cancel 금지 — iOS·Chrome에서 새 발화가 씹힌다). **안전 타임아웃**: 추정 `max(3초, 글자수 × 250ms ÷ rate + 2초)`; 만료 시 `speechSynthesis.speaking || pending`이면 1초씩 연장(상한 = 추정 × 3), 아니면(또는 상한) `cancel()` 후 다음 조각. 기존 `fallbackDevice`(무조건 cancel·onend 없음)는 큐에서 재사용하지 않는다.
+- 소리를 낼 수 없는 상태(기기 음성 미지원 + cloud 불가)로 **연속 3조각**이 즉시 끝나면 큐를 `"stopped"`로 끝낸다(하이라이트만 번쩍이며 "done"이 되지 않게).
+- 테스트 훅 `__setQueueTiming({...})`(기존 `__clearTtsMemoryCache` 관용구)로 타임아웃 상수를 eval에서 줄일 수 있게 한다.
+
+**미리 받기(look-ahead)** — 큐 전용이다.
+
+- 큐마다 자기 `AbortController`와 로컬 `pending: Map<cacheKey, Promise<Blob>>`를 둔다(키 = `${lang}:${speed}:${text}`, 기존 캐시 키와 동일 → 속도를 바꾸면 자연히 무효). 재생 단계는 `pending.get(key) ?? getAudioBlob(...)`을 기다린다 — **같은 문장을 두 번 합성하지 않는다**(짧은 제목 조각 뒤 긴 조각에서 흔히 겹친다).
+- 조각 i 재생 중 **다음 cloud 조각 2개**(device 조각은 세지 않음)를 순차로 받는다. 발사 직전에 엔진·`canUseCloud`를 다시 확인한다.
+- 전역 `prefetchSpeech`/`prefetchAbort`/`prefetchLang`을 **건드리지 않는다**(페이지 프리페치와 서로 끊지 않게). 큐가 끝나면 abort·맵 비우기.
+- 해설 전체를 미리 합성하지 않는다(안 들을 수도 있다 — 비용 가드).
+
+**iOS 자동재생 제약** — 사용자 탭 밖에서 새 `Audio`를 `play()`하면 iOS Safari가 막을 수 있다.
+
+- 큐는 **오디오 요소 하나(`queueAudio`)를 재사용**한다. `playBlob(blob, token, el?)`에 요소 주입만 추가한다(기본값은 지금처럼 `new Audio` — `speak()` 경로 불변). 주입 시 이전 핸들러를 먼저 비우고 `el.src = url`. `finish`의 동일성 검사는 `currentAudioUrl === url`(호출마다 유일)로 바꾼다.
+- `unlockSpeechPlayback()`: `queueAudio`를 만들고(없으면) 0.1초 무음 WAV(한 번 만든 objectURL, 상수라 revoke 안 함)로 `play()` — 그 Promise의 reject(AbortError 등)는 따로 삼킨다. 기기 음성도 `cancelPlayback()` **다음에** 볼륨 0 빈 발화(`" "`)를 한 번 말해 잠금을 푼다. `speakQueue`는 시작할 때(취소 **다음에**, **첫 `await` 전에**) 이 잠금 해제를 스스로 한다 — 그래서 **탭 핸들러 안에서 동기적으로** 호출돼야 한다. 공개 `unlockSpeechPlayback()`은 **지금 나는 소리를 끊지 않는다**(재생 중이면 요소·발화를 건드리지 않고, 조용할 때만 잠금 해제) — §19 세션의 ✓ 탭이 앞 세트 안내 음성을 자르지 않게.
+- 큐 요소에서 **우리가 일으키지 않은 `pause`**(잠금 화면 ⏸·전화)가 오면 큐를 `"stopped"`로 끝낸다(`ended`가 안 와 막히거나 타임아웃 뒤 다시 재생하지 않게).
+- 재생한 조각의 `objectURL`은 기존 규약대로 회수한다(누수 금지 — eval에서 생성 수 = 회수 수).
+- 최종 확인은 실기기(아빠 iPhone Safari)다.
+
+### 18-3. 한국어를 클라우드 TTS 언어에 추가
+
+- `lib/tts-shared.ts`: `TTS_LANGS = ["en-US", "ja-JP", "ko-KR"]`(라우트 zod enum이 이 배열을 쓰므로 자동 허용).
+- `lib/tts.ts`: `TTS_INSTRUCTIONS["ko-KR"]`를 기존처럼 **영어로** 쓴다 — 요지: 한국어 표준어(서울)로 또박또박, **글 속 일본어(가나·한자, 특히 「」 안)는 일본어 읽기로 — 중국어 금지**, 성인 학습자에게 강의를 설명하는 차분한 교사 톤. `export function ttsInstructionsFor(lang: TtsLang): string`를 추가해 eval이 모든 `TTS_LANGS`의 지시가 비어 있지 않은지 확인한다(tsx eval은 타입 검사를 안 하므로).
+- **`TTS_INSTRUCTIONS_VERSION`은 올리지 않는다(2 유지).** 이 값은 영속 캐시 지문 전체에 걸린다 — 올리면 이미 캐시된 영어·일본어 오디오가 통째로 비워져 재합성 비용이 난다. 새 언어 추가는 기존 키와 겹치지 않는다. ⚠️ 나중에 **ko 지시를 튜닝하면 버전을 올려야 하고, 그러면 전 언어 캐시가 비워진다** — 그 비용을 감수할 때만 고친다.
+- **한국어 기본 엔진은 cloud**(`DEFAULT_ENGINE.ko = "cloud"`). 이유: 기기 한국어 음성은 해설 속 일본어 인용을 한국어식으로 읽거나 건너뛴다. 일본어 기본(device, Kyoko)은 그대로 — 해설 듣기의 기본 조합은 **"한국어 해설자(클라우드) + 일본어 원어민(기기)"**.
+- `components/tts-engine-control.tsx`: 언어 라벨을 삼항이 아니라 맵(`{"en-US":"영어","ja-JP":"일본어","ko-KR":"한국어"}`)으로, `SAMPLE["ko-KR"]`은 일본어 인용이 섞인 문장(예: `안녕하세요. 오늘은 「は」와 「が」의 차이를 알아볼게요.`)으로 — 혼합 낭독 지시가 먹는지 들어 볼 수 있게.
+- **영속 캐시 상한**: 해설 한 번이면 한국어 조각 30~60개가 IDB에 들어간다. 항목 상한 300이면 대화 몇 개만 들어도 은우의 영어 단어 오디오가 밀려난다 → `lib/tts-cache.ts`의 `MAX_ITEMS`를 **1000**으로(바이트 상한 50MB는 그대로 — 실제 제약은 바이트가 한다).
+- 비용: 대화 하나의 해설이 대략 1~2천 자 — §16-0과 같은 "무시할 만한" 규모이고, 한 번 합성하면 영속 캐시에 남는다.
+
+### 18-4. 화면 (`components/ja-dialog-coaching-view.tsx`)
+
+- 해설 맨 위 **해설 듣기 바**(`position: sticky; top: var(--streak-h, 0)`; 배경 `var(--bg)` — 자동 스크롤이 카드를 따라가도 ■ 멈추기가 화면에 남게): 정지 상태면 `🎧 해설 전체 듣기`, 재생 중이면 `■ 멈추기` + 진행 **`{조각 index+1} / {대본 길이}`**(조각 기준, `aria-live="polite"`). `<details>` "⚙️ 소리 설정" 안에 `TtsSpeedControl`, `TtsEngineControl lang="ko-KR"`, `TtsEngineControl lang="ja-JP"` + "화면을 끄고 들으려면 일본어도 클라우드로" 안내 한 줄.
+- 각 섹션 제목 옆 **`▶`** = 그 섹션 첫 조각부터 이어 듣기(UI가 오프셋을 더해 절대 인덱스로 관리).
+- 재생 중 카드(섹션·item) **하이라이트**: 레이아웃이 밀리지 않게 `border-color` + `box-shadow: 0 0 0 1px var(--accent)`. item이 null(제목 조각)이면 섹션 제목을 강조. (section,item)이 바뀔 때만 `scrollIntoView({ block: "nearest", behavior })`(`prefers-reduced-motion`이면 `"auto"`), 카드에 `scroll-margin-top: calc(var(--streak-h, 0px) + var(--coach-bar-h, 56px) + 8px)` — 듣기 바 실제 높이를 ResizeObserver로 재 `--coach-bar-h`에 넣는다. 재생을 시작하면 소리 설정 `<details>`를 접는다(펼친 설정이 바를 키워 따라가는 카드를 가리지 않게).
+- 일본어 문장 옆 **🔊**(기존 `.speak` 클래스·`speakJa`): `quoteJa`, `originalJa`(취소선 그대로 — 내가 한 말과 고친 말을 귀로 대조), `betterJa`, `practice.ja`. 누르면 토큰 규약으로 이어 읽기가 멈춘다.
+- 재생 시작은 **onClick 안에서 동기로** `speakQueue(...)`(await·setTimeout 금지). UI는 실행 번호(`runRef`)로 옛 실행의 `onItem`/`onEnd`를 무시한다(이중 안전장치).
+- 정지 조건: ① 언마운트(`useEffect(() => () => …, [])`), ② **대본 내용 키**(`script.map(p => p.lang + "|" + p.text).join("\n")`)가 바뀔 때(해설 "다시 만들기"). 참조만 바뀌는 `router.refresh()`("단어장에 담기")에는 멈추지 않는다. 정지에는 `stopSpeaking()`이 아니라 **큐가 돌려준 stop**을 쓴다(말풍선 🔊를 죽이지 않게).
+
+### 18-5. 프리페치 정리
+
+대화 상세는 부모(전사 `turns`)와 자식(해설 어휘·연습)이 각자 `prefetchSpeech`를 부른다. `prefetchSpeech`는 새 배치가 오면 직전 배치를 끊고, React 패시브 효과는 **자식 → 부모** 순으로 돌기 때문에 **해설 쪽 프리페치는 부모에게 항상 끊긴다**(일본어 엔진이 cloud일 때 해설 🔊 첫 재생이 느린 원인. 기본 device면 둘 다 no-op이라 드러나지 않았다).
+
+→ 해설 뷰에 `prefetch?: boolean`(기본 true) prop. 상세는 `prefetch={false}`로 끄고, **전사 문장 + `coachingJaTexts(coaching)`을 한 배열로** 한 번만 부른다. 의존성은 배열 참조가 아니라 **문자열 키**(`join("\u0001")`) — `router.refresh()`로 참조만 바뀌면 다시 시작하지 않는다(중단된 요청의 합성 요금 낭비 방지). 검토 화면은 부모가 프리페치하지 않으므로 기본값(true) 그대로. 한국어 해설은 미리 받지 않는다(이어 듣기 look-ahead가 맡는다).
+
+### 18-6. eval (오프라인 — `scripts/eval-speech.ts`, `npm run eval:speech`, 실호출 0)
+
+`scripts/eval-streak.ts` 관용구(CheckResult·add·printTable·실패 시 exit 1). store import 금지. **`lib/tts`는 지시 상수 검사(`ttsInstructionsFor`·`TTS_INSTRUCTIONS_VERSION`)를 위해서만 dynamic import를 허용한다** — 클라이언트는 지연 생성이라 합성 호출이 없고, 키를 비우고 fetch 스텁을 먼저 깐 뒤 불러온다(실호출 0).
+
+- **대본**: 픽스처 해설의 (section, lang, text, item) 순서가 §18-1 표와 정확히 같음 / 빈 goods·fixes → 제목 조각 없음 / `grammarKo` null·""·"  " → `문법:` 조각 없음, `usageKo`·`practice.ko` 빈 문자열 → 조각 없음 / 언어 표기 / item(제목 null, 총평 0, 카드 0..n-1) / 400자 whyKo가 여러 조각이 돼도 같은 section·item·순서 보존 / 빈 조각 0·trim·≤300 / 일본어 조각 == 원문.trim() / `coachingJaTexts` ⊆ 일본어 조각 / `normalizeKoForTts`(→·〜·이모지).
+- **쪼개기**: ≤max는 1조각(정확히 max 포함) / 긴 한국어 문단 >1조각·각 ≤max·문장 끝에서 / join 불변식 / 구두점 없는 700자 / 쉼표·`、` 폴백 / `3.5배` 안 잘림 / `。` 뒤 공백 없이도 잘림 / `「…。」라고`의 `」`가 앞 조각 / 이모지 경계에서 고립 서로게이트 없음 / 빈·공백 → [].
+- **상수·엔진**: `isTtsLang` ko-KR·en-US·ja-JP true, `ko`·`zh-CN` false / `TTS_INSTRUCTIONS_VERSION === 2` / 모든 `TTS_LANGS`의 `ttsInstructionsFor` 비어 있지 않음 / 기본 엔진 ko=cloud·ja=device·en=cloud.
+- **큐 스텁**(가짜 `window`·`Audio`·`speechSynthesis`·`SpeechSynthesisUtterance`·`fetch`·`URL.createObjectURL/revokeObjectURL` 카운터를 전역에 깐 뒤 `await import("../lib/speech")`): ① 전부 cloud — onItem 순서·onEnd("done") 1회·POST 수 == 고유 조각 수(짧은→긴 조각 픽스처 포함, look-ahead 중복 합성 없음) ② 중간 stop — onEnd("stopped")가 stop 안에서 동기 1회·이후 onItem 없음·pause 호출·두 번째 stop no-op ③ 재생 중 `speak()` — 옛 onEnd가 speak 반환 전에 ④ 재생 중 새 큐 — 옛 onEnd가 새 onItem(0)보다 먼저, 새 큐는 done까지 ⑤ 끝난 큐의 stop을 다른 speak 재생 중에 불러도 그 재생이 안 죽음 ⑥ 한 조각 POST 500 → 그 조각만 기기 음성·큐 계속 ⑦ 501 → 이후 POST 0 ⑧ 기기 onend 안 옴 → 안전 타임아웃으로 진행(`__setQueueTiming`), speaking이면 연장 ⑨ 정상·중간 정지 모두 createObjectURL 수 == revoke 수(무음 URL 제외) ⑩ ko 엔진 device면 POST 0 ⑪ 빈 items → onEnd("done") 1회, 진행 중이던 speak 오디오는 안 멈춤 ⑫ 합성 fetch가 안 끝남 + 짧은 타임아웃 → 그 조각 기기 음성·큐 계속. 추가 잠금: 무음 잠금 해제가 실제로 큐 요소 src+play를 하는지, look-ahead가 일어나고 2개에서 멈추며 device 조각을 세지 않는지, 말하는 중일 때만 cancel(잠금 해제 빈 발화 뒤 예외), 무음 재생 중 src 교체의 낡은 pause 무시, 대기 타임아웃 기산점·요청 유지, 클라우드 재생 안전 타임아웃(duration 유무), 지문 재시도(일시 실패 → 재시도, 3회 상한, 동시 조회 1회, put은 조회 안 일으킴), 번호 목록·키캡·이모지 뒤 공백.
+
+## 19. 아빠의 운동 — 러시안 파이터 풀업·푸시업 루틴 (2026-09)
+
+### 19-0. 무엇을 위한 것인가
+
+아빠(성인 학습자 — 일본어와 같은 사람)가 **파벨 차졸린의 러시안 파이터 루틴**(Greasing the Groove 계열 풀업·푸시업 사다리)을 매일 따라가도록, **오늘 할 세트를 계산해 보여 주고, 기록을 받아 다음 날을 자동으로 정하는** 기능이다. 사이클이 끝나면 RM을 재측정해 **다음 사이클을 자동으로 다시 계산**한다.
+
+- 사용자 원안(2026-09-24): RM 입력 / 일일 세트 성공 여부 기록 → 사다리 수열 생성·예외 처리 엔진 → 상태 저장(현재 Day·실패 플래그·누적 볼륨) → 당일 목표 세트와 진행률 표시. 원안 Python 생성기(`step_indices = [None, 4, 3, 2, 1]`, 블록마다 직전 블록 베이스 +1)가 계획의 오라클이다.
+- **AI 호출이 없다.** 원안의 LLM 코치 프롬프트가 하던 일(Day 계산·실패 롤백·브리핑)은 전부 결정적 규칙이라 **순수 함수 엔진**이 한다. 같은 입력이면 언제나 같은 답이 나와야 하는 상태 기계를 LLM에 맡길 이유가 없다(비용·오답 위험만 는다). 브리핑 문구와 주의사항은 코드가 만든다.
+- 상단 스트릭(§17)에는 **일본어와 구분된 별도 트랙 `💪 운동`** 으로 들어간다(2026-09-24 사용자 요청, §17-7). 일본어 스트릭에는 섞지 않는다. 세는 기준은 "루틴을 지킨 날"(운동·실패 기록일 + 계획된 휴식일 + 재측정 끝낸 날).
+
+### 19-1. 사다리 규칙 (엔진 — `lib/workout.ts`, 순수 함수)
+
+**Day 1 사다리(베이스)** — RM으로부터:
+
+- 맨 위 세트 = `max(1, floor(RM × 비율))`. 비율: **풀업 0.6(=3/5), 푸시업 0.5(=1/2)**. 부동소수 오차를 피하려고 **정수 분수**로 계산한다(`Math.floor(rm * 3 / 5)`, `Math.floor(rm / 2)`).
+- 5세트, 1회씩 내려간다: `[top, top-1, top-2, top-3, top-4]`, 각 세트 **최소 1**.
+- 예: 풀업 10RM → `[6,5,4,3,2]`(20회), 푸시업 18RM → `[9,8,7,6,5]`(35회), 풀업 11RM → top 6, 푸시업 17RM → top 8, 풀업 1~3RM → `[1,1,1,1,1]`.
+- RM 입력 범위: 정수 **1~150**. `top − 4 < 1`(풀업 RM < 9, 푸시업 RM < 10)이면 설정 화면에 경고: "RM이 낮으면 이 루틴의 부담이 커요 — 사다리가 평평해져요." (막지는 않는다.)
+- **목표는 항상 사이클에 저장된 `base`로 계산한다.** RM에서 다시 계산하지 않는다(규칙이 바뀌어도 진행 중 사이클이 흔들리지 않게).
+
+**27일 사이클** — 4블록 × 6일 + 마무리 휴식 2일 + 재측정 1일:
+
+| Day | 종류 |
+|---|---|
+| 1~5, 7~11, 13~17, 19~23 | 운동(`workout`) — 20일 |
+| 6, 12, 18 | 휴식(`rest`) — 블록 마지막 날 |
+| 24, 25, 26 | 마무리 휴식(`cycle_rest`) |
+| 27 | 재측정(`retest`) — 새 RM 입력 |
+
+> **Day 23 뒤 3일 연속 휴식은 의도다** — 원안 Python의 Day 24 REST(블록 4의 휴식일) + 원안 문구 "Day 24 완료 시 25~26 휴식". 휴식 카드에 "사이클 마무리 휴식 1/3"처럼 순번을 보인다.
+
+**운동일 목표** — Day `n`에서 블록 `b = floor((n−1)/6)`, 블록 안 `d = (n−1) % 6`(0~4):
+`target[i] = base[i] + b + (d > 0 && i ≥ 5 − d ? 1 : 0)` (i = 0~4). 즉 블록 베이스 = Day 1 +b, 블록 안에서 **뒤쪽 세트부터** 하루에 하나씩 +1(d=1 → 5세트, d=2 → 4세트, d=3 → 3세트, d=4 → 2세트). 다음 블록 첫날은 1세트까지 +1된 셈이라 "Day 1 전 세트 +1"과 같다.
+
+기준 픽스처(풀업 10RM / 푸시업 18RM) — **eval이 이 표와 원안 Python 오라클 둘 다로 잠근다**:
+
+| Day | 풀업 | 합 | 푸시업 | 합 |
+|---|---|---|---|---|
+| 1 | 6,5,4,3,2 | 20 | 9,8,7,6,5 | 35 |
+| 2 | 6,5,4,3,3 | 21 | 9,8,7,6,6 | 36 |
+| 3 | 6,5,4,4,3 | 22 | 9,8,7,7,6 | 37 |
+| 4 | 6,5,5,4,3 | 23 | 9,8,8,7,6 | 38 |
+| 5 | 6,6,5,4,3 | 24 | 9,9,8,7,6 | 39 |
+| 7 | 7,6,5,4,3 | 25 | 10,9,8,7,6 | 40 |
+| 11 | 7,7,6,5,4 | 29 | 10,10,9,8,7 | 44 |
+| 13 | 8,7,6,5,4 | 30 | 11,10,9,8,7 | 45 |
+| 19 | 9,8,7,6,5 | 35 | 12,11,10,9,8 | 50 |
+| 23 | 9,9,8,7,6 | 39 | 12,12,11,10,9 | 54 |
+
+사이클 전체 목표 볼륨: 풀업 590회, 푸시업 890회(표시용 아님 — eval 검산용).
+
+**진행 방식(슈퍼세트)**: 풀업 1세트 → 2~3분 휴식 → 푸시업 1세트 → 2~3분 휴식 → 풀업 2세트 … 총 10스텝. 스텝 k(0~9): k 짝수 = 풀업, 홀수 = 푸시업, 세트 번호 `floor(k/2)`.
+
+### 19-2. 기록과 상태 기계
+
+**저장하는 것은 사건(event)뿐이다.** "현재 Day"·"실패 플래그"·"누적 볼륨"은 **저장하지 않고 사건을 재생해 계산한다**(스트릭 §17-5와 같은 규약 — 저장하면 두 진실이 갈린다).
+
+```ts
+type WorkoutExercise = "pullup" | "pushup";
+interface SetPair { pullup: number[]; pushup: number[] }       // 5개씩
+interface FailedAt { exercise: WorkoutExercise; setIndex: number /*0..4*/; reps: number | null }
+interface WorkoutEvent {
+  date: string;        // KST 일자 YYYY-MM-DD — 서버가 기록 시점에 찍는다(lib/kst)
+  at: string;          // ISO UTC
+  kind: "complete" | "fail";
+  day: number;         // 이 운동이 차지한 계획 Day(슬롯)
+  targetDay: number;   // 실제로 쓴 목표의 Day — 보통 day, 실패 후 복귀(재부여)면 직전 성공 Day
+  failed: FailedAt | null;  // fail일 때만
+  reps: SetPair;       // 실제 수행 횟수 — 서버가 계산해 넣는다
+}
+```
+
+**재생(`replay`)** — 사건을 **배열 순서 그대로** 접는다(정렬하지 않는다 — 배열 끝이 undo 대상이고, 저장 불변식이 날짜 순서를 보장한다):
+
+- 초기: `nextDay = 1`, `repeatOf = null`, `lastSuccessDay = null`, `failsAtNextDay = 0`.
+- `complete`:
+  - 재부여 운동(`targetDay ≠ day`): `repeatOf = null`, `lastSuccessDay = targetDay`. **`nextDay`·`failsAtNextDay`는 그대로**(실패했던 그 Day에 다시 도전한다).
+  - 보통 운동: 완료 집합에 `day`를 넣고 `lastSuccessDay = day`, `nextDay` = 다음 운동일(23 → 27), **`failsAtNextDay = 0`**.
+- `fail`: `repeatOf = lastSuccessDay`(없으면 null → 같은 Day를 그대로 재도전), `failsAtNextDay += 1`, 실패 수 +1(`failsByDay[day] += 1`).
+- 모든 사건: 볼륨 += `reps` 합.
+
+**휴식은 달력이 채우고, 운동은 기록이 채운다.**
+
+- 마지막 사건 L(날짜 dL) 다음부터 **휴식 슬롯**이 달력 하루씩 차지한다:
+  - L이 `fail` → 슬롯 1개: **회복 휴식**(recovery).
+  - L이 재부여 `complete` → 슬롯 0개(회복 휴식을 이미 했다 — 계획 휴식을 또 넣지 않는다).
+  - L이 보통 `complete` → L.day와 `nextDay` 사이의 계획 휴식일 전부(Day 5 뒤 → [6], Day 23 뒤 → [24, 25, 26], 그 밖 → []).
+- `gap = diffDateStrings(dL, today)`(KST 일자 차, `lib/kst.ts`에 추가하는 단일 정의):
+  - `gap ≤ 0` → **오늘 기록함**(`recorded_today`). 오늘은 더 할 게 없다.
+  - `1 ≤ gap ≤ 슬롯 수` → 그 슬롯의 **휴식/회복 휴식**.
+  - `gap > 슬롯 수` → `nextDay`가 27이면 **재측정**, 아니면 **운동**: 슬롯 Day = `nextDay`, 목표 Day = `repeatOf ?? nextDay`.
+- 사건이 없으면: 오늘 < 시작일 → **시작 전**, 아니면 Day 1 운동.
+- **운동일은 기다린다.** 운동일에 기록하지 않고 며칠이 지나도 같은 Day가 그대로다(벌칙 없음). **휴식일은 기다리지 않는다** — 달력이 지나면 쉰 것으로 친다. 휴식일엔 기록 버튼이 없다(파벨 규칙: 휴식일에 하지 않는다).
+- **깨진 사건**(운동일이 아닌 day·targetDay, 달력에 없는 date)은 상태 계산에서 **없는 것으로 본다** — 정규화 규칙과 같은 기준. 깨진 마지막 사건이 "오늘 기록함"으로 기록을 영영 막거나 "아주 옛날"로 상태를 튀게 하지 않는다. `diffDateStrings`는 형식 밖 입력에 NaN을 낸다. 읽기 함수(`todayStatus`·`upcoming`·`snapshot`)는 절대 던지지 않고(페이지 500 방지), 판정 함수(`decide*`)만 형식 오류에 RangeError를 던진다(라우트 zod가 먼저 막으므로 프로그래밍 오류 — 500).
+- **하루에 사건은 최대 1개**, 사건 날짜는 엄격히 증가한다(서버는 오늘 상태가 `workout`일 때만 기록을 받고, `workout`은 gap ≥ 1에서만 나온다).
+- **날짜는 전송 시각 기준이다.** 23:50에 끝낸 세션이 다음 날 아침에 전송되면 그날 기록이 되고 일정이 하루 밀린다 — 운동일은 기다리므로 계획이 틀리지는 않는다(알려진 한계, 되돌리기로 정정 가능).
+
+**오늘 상태(`TodayStatus`) — 화면이 보는 유일한 계약.** 화면은 규칙을 다시 구현하지 않는다.
+
+```ts
+type Upcoming =
+  | { kind: "workout"; day: number; targetDay: number }
+  | { kind: "rest"; day: number; cycleEnd: boolean; index: number; of: number }
+  | { kind: "recovery"; pendingDay: number }
+  | { kind: "retest" };
+type TodayStatus =
+  | { kind: "not_started"; startDate: string; daysUntil: number; displayDay: 1 }
+  | { kind: "workout"; day: number; targetDay: number; isRepeat: boolean; target: SetPair;
+      totals: { pullup: number; pushup: number }; retestHint: boolean; displayDay: number }
+  | { kind: "rest"; day: number; cycleEnd: boolean; index: number; of: number; next: Upcoming; displayDay: number }
+  | { kind: "recovery"; pendingDay: number; resumeTargetDay: number; next: Upcoming; displayDay: number }
+  | { kind: "recorded_today"; outcome: "complete" | "repeat_complete" | "fail"; day: number; targetDay: number;
+      tomorrow: Upcoming; displayDay: number }
+  | { kind: "retest"; displayDay: 27 };
+```
+
+- `displayDay`: 운동 → `day`, 휴식 → 그 휴식 Day, 회복 → `pendingDay`, 기록함 → `day`, 시작 전 → 1, 재측정 → 27.
+- `retestHint = failsAtNextDay ≥ 2` — 같은 슬롯 Day에서 두 번 이상 실패했으면(연속 실패든, "실패 → 재부여 성공 → 또 실패" 루프든) "RM 재측정을 고려해 보세요" 안내. **재부여 성공은 이 수를 되돌리지 않는다**(되돌리면 루프에서 안내가 영영 안 뜬다).
+- 앞으로의 일정(`tomorrow`, `next`, 미리보기)은 엔진의 `upcoming(cycle, today, n)`이 만든다 — 오늘부터 하루씩, 운동일이면 **가상의 성공 사건을 덧붙여** `todayStatus`를 되풀이하는 시뮬레이션. 예: 실패 당일 → [회복, 재부여 운동(X, X−1), 운동(X, X)].
+- 문구 예: 재부여 성공 당일 "✅ Day 5 목표 완료 — 내일 Day 7 재도전"(휴식 없음), 보통 성공 "🎉 Day 5 완료 — 내일은 휴식(Day 6)".
+
+**실패 처리**(원안 Failure Handler):
+
+1. 세트를 못 채우거나 자세가 무너지면 **그 자리에서 중단**하고 실패로 기록한다 — 어느 운동의 몇 세트에서, 그 세트 몇 회까지 했는지(횟수는 선택, `0 ≤ reps ≤ 목표` — 횟수는 채웠지만 자세가 무너진 경우도 담는다).
+2. 다음 날은 **회복 휴식** 1일.
+3. 복귀하면 **직전에 완전히 성공한 Day의 목표**로 한 번 한다(재부여). Day 1에서 실패해 직전 성공이 없으면 Day 1을 그대로 다시 한다(재부여 아님).
+4. 재부여 운동을 성공하면 **실패했던 Day에 다시 도전**한다(그 사이 휴식 없음).
+5. 같은 Day에서 실패가 2회 이상이면 재측정 안내(강제 아님).
+
+**수행 횟수(볼륨)** — 서버가 계산한다(클라이언트 숫자를 믿지 않는다). 기준 목표 = `target(cycle.base, targetDay)`:
+
+- `complete` → 목표 그대로.
+- `fail` → 실패한 스텝 **이전** 스텝은 목표 그대로, 실패한 세트는 입력 횟수(없으면 0, `0..목표`로 클램프), 이후는 0. 예: Day 1 푸시업 3세트(setIndex 2 = 스텝 5)에서 4회 → 풀업 [6,5,4,0,0], 푸시업 [9,8,4,0,0].
+- 누적 볼륨 = 사이클 안 모든 사건의 `reps` 합(성공·실패·재부여 모두). **원시 횟수만** 보인다(590 대비 % 같은 표시는 하지 않는다 — 실패·재부여로 100%를 넘을 수 있다).
+- **진행률** = 보통 `complete`로 끝낸 **서로 다른 운동 Day 수 / 20**, 표시 `Math.round(done / 20 × 100)`%. 재부여 성공은 진행률에 넣지 않는다(볼륨엔 넣는다). 계획표의 ✗ 표시는 사건의 `day`(슬롯) 기준 실패 수.
+
+### 19-3. 사이클 전환과 재측정
+
+- **처음 시작**: 활성 사이클이 없으면 설정 화면 — RM 기본값 **풀업 10, 푸시업 18**(원안의 현재 상태), Day 1 사다리 미리보기(클라이언트가 `lib/workout`의 순수 함수로 계산), 시작일 **오늘/내일**.
+- **재측정(Day 27)**: RM 입력(현재 RM으로 미리 채움) + 측정 안내("엄격한 정자세로, 반동 없이 — 오늘 하루만 최대치"). 새 사이클 시작일 기본값은 **내일**(최대치 측정 당일 또 운동하지 않게).
+- **도중 재측정**: 언제든 "RM 다시 재기(새 사이클)"로 새 사이클을 시작할 수 있다. 시작일은 오늘/내일 중 고른다.
+- **닫는 사이클의 상태는 사건 재생으로 판정한다**: `closingStatus(cycle) = replay(events).nextDay === 27 ? "completed" : "abandoned"`. 20개 운동일을 다 마쳤으면 재측정 화면이 아닌 곳(Day 23 완료 당일, 마무리 휴식 중)에서 재측정해도 **completed**다. 사이클은 지우지 않는다(기록 보존).
+- **사건이 0개인 활성 사이클을 다시 설정하면 닫지 않고 그 자리에서** `rm`·`base`·`startDate`를 갈아끼운다(RM 오타·시작일 변경이 "중단 사이클" 찌꺼기로 쌓이지 않게, cycleNo도 그대로).
+- **RM 변화**("10 → 13")는 연속한 두 사이클의 `rm`(cycleNo 순)에서 파생한다 — 별도 필드로 저장하지 않는다.
+- 활성(`active`) 사이클은 **최대 1개**다. 읽을 때 여러 개가 보이면(레거시·사고) `pickActiveWorkoutCycle`이 결정적으로 하나를 고른다(createdAt이 가장 늦은 것) — 한 곳에만 정의(`lib/workout.ts`), 페이지·스토어가 같이 쓴다. 새 사이클을 만들 때 나머지 활성은 전부 닫는다.
+- **마지막 기록 취소**: 잘못 누른 기록을 되돌린다 — 활성 사이클의 마지막 사건 1개를 뺀다. 두 단계 확인(브라우저 `confirm()` 대신 화면 안 확인 패널). 가족 실데이터를 되돌릴 수 없게 바꾸는 작업이라 **prod-guard 대상이다**(§19-4).
+
+### 19-4. 저장 모델 — `WorkoutCycleRecord` (Firestore 컬렉션 `workoutCycles`)
+
+```ts
+interface WorkoutCycleRecord {
+  id: string;
+  createdAt: string;                 // ISO
+  cycleNo: number;                   // 1, 2, 3 … (전체 max + 1)
+  startDate: string;                 // KST YYYY-MM-DD — Day 1을 할 수 있는 첫날
+  rm: { pullup: number; pushup: number };
+  base: SetPair;                     // Day 1 사다리(5개씩) — RM에서 계산해 고정 저장
+  status: "active" | "completed" | "abandoned";
+  endedAt: string | null;            // ISO
+  rev: number;                       // 변경마다 +1 (낙관적 동시성 토큰, 생성 시 0)
+  events: WorkoutEvent[];            // 시간순 append
+}
+```
+
+- **타입의 단일 정의처는 `lib/workout.ts`**(런타임 의존성은 `./kst`뿐 — 클라이언트·eval 안전). `lib/store.ts`는 `import type`으로 가져와 재수출한다(store는 서버 전용 — 엔진이 store를 import하면 안 된다). `lib/workout-contract.ts`는 타입 재수출 + 요청·응답 shape만. 모든 값은 직렬화 가능(Date 객체 금지 — RSC props로 넘어간다).
+- 사건은 사이클 문서 안의 배열이다(사이클당 수십 건). 날짜 필터 쿼리를 두지 않는다(복합 인덱스 회피 규약) — 전체를 읽어 메모리에서 고른다. Firestore는 `undefined`를 거부하므로 `failed`·`endedAt`은 반드시 `null`로 쓴다(`normalizeWorkoutCycle`/`normalizeWorkoutEvent` — `normalizeJaDialogRecord` 관용구, 두 백엔드 공유, 정의는 `lib/workout.ts`). 정규화는 깨진 사건을 버리고 경고하며, ISO가 아닌 `createdAt`은 epoch ISO로 둔다.
+- **검증과 쓰기는 한 원자 단위다.** 판정은 순수 함수(`decideLog`·`decideUndo`·`decideStart` — `lib/workout.ts`)가 하고, 스토어는 그것을 **파일 백엔드는 `mutate` 콜백 안에서, Firestore는 `getDb().runTransaction()` 안에서** 호출한다(`applyVocabLink` 관용구와 같은 구조 — 저장소 첫 트랜잭션 도입이니 이유를 주석으로 남긴다). 기존 `get → 판정 → update` 관용구를 복사하지 않는다(Cloud Run 인스턴스가 여럿이면 뒤 쓰기가 앞 쓰기를 덮는다). `todayKst`·`nowIso`는 라우트가 트랜잭션 밖에서 한 번 계산해 넘긴다(트랜잭션 재시도에도 결정적).
+- **동시성 토큰은 `rev`**: 기록·취소 요청은 클라이언트가 본 `expectedRev`를 보낸다. 사건 **개수**가 아니라 rev로 대조한다(개수는 "다른 탭에서 취소 후 다시 기록"하면 같아져 낡은 탭의 취소가 엉뚱한 사건을 지운다 — ABA). 사이클 시작 요청은 클라이언트가 본 활성 사이클 id `expectedActiveCycleId`(없으면 null)를 보낸다 — 연타·두 탭에서 두 번 만들어지지 않는다.
+- **서버는 자기가 계산한 값으로 사건을 만든다**: 오늘 상태를 다시 계산해 `workout`이 아니면 거절, 요청의 `day`·`targetDay`는 "화면이 낡지 않았다"를 확인하는 데만 쓰고, 사건의 day·targetDay·date·at·reps는 서버 계산값.
+- **prod-guard**: `DestructiveOp`에 `"undoWorkoutEvent"`·`"closeWorkoutCycle"`을 추가한다. **Firestore 백엔드에서만**(파일 백엔드는 가드하지 않는 기존 관용구) 취소 첫 줄, 그리고 시작 요청이 사건 있는 활성 사이클을 닫는 분기에서 `assertDestructiveAllowed`를 부른다. 최초 생성·사건 0개 제자리 교체·기록(append)은 가드 대상이 아니다. 라우트는 `isProdGuardError` → 403 `prod_guard`.
+- **파일 백엔드**: `DbShape.workoutCycles: WorkoutCycleRecord[]`(**필수 필드**). `emptyDb`·`readDb`(`(parsed.workoutCycles ?? []).map(normalizeWorkoutCycle)` — 옛 db.json 호환)·`mergeDbForSeed`(**`mergeById(cur.workoutCycles, seed.workoutCycles)`** — 빠뜨리면 `npm run seed`가 운동 기록을 지운다)·`scripts/seed.ts`(`workoutCycles: []`) 네 곳을 함께 바꾼다.
+- `scripts/migrate-to-firestore.ts`에는 **넣지 않는다** — 운동 기록은 프로덕션에서만 생긴다(로컬 테스트 사이클이 프로덕션에 활성으로 올라가면 활성이 2개가 된다).
+
+**스토어 계약**(`StudyStore`에 추가):
+
+```ts
+listWorkoutCycles(): Promise<WorkoutCycleRecord[]>;           // 전체, createdAt 내림차순
+getWorkoutCycle(id: string): Promise<WorkoutCycleRecord | null>;
+startWorkoutCycle(input: { rm: { pullup: number; pushup: number }; startDate: string;
+  expectedActiveCycleId: string | null; todayKst: string; nowIso: string }): Promise<StartWorkoutResult>;
+logWorkoutEvent(cycleId: string, input: { expectedRev: number; kind: "complete" | "fail"; day: number;
+  targetDay: number; failed: FailedAt | null; todayKst: string; nowIso: string }): Promise<WorkoutMutationResult>;
+undoWorkoutEvent(cycleId: string, input: { expectedRev: number }): Promise<WorkoutMutationResult>;
+
+type StartWorkoutResult =
+  | { status: "ok"; record: WorkoutCycleRecord; mode: "created" | "replaced"; closed: { id: string; status: "completed" | "abandoned" } | null }
+  | { status: "conflict"; activeCycleId: string | null };
+type WorkoutMutationResult =
+  | { status: "ok"; record: WorkoutCycleRecord }
+  | { status: "not_found" }
+  | { status: "conflict" | "stale_state" | "not_active" | "empty"; record: WorkoutCycleRecord };
+```
+
+### 19-5. API
+
+| 경로 | 요청 | 동작 |
+|---|---|---|
+| `POST /api/workout/cycle` | `{ pullupRm, pushupRm, start: "today" \| "tomorrow", expectedActiveCycleId }` | 활성과 expected 대조 → 활성 사건 0개면 제자리 교체, 아니면 `closingStatus`로 닫고 새 사이클(cycleNo = max+1) |
+| `POST /api/workout/log` | `{ cycleId, expectedRev, kind, day, targetDay, failed }` | 오늘 상태 재계산·대조 후 사건 append(date·at·reps는 서버), rev+1 |
+| `POST /api/workout/undo` | `{ cycleId, expectedRev }` | 활성 사이클의 마지막 사건 제거, rev+1 |
+
+- 공통 관용구: `export const runtime = "nodejs"`, zod `safeParse`(issues 매핑), 계약 타입으로 받는 `json(body, status)` 헬퍼, `req.json()` 실패 → 400. AI 없음 → `OPENAI_API_KEY` 무관.
+- 요청 계약 타입(`lib/workout-contract.ts`)과 라우트 zod 스키마는 **컴파일 때 양방향으로 묶는다**(`[Request, z.infer<typeof bodySchema>] extends [z.infer<…>, Request]`) — 화면은 계약 타입으로 보내고 라우트는 zod로 받으므로, 한쪽만 필드명을 바꾸면 런타임 400이 된다. 스토어 입력 타입도 엔진 판정 입력(`Decide*Input`)의 별칭이다(두 정의 금지).
+- zod: RM은 `z.number().int().min(1).max(150)`. log의 `day`·`targetDay`는 1~23 정수이며 운동일. `kind`로 판별 유니온 — `complete`는 `failed: null`, `fail`은 `failed: { exercise, setIndex 0..4, reps: 정수 0..500 | null }`(`.nullish()` 금지 — undefined가 Firestore로 샌다).
+- 응답: `{ ok: true, ... }` / `{ ok: false, error, messageKo, issues? }`. 에러 enum과 상태 코드:
+  `invalid_input`(400) · `not_found`(404, 사이클 없음) · `conflict`(409, rev·활성 id 불일치 — 다른 탭·연타로 이미 바뀜) · `stale_state`(409, 오늘 상태가 운동이 아니거나 day·targetDay가 다름) · `not_active`(409, 닫힌 사이클) · `empty`(409, 취소할 사건 없음) · `prod_guard`(403) · `save_failed`(500).
+  409 계열이면 화면은 메시지를 보이고 `router.refresh()`한다.
+- **화면 데이터는 서버 컴포넌트가 직접 읽는다**: `app/workout/page.tsx`는 **`export const dynamic = "force-dynamic"`**(필수 — 빠지면 빌드 때 빈 DB로 정적 고정돼 "처음 시작" 화면이 영구히 박힌다. store를 읽는 모든 페이지의 관용구). 서버에서 `kstTodayString()` → `listWorkoutCycles()` → `pickActiveWorkoutCycle` → 엔진 `snapshot(active, today)` → 클라이언트 뷰에 직렬화 가능한 props. 렌더 중 `new Date()`·localStorage 금지(오늘은 props). 날짜 표시는 KST 문자열(`createdAt.slice(0,10)`은 UTC라 쓰지 않는다).
+- PIN 게이트는 `proxy.ts`가 `/workout`·`/api/workout`을 자동으로 덮는다.
+
+### 19-6. 화면 — `/workout` "💪 아빠의 운동"
+
+- **홈**: 과목 그리드를 2×2로 — 은우 줄(영어·수학) / 아빠 줄(일본어·운동). 일본어의 `sm:col-span-2`를 빼고 `아빠의 운동` `.u-entry u-entry-secondary`를 추가. 폰(<640px)은 1열 그대로. 홈 주석·metadata 설명도 4개 구성으로.
+- **헤더**: `← 과목 선택`(`u-navbtn`) + `💪 아빠의 운동` + 한 줄 소개.
+- **브리핑**(원안 "서두에 군더더기 없이"): `Day {displayDay} / 27 · 사이클 {n}` · `완료 {done}/20일 ({pct}%)` · 오늘 목표 합계(풀업 22회 · 푸시업 37회) · 주의사항 한 줄.
+- **오늘 카드**(`TodayStatus` 변형별 — 문구는 변형에서만 파생):
+  - `workout`: 세트표(1~5세트 × 풀업/푸시업) + **`▶ 운동 시작`**(세션) + **`✓ 전부 해냈어요`**(폰 없이 이미 했을 때) + **`✗ 실패 기록`**(운동·세트·횟수 고르기). `isRepeat`면 배너 "실패 후 복귀 — Day {targetDay} 목표로 한 번, 성공하면 Day {day} 재도전". `retestHint`면 "같은 Day에서 두 번 이상 막혔어요 — RM 재측정을 고려해 보세요".
+  - `recorded_today`: outcome별 문구 + `tomorrow` 미리보기.
+  - `rest` / `recovery`: "😴 Day 6 휴식 — 상체 완전 휴식"(마무리 휴식이면 "사이클 마무리 휴식 {index}/{of}") / "🩹 회복 휴식 — 내일 Day {resumeTargetDay} 목표로 복귀" + `next` 미리보기.
+  - `retest`: RM 입력 폼(§19-3).
+  - `not_started`: "Day 1은 {startDate}부터({daysUntil}일 뒤)".
+- **세션 모드**(`▶ 운동 시작`) — 전면 오버레이(z-index 20 + `lockBodyScroll`, 스트릭 헤드라인이 가려지는 게 의도 — §17-4):
+  - 10스텝 목록, 현재 스텝을 크게("풀업 1세트 · 6회"), `✓ 완료`(u-btn-primary) / `✗ 실패`(u-btn-secondary).
+  - `✓`를 누르면 **휴식 타이머**(기본 2:00, 2분/3분 선택, +30초, 건너뛰기, 다음 스텝 미리보기). **종료 시각(epoch ms) 기반** — 백그라운드 스로틀·새로고침에도 남은 시간이 맞게. **마지막 스텝의 ✓는 타이머 없이 곧바로 완료 기록.**
+  - 타이머 종료 알림: **비프**는 `✓` 탭 핸들러 안에서 `AudioContext`를 만들거나 `resume()`하고 그 컨텍스트로 낸다(가능하면 종료 시각에 미리 예약 — 탭 밖 재생 제약 회피). 진동(`navigator.vibrate`, 가능하면). **음성 안내**(토글, localStorage 영속, 기본 켬): `✓` 탭에서 `unlockSpeechPlayback()`을 부르고, 종료 시 `speakQueue([{ text: "다음, 푸시업 1세트 9회", lang: "ko-KR" }])`(재사용 오디오 요소라 탭 밖에서도 나올 가능성이 높다). 세션 시작 탭에서 그날의 **휴식 뒤 안내 문구 9개**(첫 스텝 안내는 휴식 뒤에 나오지 않으므로 제외)를 `prefetchSpeech(phrases, "ko-KR")`로 미리 받는다. **음성·비프는 best-effort**, 시각 타이머가 기준이다. 화면이 꺼진 상태의 알림은 보장하지 않는다(Wake Lock은 best-effort — 요청하고, visible 복귀 때 재요청).
+  - 실패: 그 세트에서 한 횟수를 고르게(선택, 0..목표) 한 뒤 기록 → 세션 종료.
+  - **진행 보존**: localStorage 키 `workout-session:v1` 하나, 값 `{ cycleId, rev, day, targetDay, dateKst, step, restEndsAt }`. **마운트 후 effect에서만** 읽고(hydration), cycleId·rev·day·targetDay·dateKst가 전부 props와 같을 때만 복원 — 다르면 조용히 버린다(undo·다른 기기 기록·어제 세션이 새 목표에 이어 붙지 않게). 기록 성공·409·실패 기록 시 삭제. 모든 접근 try/catch.
+  - 자동 완료 요청이 409를 받으면 새로고침 후 상태가 같은 day의 `recorded_today`면 성공으로 보여 준다.
+- **주의사항**(원안 3항, 세션 상단에 늘): "실패 지점까지 가지 마세요 — 한두 개 남기고 멈추기" · "반동 없는 엄격한 정자세" · "세트 사이 최소 2분 휴식".
+- **27일 계획표**(`<details>` 접이식): Day · 종류 · 풀업/푸시업 목표(합) · 표시(✓ 완료, ✗ 실패 수, ▶ 오늘).
+- **누적**: 이번 사이클 풀업 N회 · 푸시업 M회 · 실패 k회. **지난 사이클**: 번호 · 시작일 · RM 변화(다음 사이클 rm에서 파생) · 완료/중단.
+- **마지막 기록 취소**, **RM 다시 재기(새 사이클)** — 화면 하단에 작게, 화면 안 두 단계 확인 패널(`danger`는 이 확인 패널에만 — DESIGN §2).
+- 화면이 다시 보일 때(`visibilitychange`) `router.refresh()` — 자정을 넘겨 켜 둔 화면이 어제 상태를 보이지 않게. **세션 중에는 건너뛴다.**
+- 요청 중 버튼 disabled(단일 비행). 변경 흐름: fetch → 계약 타입 → ok면 `router.refresh()`.
+- 디자인: 새 토큰·새 색조 없이 기존 `.u-*`/`.t-*`·CSS 변수만(`docs/DESIGN.md` — 초록·빨강 도입 금지, 완료/실패는 accent·ink-3 명도 차 + 글리프).
+
+### 19-7. eval (오프라인 — `scripts/eval-workout.ts`, `npm run eval:workout`, 실호출 0)
+
+`lib/workout.ts`·`lib/kst.ts`(그리고 §17-7 운동 스트릭의 doneToday 확인용 순수 모듈 `lib/streak.ts`)만 import(store 금지 — 어떤 DB도 만지지 않는다). `scripts/eval-streak.ts` 관용구.
+
+- **베이스**: 10→[6,5,4,3,2], 푸시업 18→[9,8,7,6,5], 풀업 3→[1,1,1,1,1], 풀업 11→top 6, 푸시업 17→top 8, 풀업 1→[1,1,1,1,1], 1~150 전 범위에서 `floor(r*3/5)` 정수 계산.
+- **계획**: 원안 Python을 eval 안에 JS 오라클로 옮겨 20개 운동일 전부 대조 / §19-1 표 10행 / 합계 590·890 / Day 종류(운동 20·rest [6,12,18]·cycle_rest [24,25,26]·retest [27]·27행) / `nextWorkoutDay`(5→7, 11→13, 23→27) / `restDaysBetween`(5,7→[6], 23,27→[24,25,26], 1,2→[]).
+- **스텝·횟수**: 10스텝 교차 순서, 스텝 5 = 푸시업 setIndex 2 / 실패 횟수(푸시업 set2 4회 → [6,5,4,0,0]/[9,8,4,0,0], 풀업 set0 null → 전부 0, 목표 초과 → 목표로, 음수 → 0) / 재부여 실패의 reps는 Day 5 목표 기준.
+- **상태**: 사건 없음(시작 전 daysUntil·시작일 당일 Day 1·열흘 뒤에도 Day 1) / Day 1 완료 당일 recorded_today(tomorrow=Day 2) / Day 5 완료 D → D+1 rest 6 → D+2 Day 7 → D+5 Day 7 / Day 2 완료 D → D+4 Day 3 / Day 23 완료 → 24·25·26 cycle_rest(index 1..3/3) → 재측정 → 한 달 뒤에도 재측정 / 실패 → 당일 recorded_today(fail, tomorrow=recovery) → 회복(pendingDay·resumeTargetDay) → 재부여(X, X−1) → 성공 → 다음날 (X, X)(휴식 없음) → 성공 → X+1 / **Day 7 실패 → Day 5 목표(Day 6 휴식 재삽입 없음)** / Day 1 실패 → Day 1 재도전(isRepeat false) / 재부여 실패 → 같은 목표 + retestHint / **실패 → 재부여 성공 → 실패 루프 → retestHint true** / 실패 후 닷새 뒤 첫 접속 → 재부여 운동 / Day 23 실패 → 22 → 23 → 24~26 → 27 / Day 5 실패 → 4 → 5 → 6 → 7 / 재부여 성공 당일 recorded_today(repeat_complete, tomorrow = 같은 Day) / 월 경계 gap(09-30 → 10-01 = 1).
+- **판정 함수**: `decideLog` — 같은 날 두 번째 기록 거절, 휴식·재측정·시작 전 거절, day·targetDay 불일치 → stale_state, rev 불일치 → conflict, 닫힌 사이클 → not_active, 사건 date=today·reps 서버 계산 / `decideUndo` — 사건 0개 → empty, rev 불일치 → conflict, Day 23 완료를 Day 25에 취소 → Day 23 운동, 같은 날 fail → 취소 → complete 허용 / `decideStart` — expected 불일치 → conflict, 사건 0개 활성 → replaced(cycleNo 유지), 사건 있는 활성 → closed + created(cycleNo+1) / `closingStatus` — Day 23 완료 당일·Day 25·재측정 → completed, 도중 → abandoned / 진행률(재부여 제외, 반올림)·볼륨(실패 부분·재부여 포함) / `upcoming` 시뮬레이션(실패 당일 → [회복, (X,X−1), (X,X)]) / `pickActiveWorkoutCycle` 다중 활성 결정성 / 사이클 격리.
