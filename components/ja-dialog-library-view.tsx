@@ -8,6 +8,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useReorder } from "@/components/use-reorder";
+import { formatKstDate } from "@/lib/kst";
 
 export interface JaDialogLibraryItem {
   id: string;
@@ -17,10 +18,6 @@ export interface JaDialogLibraryItem {
   hasCoaching: boolean;
   partial: boolean;
   sortIndex: number | null;
-}
-
-function formatDate(iso: string): string {
-  return iso.slice(0, 10).replace(/-/g, ".");
 }
 
 export default function JaDialogLibraryView({ items }: { items: JaDialogLibraryItem[] }) {
@@ -147,7 +144,7 @@ export default function JaDialogLibraryView({ items }: { items: JaDialogLibraryI
                         <span className="u-chip">발화 {item.turnCount}개</span>
                         {item.hasCoaching ? <span className="u-chip">해설 있음</span> : <span className="u-chip">해설 없음</span>}
                         {item.partial && <span className="u-chip">일부</span>}
-                        <span className="t-caption">{formatDate(item.createdAt)}</span>
+                        <span className="t-caption">{formatKstDate(item.createdAt)}</span>
                       </span>
                     </span>
                   </Link>

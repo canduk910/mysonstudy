@@ -7,6 +7,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import JaDialogDetailView from "@/components/ja-dialog-detail-view";
+import { formatKstDate } from "@/lib/kst";
 import { getStore } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
@@ -34,7 +35,7 @@ export default async function JaDialogDetailPage({ params }: DetailProps) {
           <Link href="/japanese/dialog" className="u-navbtn">
             ← 대화 복습
           </Link>
-          <p className="t-caption flex-none">{record.createdAt.slice(0, 10).replace(/-/g, ".")}</p>
+          <p className="t-caption flex-none">{formatKstDate(record.createdAt)}</p>
         </div>
       </header>
       <JaDialogDetailView

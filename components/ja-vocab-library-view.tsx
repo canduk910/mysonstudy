@@ -12,6 +12,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useReorder } from "@/components/use-reorder";
+import { formatKstDate } from "@/lib/kst";
 import type { JlptLevel } from "@/lib/japanese-vocab-contract";
 
 /** 서버가 목록 줄에 필요한 것만 줄여 넘긴다(entries 전문 X — 무겁다). */
@@ -24,11 +25,6 @@ export interface JaVocabLibraryItem {
   wordCount: number;
   createdAt: string; // ISO 8601
   sortIndex: number | null;
-}
-
-/** 만든 날짜 — 타임존 계산 없이 ISO 날짜부만(SSR/클라 동일 출력) */
-function formatDate(iso: string): string {
-  return iso.slice(0, 10).replace(/-/g, ".");
 }
 
 export default function JaVocabLibraryView({
@@ -220,7 +216,7 @@ export default function JaVocabLibraryView({
                           </span>
                         ))}
                         {item.topic && <span className="u-chip">{item.topic}</span>}
-                        <span className="t-caption">{formatDate(item.createdAt)}</span>
+                        <span className="t-caption">{formatKstDate(item.createdAt)}</span>
                       </span>
                     </span>
                   </Link>

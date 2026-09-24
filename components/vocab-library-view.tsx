@@ -16,6 +16,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useReorder } from "@/components/use-reorder";
+import { formatKstDate } from "@/lib/kst";
 
 /** 서버가 목록 줄에 필요한 것만 줄여 넘긴다 (레코드 전문 X — entries 배열이 무겁다) */
 export interface VocabLibraryItem {
@@ -27,11 +28,6 @@ export interface VocabLibraryItem {
   createdAt: string; // ISO 8601
   /** 수동 정렬 값(서재와 동일 규약). null이면 미정렬(맨 위 블록). 정렬은 서버(page.tsx)가 끝낸다. */
   sortIndex: number | null;
-}
-
-/** 만든 날짜 표시 — 타임존 계산 없이 ISO 날짜부만 (SSR/클라이언트 동일 출력) */
-function formatDate(iso: string): string {
-  return iso.slice(0, 10).replace(/-/g, ".");
 }
 
 export default function VocabLibraryView({
@@ -253,7 +249,7 @@ export default function VocabLibraryView({
                         {item.dayLabel && item.dayLabel !== item.titleKo && (
                           <span className="u-chip">{item.dayLabel}</span>
                         )}
-                        <span className="t-caption">{formatDate(item.createdAt)}</span>
+                        <span className="t-caption">{formatKstDate(item.createdAt)}</span>
                       </span>
                     </span>
                   </Link>

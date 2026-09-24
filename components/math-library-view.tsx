@@ -29,6 +29,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useReorder } from "@/components/use-reorder";
+import { formatKstDate } from "@/lib/kst";
 import type { ChildGrade, ProblemPattern } from "@/lib/ai/math/schemas";
 // 채점 배지 문구는 설명 화면과 **한 정의처**를 공유한다 — 예전엔 두 벌이라 `wrong`이 어긋나 있었다
 import { GRADE_BADGE } from "@/lib/math-labels";
@@ -115,11 +116,6 @@ const FILTERS: { key: FilterKey; labelKo: string }[] = [
   { key: "wrong", labelKo: "틀린 문제" },
   { key: "held", labelKo: "보류" },
 ];
-
-/** 만든 날짜 표시 — 타임존 계산 없이 ISO 날짜부만 사용 (SSR/클라이언트 동일 출력) */
-function formatDate(iso: string): string {
-  return iso.slice(0, 10).replace(/-/g, ".");
-}
 
 /** 비율 표시 — 분모가 0이면 숫자 대신 "—"(§9-4). 0%와 "잴 것이 없음"은 다른 말이다 */
 function ratio(numerator: number, denominator: number): string {
@@ -537,7 +533,7 @@ export default function MathLibraryView({
                             <span className="u-chip">{GRADE_BADGE[item.childGrade]}</span>
                           )
                         )}
-                        <span className="t-caption">{formatDate(item.createdAt)}</span>
+                        <span className="t-caption">{formatKstDate(item.createdAt)}</span>
                       </span>
                     </span>
                   </Link>

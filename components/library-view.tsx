@@ -20,6 +20,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useReorder } from "@/components/use-reorder";
+import { formatKstDate } from "@/lib/kst";
 
 export interface LibraryItem {
   /**
@@ -60,11 +61,6 @@ export interface ChartPoint {
   date: string; // YYYY-MM-DD (readAt)
   ar: number; // 그 책의 arLevel
   title: string; // 툴팁용 책 제목
-}
-
-/** 만든 날짜 표시 — 타임존 계산 없이 ISO 날짜부만 사용 (SSR/클라이언트 동일 출력) */
-function formatDate(iso: string): string {
-  return iso.slice(0, 10).replace(/-/g, ".");
 }
 
 /**
@@ -537,7 +533,7 @@ export default function LibraryView({
                           <span className="u-chip">카드 {item.cardCount}장</span>
                         )}
                         {item.cardCount === 0 && <span className="u-chip">카드 없음</span>}
-                        <span className="t-caption">{formatDate(item.createdAt)}</span>
+                        <span className="t-caption">{formatKstDate(item.createdAt)}</span>
                       </span>
                     </span>
                   </Wrap>

@@ -27,6 +27,48 @@ export function formatKst(iso: string): string {
   return `${d.getUTCFullYear()}.${pad2(d.getUTCMonth() + 1)}.${pad2(d.getUTCDate())} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
 }
 
+/** isZonedIsoTimestamp의 형식 — 날짜만, 또는 날짜T시각(시 00~23·분초 00~59·소수 1~3자리) + `Z`·`±HH:MM` 필수 */
+const ZONED_ISO_PATTERN =
+  /^\d{4}-\d{2}-\d{2}(?:T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,3})?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d))?$/;
+
+/**
+ * 시간대가 **명시된** ISO 시각 문자열인가 — "어느 런타임에서 `Date.parse`해도 같은 순간이 나오는 값"의 **단일 정의처**.
+ * 표시(formatKstDate)와 운동 엔진(`lib/workout.ts`의 createdAt·endedAt 판정)이 같이 쓴다 — 예전엔 두 벌이라 경계가 갈렸다
+ * (`…T15:00:00.123456Z`를 운동은 유효로, 표시는 폴백으로 봤다).
+ *
+ * 받는 것: 날짜만(`YYYY-MM-DD`, 명세상 UTC로 해석) 또는 `YYYY-MM-DDTHH:MM[:SS[.s{1,3}]]` + `Z`·`±HH:MM`,
+ * 그리고 날짜가 달력에 실제로 있고(diffDateStrings가 같은 날끼리 0) `Date.parse`가 성공하는 값. 우리가 저장하는 값
+ * (`new Date().toISOString()` — Z·소수 3자리, 날짜만)은 전부 통과한다.
+ * 거절하는 것과 이유 — 전부 "엔진·실행 시간대마다 해석이 갈려 서버(Cloud Run UTC)와 폰(KST)이 다른 날을 낼 수 있는 값"이다:
+ * - 시간대 없는 날짜·시각(`2026-09-25T10:00:00`): `Date.parse`가 **실행 환경의 로컬 시각**으로 읽는다.
+ * - 소수 4자리 이상: ES 날짜 형식은 밀리초 3자리다. 그 밖은 엔진 재량(자르기·반올림)이라 자정 직전 값의 날짜가 갈릴 수 있다
+ *   (1~2자리는 밀리초로 정확히 떨어져 갈리지 않는다).
+ * - `24:00`: V8은 다음 날 0시로 굴린다 — 날짜부와 실제 순간의 날짜가 다른 값이다. 시 00~23·분초 00~59로 좁힌다.
+ * - 달력에 없는 날(2월 30일): V8은 3월 2일로 굴리고 다른 엔진은 NaN을 낼 수 있다.
+ * 문자열이 아닌 값(`String` 객체 포함)은 false다.
+ */
+export function isZonedIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== "string" || !ZONED_ISO_PATTERN.test(value)) return false;
+  const datePart = value.slice(0, 10);
+  return diffDateStrings(datePart, datePart) === 0 && !Number.isNaN(Date.parse(value));
+}
+
+/**
+ * ISO(UTC) 시각 → **KST 날짜 표시** `YYYY.MM.DD`. 목록·상세 화면의 "만든 날짜"(`createdAt`) 표시의 단일 정의처.
+ *
+ * 왜: 화면마다 `iso.slice(0, 10)`으로 UTC 일자를 잘라 보여, **KST 00:00~08:59에 만든 기록이 전날로** 보였다.
+ * 계산은 kstDateString(+9h → getUTC*)이라 서버(Cloud Run UTC)·SSR·클라이언트가 같은 값을 낸다 — hydration 안전.
+ * isZonedIsoTimestamp가 아닌 값(시간대 없음·파싱 불가·비문자열)은 **예전 동작 그대로** 원문 앞 10자(`-`→`.`)를 보인다
+ * (결정적이라 역시 hydration 안전). 비문자열은 `""`.
+ *
+ * ⚠️ 읽음 기록의 `readAt`(읽은 날)에는 쓰지 않는다 — 그건 기기 로컬 날짜 문자열이다(아래 deviceDateString).
+ */
+export function formatKstDate(iso: string): string {
+  const raw = typeof iso === "string" ? iso : "";
+  const datePart = raw.slice(0, 10); // 폴백 — 예전 동작(원문 앞 10자)
+  return (isZonedIsoTimestamp(raw) ? kstDateString(raw) : datePart).replace(/-/g, ".");
+}
+
 /** 지금(기본 new Date())의 **KST 오늘 일자** `YYYY-MM-DD`. "오늘"이 필요한 순간에만 부른다(서버가 스트릭 계산 시). */
 export function kstTodayString(now: Date = new Date()): string {
   return kstDateString(now.toISOString());

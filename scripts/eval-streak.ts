@@ -5,13 +5,14 @@
  * docs/SPEC.md §17에 살고 어느 과목 하네스(english/math/japanese)에도 속하지 않아, 한 과목 eval에 붙이면
  * 오귀속이 된다 — 그래서 **별도 진입점**으로 둔다(eval:english가 lib/kst·lib/streak에 의존하게 만들지 않는다).
  *
- * 대상(순수 함수): computeStreak·computeStreakFromDays(lib/streak.ts) · kstDateString/formatKst/shiftDateString(lib/kst.ts).
+ * 대상(순수 함수): computeStreak·computeStreakFromDays(lib/streak.ts) · kstDateString/formatKst/formatKstDate/isZonedIsoTimestamp/shiftDateString(lib/kst.ts).
+ * formatKstDate 경계는 실행 기기 TZ에 기대지 않는다 — 판정을 값으로 단언하고, 같은 표를 TZ 3곳으로 바꿔 다시 돌린다(아래 "KST 환산").
  * computeStreak은 "오늘(todayKst)"을 인자로 받는 순수 함수라 현재 시각에 의존하지 않는다(테스트 안정, §17-2·17-6).
  * 운동 트랙의 "지킨 날" 계산(workoutKeptDays)은 운동 엔진 소관이라 eval-workout.ts가 잠근다(§17-7).
  */
 
 import { computeStreak, computeStreakFromDays, type StreakSession } from "../lib/streak";
-import { formatKst, kstDateString, shiftDateString } from "../lib/kst";
+import { formatKst, formatKstDate, isZonedIsoTimestamp, kstDateString, shiftDateString } from "../lib/kst";
 
 interface CheckResult {
   book: string;
@@ -46,6 +47,126 @@ add("KST 환산", "14:59Z → 같은날 KST(자정 직전)", kstDateString("2026
 add("KST 환산", "00:00Z → 같은날 KST(09:00 KST)", kstDateString("2026-09-20T00:00:00.000Z") === "2026-09-20", `→ ${kstDateString("2026-09-20T00:00:00.000Z")}`);
 add("KST 환산", "formatKst 15:00Z → 2026.09.21 00:00", formatKst("2026-09-20T15:00:00.000Z") === "2026.09.21 00:00", `→ ${formatKst("2026-09-20T15:00:00.000Z")}`);
 add("KST 환산", "shiftDateString 월말 경계(-1)", shiftDateString("2026-10-01", -1) === "2026-09-30", `→ ${shiftDateString("2026-10-01", -1)}`);
+
+// "만든 날짜" 표시(formatKstDate) — 목록·상세·카드 이력이 createdAt을 이 함수로만 보인다(예전엔 UTC 날짜부 자르기라
+// KST 00:00~08:59에 만든 기록이 전날로 보였다). 깨진 값은 예전 동작(원문 앞 10자, -→.)으로 떨어져야 하고, 시간대 없는
+// 시각·달력에 없는 날은 엔진마다 해석이 갈려(로컬 시각·V8 굴림) hydration이 깨지므로 KST 환산에 넘기지 않는다.
+const FMT_CASES: { input: string; want: string; why: string }[] = [
+  { input: "2026-09-20T15:00:00.000Z", want: "2026.09.21", why: "15:00Z → 다음날(KST 00:00)" },
+  { input: "2026-09-20T14:59:59.999Z", want: "2026.09.20", why: "14:59:59Z → 같은날(KST 23:59)" },
+  { input: "2026-09-20T00:00:00.000Z", want: "2026.09.20", why: "00:00Z → 같은날(KST 09:00)" },
+  { input: "2026-12-31T15:00:00.000Z", want: "2027.01.01", why: "연말 15:00Z → 새해(연 경계)" },
+  { input: "2026-09-21T00:30:00+09:00", want: "2026.09.21", why: "+09:00 오프셋 → 그대로 KST 날짜" },
+  { input: "2026-09-20", want: "2026.09.20", why: "날짜만(UTC 자정) → 같은날" },
+  { input: "garbage", want: "garbage", why: "깨진 입력 → 원문 앞 10자" },
+  { input: "", want: "", why: "빈 문자열 → 빈 문자열(throw 없음)" },
+  { input: "2026-09-20T20:00:00", want: "2026.09.20", why: "시간대 없는 시각 → 환산 안 함(로컬 해석 차단)" },
+  { input: "2026-02-30T15:00:00.000Z", want: "2026.02.30", why: "달력에 없는 날 → 환산 안 함(V8 굴림 차단)" },
+  { input: "2026-09-20T24:00:00Z", want: "2026.09.20", why: "24:00 → 환산 안 함(엔진별 해석 차단)" },
+  { input: "2026-09-20T15:00:00.123456Z", want: "2026.09.20", why: "소수 4자리 이상 → 환산 안 함(ES 형식 밖·엔진 재량)" },
+];
+for (const c of FMT_CASES) {
+  const got = formatKstDate(c.input);
+  add("KST 환산", `formatKstDate ${c.why}`, got === c.want, `${JSON.stringify(c.input)} → ${JSON.stringify(got)}`);
+}
+{
+  // 실행 환경 시간대와 무관 — +9h→getUTC*만 쓰므로 TZ를 바꿔도 같은 값(서버 UTC·폰 KST SSR/hydration 일치의 근거)
+  const probe = "2026-09-20T15:00:00.000Z";
+  add("KST 환산", "formatKstDate = kstDateString의 -→. (단일 정의)", formatKstDate(probe) === kstDateString(probe).replace(/-/g, "."), `→ ${formatKstDate(probe)}`);
+}
+
+// 위 표는 이 eval을 돌리는 기기의 TZ에서만 돈다. 그런데 KST 기기에서는 "시간대 없는 시각"을 로컬(KST)로 읽고 +9h를 해도
+// 원래 날짜로 돌아와, 가드를 지워도 결과가 같다(QA F1 — 가드가 잠기지 않았다). 그래서 두 겹으로 잠근다.
+// ① 판정 자체(isZonedIsoTimestamp)를 값으로 단언한다 — 참/거짓만 보므로 실행 TZ와 무관하다.
+// ② 같은 표를 TZ=Asia/Seoul·UTC·America/Los_Angeles로 바꿔 가며 다시 돌린다. Node는 process.env.TZ 대입을 즉시 반영한다 —
+//    반영됐는지 먼저 확인(로컬 생성자 → UTC)해, 전환이 먹지 않는 환경에서 조용히 빈 검사가 되지 않게 한다.
+{
+  const accept = [
+    "2026-09-20T15:00:00.000Z", // toISOString 그대로(저장 형식)
+    "2026-09-20", // 날짜만(UTC 자정)
+    "2026-09-20T15:00Z", // 초 생략
+    "2026-09-20T15:00:00Z",
+    "2026-09-20T15:00:00.1Z", // 소수 1~2자리 — 밀리초로 정확히 떨어진다
+    "2026-09-20T15:00:00.12Z",
+    "2026-09-21T00:30:00+09:00",
+    "2026-09-20T23:59:59.999-00:00",
+    "2028-02-29T00:00:00.000Z", // 윤년
+  ];
+  const rejectNoZone = ["2026-09-20T20:00:00", "2026-09-20T20:00", "2026-09-20T20:00:00.000"];
+  const rejectRange = [
+    "2026-09-20T15:00:00.1234Z", // 소수 4자리 이상
+    "2026-09-20T15:00:00.123456Z",
+    "2026-09-20T24:00:00Z", // 24:00
+    "2026-09-20T23:60:00Z",
+    "2026-09-20T23:59:60Z",
+    "2026-09-20T15:00:00+24:00",
+    "2026-02-30T15:00:00.000Z", // 달력에 없는 날
+    "2027-02-29",
+    "2026-09-20T15:00:00.000z", // 소문자 z
+    "2026-09-20 15:00:00Z", // T 대신 공백
+    "garbage",
+    "",
+  ];
+  const nonStrings: unknown[] = [undefined, null, 1758380400000, new Date("2026-09-20T15:00:00.000Z"), new String("2026-09-20"), { toString: () => "2026-09-20" }];
+  const wrongAccept = accept.filter((x) => !isZonedIsoTimestamp(x));
+  const wrongNoZone = rejectNoZone.filter((x) => isZonedIsoTimestamp(x));
+  const wrongRange = rejectRange.filter((x) => isZonedIsoTimestamp(x));
+  // 던져도 "거절 못 함"으로 센다 — 가드가 빠지면 toString 객체가 패턴을 통과한 뒤 .slice에서 던진다(크래시 대신 FAIL 행으로)
+  const wrongNonString = nonStrings
+    .filter((x) => {
+      try {
+        return isZonedIsoTimestamp(x);
+      } catch {
+        return true;
+      }
+    })
+    .map((x) => Object.prototype.toString.call(x));
+  add("KST 환산", `isZonedIsoTimestamp 받음 — 저장 형식·날짜만·초 생략·소수 1~3자리·오프셋·윤년 (${accept.length}건)`, wrongAccept.length === 0, wrongAccept.length === 0 ? "전부 true" : `false: ${JSON.stringify(wrongAccept)}`);
+  add("KST 환산", `isZonedIsoTimestamp 거절 — 시간대 없는 시각(실행 TZ와 무관한 판정, ${rejectNoZone.length}건)`, wrongNoZone.length === 0, wrongNoZone.length === 0 ? "전부 false" : `true: ${JSON.stringify(wrongNoZone)}`);
+  add("KST 환산", `isZonedIsoTimestamp 거절 — 소수 4자리+·24:00·60분초·오프셋 범위 밖·달력 밖·형식 밖 (${rejectRange.length}건)`, wrongRange.length === 0, wrongRange.length === 0 ? "전부 false" : `true: ${JSON.stringify(wrongRange)}`);
+  add("KST 환산", `isZonedIsoTimestamp 거절 — 비문자열(undefined·null·숫자·Date·String 객체·toString 객체, ${nonStrings.length}건)`, wrongNonString.length === 0, wrongNonString.length === 0 ? "전부 false" : `true: ${JSON.stringify(wrongNonString)}`);
+}
+{
+  // 옛 레코드(필드 없음)·깨진 문서가 화면을 죽이지 않는다 — 비문자열은 throw 없이 "" (typeof 가드, QA F1 M7)
+  const got = [undefined, null, 1758380400000, {}].map((x) => {
+    try {
+      return formatKstDate(x as unknown as string);
+    } catch (e) {
+      return `THROW ${(e as Error).message}`;
+    }
+  });
+  add("KST 환산", "formatKstDate 비문자열(undefined·null·숫자·객체) → \"\"(throw 없음)", got.every((g) => g === ""), JSON.stringify(got));
+}
+{
+  // 로컬 생성자 2026-09-20 20:00 → UTC. TZ 전환이 실제로 먹었는지의 증거(LA는 9월에 PDT = UTC-7)
+  const TZ_MATRIX: { tz: string; local2000: string }[] = [
+    { tz: "Asia/Seoul", local2000: "2026-09-20T11:00:00.000Z" },
+    { tz: "UTC", local2000: "2026-09-20T20:00:00.000Z" },
+    { tz: "America/Los_Angeles", local2000: "2026-09-21T03:00:00.000Z" },
+  ];
+  const hadTz = Object.prototype.hasOwnProperty.call(process.env, "TZ");
+  const originalTz = process.env.TZ;
+  try {
+    for (const { tz, local2000 } of TZ_MATRIX) {
+      process.env.TZ = tz;
+      const probe = new Date(2026, 8, 20, 20, 0, 0).toISOString();
+      const bad = FMT_CASES.map((c) => ({ c, got: formatKstDate(c.input) })).filter(({ c, got }) => got !== c.want);
+      add(
+        "KST 환산",
+        `formatKstDate 경계표 ${FMT_CASES.length}건 — TZ=${tz}에서도 같음(TZ 전환 확인 포함)`,
+        probe === local2000 && bad.length === 0,
+        probe !== local2000
+          ? `TZ 전환이 반영되지 않음: 로컬 20:00 → ${probe} (기대 ${local2000})`
+          : bad.length === 0
+            ? `전부 일치 · 로컬 20:00 → ${probe}`
+            : bad.map(({ c, got }) => `${JSON.stringify(c.input)} → ${JSON.stringify(got)} (기대 ${c.want})`).join(" / "),
+      );
+    }
+  } finally {
+    if (hadTz) process.env.TZ = originalTz;
+    else delete process.env.TZ;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // 2) 연속 판정 (§17-3)
@@ -126,7 +247,7 @@ const TODAY = "2026-09-21";
 
 // ---------------------------------------------------------------------------
 // 5) 날짜 집합 코어 — computeStreakFromDays (§17-7). 운동 트랙(아빠 · 운동)이 세션이 아니라 "지킨 날" 집합으로 부른다.
-// 위 1~4의 15항목은 코어 분리 뒤에도 그대로 통과해야 한다(computeStreak = 세션 → 날짜 집합 → 코어, 동작 불변).
+// 위 1~4의 항목은 코어 분리 뒤에도 그대로 통과해야 한다(computeStreak = 세션 → 날짜 집합 → 코어, 동작 불변).
 // ---------------------------------------------------------------------------
 {
   // 배열·Set 둘 다 받는다 — 같은 날짜 집합이면 같은 답

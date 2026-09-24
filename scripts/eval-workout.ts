@@ -44,7 +44,7 @@ import {
   type WorkoutCycleRecord,
   type WorkoutEvent,
 } from "../lib/workout";
-import { diffDateStrings, shiftDateString } from "../lib/kst";
+import { diffDateStrings, isZonedIsoTimestamp, shiftDateString } from "../lib/kst";
 import { computeStreakFromDays } from "../lib/streak";
 
 interface CheckResult {
@@ -1400,6 +1400,29 @@ scenario("정규화", "깨진 레코드", () => {
     eq(kept, keep) && dropped.every((x) => x === "1970-01-01T00:00:00.000Z"),
     `${S(kept)} / ${S(dropped)}`,
   );
+
+  // ISO 판정은 lib/kst isZonedIsoTimestamp 한 곳 — "만든 날짜" 표시(formatKstDate)와 경계가 같아야 한다(예전엔 운동만
+  // 소수 1~9자리·24:00을 받아 `…15:00:00.123456Z`를 표시는 폴백, 운동은 유효로 봤다). 경계값은 기대값으로 직접 적는다.
+  const EPOCH = "1970-01-01T00:00:00.000Z";
+  const boundary: { iso: string; keep: boolean }[] = [
+    { iso: "2026-09-01T00:00:00.1Z", keep: true },
+    { iso: "2026-09-01T00:00:00.12Z", keep: true },
+    { iso: "2026-09-01T23:59:59.999Z", keep: true },
+    { iso: "2026-09-01T00:00Z", keep: true },
+    { iso: "2026-09-01T00:00:00.1234Z", keep: false }, // 소수 4자리 이상
+    { iso: "2026-09-01T15:00:00.123456Z", keep: false },
+    { iso: "2026-09-01T00:00:00.123456789Z", keep: false },
+    { iso: "2026-09-01T24:00:00Z", keep: false }, // 24:00
+    { iso: "2026-09-01T24:00Z", keep: false },
+  ];
+  const got = boundary.map((b) => normalizeWorkoutCycle({ ...raw, createdAt: b.iso, events: [] }).createdAt);
+  const wrong = boundary.filter((b, i) => got[i] !== (b.keep ? b.iso : EPOCH) || isZonedIsoTimestamp(b.iso) !== b.keep);
+  add(
+    "정규화",
+    "createdAt ISO 경계 = lib/kst isZonedIsoTimestamp(소수 1~3자리 유지, 4자리+·24:00은 epoch — 표시와 같은 경계)",
+    wrong.length === 0,
+    wrong.length === 0 ? `${boundary.length}건 일치` : `불일치: ${S(wrong.map((b) => b.iso))}`,
+  );
 });
 
 // ===========================================================================
@@ -1702,6 +1725,20 @@ scenario("운동 스트릭", "도중 재측정한 날", () => {
       todayLabel([legacy], dt(3)) === null,
     `닫힘=${closed?.status} dt6=${l6} · 새 Day 1 뒤 ${S(s7)} · 레거시=${S(kLegacy)}`,
   );
+  // 닫힌 날(endedAt) 판정도 lib/kst isZonedIsoTimestamp 한 곳 — createdAt·"만든 날짜" 표시와 같은 경계.
+  // 소수 3자리(toISOString)는 닫힌 날로 읽고, 소수 4자리+·24:00은 ISO가 아니라 닫힌 날이 없다(재측정 ✓ 없음).
+  if (closed) {
+    const at = (endedAt: string) => keptDays([{ ...closed, endedAt }], dt(6)).includes(dt(6));
+    const ms = at(`${dt(6)}T03:00:00.123Z`);
+    const micro = at(`${dt(6)}T03:00:00.123456Z`);
+    const h24 = at(`${dt(5)}T24:00:00Z`);
+    add(
+      "운동 스트릭",
+      "endedAt ISO 경계 = lib/kst isZonedIsoTimestamp — .123Z는 닫힌 날(재측정 ✓), .123456Z·24:00은 닫힌 날 없음",
+      ms && !micro && !h24,
+      `.123Z=${ms} .123456Z=${micro} 24:00=${h24}`,
+    );
+  }
 });
 
 scenario("운동 스트릭", "다음 사건 전날에서 자름", () => {

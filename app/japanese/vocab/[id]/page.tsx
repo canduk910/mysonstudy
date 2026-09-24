@@ -11,6 +11,7 @@ import { notFound } from "next/navigation";
 import JaVocabDetailView from "@/components/ja-vocab-detail-view";
 import { resolveJaGlyph } from "@/lib/ai/japanese/schemas";
 import { isRenderableJaVocabBook } from "@/lib/japanese-record";
+import { formatKstDate } from "@/lib/kst";
 import { getStore } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
@@ -40,7 +41,7 @@ export default async function JaVocabDetailPage({ params }: DetailPageProps) {
           <Link href="/japanese/vocab" className="u-navbtn">
             ← 단어장 목록
           </Link>
-          <p className="t-caption flex-none">{record.createdAt.slice(0, 10).replace(/-/g, ".")}</p>
+          <p className="t-caption flex-none">{formatKstDate(record.createdAt)}</p>
         </div>
       </header>
 

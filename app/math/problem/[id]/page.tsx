@@ -19,6 +19,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import MathExplanationView from "@/components/math-explanation-view";
 import { isRenderableExplanation, toExplainSuccess } from "@/lib/math-record";
+import { formatKstDate } from "@/lib/kst";
 import { getStore } from "@/lib/store";
 
 // 저장 데이터는 요청 시점에 읽는다
@@ -54,7 +55,7 @@ export default async function MathProblemPage({ params }: MathProblemPageProps) 
           <Link href="/math/library" className="u-navbtn">
             ← 지난 문제
           </Link>
-          <p className="t-caption flex-none">{record.createdAt.slice(0, 10).replace(/-/g, ".")}</p>
+          <p className="t-caption flex-none">{formatKstDate(record.createdAt)}</p>
         </div>
       </header>
 

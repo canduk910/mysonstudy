@@ -12,7 +12,7 @@
  * - 반환 값은 전부 직렬화 가능(Date 객체·undefined 없음 — RSC props로 넘어간다).
  */
 
-import { diffDateStrings, kstDateString, shiftDateString } from "./kst";
+import { diffDateStrings, isZonedIsoTimestamp, kstDateString, shiftDateString } from "./kst";
 
 // ===========================================================================
 // 상수
@@ -275,21 +275,14 @@ export type DecideStartResult =
 // ===========================================================================
 
 const EPOCH_ISO = "1970-01-01T00:00:00.000Z";
-/** ISO 시각 — 날짜만(`YYYY-MM-DD`, UTC로 해석) 또는 날짜T시각 + **타임존 필수**(없으면 Date.parse가 런타임 로컬 시각으로 읽어 결정적이지 않다) */
-const ISO_RE = /^(\d{4}-\d{2}-\d{2})(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2}))?$/;
+// ISO 시각 판정(createdAt·endedAt)은 lib/kst의 isZonedIsoTimestamp 한 곳이다 — 여기에 정규식을 따로 두지 않는다
+// (예전엔 소수 1~9자리·24:00을 받는 별도 정의라 "만든 날짜" 표시 formatKstDate와 경계가 갈렸다).
 
 const sumOf = (xs: readonly number[]) => xs.reduce((a, b) => a + b, 0);
 
 /** 달력에 있는 `YYYY-MM-DD`인가 — 판정은 lib/kst의 diffDateStrings 한 곳(형식·달력 밖이면 NaN) */
 function isDateString(value: unknown): value is string {
   return typeof value === "string" && Number.isFinite(diffDateStrings(value, value));
-}
-
-/** ISO 시각 문자열인가 — 형식(ISO_RE) + 날짜 부분이 달력에 있음 + Date.parse 성공(시각 범위) */
-function isIsoTimestamp(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  const m = ISO_RE.exec(value);
-  return m !== null && isDateString(m[1]) && Number.isFinite(Date.parse(value));
 }
 
 function assertDateString(value: unknown, label: string): asserts value is string {
@@ -826,7 +819,7 @@ type KeptReason = { kind: "event"; event: WorkoutEvent } | { kind: "slot"; slot:
 
 /** 닫힌 사이클이 닫힌 KST 일자 — 활성이거나 endedAt이 ISO가 아니면 null(자르지 않는다) */
 function closedDayOf(cycle: Pick<WorkoutCycleRecord, "status" | "endedAt">): string | null {
-  if (cycle.status === "active" || !isIsoTimestamp(cycle.endedAt)) return null;
+  if (cycle.status === "active" || !isZonedIsoTimestamp(cycle.endedAt)) return null;
   const day = kstDateString(cycle.endedAt);
   return isDateString(day) ? day : null;
 }
@@ -1117,7 +1110,7 @@ function rmOr(v: unknown, fallback: number): number {
 
 /**
  * 저장·읽기 경계의 사이클 방어 — undefined → null·기본값, 여분 속성은 떨군다. **던지지 않고, 결과로 snapshot도 던지지 않는다.**
- * - Firestore Timestamp 같은 비문자열 createdAt은 호출측이 ISO로 바꿔 넘긴다(toIso). 그래도 ISO가 아니면 epoch ISO.
+ * - Firestore Timestamp 같은 비문자열 createdAt은 호출측이 ISO로 바꿔 넘긴다(toIso). 그래도 ISO(isZonedIsoTimestamp)가 아니면 epoch ISO.
  * - startDate가 달력에 있는 YYYY-MM-DD가 아니면 createdAt의 KST 일자.
  * - base가 깨졌으면 rm으로 재계산, 알 수 없는 status는 "abandoned"(깨진 레코드가 활성을 가로채지 않게).
  * - 깨진 사건(운동일 아닌 day·targetDay, 달력 밖 date)은 버리고 console.warn — 예전엔 Day 6 사건 하나로 /workout이 500이 됐다.
@@ -1128,7 +1121,7 @@ export function normalizeWorkoutCycle(raw: unknown): WorkoutCycleRecord {
   const id = typeof d.id === "string" ? d.id : "";
   const rmRaw = isObj(d.rm) ? d.rm : {};
   const rm: WorkoutRm = { pullup: rmOr(rmRaw.pullup, DEFAULT_RM.pullup), pushup: rmOr(rmRaw.pushup, DEFAULT_RM.pushup) };
-  const createdAt = isIsoTimestamp(d.createdAt) ? d.createdAt : EPOCH_ISO;
+  const createdAt = isZonedIsoTimestamp(d.createdAt) ? d.createdAt : EPOCH_ISO;
   const status: WorkoutCycleStatus = d.status === "active" || d.status === "completed" || d.status === "abandoned" ? d.status : "abandoned";
   return {
     id,

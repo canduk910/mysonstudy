@@ -104,6 +104,7 @@ import {
 } from "./ai/english/schemas";
 // store.ts는 이 파일을 값으로 import하므로(FirestoreStore), 가드는 별도 모듈에 둔다 — 순환 방지
 import { assertDestructiveAllowed } from "./prod-guard";
+import { isFirestoreDocId } from "./reorder-contract";
 
 // ---------------------------------------------------------------------------
 // Admin SDK 초기화 — 지연 + 중복 방지 (dev HMR에서 앱이 이미 있으면 재사용)
@@ -384,6 +385,83 @@ function toVocabQuiz(id: string, d: DocumentData): VocabQuizRecord {
 const BATCH_LIMIT = 450;
 
 // ---------------------------------------------------------------------------
+// 목록 수동 정렬 — 다섯 reorder<X>의 공유 본체 (SPEC §15-1)
+// ---------------------------------------------------------------------------
+
+/** gRPC NOT_FOUND — `update` 대상 문서가 없으면 commit이 이 코드로 **배치 전체를** 거부한다. */
+const GRPC_NOT_FOUND = 5;
+
+/**
+ * reorderBySortIndex가 쓰는 Firestore의 최소 면. 실제 `Firestore`·`WriteBatch`·`CollectionReference`가 구조적으로
+ * 만족한다. 에뮬레이터 없이 가짜 db를 주입해 "없는 id 거르기"를 검증하려고 좁혀 둔 것이다(다른 의도는 없다).
+ */
+export interface SortIndexDb<Ref> {
+  /** 결과 순서 = 넘긴 참조 순서(SDK DocumentReader가 요청 순서로 되돌린다). 마지막 인자는 ReadOptions. */
+  getAll(...refsOrOptions: Array<Ref | { fieldMask: string[] }>): Promise<Array<{ readonly exists: boolean }>>;
+  batch(): {
+    update(ref: Ref, data: { sortIndex: number }): unknown;
+    commit(): Promise<unknown>;
+  };
+}
+
+/**
+ * 넘어온 id 순서대로 컬렉션 문서의 `sortIndex`를 매긴다 — **존재하는 문서만.** 쓴 문서 수를 돌려준다.
+ *
+ * 왜 거르나: `WriteBatch.update`는 문서가 없으면 **배치 전체**를 거부한다. 그래서 다른 탭에서 지운 항목이 남은
+ * 화면에서 재배치하면 라우트가 500 `save_failed`를 줬다. 계약(`lib/reorder-contract.ts` "존재하지 않는 id는 스토어가
+ * 조용히 건너뛴다")과 파일 백엔드(`rank.get(id)`가 있는 레코드만 바꾼다)는 건너뛴다 — 두 백엔드를 여기서 맞춘다.
+ *
+ * 인덱스 규칙은 파일 백엔드와 **같다**(`new Map(orderedIds.map((id, i) => [id, i]))`): 넘어온 **위치** 그대로 0..n이고,
+ * 없는 id의 자리는 당기지 않고 비워 둔다(정렬은 오름차순이라 빈 번호는 무해하다). 같은 id가 두 번 오면 마지막 위치가
+ * 이긴다(라우트 zod가 중복을 400으로 막지만 스토어 단독 호출도 같은 결과를 낸다). 목록에 없는 문서는 건드리지 않는다.
+ * 수정이라 prod-guard 대상이 아니다.
+ */
+export async function reorderBySortIndex<Ref>(
+  db: SortIndexDb<Ref>,
+  col: { doc(id: string): Ref },
+  orderedIds: readonly string[],
+): Promise<number> {
+  const rank = new Map(orderedIds.map((id, i) => [id, i] as const));
+  const targets: { ref: Ref; sortIndex: number }[] = [];
+  for (const [id, sortIndex] of rank) {
+    // Firestore 문서 id가 될 수 없는 id는 존재할 수 없는 문서다 → 건너뛴다(파일 백엔드에서 "없는 id"와 같은 결과).
+    // doc()에 넘기면 안 된다 — `"a/"`·`"/a"`는 빈 세그먼트가 버려져 **다른 문서 `a`**를 가리키고, `"a/b"`는 던진다.
+    // 판정은 계약과 같은 함수(라우트 zod가 이미 400으로 막는다 — 여기는 스토어 단독 호출의 방어선).
+    if (!isFirestoreDocId(id)) continue;
+    targets.push({ ref: col.doc(id), sortIndex });
+  }
+  let written = 0;
+  for (let i = 0; i < targets.length; i += BATCH_LIMIT) {
+    written += await commitExistingSortIndexes(db, targets.slice(i, i + BATCH_LIMIT));
+  }
+  return written;
+}
+
+/** 한 청크: 존재 확인 → 있는 문서만 batch.update → commit. 확인~커밋 사이에 지워졌으면 한 번만 다시 거른다. */
+async function commitExistingSortIndexes<Ref>(
+  db: SortIndexDb<Ref>,
+  chunk: { ref: Ref; sortIndex: number }[],
+  retried = false,
+): Promise<number> {
+  // sortIndex만 마스크로 받는다 — 존재 여부만 필요하고 본문(챕터·단어 배열)을 내려받을 이유가 없다
+  const snaps = await db.getAll(...chunk.map((t) => t.ref), { fieldMask: ["sortIndex"] });
+  const live = chunk.filter((_, k) => snaps[k]?.exists === true);
+  if (live.length === 0) return 0; // 전부 없다 — 빈 배치는 커밋하지 않는다
+  const batch = db.batch();
+  for (const t of live) batch.update(t.ref, { sortIndex: t.sortIndex });
+  try {
+    await batch.commit();
+  } catch (err) {
+    // 배치는 원자적이라 NOT_FOUND면 아무것도 써지지 않았다. 쓰는 값이 고정이라 다시 걸러 쓰는 것은 멱등이다.
+    if (!retried && (err as { code?: unknown } | null)?.code === GRPC_NOT_FOUND) {
+      return commitExistingSortIndexes(db, chunk, true);
+    }
+    throw err;
+  }
+  return live.length;
+}
+
+// ---------------------------------------------------------------------------
 // 구현
 // ---------------------------------------------------------------------------
 
@@ -448,15 +526,8 @@ export class FirestoreStore implements StudyStore {
   async reorderBooks(orderedIds: string[]): Promise<void> {
     // 넘어온 순서 = 최종 순서. 각 book 문서의 sortIndex를 0..n으로 갱신한다.
     // **수정이라 prod-guard를 걸지 않는다**(updateBookEvidence와 같은 규약 — 삭제가 아니다).
-    // 목록에 없는 book은 여기 오지 않으니 건드려지지 않는다. BATCH_LIMIT 단위로 나눠 커밋한다.
-    const db = getDb();
-    for (let i = 0; i < orderedIds.length; i += BATCH_LIMIT) {
-      const batch = db.batch();
-      for (let j = i; j < Math.min(i + BATCH_LIMIT, orderedIds.length); j++) {
-        batch.update(this.books().doc(orderedIds[j]), { sortIndex: j });
-      }
-      await batch.commit();
-    }
+    // 목록에 없는 book은 건드리지 않고, 없는(지워진) id는 건너뛴다 — reorderBySortIndex(BATCH_LIMIT 단위 커밋).
+    await reorderBySortIndex(getDb(), this.books(), orderedIds);
   }
 
   async getBook(id: string): Promise<BookRecord | null> {
@@ -616,15 +687,8 @@ export class FirestoreStore implements StudyStore {
   }
 
   async reorderExplanations(orderedIds: string[]): Promise<void> {
-    // reorderBooks의 explanations판 — BATCH_LIMIT 단위 batch.update. 수정이라 prod-guard 무관.
-    const db = getDb();
-    for (let i = 0; i < orderedIds.length; i += BATCH_LIMIT) {
-      const batch = db.batch();
-      for (let j = i; j < Math.min(i + BATCH_LIMIT, orderedIds.length); j++) {
-        batch.update(this.explanations().doc(orderedIds[j]), { sortIndex: j });
-      }
-      await batch.commit();
-    }
+    // reorderBooks의 explanations판 — 공유 본체 reorderBySortIndex(없는 id 건너뜀). 수정이라 prod-guard 무관.
+    await reorderBySortIndex(getDb(), this.explanations(), orderedIds);
   }
 
   async getExplanation(id: string): Promise<ExplanationRecord | null> {
@@ -670,15 +734,8 @@ export class FirestoreStore implements StudyStore {
   }
 
   async reorderVocabBooks(orderedIds: string[]): Promise<void> {
-    // reorderBooks의 vocab판 — BATCH_LIMIT 단위 batch.update. 수정이라 prod-guard 무관.
-    const db = getDb();
-    for (let i = 0; i < orderedIds.length; i += BATCH_LIMIT) {
-      const batch = db.batch();
-      for (let j = i; j < Math.min(i + BATCH_LIMIT, orderedIds.length); j++) {
-        batch.update(this.vocabBooks().doc(orderedIds[j]), { sortIndex: j });
-      }
-      await batch.commit();
-    }
+    // reorderBooks의 vocab판 — 공유 본체 reorderBySortIndex(없는 id 건너뜀). 수정이라 prod-guard 무관.
+    await reorderBySortIndex(getDb(), this.vocabBooks(), orderedIds);
   }
 
   async getVocabBook(id: string): Promise<VocabBookRecord | null> {
@@ -880,15 +937,8 @@ export class FirestoreStore implements StudyStore {
   }
 
   async reorderJaVocabBooks(orderedIds: string[]): Promise<void> {
-    // reorderVocabBooks의 일본어판 — BATCH_LIMIT 단위 batch.update. 수정이라 prod-guard 무관.
-    const db = getDb();
-    for (let i = 0; i < orderedIds.length; i += BATCH_LIMIT) {
-      const batch = db.batch();
-      for (let j = i; j < Math.min(i + BATCH_LIMIT, orderedIds.length); j++) {
-        batch.update(this.jaVocabBooks().doc(orderedIds[j]), { sortIndex: j });
-      }
-      await batch.commit();
-    }
+    // reorderVocabBooks의 일본어판 — 공유 본체 reorderBySortIndex(없는 id 건너뜀). 수정이라 prod-guard 무관.
+    await reorderBySortIndex(getDb(), this.jaVocabBooks(), orderedIds);
   }
 
   async updateJaVocabBookTitle(id: string, titleKo: string): Promise<JaVocabBookRecord | null> {
@@ -1002,14 +1052,8 @@ export class FirestoreStore implements StudyStore {
   }
 
   async reorderJaDialogs(orderedIds: string[]): Promise<void> {
-    const db = getDb();
-    for (let i = 0; i < orderedIds.length; i += BATCH_LIMIT) {
-      const batch = db.batch();
-      for (let j = i; j < Math.min(i + BATCH_LIMIT, orderedIds.length); j++) {
-        batch.update(this.jaDialogs().doc(orderedIds[j]), { sortIndex: j });
-      }
-      await batch.commit();
-    }
+    // reorderBooks의 대화판 — 공유 본체 reorderBySortIndex(없는 id 건너뜀). 수정이라 prod-guard 무관.
+    await reorderBySortIndex(getDb(), this.jaDialogs(), orderedIds);
   }
 
   async updateJaDialogTitle(id: string, titleKo: string): Promise<JaDialogRecord | null> {

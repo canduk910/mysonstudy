@@ -5,7 +5,7 @@
 
 여기 적힌 관용구는 대부분 **한 번 사고가 난 자리**에서 나왔다. 규칙만 옮기지 말고 이유도 같이 읽어라. 새 기능이 관용구에서 벗어날 때 무엇을 잃는지는 이유를 봐야 안다.
 
-**목차** — 1 페이지와 `force-dynamic` · 2 라우트 관용구 · 3 계약 파일과 번들 경계 · 4 저장소 이원화 · 5 원자적 쓰기 · 6 prod-guard · 7 PIN 게이트 · 8 발음 관문·낭독 대본 · 9 KST 날짜(알려진 부채 포함) · 10 스트릭 갱신 이벤트 · 11 층·디자인 토큰 · 12 목록 순서변경 · 13 로컬 검증 안전 규칙
+**목차** — 1 페이지와 `force-dynamic` · 2 라우트 관용구 · 3 계약 파일과 번들 경계 · 4 저장소 이원화 · 5 원자적 쓰기 · 6 prod-guard · 7 PIN 게이트 · 8 발음 관문·낭독 대본 · 9 KST 날짜(해소된 부채 포함) · 10 스트릭 갱신 이벤트 · 11 층·디자인 토큰 · 12 목록 순서변경 · 13 로컬 검증 안전 규칙
 
 ## 1. 페이지 — 서버 컴포넌트가 store를 읽는다
 
@@ -137,10 +137,11 @@
 
 ## 9. KST 날짜 — `lib/kst.ts` 단일 정의
 
-- 함수는 `kstDateString(iso)`, `formatKst(iso)`, `kstTodayString(now?)`, `shiftDateString(date, n)`, `diffDateStrings(from, to)`(형식 밖이면 NaN), `deviceDateString(d?)`다.
+- 함수는 `kstDateString(iso)`, `formatKst(iso)`, `formatKstDate(iso)`, `isZonedIsoTimestamp(value)`, `kstTodayString(now?)`, `shiftDateString(date, n)`, `diffDateStrings(from, to)`(형식 밖이면 NaN), `deviceDateString(d?)`다.
+- **"시간대가 명시된 ISO 시각인가"는 `isZonedIsoTimestamp` 한 곳이 정한다**(2026-09-25 단일화). 날짜만(`YYYY-MM-DD`) 또는 `THH:MM[:SS[.s{1,3}]]` + `Z`·`±HH:MM`이고, 날짜가 달력에 있고 `Date.parse`가 성공해야 한다. 시간대 없는 시각, 소수 4자리 이상, `24:00`, 달력 밖 날짜, 비문자열은 거절한다. 모두 엔진이나 실행 TZ에 따라 해석이 갈리는 값이다. `formatKstDate`(표시)와 `lib/workout.ts`(createdAt 정규화·endedAt 닫힌 날)가 이 함수를 같이 쓴다. 예전에는 운동에만 별도 정규식(소수 1~9자리, 24:00 허용)이 있어서 `…T15:00:00.123456Z`를 운동은 유효로, 표시는 폴백으로 봤다. 저장 값(`toISOString()`)은 양쪽 모두 통과하므로 실데이터에는 영향이 없었다. ISO 판정이 필요하면 정규식을 새로 쓰지 말고 이 함수를 import한다.
 - 계산은 **+9시간 후 `getUTC*`** 방식만 쓴다. `toLocaleString`·`Intl`·시간대 DB는 쓰지 않는다. 그래야 서버(Cloud Run UTC), SSR, 클라이언트가 항상 같은 값을 낸다.
-- 시각은 ISO UTC로 저장하고, "하루"는 KST 일자로 파생한다. ISO 시각에 `.slice(0, 10)`을 하면 UTC 일자가 나온다. KST 00:00~08:59에 만든 기록은 전날로 찍히므로 새 코드에서는 쓰지 않는다. 표시용 날짜는 `kstDateString(iso)`(또는 시각까지면 `formatKst`)로 만든다.
-- **알려진 부채 — 기존 화면을 견본으로 복사하지 않는다.** "만든 날짜" 표시가 지금 UTC 날짜부 자르기로 되어 있다. 상세 페이지 `app/english/vocab/[id]/page.tsx`·`app/math/problem/[id]/page.tsx`·`app/japanese/vocab/[id]/page.tsx`·`app/japanese/dialog/[id]/page.tsx`는 `record.createdAt.slice(0, 10)`을 쓴다. 목록 뷰 `components/{library,math-library,vocab-library,ja-vocab-library,ja-dialog-library}-view.tsx`는 각자 `formatDate(iso)`에서 `iso.slice(0, 10)`을 쓰고, `components/card-view.tsx`는 `item.createdAt.slice(0, 10)`을 쓴다. 주석에는 "타임존 계산 없이 SSR/클라 동일 출력"이라고 적혀 있다. 하지만 `kstDateString`도 +9h와 `getUTC*`만 쓰므로 SSR과 클라이언트가 같은 값을 낸다. 자를 이유가 없다. 새 페이지를 만들 때 이 줄을 따라 하지 말고, 고칠 기회가 오면 `kstDateString`으로 바꾼다. 반면 읽음 기록의 `readAt.slice(0, 10)`은 부채가 아니다. `readAt`은 기기 날짜 문자열(`deviceDateString`)이다(아래 예외).
+- 시각은 ISO UTC로 저장하고, "하루"는 KST 일자로 파생한다. ISO 시각에 `.slice(0, 10)`을 하면 UTC 일자가 나온다. KST 00:00~08:59에 만든 기록은 전날로 찍히므로 쓰지 않는다. 표시용 날짜는 `formatKstDate(iso)`(`YYYY.MM.DD`, 시각까지면 `formatKst`)로 만든다.
+- **해소된 부채(2026-09-25) — "만든 날짜" UTC 날짜부 자르기.** 상세 페이지 4곳(`app/{english/vocab,math/problem,japanese/vocab,japanese/dialog}/[id]/page.tsx`), 목록 뷰 5곳(`components/{library,math-library,vocab-library,ja-vocab-library,ja-dialog-library}-view.tsx`의 로컬 `formatDate` 헬퍼는 지웠다), `components/card-view.tsx`의 카드 이력이 `createdAt.slice(0, 10)`으로 UTC 일자를 보이던 것을 전부 `formatKstDate(iso)`로 바꿨다. 예전 주석의 "타임존 계산 없이 SSR/클라 동일 출력"은 자를 이유가 못 됐다 — `formatKstDate`도 +9h와 `getUTC*`만 써서 SSR과 클라이언트가 같은 값을 낸다. `isZonedIsoTimestamp`가 거절하는 값(시간대 없는 시각 `2026-09-25T10:00:00`, 달력에 없는 날, `24:00`, 소수 4자리 이상)은 엔진마다 해석이 갈린다(로컬 시각, V8 굴림). 그대로 환산하면 hydration이 깨지므로 환산하지 않고 예전처럼 원문 앞 10자를 보인다. 경계는 `eval:streak`("KST 환산")이 잠근다. 판정을 값으로 단언하고, formatKstDate 경계표를 TZ Asia/Seoul·UTC·America/Los_Angeles로 바꿔 다시 돌린다. KST 기기에서만 돌리면 "시간대 없는 시각" 가드가 잠기지 않기 때문이다. 새 화면에서 `createdAt`을 날짜로 보일 때도 이 함수만 쓴다. 반면 읽음 기록의 `readAt.slice(0, 10)`은 부채가 아니다. `readAt`은 기기 날짜 문자열(`deviceDateString`)이다(아래 예외).
 - "오늘"은 서버가 필요한 순간에 한 번만 읽는다. 순수 함수는 `todayKst`를 인자로 받아 결정적으로 동작한다.
 - 예외가 하나 있다. `deviceDateString`은 "오늘 읽었어요"(읽음 기록) 전용이고 기기 로컬 달력을 따른다. 스트릭(KST)과 일부러 합치지 않는다.
 - 새 날짜 규칙이 필요하면 이 파일에 추가한다(운동 때 `diffDateStrings`를 추가한 선례). 컴포넌트에 +9h 계산을 복사하지 않는다. 예전에 세 곳에 복사돼 있던 것을 모아서 이 파일이 생겼다.
@@ -164,8 +165,8 @@
 새 목록에 순서변경을 붙일 때는 이미 있는 프리미티브를 그대로 쓴다. 라이브러리는 추가하지 않는다.
 
 - 화면은 `components/use-reorder.ts`를 쓴다. 이 훅은 id 순서만 알고, 포인터 드래그·자동 스크롤·↑/↓·키보드·낙관적 반영과 실패 시 되돌리기를 처리한다. **관리 모드일 때만** 켠다(`enabled`). 평소에 드래그 핸들이 있으면 모바일 세로 스크롤과 충돌한다.
-- 요청 계약은 `lib/reorder-contract.ts`의 범용 `{ orderedIds }` 하나다. zod 값(`reorderRequestSchema`, 빈 배열·중복·`REORDER_MAX_IDS` 초과 거절)은 라우트에서만 쓴다. 지금 라우트는 `/api/library/reorder`·`/api/math/reorder`·`/api/english/vocab/reorder`·`/api/japanese/vocab/reorder`·`/api/japanese/dialog/reorder` 다섯이다.
-- 저장: 레코드마다 `sortIndex: number | null`(필수 nullable)을 둔다. 생성 입력 타입(`New*`)에서는 `sortIndex`를 `Omit`한다. 스토어가 null로 태어나게 하므로 새 항목은 맨 위에 뜬다. `reorder<X>(orderedIds)`는 넘어온 id들을 0..n으로 재색인하고 **목록에 없는 항목은 건드리지 않는다.** Firestore는 batch update로 처리한다(`BATCH_LIMIT` 단위로 커밋). 없는 id를 다루는 방식은 두 백엔드가 다르다. 계약 주석은 "존재하지 않는 id는 스토어가 조용히 건너뛴다"고 적었다. 파일 백엔드는 실제로 그렇게 한다(`rank.get(id)`가 있는 레코드만 바꾼다). 하지만 Firestore의 `WriteBatch.update`는 문서가 없으면 배치 전체를 거부한다(SDK 타입 주석). 그러면 라우트는 500 `save_failed`를 준다. 다른 탭에서 지운 항목이 남은 화면에서 재배치하면 이 차이가 드러난다. 새 목록을 붙일 때 이 차이를 알고 쓴다. 맞추려면 Firestore 쪽에서 존재 여부를 먼저 거른다. 정렬은 페이지나 뷰가 한다. null이 먼저 오고(createdAt 역순), 그 뒤 sortIndex 오름차순이다.
+- 요청 계약은 `lib/reorder-contract.ts`의 범용 `{ orderedIds }` 하나다. zod 값(`reorderRequestSchema`)은 라우트에서만 쓴다. 빈 배열·중복·`REORDER_MAX_IDS` 초과를 거절하고, Firestore 문서 id 규칙(`isFirestoreDocId`: `/` 없음, `.`·`..` 아님, `__.*__` 아님, 올바른 UTF-8, 1,500바이트 이하)을 어기는 id도 400으로 막는다(2026-09-25). Firestore `col.doc("a/")`는 문서 `a`를 가리키므로, 막지 않으면 같은 요청에 두 백엔드 결과가 갈린다. 실제 저장 id(randomUUID, 자동 id 20자)는 전부 통과한다. 지금 라우트는 `/api/library/reorder`·`/api/math/reorder`·`/api/english/vocab/reorder`·`/api/japanese/vocab/reorder`·`/api/japanese/dialog/reorder` 다섯이다.
+- 저장: 레코드마다 `sortIndex: number | null`(필수 nullable)을 둔다. 생성 입력 타입(`New*`)에서는 `sortIndex`를 `Omit`한다. 스토어가 null로 태어나게 하므로 새 항목은 맨 위에 뜬다. `reorder<X>(orderedIds)`는 넘어온 id들을 0..n으로 재색인하고 **목록에 없는 항목은 건드리지 않는다.** Firestore는 다섯 `reorder<X>`가 공유 본체 `reorderBySortIndex(db, col, orderedIds)`(`lib/store-firestore.ts`)를 부른다. **없는 id는 두 백엔드 모두 조용히 건너뛴다**(계약 주석 "존재하지 않는 id는 스토어가 조용히 건너뛴다"). 파일 백엔드는 `rank.get(id)`가 있는 레코드만 바꾸고, Firestore는 `getAll(...refs, { fieldMask: ["sortIndex"] })`로 존재하는 문서만 걸러 batch update한다(`BATCH_LIMIT` 단위 청크). `isFirestoreDocId`를 통과하지 못한 id는 `doc()`에 넘기지 않고 건너뛴다(계약과 같은 판정이라 스토어를 단독으로 불러도 파일 백엔드와 같다). **해소된 부채(2026-09-25):** 예전 Firestore 구현은 넘어온 id마다 `WriteBatch.update`를 걸어, 다른 탭에서 지운 id 하나가 배치 전체를 NOT_FOUND로 거부시켜 라우트가 500 `save_failed`를 줬다. 인덱스는 파일 백엔드와 같은 규칙이다 — 넘어온 **위치** 그대로(없는 id 자리는 당기지 않고 비운다), 중복이면 마지막 위치가 이긴다. 확인과 커밋 사이에 지워지면(NOT_FOUND, code 5) 한 번만 다시 걸러 쓴다(값이 고정이라 멱등). 에뮬레이터가 없어 이 함수는 db를 주입받는다 — 가짜 db로 검증한다. 새 목록을 붙이면 Firestore 쪽도 이 함수를 부르고 `batch.update`를 직접 걸지 않는다. 정렬은 페이지나 뷰가 한다. null이 먼저 오고(createdAt 역순), 그 뒤 sortIndex 오름차순이다.
 - **부분 목록에서는 재배치를 끈다.** 필터나 검색으로 일부만 보일 때 재색인하면 숨은 항목과 인덱스가 겹친다. 수학 목록은 '전체'가 아니면 끄고, 서재는 검색 중에 끈다. 삭제는 필터와 무관하게 유지한다.
 - 순서 변경은 수정이라 prod-guard 대상이 아니다. 성공하면 `router.refresh()`로 서버 순서를 확정한다.
 

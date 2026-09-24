@@ -21,11 +21,11 @@ OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_
 OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run eval:workout
 ```
 
-| 스크립트 | 대상 | import 경계 | 출력 영역 (항목 수는 2026-09-24 실측) |
+| 스크립트 | 대상 | import 경계 | 출력 영역 (항목 수는 2026-09-25 실측) |
 |---|---|---|---|
 | `scripts/eval-speech.ts` | `lib/ja-coaching-script.ts` 대본·쪼개기, `lib/speech.ts` 큐, `lib/tts-shared.ts`·`lib/tts.ts` 상수, `lib/tts-cache.ts` 지문 | store 금지. `lib/speech`·`lib/tts`·`lib/tts-cache`는 fetch 스텁을 깔고 키를 비운 **뒤에** dynamic import한다 | 대본·쪼개기·상수·엔진·큐·지문·안전 (71) |
-| `scripts/eval-streak.ts` | `lib/streak.ts`의 `computeStreak`·`computeStreakFromDays`, `lib/kst.ts` | `../lib/streak`·`../lib/kst`만 | KST 환산·연속 판정·0문항 제외·사람 분리·날짜 코어 (20) |
-| `scripts/eval-workout.ts` | `lib/workout.ts` 전체, `diffDateStrings` | `../lib/workout`·`../lib/kst`·`../lib/streak`만 | 베이스·계획·스텝·횟수·상태·판정(`decideLog`·`decideUndo`·`decideStart`·`closingStatus`)·활성 선택·격리·정규화·날짜 방어·진행·볼륨·일정·스냅샷·지난 사이클·운동 스트릭 (122) |
+| `scripts/eval-streak.ts` | `lib/streak.ts`의 `computeStreak`·`computeStreakFromDays`, `lib/kst.ts`(`formatKstDate`·`isZonedIsoTimestamp` 포함) | `../lib/streak`·`../lib/kst`만 | KST 환산(formatKstDate 경계표를 TZ Asia/Seoul·UTC·America/Los_Angeles로 다시 돌림 — 실행 기기 TZ 무관)·연속 판정·0문항 제외·사람 분리·날짜 코어 (41) |
+| `scripts/eval-workout.ts` | `lib/workout.ts` 전체, `diffDateStrings` | `../lib/workout`·`../lib/kst`·`../lib/streak`만 | 베이스·계획·스텝·횟수·상태·판정(`decideLog`·`decideUndo`·`decideStart`·`closingStatus`)·활성 선택·격리·정규화(createdAt ISO 경계 = `isZonedIsoTimestamp`)·날짜 방어·진행·볼륨·일정·스냅샷·지난 사이클·운동 스트릭(endedAt ISO 경계 포함) (124) |
 
 - **import 경계 자체가 검증 항목이다.** eval이 store를 import하면 어느 DB를 향할지 모르는 스크립트가 된다. 판정은 두 단계로 한다.
   - `grep -an 'lib/store' scripts/eval-speech.ts scripts/eval-streak.ts scripts/eval-workout.ts`가 **0줄**이어야 한다.
@@ -72,8 +72,8 @@ OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_
 
 | 검증 | 방법 |
 |---|---|
-| KST 정의처가 하나인가 | `grep -rna -e "9 \* 60 \* 60" -e "Asia/Seoul" -e "toLocaleDateString" app components lib`의 결과가 `lib/kst.ts` 밖에서는 0건이어야 한다. `toLocaleString`은 숫자 서식에만 쓰였는지 확인한다 |
-| UTC 날짜부 자르기 | 위 grep은 ISO 시각을 잘라 UTC 일자를 얻는 패턴을 잡지 못한다. `grep -rnaE '\.slice\(0, *10\)' app components lib`를 따로 돌려 결과를 셋으로 나눈다. ① 읽음 기록의 `readAt.slice(0, 10)`은 정상이다. `readAt`이 기기 날짜 문자열(`deviceDateString`)이기 때문이다. 날짜가 아닌 배열 자르기도 정상이다. ② "만든 날짜" 표시에서 `createdAt.slice(0, 10)`이나 `formatDate(iso)` 안의 `iso.slice(0, 10)`을 쓰는 곳은 **기존 부채**다. 목록은 app-patterns §9에 있다(상세 페이지 4곳, 목록 뷰 5곳, `card-view.tsx`). 이번 변경과 무관하면 "기존 부채"로 따로 적고 P2로 둔다. ③ 그 목록에 없는 **새** 위치는 이번 변경의 결함이다 |
+| KST 정의처가 하나인가 | `grep -rna -e "9 \* 60 \* 60" -e "Asia/Seoul" -e "toLocaleDateString" app components lib`의 결과가 `lib/kst.ts` 밖에서는 0건이어야 한다. `toLocaleString`은 숫자 서식에만 쓰였는지 확인한다. "시간대가 명시된 ISO 시각" 판정도 `lib/kst.ts`의 `isZonedIsoTimestamp` 하나다(`formatKstDate`와 `lib/workout.ts`의 createdAt·endedAt 판정이 같이 쓴다, 2026-09-25 단일화). `grep -rnaF -e '[+-]\d{2}:' -e '[+-](?:' lib app components`로 시간대 오프셋을 받는 정규식을 찾는다. `lib/kst.ts` 밖에서 나오면 두 번째 정의(결함)다(예전 `lib/workout.ts`의 `ISO_RE`가 이 grep에 걸렸다) |
+| UTC 날짜부 자르기 | 위 grep은 ISO 시각을 잘라 UTC 일자를 얻는 패턴을 잡지 못한다. `grep -rnaE '\.slice\(0, *10\)' app components lib`를 따로 돌려 결과를 셋으로 나눈다. ① 읽음 기록의 `readAt.slice(0, 10)`은 정상이다. `readAt`이 기기 날짜 문자열(`deviceDateString`)이기 때문이다. 날짜가 아닌 배열 자르기도 정상이다. `lib/kst.ts` 안의 `raw.slice(0, 10)`(`formatKstDate`가 환산할 수 없는 값을 예전처럼 보이는 폴백)도 정상이다. ② "만든 날짜" 표시(상세 페이지 4곳, 목록 뷰 5곳, `card-view.tsx` 카드 이력)의 UTC 날짜부 자르기는 **2026-09-25에 해소됐다** — 전부 `formatKstDate(iso)`를 쓴다(app-patterns §9). 그래서 `createdAt.slice(0, 10)`이나 표시용 `iso.slice(0, 10)`이 다시 나오면 위치와 무관하게 **회귀(결함)** 다. `grep -rna "formatKstDate" app components`가 10곳(상세 4·목록 5·카드 이력 1)인지도 본다. 경계값은 `eval:streak`의 "KST 환산" formatKstDate 줄(15:00Z→다음날, 14:59:59Z→같은날, 깨진 입력·시간대 없는 시각·달력에 없는 날·24:00·소수 4자리+는 환산 안 함)이 잠근다. 이 표는 KST 기기에서만 돌리면 "시간대 없는 시각" 가드가 잠기지 않는다(로컬 KST로 읽고 +9h를 해도 같은 날). 그래서 eval이 판정(`isZonedIsoTimestamp`)을 값으로 단언하고 표를 TZ 3곳으로 바꿔 다시 돌린다. TZ 전환이 먹었는지(로컬 생성자 → UTC)도 같은 줄이 확인한다 |
 | 자정 경계 | eval "KST 환산": 15:00Z는 다음 날, 14:59Z는 같은 날 |
 | 시험만 세고, 답한 문항이 1개 이상이어야 한다 | eval "0문항 제외"(answered null·false). `app/api/streak/route.ts`가 스트릭을 **세는 데** 쓰는 컬렉션이 `listAllVocabQuizzes`·`listAllJaQuizzes`·`listJaKanjiQuizzes`·`listWorkoutCycles` 넷뿐인지 본다. 오늘 라벨(`todayLabel`)을 만들려고 `getVocabBook`·`getJaVocabBook`으로 단어장 이름을 읽는 것은 허용한다. 수학·읽음·대화 컬렉션이 끼면 실패다 |
 | 사람·트랙 분리 | eval "사람 분리"와 "날짜 코어"에는 섞으면 값이 달라지는 반례가 있다. 라우트에서 eunwoo=vocab, appa=jaVocab+jaKanji, appaWorkout=`workoutKeptDays`가 한 집합에 섞이지 않는지 코드로 확인한다 |
@@ -116,10 +116,10 @@ eval:workout이 잠그는 것은 이렇다. **원안 오라클**: 원안 Python 
 
 | 검증 | 방법 | 실패의 의미 |
 |---|---|---|
-| zod가 반례를 거부한다 | `reorderRequestSchema.safeParse`에 네 반례를 넣어 전부 실패하는지 본다. 빈 배열 `{orderedIds: []}`, 중복 `["a","a"]`, `REORDER_MAX_IDS`(1000)+1개, 빈 문자열 id `[""]`다. 경계인 정확히 1000개는 통과해야 한다. 스크래치 스크립트는 `lib/reorder-contract.ts`만 import한다. zod만 쓰는 모듈이라 store에 닿지 않는다. 접두어를 붙여 `tsx`로 돌린다. dev 서버를 띄웠다면 같은 본문을 라우트에 POST해 400 `invalid_input`과 `issues`가 오는지 본다 | 재색인이 꼬이거나 무의미한 쓰기가 난다 |
+| zod가 반례를 거부한다 | `reorderRequestSchema.safeParse`에 반례를 넣어 전부 실패하는지 본다. 빈 배열 `{orderedIds: []}`, 중복 `["a","a"]`, `REORDER_MAX_IDS`(1000)+1개, 빈 문자열 id `[""]`, 그리고 **Firestore 문서 id 규칙 위반**(`isFirestoreDocId`, 2026-09-25): `"a/"`·`"/a"`·`"a/b"`·`"."`·`".."`·`"__x__"`·짝 없는 서로게이트·UTF-8 1,501바이트다. 경계인 정확히 1000개와 정상 id(randomUUID 36자, Firestore 자동 id 20자 영숫자, `data/db.json`의 seed id, `...`·`__`·1,500바이트 정확히)는 통과해야 한다. 스크래치 스크립트는 `lib/reorder-contract.ts`만 import한다. zod만 쓰는 모듈이라 store에 닿지 않는다. 접두어를 붙여 `tsx`로 돌린다. dev 서버를 띄웠다면 같은 본문을 라우트에 POST해 400 `invalid_input`과 `issues`가 오는지 본다 | 재색인이 꼬이거나 무의미한 쓰기가 난다 |
 | 다섯 라우트가 같은 계약 | `app/api/{library,math,english/vocab,japanese/vocab,japanese/dialog}/reorder/route.ts`를 본다. 모두 `reorderRequestSchema`와 `ReorderResponse`를 import하는지, 스토어의 `reorderBooks`·`reorderExplanations`·`reorderVocabBooks`·`reorderJaVocabBooks`·`reorderJaDialogs`를 하나씩 부르는지, 저장 실패를 500 `save_failed`로 내리는지 확인한다. SPEC §15-1에는 앞의 세 라우트만 적혀 있다. 일본어 두 목록은 뒤에 붙었다 | 목록마다 에러 분기가 갈린다 |
 | 목록 밖 항목은 건드리지 않는다 | 파일 백엔드의 `reorder<X>`가 `rank.get(id)`가 있는 레코드만 바꾸는지 코드로 읽는다. db.json을 백업한 뒤 일부 id만 보내 보고, 나머지 레코드의 `sortIndex`가 그대로인지 본다 | 부분 재배치가 숨은 항목의 순서를 깬다 |
-| 없는 id — 두 백엔드 차이 | 계약 주석은 "존재하지 않는 id는 스토어가 조용히 건너뛴다"고 한다. 파일 백엔드는 그렇게 동작한다. Firestore 구현은 `batch.update`를 쓰는데, 문서가 없으면 배치 전체가 거부된다(SDK 타입 주석). 결과는 500 `save_failed`이고, 훅이 되돌린 뒤 오류 문구를 띄운다. 다른 탭에서 지운 항목이 남은 화면에서 재배치하면 이 차이가 드러난다. Firestore는 실행하지 않으므로 코드 대조로 판정하고, 발견 사항(두 백엔드 동작 불일치)으로 적는다 | 로컬에서는 되는데 프로덕션에서는 저장이 실패한다 |
+| 없는 id — 두 백엔드가 같다 | 계약 주석은 "존재하지 않는 id는 스토어가 조용히 건너뛴다"고 한다. 경로 문자가 든 id(`"a/"`는 Firestore에서 문서 `a`가 된다)는 라우트 zod가 400으로 먼저 막고, `reorderBySortIndex`도 같은 판정(`isFirestoreDocId`)으로 `doc()` 전에 건너뛴다 — 스토어 단독 호출에서도 파일 백엔드와 같다. 파일 백엔드는 `rank.get(id)`가 있는 레코드만 바꾼다. Firestore는 **2026-09-25에 맞췄다**(해소) — 다섯 `reorder<X>`가 공유 본체 `reorderBySortIndex`(`lib/store-firestore.ts`)를 부르고, 그 함수가 `getAll(...refs, { fieldMask: ["sortIndex"] })`로 존재하는 문서만 걸러 batch update한다. 코드로 본다: `grep -na "batch.update" lib/store-firestore.ts`에서 sortIndex를 쓰는 줄이 그 함수 안 하나뿐인지, 다섯 메서드 본문이 `reorderBySortIndex(getDb(), this.<col>(), orderedIds)` 한 줄인지. 인덱스 규칙이 파일 백엔드와 같은지(넘어온 **위치** 그대로 — 없는 id 자리를 당기지 않는다, 중복이면 마지막 위치)도 대조한다. Firestore는 실행하지 않으므로, 이 함수는 db를 주입받는다 — 가짜 db(존재/비존재 섞기·전부 없음·중복·청크 >450·확인~커밋 사이 삭제)로 파일 백엔드 규칙과 같은 결과인지 스크래치로 돌리고, 실제 SDK 동작은 미검증으로 적는다 | 로컬에서는 되는데 프로덕션에서는 다른 탭에서 지운 항목 하나 때문에 저장이 500으로 실패한다 |
 | 생성은 sortIndex를 모른다 | `lib/store.ts`의 `NewBook`·`NewExplanation`·`NewVocabBook`·`NewJaVocabBook`·`NewJaDialog`가 `Omit<…, "id" \| "createdAt" \| "sortIndex">`인지, 두 백엔드의 생성 메서드가 `sortIndex: null`로 쓰는지 본다 | 새 항목이 맨 위에 뜨지 않는다 |
 | 정렬 규칙이 하나다 | `app/{library,math/library,english/vocab,japanese/vocab,japanese/dialog}/page.tsx`의 비교 함수가 모두 같은지 본다. null이 먼저 오고(그 안은 `createdAt` 역순), 그 뒤 `sortIndex` 오름차순이어야 한다 | 목록마다 새 항목의 위치가 다르다 |
 | 부분 목록에서 끈다 | `components/library-view.tsx`는 `reorderEnabled = manageMode && !q`(검색 중 비활성)이고, `components/math-library-view.tsx`는 `manageMode && filter === "all"`이다. 나머지 셋(`vocab-library-view`·`ja-vocab-library-view`·`ja-dialog-library-view`)은 필터가 없어서 `enabled: manageMode`다. 새로 필터나 검색이 붙은 목록이 있으면 이 게이트도 함께 생겼는지 본다. 삭제는 필터와 무관하게 유지돼야 한다 | 보이는 일부만 재색인해 숨은 항목과 인덱스가 겹친다 |
@@ -180,6 +180,6 @@ eval을 통과한 엔진에서 규칙 위반을 더 찾거나, eval이 무엇을
 
 - **실측 방법**에 eval 3종의 결과(PASS 수/전체)와 실행 접두어를 적는다. dev 서버를 띄웠다면 store 백엔드 로그를 확인한 줄과 db.json 백업·복원 shasum도 적는다. grep 판정은 `-a`를 붙여 돌렸다고 명시한다.
 - **미검증**에는 §8 목록 가운데 해당하는 것과 Firestore 경로(안전 규칙상 접속하지 않음)를 **이유와 함께** 적는다. 실기기 항목은 아빠 iPhone 확인 목록으로 넘긴다.
-- **기존 부채**(이번 변경 전부터 있던 위반, 예: §3의 UTC 날짜부 표시)는 이번 변경의 결함과 섞지 말고 따로 적는다.
+- **기존 부채**(이번 변경 전부터 있던 위반)는 이번 변경의 결함과 섞지 말고 따로 적는다. §3의 UTC 날짜부 표시는 2026-09-25에 해소돼 이제 부채가 아니라 회귀로 판정한다.
 - eval 공백(변이가 살아남음)은 P2로 둔다. 담당은 app-builder이고, 어떤 변이가 살아남았는지와 추가할 단언을 함께 적는다.
 - 폰 폭에서 사용자가 요청한 요소가 첫 화면에 보이지 않으면 P1이다. 스펙 문언을 어기지 않았더라도 요청 목적을 달성하지 못한 것이기 때문이다.

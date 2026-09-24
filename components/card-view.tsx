@@ -20,7 +20,7 @@ import {
 } from "@/lib/ai/english/schemas";
 // 발음 재생은 lib/speech.ts가 단일 정의처다 (lang·rate 다이얼이 화면마다 갈리지 않도록).
 import { prefetchSpeech, speak } from "@/lib/speech";
-import { deviceDateString } from "@/lib/kst";
+import { deviceDateString, formatKstDate } from "@/lib/kst";
 import type { BookRecord, CardRecord, ReadingRecord } from "@/lib/store";
 // 챕터 리더(호출 F, §9) — 목차+자막이 있을 때만 스스로를 그린다(없으면 null → 회귀 0).
 import ChapterReaderSection from "./chapter-reader";
@@ -351,7 +351,7 @@ function CardHistory({
                 {isCurrent && <span className={s.versionCurrent}>지금 보는 카드</span>}
               </div>
               <p className={s.versionMeta}>
-                {item.createdAt.slice(0, 10).replace(/-/g, ".")}
+                {formatKstDate(item.createdAt)}
                 {item.storySource && ` · ${STORY_SOURCE_LABELS_KO[item.storySource]}`}
                 {item.sceneCount > 0 && ` · 장면 ${item.sceneCount}개`}
               </p>

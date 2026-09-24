@@ -17,6 +17,7 @@ import VocabbookView from "@/components/vocabbook-view";
 import VocabTitleEditor from "@/components/vocab-title-editor";
 import { MIN_QUIZ_WORDS } from "@/lib/vocab-quiz";
 import { isRenderableVocabBook } from "@/lib/vocabbook-record";
+import { formatKstDate } from "@/lib/kst";
 import { getStore } from "@/lib/store";
 
 // 저장 데이터는 요청 시점에 읽는다
@@ -53,7 +54,7 @@ export default async function VocabDetailPage({ params }: VocabDetailPageProps) 
           <Link href="/english/vocab" className="u-navbtn">
             ← 단어장 목록
           </Link>
-          <p className="t-caption flex-none">{record.createdAt.slice(0, 10).replace(/-/g, ".")}</p>
+          <p className="t-caption flex-none">{formatKstDate(record.createdAt)}</p>
         </div>
         {/* 이름 인라인 편집 (클라이언트) — 저장 시 router.refresh로 목록·헤더·카드 chrome 제목까지 갱신 */}
         <VocabTitleEditor id={record.id} titleKo={record.titleKo} />
