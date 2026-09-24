@@ -19,13 +19,22 @@
  *   ALLOW_PROD_DESTRUCTIVE=1 npx tsx scripts/whatever.ts
  */
 
-/** 파괴적 작업 이름 — 에러 메시지에 그대로 실린다 */
+/**
+ * 파괴적 작업 이름 — 에러 메시지에 그대로 실린다.
+ *
+ * 운동 두 개(SPEC §19-4)는 문서 삭제가 아니지만 **되돌릴 수 없게 실데이터를 바꾼다**:
+ * - `undoWorkoutEvent` — 활성 사이클의 마지막 운동 기록을 뺀다(되살리는 UI 없음)
+ * - `closeWorkoutCycle` — 사건 있는 활성 사이클을 닫는다(도중 재측정 → abandoned, 되살리는 UI 없음)
+ * 가드의 기준은 "삭제 API냐"가 아니라 "가족 기록을 되돌릴 수 없게 잃느냐"다.
+ */
 export type DestructiveOp =
   | "deleteBook"
   | "deleteCard"
   | "deleteExplanation"
   | "deleteVocabBook"
-  | "deleteJaVocabBook";
+  | "deleteJaVocabBook"
+  | "undoWorkoutEvent"
+  | "closeWorkoutCycle";
 
 export class ProdGuardError extends Error {
   readonly code = "prod_guard";

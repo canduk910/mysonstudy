@@ -44,6 +44,27 @@ export function shiftDateString(date: string, deltaDays: number): string {
 }
 
 /**
+ * 두 `YYYY-MM-DD` 사이의 **일수 차**(`to − from`, 달력 산술, 결정적). 운동 상태 기계의 gap 판정에 쓴다(SPEC §19-2).
+ * shiftDateString과 같은 방식(UTC 자정 기준)이라 월·연 경계·DST에 흔들리지 않는다.
+ *
+ * **형식이 틀리면 NaN** — 정확히 숫자 `YYYY-MM-DD`이고 달력에 실제로 있는 날(월 1~12, 그 달의 일수 안 — 평년 2월 29 ✗)이어야 한다.
+ * 문자열이 아닌 값, `""`·`"2026-09"`·`"2026-13-01"`·`"2026-02-30"`·시각이 붙은 값은 전부 NaN이다
+ * (예전엔 `""`를 1900-01-01로, 2월 30일을 3월 2일로 조용히 굴렸다). 그래서 `diffDateStrings(d, d) === 0`이 곧 "유효한 날짜" 검사다.
+ * 연도 0000~0099는 Date.UTC가 1900년대로 해석하므로 왕복 검사에서 NaN이 된다(실사용 범위 밖).
+ */
+export function diffDateStrings(from: string, to: string): number {
+  const utcMidnight = (date: unknown): number => {
+    if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return Number.NaN;
+    const [y, m, d] = date.split("-").map(Number);
+    const t = Date.UTC(y, m - 1, d);
+    // 달력 왕복 — Date.UTC는 13월·2월 30일을 다음 달로 굴린다. 되돌린 연·월·일이 입력과 같아야 실제로 있는 날이다.
+    const back = new Date(t);
+    return back.getUTCFullYear() === y && back.getUTCMonth() === m - 1 && back.getUTCDate() === d ? t : Number.NaN;
+  };
+  return Math.round((utcMidnight(to) - utcMidnight(from)) / (24 * 60 * 60 * 1000));
+}
+
+/**
  * **기기 로컬** 날짜 `YYYY-MM-DD`. ⚠️ KST가 아니다 — 이건 **"오늘 읽었어요"(읽음 기록) 전용**이다.
  * 읽은 날의 기준은 사용자 쪽 달력이어야 자연스럽다는 규약(`app/api/readings/route.ts` 주석 참고).
  * 그래서 KST 함수와 **일부러 합치지 않는다** — 스트릭(KST)과 읽음(기기 로컬)은 다른 기준이다.

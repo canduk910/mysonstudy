@@ -1,0 +1,88 @@
+/* 아빠의 운동 화면 (SPEC §19-6). 새 토큰·새 색조 없이 CSS 변수만(DESIGN §2).
+ * 완료/실패는 accent·ink-3 명도 차 + 글리프(✓ ✗ ▶)로 — 초록·빨강을 들이지 않는다. danger는 확인 패널에만. */
+
+/* 오류·안내 박스 — danger가 아니라 중립(경계선 강조). danger는 두 단계 확인 패널 전용이다. */
+.warn {
+  padding: 12px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+/* 진행률 막대 — 완료 {done}/20일 */
+.progress {
+  height: 8px;
+  margin: 4px 0 2px;
+  border-radius: var(--radius-chip);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.progressFill {
+  height: 100%;
+  border-radius: var(--radius-chip);
+  background: var(--accent);
+}
+
+/* 앞으로 3일 */
+.upcomingRow {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+}
+
+/* 27일 계획표 */
+.planSummary {
+  padding: 16px;
+  cursor: pointer;
+  list-style-position: inside;
+}
+.planTable td,
+.planTable th {
+  padding: 6px 8px;
+  vertical-align: middle;
+}
+.planTable td {
+  font-size: var(--fs-vocab-example);
+  color: var(--ink);
+}
+/* 좁은 폰(390px)에서 4열이 한 줄에 들어가게 사다리 글자를 한 단계 줄인다(인쇄는 건드리지 않는다) */
+@media screen and (max-width: 420px) {
+  .planTable td,
+  .planTable th {
+    padding: 6px 4px;
+  }
+  .planTable td {
+    font-size: var(--fs-parent-hint);
+  }
+}
+.currentRow td {
+  background: var(--accent-soft);
+}
+.marks {
+  white-space: nowrap;
+  font-weight: var(--fw-bold);
+}
+.markNow {
+  color: var(--accent-ink);
+}
+.markDone {
+  color: var(--accent);
+}
+.markFail {
+  color: var(--ink-3);
+}
+.marks > span + span {
+  margin-left: 4px;
+}
+
+/* 두 단계 확인 패널 — danger는 여기에만(ja-dialog-library-view 확인 패널과 같은 모양) */
+.dangerPanel {
+  padding: 16px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-box);
+  background: var(--danger-soft);
+}

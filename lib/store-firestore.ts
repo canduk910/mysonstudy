@@ -3,7 +3,8 @@
  *
  * - 컬렉션: books / cards / readings (SPEC §5 필드 그대로 + M1의 추가 필드
  *   coverEmoji·description — 빌드 리포트 M1 §5-2 근거 참조) + explanations
- *   (수학 설명 기록 — math.md §9-1 필드 그대로)
+ *   (수학 설명 기록 — math.md §9-1 필드 그대로) … + workoutCycles(아빠의 운동 — SPEC §19-4,
+ *   변경 3개만 runTransaction — 이유는 해당 메서드 위 주석)
  * - 인증: Admin SDK + ADC(Application Default Credentials).
  *   Cloud Run에서는 서비스 계정, 로컬에서는 GOOGLE_APPLICATION_CREDENTIALS 키 파일.
  * - 날짜: 파일 스토어와 동일하게 ISO 8601 "문자열"로 저장한다 — 인터페이스가
@@ -74,7 +75,14 @@ import {
   type VocabBookRecord,
   type VocabQuizItem,
   type VocabQuizRecord,
+  type LogWorkoutInput,
+  type StartWorkoutInput,
+  type StartWorkoutResult,
+  type UndoWorkoutInput,
+  type WorkoutMutationResult,
 } from "./store";
+// 아빠의 운동(§19-4) — 판정·정규화는 파일 백엔드(store.ts)와 **같은 순수 함수**라 두 백엔드가 안 갈린다(런타임 의존성 ./kst뿐).
+import { decideLog, decideStart, decideUndo, normalizeWorkoutCycle, type WorkoutCycleRecord } from "./workout";
 // 단어장 보강(V3) 저장이 받는 완성형 entry 타입 — store는 VocabEntry를 재수출하지 않는다.
 import type { VocabEntry } from "./ai/english/vocabbook-schemas";
 // enriched 재계산의 단일 정의처(V8) — file 백엔드(store.ts)와 같은 함수로 두 백엔드가 안 갈린다.
@@ -288,6 +296,28 @@ function toJaDialog(id: string, d: DocumentData): JaDialogRecord {
   return normalizeJaDialogRecord({ ...(d as JaDialogRecord), id, createdAt: toIso(d.createdAt) });
 }
 
+/**
+ * 운동 사이클 읽기 방어 변환(§19-4) — 파일 백엔드와 **같은 함수**(normalizeWorkoutCycle)로 조인다. 엔진 정규화는
+ * 문자열 시각만 인정하므로, 손으로 넣은 Timestamp 문서도 읽히게 createdAt·endedAt을 toIso로 먼저 바꾼다.
+ */
+function toWorkoutCycle(id: string, d: DocumentData): WorkoutCycleRecord {
+  return normalizeWorkoutCycle({
+    ...d,
+    id,
+    createdAt: toIso(d.createdAt),
+    endedAt: d.endedAt == null ? null : toIso(d.endedAt),
+  });
+}
+
+/**
+ * 운동 사이클 저장 본문 — 저장 계층이 마지막 관문이라 normalizeWorkoutCycle을 한 번 더 태워 undefined를 없애고
+ * (Firestore는 undefined를 거부한다 — failed·endedAt은 반드시 null), 문서 ID가 곧 id라 본문에서 뺀다.
+ */
+function workoutCycleData(record: WorkoutCycleRecord): Omit<WorkoutCycleRecord, "id"> {
+  const { id: _id, ...data } = normalizeWorkoutCycle(record);
+  return data;
+}
+
 /** 한자 정보 읽기 방어 변환(JK) — normalizeJaKanji로 조인다(파일 백엔드와 같은 규약). */
 function toJaKanji(id: string, d: DocumentData): JaKanjiRecord {
   return normalizeJaKanji({ ...(d as JaKanjiRecord), id, createdAt: toIso(d.createdAt) });
@@ -390,6 +420,9 @@ export class FirestoreStore implements StudyStore {
   }
   private jaDialogs(): CollectionReference {
     return getDb().collection("jaDialogs");
+  }
+  private workoutCycles(): CollectionReference {
+    return getDb().collection("workoutCycles");
   }
 
   async createBook(input: NewBook): Promise<BookRecord> {
@@ -1028,5 +1061,82 @@ export class FirestoreStore implements StudyStore {
     await ref.update({ entries: nextEntries });
     const updated = await ref.get();
     return { record: toJaVocabBook(updated.id, updated.data()!), appended: true };
+  }
+
+  // ---- workoutCycles — 아빠의 운동 (§19-4) ----
+  //
+  // ⚠️ 이 저장소에서 **처음으로 트랜잭션(getDb().runTransaction)을 쓴다.** 이유:
+  // 위의 다른 수정 메서드는 전부 `get → 메모리에서 판정 → update` 관용구다. 운동 기록에 그걸 그대로 쓰면 두 요청
+  // (연타·폰과 PC·Cloud Run 인스턴스 여럿 — deploy에 max-instances 제한이 없다)이 같은 rev를 읽고 둘 다 통과해,
+  // 뒤 쓰기가 앞 쓰기를 덮는다(사건 유실·같은 Day 이중 기록·활성 사이클 2개). rev·활성 id 대조가 그걸 막으려면
+  // **읽기·판정·쓰기가 한 원자 단위**여야 한다. 트랜잭션은 경합하면 콜백을 다시 돌리는데, 판정 함수(decide*)가
+  // 순수·결정적이고 todayKst·nowIso(라우트)·newId(여기, 트랜잭션 밖)를 밖에서 한 번 정하므로 재시도해도 같은 답이다.
+  // 규칙: 콜백 안에서 **읽기를 모두 끝낸 뒤** 쓴다(Firestore 트랜잭션 제약). 콜백이 던지면(RangeError·prod-guard)
+  // 쓰기 없이 롤백되고 그 에러가 그대로 올라간다(재시도 대상 아님).
+
+  async listWorkoutCycles(): Promise<WorkoutCycleRecord[]> {
+    // orderBy("createdAt") 대신 전체를 읽어 메모리에서 정렬한다 — orderBy는 그 필드가 없는 문서를 결과에서 빼 버려,
+    // 페이지가 고른 활성 사이클과 트랜잭션(start)이 컬렉션 전체에서 고른 활성이 달라질 수 있다(→ 영영 conflict).
+    // 사이클은 한 달에 1개꼴이라 전체 읽기로 충분하다(listJaKanji와 같은 판단).
+    const snap = await this.workoutCycles().get();
+    return snap.docs.map((d) => toWorkoutCycle(d.id, d.data())).sort(byCreatedAtDesc);
+  }
+
+  async getWorkoutCycle(id: string): Promise<WorkoutCycleRecord | null> {
+    const snap = await this.workoutCycles().doc(id).get();
+    return snap.exists ? toWorkoutCycle(snap.id, snap.data()!) : null;
+  }
+
+  async startWorkoutCycle(input: StartWorkoutInput): Promise<StartWorkoutResult> {
+    const col = this.workoutCycles();
+    // 새 문서 id는 트랜잭션 **밖에서** 한 번 정한다 — 경합으로 콜백이 다시 돌아도 같은 id로 판정·쓰기(결정성).
+    const newId = col.doc().id;
+    return getDb().runTransaction(async (tx): Promise<StartWorkoutResult> => {
+      // 컬렉션 전체를 트랜잭션으로 읽는다 — 활성 대조·cycleNo(max+1)·닫기가 모두 이 한 번의 읽기에 기댄다.
+      // (활성이 없을 때 두 요청이 겹치면 잠글 활성 문서가 없다 — 이때는 트랜잭션 쿼리 읽기의 직렬화에 기대고,
+      //  그래도 둘이 생기면 다음 시작이 pickActiveWorkoutCycle로 하나만 남기고 닫는다.)
+      const snap = await tx.get(col);
+      const all = snap.docs.map((d) => toWorkoutCycle(d.id, d.data()));
+      const r = decideStart(all, input, newId);
+      if (r.status === "conflict") return { status: "conflict", activeCycleId: r.activeCycleId };
+      // 사건 있는 활성 사이클을 닫는 것은 가족 기록을 되돌릴 수 없게 바꾸는 일이다 — prod-guard(§19-4).
+      // 닫을지는 트랜잭션 안에서 읽어야 알 수 있어 여기서 판정한다 — 아래 tx.set **전**이라 던지면 아무것도 쓰이지 않는다.
+      if (r.closedHadEvents) assertDestructiveAllowed("closeWorkoutCycle");
+      // writes = 닫은 사이클 + 새로 만든/제자리 교체한 사이클 — id 지정 문서로 upsert(한 커밋에 함께 반영).
+      for (const w of r.writes) tx.set(col.doc(w.id), workoutCycleData(w));
+      return { status: "ok", record: normalizeWorkoutCycle(r.record), mode: r.mode, closed: r.closed };
+    });
+  }
+
+  async logWorkoutEvent(cycleId: string, input: LogWorkoutInput): Promise<WorkoutMutationResult> {
+    // 기록(append)은 가드 대상이 아니다(§19-4) — 되돌리기(undo)만 가드한다.
+    const ref = this.workoutCycles().doc(cycleId);
+    return getDb().runTransaction(async (tx): Promise<WorkoutMutationResult> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return { status: "not_found" };
+      const current = toWorkoutCycle(snap.id, snap.data()!);
+      const r = decideLog(current, input);
+      if (r.status !== "ok") return { status: r.status, record: current };
+      const next = normalizeWorkoutCycle(r.next);
+      // 바뀌는 두 필드만 쓴다 — events는 normalize를 통과한 값(undefined 없음).
+      tx.update(ref, { rev: next.rev, events: next.events });
+      return { status: "ok", record: next };
+    });
+  }
+
+  async undoWorkoutEvent(cycleId: string, input: UndoWorkoutInput): Promise<WorkoutMutationResult> {
+    // 개발 환경에서 실데이터(운동 기록)를 되돌릴 수 없게 빼는 것을 막는다(2026-08-17 사고 — lib/prod-guard.ts, §19-4).
+    assertDestructiveAllowed("undoWorkoutEvent");
+    const ref = this.workoutCycles().doc(cycleId);
+    return getDb().runTransaction(async (tx): Promise<WorkoutMutationResult> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return { status: "not_found" };
+      const current = toWorkoutCycle(snap.id, snap.data()!);
+      const r = decideUndo(current, input);
+      if (r.status !== "ok") return { status: r.status, record: current };
+      const next = normalizeWorkoutCycle(r.next);
+      tx.update(ref, { rev: next.rev, events: next.events });
+      return { status: "ok", record: next };
+    });
   }
 }

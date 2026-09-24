@@ -1,0 +1,1797 @@
+/**
+ * scripts/eval-workout.ts — 아빠의 운동(러시안 파이터 풀업·푸시업 사다리) 엔진 회귀 가드 (docs/SPEC.md §19-7). **실호출 0회.**
+ *
+ * 운동은 AI 호출이 없는 **순수 상태 기계**다(§19-0). 같은 입력이면 언제나 같은 답이 나와야 하므로,
+ * 원안 Python 생성기를 JS 오라클로 옮겨 계획을 대조하고, 사건 재생·오늘 상태·판정 함수를 시나리오로 잠근다.
+ *
+ * ⚠️ `lib/workout.ts`·`lib/kst.ts`만 import한다 — store 금지(어떤 DB도 만지지 않는다, §19-7).
+ *   예외: 상단 스트릭 운동 트랙(§17-7)의 doneToday·연속 판정은 같은 순수 코어 `lib/streak.ts`의 computeStreakFromDays로 확인한다
+ *   (store·AI 의존 없음 — "지킨 날" 집합이 스트릭 규칙을 거쳐 어떤 값이 되는지까지 잠근다).
+ * 날짜는 전부 인자로 넘긴다("오늘"은 픽스처 상수) — 현재 시각에 의존하지 않는다.
+ */
+
+import {
+  baseLadder,
+  makeBase,
+  lowRmWarning,
+  isValidRm,
+  dayKind,
+  isWorkoutDay,
+  targetFor,
+  buildPlan,
+  nextWorkoutDay,
+  restDaysBetween,
+  supersetSteps,
+  repsForEvent,
+  replay,
+  todayStatus,
+  upcoming,
+  snapshot,
+  decideLog,
+  decideUndo,
+  decideStart,
+  closingStatus,
+  pickActiveWorkoutCycle,
+  workoutHistory,
+  normalizeWorkoutCycle,
+  normalizeWorkoutEvent,
+  workoutKeptDays,
+  workoutStreakTodayLabel,
+  type FailedAt,
+  type SetPair,
+  type TodayStatus,
+  type Upcoming,
+  type WorkoutCycleRecord,
+  type WorkoutEvent,
+} from "../lib/workout";
+import { diffDateStrings, shiftDateString } from "../lib/kst";
+import { computeStreakFromDays } from "../lib/streak";
+
+interface CheckResult {
+  book: string;
+  check: string;
+  pass: boolean;
+  detail: string;
+}
+
+function printTable(results: CheckResult[]): void {
+  console.log("");
+  console.log(`| ${"결과".padEnd(4)} | ${"영역".padEnd(14)} | 점검 항목 | 상세 |`);
+  console.log(`|------|----------------|-----------|------|`);
+  for (const r of results) {
+    console.log(`| ${r.pass ? "PASS" : "FAIL"} | ${r.book.padEnd(14)} | ${r.check} | ${r.detail} |`);
+  }
+  console.log("");
+}
+
+const results: CheckResult[] = [];
+const add = (book: string, check: string, pass: boolean, detail: string) => results.push({ book, check, pass, detail });
+
+/** 시나리오 하나를 감싼다 — 구성 중 예외가 나도 스크립트가 죽지 않고 FAIL 한 줄로 남는다. */
+function scenario(book: string, check: string, fn: () => void): void {
+  try {
+    fn();
+  } catch (err) {
+    add(book, check, false, `예외: ${(err as Error).message}`);
+  }
+}
+
+/** 기대한 예외(RangeError 등)가 나는지 */
+function throws(fn: () => unknown, ctor: ErrorConstructor = RangeError): boolean {
+  try {
+    fn();
+    return false;
+  } catch (err) {
+    return err instanceof ctor;
+  }
+}
+
+const S = (x: unknown) => JSON.stringify(x);
+const eq = (a: unknown, b: unknown) => S(a) === S(b);
+const sum = (xs: readonly number[]) => xs.reduce((a, b) => a + b, 0);
+
+/** RSC props·Firestore로 그대로 넘길 수 있는 값인가 — undefined·Date·함수·NaN/∞·클래스 인스턴스가 하나라도 있으면 false */
+function isPlainData(x: unknown): boolean {
+  if (x === null) return true;
+  if (typeof x === "string" || typeof x === "boolean") return true;
+  if (typeof x === "number") return Number.isFinite(x);
+  if (Array.isArray(x)) return x.every(isPlainData);
+  if (typeof x === "object") return Object.getPrototypeOf(x) === Object.prototype && Object.values(x as object).every(isPlainData);
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// 픽스처 — 풀업 10RM / 푸시업 18RM(원안의 현재 상태), 시작일 2026-09-01
+// ---------------------------------------------------------------------------
+const RM = { pullup: 10, pushup: 18 };
+const BASE = makeBase(RM);
+const D0 = "2026-09-01";
+const dt = (n: number) => shiftDateString(D0, n);
+/** 12:00 KST(=03:00Z) — UTC·KST 일자가 같아 픽스처가 헷갈리지 않는다(eval-streak 관용구). */
+const nowIsoFor = (date: string) => `${date}T03:00:00.000Z`;
+
+function newCycle(over: Partial<WorkoutCycleRecord> = {}): WorkoutCycleRecord {
+  return {
+    id: "c1",
+    createdAt: "2026-08-31T03:00:00.000Z",
+    cycleNo: 1,
+    startDate: D0,
+    rm: RM,
+    base: BASE,
+    status: "active",
+    endedAt: null,
+    rev: 0,
+    events: [],
+    ...over,
+  };
+}
+
+/** 스토어가 하듯 writes를 id로 upsert한 결과(순서: 기존 → 새 id) — decideStart 적용 후 상태 검사용 */
+function applyWrites(all: readonly WorkoutCycleRecord[], writes: readonly WorkoutCycleRecord[]): WorkoutCycleRecord[] {
+  const byId = new Map(all.map((c) => [c.id, c] as const));
+  for (const w of writes) byId.set(w.id, w);
+  return [...byId.values()];
+}
+
+/** console.warn을 잠시 가로채 호출을 센다(정규화가 깨진 사건을 버릴 때 경고하는지) — 출력은 삼킨다 */
+function captureWarn<T>(fn: () => T): { value: T; warns: string[] } {
+  const orig = console.warn;
+  const warns: string[] = [];
+  console.warn = (...args: unknown[]) => {
+    warns.push(args.map(String).join(" "));
+  };
+  try {
+    return { value: fn(), warns };
+  } finally {
+    console.warn = orig;
+  }
+}
+
+/** 상태·일정 한 줄 요약 — 시퀀스 비교용 */
+function desc(s: TodayStatus | Upcoming): string {
+  switch (s.kind) {
+    case "workout":
+      return `workout(${s.day},${s.targetDay})`;
+    case "rest":
+      return `rest(${s.day},${s.index}/${s.of}${s.cycleEnd ? ",end" : ""})`;
+    case "recovery":
+      return `recovery(${s.pendingDay})`;
+    case "recorded_today":
+      return `recorded(${s.outcome},${s.day},${s.targetDay})`;
+    case "retest":
+      return "retest";
+    case "not_started":
+      return `not_started(${s.daysUntil})`;
+  }
+}
+
+const FAIL_PU0: FailedAt = { exercise: "pullup", setIndex: 0, reps: null };
+
+/** 서버 흐름 그대로 기록 — 그날 오늘 상태의 day·targetDay로 decideLog. 운동일이 아니거나 거절되면 던진다(시나리오 구성용). */
+function log(c: WorkoutCycleRecord, date: string, kind: "complete" | "fail", failed: FailedAt = FAIL_PU0): WorkoutCycleRecord {
+  const st = todayStatus(c, date);
+  if (st.kind !== "workout") throw new Error(`시나리오 오류: ${date} 상태가 ${desc(st)}`);
+  const r = decideLog(c, {
+    expectedRev: c.rev,
+    kind,
+    day: st.day,
+    targetDay: st.targetDay,
+    failed: kind === "fail" ? failed : null,
+    todayKst: date,
+    nowIso: nowIsoFor(date),
+  });
+  if (r.status !== "ok") throw new Error(`시나리오 오류: ${date} decideLog → ${r.status}`);
+  return r.next;
+}
+
+/** fromDate부터 하루씩 — 운동일이면 완료 기록, 휴식일은 달력으로 지나간다 — Day lastDay를 보통 완료할 때까지. */
+function completeThrough(c: WorkoutCycleRecord, fromDate: string, lastDay: number): { c: WorkoutCycleRecord; date: string } {
+  let date = fromDate;
+  for (let guard = 0; guard < 200; guard++) {
+    const st = todayStatus(c, date);
+    if (st.kind === "workout") {
+      c = log(c, date, "complete");
+      if (st.day === lastDay && st.targetDay === st.day) return { c, date };
+    }
+    date = shiftDateString(date, 1);
+  }
+  throw new Error(`시나리오 오류: Day ${lastDay}까지 못 감`);
+}
+
+/** date부터 k일 동안의 오늘 상태 요약 */
+function statusRun(c: WorkoutCycleRecord, date: string, k: number): string[] {
+  return Array.from({ length: k }, (_, i) => desc(todayStatus(c, shiftDateString(date, i))));
+}
+
+// ---------------------------------------------------------------------------
+// 원안 Python 생성기 — JS 오라클 (§19-0 "계획의 오라클")
+//   def generate(pu_start, ps_start): … step_indices=[None,4,3,2,1], 블록마다 직전 블록 베이스 +1
+// ---------------------------------------------------------------------------
+interface OracleDay {
+  type: "workout" | "rest";
+  day: number;
+  pu: number[];
+  ps: number[];
+}
+function oracleGenerate(puStart: number[], psStart: number[]): OracleDay[] {
+  const days: OracleDay[] = [];
+  let pu = [...puStart];
+  let ps = [...psStart];
+  let puBlockBase: number[] = [];
+  let psBlockBase: number[] = [];
+  const stepIndices: (number | null)[] = [null, 4, 3, 2, 1];
+  for (let block = 0; block < 4; block++) {
+    if (block > 0) {
+      pu = puBlockBase.map((x) => x + 1);
+      ps = psBlockBase.map((x) => x + 1);
+    }
+    puBlockBase = [...pu];
+    psBlockBase = [...ps];
+    for (let d = 0; d < 5; d++) {
+      const dayNum = block * 6 + (d + 1);
+      if (d > 0) {
+        const idx = stepIndices[d] as number;
+        pu[idx] += 1;
+        ps[idx] += 1;
+      }
+      days.push({ type: "workout", day: dayNum, pu: [...pu], ps: [...ps] }); // 스냅샷(원안의 append 시점 값)
+    }
+    days.push({ type: "rest", day: (block + 1) * 6, pu: [], ps: [] });
+  }
+  return days;
+}
+
+// ===========================================================================
+// 1) 베이스 (§19-1 Day 1 사다리)
+// ===========================================================================
+add("베이스", "풀업 10RM → [6,5,4,3,2]", eq(baseLadder(10, "pullup"), [6, 5, 4, 3, 2]), S(baseLadder(10, "pullup")));
+add("베이스", "푸시업 18RM → [9,8,7,6,5]", eq(baseLadder(18, "pushup"), [9, 8, 7, 6, 5]), S(baseLadder(18, "pushup")));
+add("베이스", "풀업 3RM → [1,1,1,1,1](최소 1)", eq(baseLadder(3, "pullup"), [1, 1, 1, 1, 1]), S(baseLadder(3, "pullup")));
+add("베이스", "풀업 11RM → top 6", baseLadder(11, "pullup")[0] === 6, S(baseLadder(11, "pullup")));
+add("베이스", "푸시업 17RM → top 8", baseLadder(17, "pushup")[0] === 8, S(baseLadder(17, "pushup")));
+add("베이스", "풀업 1RM → [1,1,1,1,1]", eq(baseLadder(1, "pullup"), [1, 1, 1, 1, 1]), S(baseLadder(1, "pullup")));
+add("베이스", "makeBase(10/18) = {pullup,pushup} 5개씩", eq(BASE, { pullup: [6, 5, 4, 3, 2], pushup: [9, 8, 7, 6, 5] }), S(BASE));
+{
+  // 1~150 전 범위 — 정수 분수 floor(r*3/5)·floor(r/2), 1회씩 내려가며 최소 1. floor(r*0.6)과도 한 번도 안 갈린다.
+  const bad: string[] = [];
+  for (let r = 1; r <= 150; r++) {
+    const puTop = Math.max(1, Math.floor((r * 3) / 5));
+    const psTop = Math.max(1, Math.floor(r / 2));
+    const pu = baseLadder(r, "pullup");
+    const ps = baseLadder(r, "pushup");
+    const expPu = [0, 1, 2, 3, 4].map((i) => Math.max(1, puTop - i));
+    const expPs = [0, 1, 2, 3, 4].map((i) => Math.max(1, psTop - i));
+    if (!eq(pu, expPu) || !eq(ps, expPs)) bad.push(`r=${r}`);
+    if (Math.max(1, Math.floor(r * 0.6)) !== puTop) bad.push(`r=${r} 0.6≠3/5`);
+  }
+  add("베이스", "1~150 전 범위 정수 분수 사다리(최소 1)", bad.length === 0, bad.length ? bad.slice(0, 5).join(",") : "150×2 일치");
+}
+add(
+  "베이스",
+  "낮은 RM 경고: 풀업 <9·푸시업 <10일 때만",
+  lowRmWarning({ pullup: 8, pushup: 18 }) && !lowRmWarning({ pullup: 9, pushup: 10 }) && lowRmWarning({ pullup: 10, pushup: 9 }),
+  `8/18=${lowRmWarning({ pullup: 8, pushup: 18 })} 9/10=${lowRmWarning({ pullup: 9, pushup: 10 })} 10/9=${lowRmWarning({ pullup: 10, pushup: 9 })}`,
+);
+add(
+  "베이스",
+  "RM 범위 1~150 정수만 유효",
+  isValidRm(1) && isValidRm(150) && !isValidRm(0) && !isValidRm(151) && !isValidRm(10.5) && !isValidRm(Number.NaN) && !isValidRm("10"),
+  "1·150 ok / 0·151·10.5·NaN·'10' 거절",
+);
+add("베이스", "유효하지 않은 RM → RangeError", throws(() => baseLadder(0, "pullup")) && throws(() => makeBase({ pullup: 10, pushup: 151 })), "0·151");
+
+// ===========================================================================
+// 2) 계획 (§19-1 27일 사이클·운동일 목표)
+// ===========================================================================
+{
+  const oracle = oracleGenerate(BASE.pullup, BASE.pushup);
+  const workouts = oracle.filter((d) => d.type === "workout");
+  const mism = workouts.filter((d) => !eq(targetFor(BASE, d.day), { pullup: d.pu, pushup: d.ps })).map((d) => d.day);
+  add("계획", "원안 Python 오라클 20개 운동일 전부 일치(10/18)", workouts.length === 20 && mism.length === 0, mism.length ? `불일치 Day ${mism.join(",")}` : "20/20");
+  const oracleRest = oracle.filter((d) => d.type === "rest").map((d) => d.day);
+  add(
+    "계획",
+    "오라클 휴식일 [6,12,18,24] — 전부 비운동일(24는 마무리 휴식)",
+    eq(oracleRest, [6, 12, 18, 24]) && oracleRest.every((d) => !isWorkoutDay(d)) && dayKind(24) === "cycle_rest",
+    S(oracleRest),
+  );
+}
+{
+  // 전 RM 범위에서도 공식 = 오라클
+  const bad: string[] = [];
+  for (let r = 1; r <= 150; r++) {
+    const base: SetPair = { pullup: baseLadder(r, "pullup"), pushup: baseLadder(r, "pushup") };
+    for (const d of oracleGenerate(base.pullup, base.pushup)) {
+      if (d.type === "workout" && !eq(targetFor(base, d.day), { pullup: d.pu, pushup: d.ps })) bad.push(`r=${r} Day ${d.day}`);
+    }
+  }
+  add("계획", "RM 1~150 전 범위 × 20일 오라클 일치", bad.length === 0, bad.length ? bad.slice(0, 5).join(",") : "3000/3000");
+}
+{
+  // §19-1 기준 픽스처 표 10행
+  const table: [number, number[], number, number[], number][] = [
+    [1, [6, 5, 4, 3, 2], 20, [9, 8, 7, 6, 5], 35],
+    [2, [6, 5, 4, 3, 3], 21, [9, 8, 7, 6, 6], 36],
+    [3, [6, 5, 4, 4, 3], 22, [9, 8, 7, 7, 6], 37],
+    [4, [6, 5, 5, 4, 3], 23, [9, 8, 8, 7, 6], 38],
+    [5, [6, 6, 5, 4, 3], 24, [9, 9, 8, 7, 6], 39],
+    [7, [7, 6, 5, 4, 3], 25, [10, 9, 8, 7, 6], 40],
+    [11, [7, 7, 6, 5, 4], 29, [10, 10, 9, 8, 7], 44],
+    [13, [8, 7, 6, 5, 4], 30, [11, 10, 9, 8, 7], 45],
+    [19, [9, 8, 7, 6, 5], 35, [12, 11, 10, 9, 8], 50],
+    [23, [9, 9, 8, 7, 6], 39, [12, 12, 11, 10, 9], 54],
+  ];
+  const plan = buildPlan(BASE);
+  const bad: number[] = [];
+  for (const [day, pu, puSum, ps, psSum] of table) {
+    const t = targetFor(BASE, day);
+    const row = plan[day - 1];
+    if (!eq(t, { pullup: pu, pushup: ps }) || sum(t.pullup) !== puSum || sum(t.pushup) !== psSum) bad.push(day);
+    if (!row || row.day !== day || !eq(row.totals, { pullup: puSum, pushup: psSum }) || !eq(row.target, t)) bad.push(day);
+  }
+  add("계획", "§19-1 기준 픽스처 표 10행(배열·합·계획표 행)", bad.length === 0, bad.length ? `불일치 Day ${bad.join(",")}` : "10/10");
+}
+{
+  const plan = buildPlan(BASE);
+  const pu = sum(plan.map((r) => r.totals?.pullup ?? 0));
+  const ps = sum(plan.map((r) => r.totals?.pushup ?? 0));
+  add("계획", "사이클 전체 목표 볼륨 풀업 590·푸시업 890", pu === 590 && ps === 890, `풀업 ${pu} · 푸시업 ${ps}`);
+}
+{
+  const plan = buildPlan(BASE);
+  const by = (k: string) => plan.filter((r) => r.kind === k).map((r) => r.day);
+  const ok =
+    plan.length === 27 &&
+    plan.every((r, i) => r.day === i + 1 && r.kind === dayKind(r.day)) &&
+    by("workout").length === 20 &&
+    eq(by("rest"), [6, 12, 18]) &&
+    eq(by("cycle_rest"), [24, 25, 26]) &&
+    eq(by("retest"), [27]) &&
+    plan.filter((r) => r.kind !== "workout").every((r) => r.target === null && r.totals === null);
+  add("계획", "Day 종류: 운동 20·rest [6,12,18]·cycle_rest [24,25,26]·retest [27]·27행", ok, `workout=${S(by("workout"))}`);
+}
+add(
+  "계획",
+  "nextWorkoutDay 5→7·11→13·23→27·1→2·17→19",
+  nextWorkoutDay(5) === 7 && nextWorkoutDay(11) === 13 && nextWorkoutDay(23) === 27 && nextWorkoutDay(1) === 2 && nextWorkoutDay(17) === 19,
+  `5→${nextWorkoutDay(5)} 11→${nextWorkoutDay(11)} 23→${nextWorkoutDay(23)}`,
+);
+add(
+  "계획",
+  "restDaysBetween (5,7)→[6]·(23,27)→[24,25,26]·(1,2)→[]",
+  eq(restDaysBetween(5, 7), [6]) && eq(restDaysBetween(23, 27), [24, 25, 26]) && eq(restDaysBetween(1, 2), []),
+  `${S(restDaysBetween(5, 7))} ${S(restDaysBetween(23, 27))} ${S(restDaysBetween(1, 2))}`,
+);
+add(
+  "계획",
+  "범위 밖 Day → RangeError·isWorkoutDay 경계",
+  throws(() => dayKind(0)) &&
+    throws(() => dayKind(28)) &&
+    throws(() => dayKind(2.5)) &&
+    throws(() => targetFor(BASE, 6)) &&
+    throws(() => targetFor(BASE, 27)) &&
+    isWorkoutDay(1) &&
+    isWorkoutDay(23) &&
+    !isWorkoutDay(6) &&
+    !isWorkoutDay(24) &&
+    !isWorkoutDay(0) &&
+    !isWorkoutDay(1.5),
+  "dayKind(0/28/2.5)·targetFor(6/27) 던짐",
+);
+
+// ===========================================================================
+// 3) 스텝·횟수 (§19-1 슈퍼세트·§19-2 수행 횟수)
+// ===========================================================================
+{
+  const t = targetFor(BASE, 1);
+  const steps = supersetSteps(t);
+  const order = steps.map((s) => `${s.exercise === "pullup" ? "pu" : "ps"}${s.setIndex}`).join(",");
+  const ok =
+    steps.length === 10 &&
+    order === "pu0,ps0,pu1,ps1,pu2,ps2,pu3,ps3,pu4,ps4" &&
+    steps.every((s, k) => s.step === k && s.reps === t[s.exercise][s.setIndex]) &&
+    steps[5].exercise === "pushup" &&
+    steps[5].setIndex === 2;
+  add("스텝·횟수", "10스텝 교차 순서·스텝 5 = 푸시업 setIndex 2", ok, order);
+}
+{
+  const t = targetFor(BASE, 1);
+  const r = repsForEvent(t, "fail", { exercise: "pushup", setIndex: 2, reps: 4 });
+  add("스텝·횟수", "Day 1 푸시업 3세트 4회 실패 → [6,5,4,0,0]/[9,8,4,0,0]", eq(r, { pullup: [6, 5, 4, 0, 0], pushup: [9, 8, 4, 0, 0] }), S(r));
+  const r0 = repsForEvent(t, "fail", { exercise: "pullup", setIndex: 0, reps: null });
+  add("스텝·횟수", "풀업 1세트 횟수 없음(null) → 전부 0", eq(r0, { pullup: [0, 0, 0, 0, 0], pushup: [0, 0, 0, 0, 0] }), S(r0));
+  const rOver = repsForEvent(t, "fail", { exercise: "pushup", setIndex: 2, reps: 99 });
+  add("스텝·횟수", "목표 초과 횟수 → 목표로(0..목표 — 자세 무너짐도 담는다)", eq(rOver, { pullup: [6, 5, 4, 0, 0], pushup: [9, 8, 7, 0, 0] }), S(rOver));
+  const rNeg = repsForEvent(t, "fail", { exercise: "pullup", setIndex: 1, reps: -3 });
+  add("스텝·횟수", "음수 횟수 → 0", eq(rNeg, { pullup: [6, 0, 0, 0, 0], pushup: [9, 0, 0, 0, 0] }), S(rNeg));
+  const rc = repsForEvent(t, "complete", null);
+  add("스텝·횟수", "complete → 목표 그대로(복사본)", eq(rc, t) && rc.pullup !== t.pullup, S(rc));
+  add(
+    "스텝·횟수",
+    "fail인데 failed 없음·setIndex 범위 밖 → RangeError",
+    throws(() => repsForEvent(t, "fail", null)) && throws(() => repsForEvent(t, "fail", { exercise: "pullup", setIndex: 5, reps: 1 })),
+    "null·setIndex 5",
+  );
+}
+scenario("스텝·횟수", "재부여 실패의 reps는 Day 5 목표 기준(서버 계산)", () => {
+  // Day 1~5 완료 → Day 6 휴식 → Day 7 실패 → 회복 → (7,5) 재부여에서 풀업 5세트 1회 실패
+  let { c, date } = completeThrough(newCycle(), D0, 5);
+  c = log(c, shiftDateString(date, 2), "fail");
+  const repeatDate = shiftDateString(date, 4);
+  const st = todayStatus(c, repeatDate);
+  c = log(c, repeatDate, "fail", { exercise: "pullup", setIndex: 4, reps: 1 });
+  const ev = c.events[c.events.length - 1];
+  // Day 5 목표 풀업 [6,6,5,4,3] 푸시업 [9,9,8,7,6] — 풀업 5세트(스텝 8)에서 1회, 푸시업 5세트(스텝 9)는 0
+  add(
+    "스텝·횟수",
+    "재부여 실패의 reps는 Day 5 목표 기준(서버 계산)",
+    desc(st) === "workout(7,5)" && ev.day === 7 && ev.targetDay === 5 && eq(ev.reps, { pullup: [6, 6, 5, 4, 1], pushup: [9, 9, 8, 7, 0] }),
+    `${desc(st)} reps=${S(ev.reps)}`,
+  );
+});
+
+// ===========================================================================
+// 4) 상태 (§19-2 재생·휴식 슬롯·오늘 상태)
+// ===========================================================================
+{
+  const c = newCycle({ startDate: dt(2) });
+  const st = todayStatus(c, D0);
+  add(
+    "상태",
+    "사건 없음·시작 전 → not_started(daysUntil 2, displayDay 1)",
+    st.kind === "not_started" && st.daysUntil === 2 && st.startDate === dt(2) && st.displayDay === 1,
+    S(st),
+  );
+  const st0 = todayStatus(c, dt(2));
+  add(
+    "상태",
+    "시작일 당일 → Day 1 운동(isRepeat false, 목표 20/35)",
+    st0.kind === "workout" && st0.day === 1 && st0.targetDay === 1 && !st0.isRepeat && !st0.retestHint && st0.displayDay === 1 && eq(st0.totals, { pullup: 20, pushup: 35 }) && eq(st0.target, targetFor(BASE, 1)),
+    S(st0),
+  );
+  add("상태", "열흘 뒤에도 Day 1(운동일은 기다린다)", desc(todayStatus(c, dt(12))) === "workout(1,1)", desc(todayStatus(c, dt(12))));
+}
+scenario("상태", "Day 1 완료 당일 → recorded_today(complete, tomorrow Day 2)", () => {
+  const c = log(newCycle(), D0, "complete");
+  const st = todayStatus(c, D0);
+  add(
+    "상태",
+    "Day 1 완료 당일 → recorded_today(complete, tomorrow Day 2)",
+    st.kind === "recorded_today" && st.outcome === "complete" && st.day === 1 && st.displayDay === 1 && desc(st.tomorrow) === "workout(2,2)",
+    S(st),
+  );
+});
+scenario("상태", "Day 5 완료 D → D+1 rest 6 → D+2 Day 7 → D+5 Day 7", () => {
+  const { c, date } = completeThrough(newCycle(), D0, 5);
+  const run = [0, 1, 2, 5].map((i) => desc(todayStatus(c, shiftDateString(date, i))));
+  const rest = todayStatus(c, shiftDateString(date, 1));
+  const recorded = todayStatus(c, date);
+  add(
+    "상태",
+    "Day 5 완료 D → D+1 rest 6 → D+2 Day 7 → D+5 Day 7",
+    eq(run, ["recorded(complete,5,5)", "rest(6,1/1)", "workout(7,7)", "workout(7,7)"]) &&
+      rest.kind === "rest" &&
+      rest.displayDay === 6 &&
+      desc(rest.next) === "workout(7,7)" &&
+      recorded.kind === "recorded_today" &&
+      desc(recorded.tomorrow) === "rest(6,1/1)",
+    run.join(" → "),
+  );
+});
+scenario("상태", "Day 2 완료 D → D+4 Day 3", () => {
+  const { c, date } = completeThrough(newCycle(), D0, 2);
+  const s = desc(todayStatus(c, shiftDateString(date, 4)));
+  add("상태", "Day 2 완료 D → D+4 Day 3", s === "workout(3,3)", s);
+});
+scenario("상태", "Day 23 완료 → 24·25·26 마무리 휴식(1..3/3) → 재측정 → 한 달 뒤에도 재측정", () => {
+  const { c, date } = completeThrough(newCycle(), D0, 23);
+  const run = statusRun(c, date, 5);
+  const r1 = todayStatus(c, shiftDateString(date, 1));
+  const later = todayStatus(c, shiftDateString(date, 30));
+  add(
+    "상태",
+    "Day 23 완료 → 24·25·26 마무리 휴식(1..3/3) → 재측정 → 한 달 뒤에도 재측정",
+    eq(run, ["recorded(complete,23,23)", "rest(24,1/3,end)", "rest(25,2/3,end)", "rest(26,3/3,end)", "retest"]) &&
+      r1.kind === "rest" &&
+      r1.displayDay === 24 &&
+      later.kind === "retest" &&
+      later.displayDay === 27,
+    `${run.join(" → ")} / D+30 ${desc(later)}`,
+  );
+});
+scenario("상태", "실패 → 당일 기록함(fail) → 회복 → 재부여(X,X−1) → 성공 → (X,X) → 성공 → X+1", () => {
+  let { c, date } = completeThrough(newCycle(), D0, 2);
+  const D = shiftDateString(date, 1);
+  c = log(c, D, "fail", { exercise: "pullup", setIndex: 2, reps: 2 });
+  const s0 = todayStatus(c, D);
+  const s1 = todayStatus(c, shiftDateString(D, 1));
+  const s2 = todayStatus(c, shiftDateString(D, 2));
+  c = log(c, shiftDateString(D, 2), "complete");
+  const s2b = todayStatus(c, shiftDateString(D, 2));
+  const s3 = todayStatus(c, shiftDateString(D, 3));
+  c = log(c, shiftDateString(D, 3), "complete");
+  const s4 = todayStatus(c, shiftDateString(D, 4));
+  const ok =
+    s0.kind === "recorded_today" &&
+    s0.outcome === "fail" &&
+    s0.displayDay === 3 &&
+    desc(s0.tomorrow) === "recovery(3)" &&
+    s1.kind === "recovery" &&
+    s1.pendingDay === 3 &&
+    s1.resumeTargetDay === 2 &&
+    s1.displayDay === 3 &&
+    desc(s1.next) === "workout(3,2)" &&
+    s2.kind === "workout" &&
+    s2.day === 3 &&
+    s2.targetDay === 2 &&
+    s2.isRepeat &&
+    s2.displayDay === 3 &&
+    eq(s2.target, targetFor(BASE, 2)) &&
+    desc(s3) === "workout(3,3)" &&
+    s3.kind === "workout" &&
+    !s3.isRepeat &&
+    desc(s4) === "workout(4,4)";
+  add(
+    "상태",
+    "실패 → 당일 기록함(fail) → 회복 → 재부여(X,X−1) → 성공 → (X,X) → 성공 → X+1",
+    ok,
+    [s0, s1, s2, s2b, s3, s4].map(desc).join(" → "),
+  );
+  add(
+    "상태",
+    "재부여 성공 당일 → recorded_today(repeat_complete, tomorrow = 같은 Day, 휴식 없음)",
+    s2b.kind === "recorded_today" && s2b.outcome === "repeat_complete" && s2b.day === 3 && s2b.targetDay === 2 && s2b.displayDay === 3 && desc(s2b.tomorrow) === "workout(3,3)",
+    S(s2b),
+  );
+});
+scenario("상태", "Day 7 실패 → Day 5 목표(Day 6 휴식 재삽입 없음)", () => {
+  let { c, date } = completeThrough(newCycle(), D0, 5);
+  const D = shiftDateString(date, 2); // Day 6 휴식 다음 날
+  c = log(c, D, "fail");
+  const before = statusRun(c, D, 3);
+  c = log(c, shiftDateString(D, 2), "complete");
+  const after = desc(todayStatus(c, shiftDateString(D, 3)));
+  add(
+    "상태",
+    "Day 7 실패 → Day 5 목표(Day 6 휴식 재삽입 없음)",
+    eq(before, ["recorded(fail,7,7)", "recovery(7)", "workout(7,5)"]) && after === "workout(7,7)",
+    `${before.join(" → ")} → 성공 → ${after}`,
+  );
+});
+scenario("상태", "Day 1 실패 → Day 1 재도전(isRepeat false)", () => {
+  const c = log(newCycle(), D0, "fail");
+  const rec = todayStatus(c, dt(1));
+  const st = todayStatus(c, dt(2));
+  add(
+    "상태",
+    "Day 1 실패 → Day 1 재도전(isRepeat false)",
+    rec.kind === "recovery" && rec.pendingDay === 1 && rec.resumeTargetDay === 1 && st.kind === "workout" && st.day === 1 && st.targetDay === 1 && !st.isRepeat,
+    `${desc(rec)} → ${desc(st)}`,
+  );
+});
+scenario("상태", "재부여 실패 → 같은 목표 다시 + retestHint", () => {
+  let { c, date } = completeThrough(newCycle(), D0, 5);
+  const D = shiftDateString(date, 2);
+  c = log(c, D, "fail"); // Day 7 실패 (1회)
+  const first = todayStatus(c, shiftDateString(D, 2));
+  c = log(c, shiftDateString(D, 2), "fail"); // (7,5) 재부여도 실패 (2회)
+  const st = todayStatus(c, shiftDateString(D, 4));
+  add(
+    "상태",
+    "재부여 실패 → 같은 목표 다시 + retestHint",
+    first.kind === "workout" && !first.retestHint && st.kind === "workout" && st.day === 7 && st.targetDay === 5 && st.retestHint,
+    `1회 후 ${desc(first)} hint=${first.kind === "workout" && first.retestHint} / 2회 후 ${desc(st)} hint=${st.kind === "workout" && st.retestHint}`,
+  );
+});
+scenario("상태", "실패 → 재부여 성공 → 실패 루프 → retestHint true", () => {
+  let { c, date } = completeThrough(newCycle(), D0, 5);
+  const D = shiftDateString(date, 2);
+  c = log(c, D, "fail"); // Day 7 실패
+  c = log(c, shiftDateString(D, 2), "complete"); // (7,5) 재부여 성공 — 실패 수를 되돌리지 않는다
+  const mid = todayStatus(c, shiftDateString(D, 3)); // (7,7) — 아직 1회
+  c = log(c, shiftDateString(D, 3), "fail"); // Day 7 또 실패
+  const st = todayStatus(c, shiftDateString(D, 5));
+  add(
+    "상태",
+    "실패 → 재부여 성공 → 실패 루프 → retestHint true",
+    mid.kind === "workout" && desc(mid) === "workout(7,7)" && !mid.retestHint && st.kind === "workout" && desc(st) === "workout(7,5)" && st.retestHint,
+    `${desc(mid)} hint=${mid.kind === "workout" && mid.retestHint} → 실패 → ${desc(st)} hint=${st.kind === "workout" && st.retestHint}`,
+  );
+});
+scenario("상태", "보통 성공은 실패 수를 0으로(다음 Day에 안내 안 뜸)", () => {
+  let c = log(newCycle(), D0, "fail"); // Day 1 실패
+  c = log(c, dt(2), "fail"); // Day 1 또 실패 → hint
+  const hinted = todayStatus(c, dt(4));
+  c = log(c, dt(4), "complete"); // Day 1 보통 성공
+  const st = todayStatus(c, dt(5));
+  add(
+    "상태",
+    "보통 성공은 실패 수를 0으로(다음 Day에 안내 안 뜸)",
+    hinted.kind === "workout" && hinted.retestHint && st.kind === "workout" && st.day === 2 && !st.retestHint,
+    `${desc(hinted)} hint → 성공 → ${desc(st)}`,
+  );
+});
+scenario("상태", "실패 후 닷새 뒤 첫 접속 → 재부여 운동", () => {
+  let { c, date } = completeThrough(newCycle(), D0, 2);
+  const D = shiftDateString(date, 1);
+  c = log(c, D, "fail");
+  const s = desc(todayStatus(c, shiftDateString(D, 5)));
+  add("상태", "실패 후 닷새 뒤 첫 접속 → 재부여 운동", s === "workout(3,2)", s);
+});
+scenario("상태", "Day 23 실패 → 22 → 23 → 24~26 → 27", () => {
+  let { c, date } = completeThrough(newCycle(), D0, 22);
+  const D = shiftDateString(date, 1);
+  c = log(c, D, "fail");
+  const seq = [desc(todayStatus(c, shiftDateString(D, 1)))];
+  seq.push(desc(todayStatus(c, shiftDateString(D, 2))));
+  c = log(c, shiftDateString(D, 2), "complete");
+  seq.push(desc(todayStatus(c, shiftDateString(D, 3))));
+  c = log(c, shiftDateString(D, 3), "complete");
+  seq.push(...statusRun(c, shiftDateString(D, 4), 4));
+  add(
+    "상태",
+    "Day 23 실패 → 22 → 23 → 24~26 → 27",
+    eq(seq, ["recovery(23)", "workout(23,22)", "workout(23,23)", "rest(24,1/3,end)", "rest(25,2/3,end)", "rest(26,3/3,end)", "retest"]),
+    seq.join(" → "),
+  );
+});
+scenario("상태", "Day 5 실패 → 4 → 5 → 6 → 7", () => {
+  let { c, date } = completeThrough(newCycle(), D0, 4);
+  const D = shiftDateString(date, 1);
+  c = log(c, D, "fail");
+  const seq = [desc(todayStatus(c, shiftDateString(D, 1))), desc(todayStatus(c, shiftDateString(D, 2)))];
+  c = log(c, shiftDateString(D, 2), "complete");
+  seq.push(desc(todayStatus(c, shiftDateString(D, 3))));
+  c = log(c, shiftDateString(D, 3), "complete");
+  seq.push(...statusRun(c, shiftDateString(D, 4), 2));
+  add("상태", "Day 5 실패 → 4 → 5 → 6 → 7", eq(seq, ["recovery(5)", "workout(5,4)", "workout(5,5)", "rest(6,1/1)", "workout(7,7)"]), seq.join(" → "));
+});
+{
+  const ok =
+    diffDateStrings("2026-09-30", "2026-10-01") === 1 &&
+    diffDateStrings("2026-12-31", "2027-01-01") === 1 &&
+    diffDateStrings("2028-02-28", "2028-03-01") === 2 &&
+    diffDateStrings("2026-10-01", "2026-09-30") === -1 &&
+    diffDateStrings("2026-09-24", "2026-09-24") === 0 &&
+    diffDateStrings("2026-01-01", "2026-12-31") === 364;
+  add("상태", "diffDateStrings 월·연 경계·윤년·음수·같은 날", ok, `09-30→10-01=${diffDateStrings("2026-09-30", "2026-10-01")}`);
+}
+scenario("상태", "diffDateStrings 형식·달력 밖 → NaN", () => {
+  // 형식이 틀리면 NaN(주석의 약속) — 예전엔 ""가 1900-01-01로, "2026-02-30"이 03-02로 조용히 해석됐다(QA F6).
+  const bad =["", "2026-09", "2026-13-01", "2026-00-10", "2026-09-00", "2026-02-30", "2026-02-29", "2026-04-31", "2026-9-1", " 2026-09-01", "2026-09-01T00:00", "abc"];
+  const leaked = bad.filter((b) => !Number.isNaN(diffDateStrings(b, "2026-09-01")) || !Number.isNaN(diffDateStrings("2026-09-01", b)));
+  const nonString = [undefined, null, 20260901].filter((v) => !Number.isNaN(diffDateStrings(v as unknown as string, "2026-09-01")));
+  const leap = diffDateStrings("2028-02-29", "2028-03-01") === 1 && diffDateStrings("2024-02-29", "2024-02-29") === 0;
+  add(
+    "상태",
+    "diffDateStrings 형식·달력 밖('', 월 13, 2월 30, 평년 2월 29 …)·비문자열 → NaN, 윤일은 유효",
+    leaked.length === 0 && nonString.length === 0 && leap,
+    leaked.length || nonString.length ? `NaN 아님: ${S(leaked)} ${S(nonString)}` : `${bad.length}종 NaN · 윤일 ok`,
+  );
+});
+{
+  // 성질 — 2025~2028 모든 날 d: diff(d,d)=0, diff(d, shift(d,k))=k. 엄격 검증이 유효한 날짜를 NaN으로 떨구지 않는다.
+  const bad: string[] = [];
+  const ks = [-400, -31, -1, 1, 29, 365, 800];
+  for (let i = 0; i < 4 * 366; i++) {
+    const d = shiftDateString("2025-01-01", i);
+    if (diffDateStrings(d, d) !== 0) bad.push(`${d}:0`);
+    for (const k of ks) if (diffDateStrings(d, shiftDateString(d, k)) !== k) bad.push(`${d}:${k}`);
+  }
+  add("상태", "diffDateStrings ↔ shiftDateString 역관계(2025~2028 매일 × 7간격)", bad.length === 0, bad.length ? bad.slice(0, 5).join(",") : `${4 * 366 * 8}쌍 일치`);
+}
+scenario("상태", "월 경계 gap(09-30 → 10-01 = 1)", () => {
+  let c = newCycle({ startDate: "2026-09-29" });
+  c = log(c, "2026-09-29", "complete");
+  c = log(c, "2026-09-30", "complete");
+  const s = desc(todayStatus(c, "2026-10-01"));
+  add("상태", "월 경계 gap(09-30 완료 → 10-01 Day 3)", s === "workout(3,3)", s);
+});
+
+// ===========================================================================
+// 5) 판정 함수 (§19-4 decideLog·decideUndo·decideStart, §19-3 closingStatus)
+// ===========================================================================
+scenario("판정 decideLog", "거절 분기", () => {
+  const c1 = log(newCycle(), D0, "complete"); // Day 1 완료(rev 1)
+  const base = { expectedRev: c1.rev, kind: "complete" as const, failed: null, todayKst: D0, nowIso: nowIsoFor(D0) };
+  const twice = decideLog(c1, { ...base, day: 2, targetDay: 2 });
+  add("판정 decideLog", "같은 날 두 번째 기록 → stale_state", twice.status === "stale_state", twice.status);
+
+  const { c: c5, date: d5 } = completeThrough(newCycle(), D0, 5);
+  const onRest = decideLog(c5, { ...base, expectedRev: c5.rev, day: 7, targetDay: 7, todayKst: shiftDateString(d5, 1) });
+  const { c: c23, date: d23 } = completeThrough(newCycle(), D0, 23);
+  const onRetest = decideLog(c23, { ...base, expectedRev: c23.rev, day: 23, targetDay: 23, todayKst: shiftDateString(d23, 4) });
+  const onCycleRest = decideLog(c23, { ...base, expectedRev: c23.rev, day: 23, targetDay: 23, todayKst: shiftDateString(d23, 2) });
+  const notStarted = decideLog(newCycle({ startDate: dt(1) }), { ...base, expectedRev: 0, day: 1, targetDay: 1 });
+  const cFail = log(newCycle(), D0, "fail");
+  const onRecovery = decideLog(cFail, { ...base, expectedRev: cFail.rev, day: 1, targetDay: 1, todayKst: dt(1) });
+  add(
+    "판정 decideLog",
+    "휴식·마무리 휴식·회복·재측정·시작 전 → stale_state",
+    [onRest, onCycleRest, onRecovery, onRetest, notStarted].every((r) => r.status === "stale_state"),
+    [onRest, onCycleRest, onRecovery, onRetest, notStarted].map((r) => r.status).join(","),
+  );
+
+  const c0 = newCycle();
+  const dayMismatch = decideLog(c0, { ...base, expectedRev: 0, day: 2, targetDay: 2 });
+  let cr = log(newCycle(), D0, "complete");
+  cr = log(cr, dt(1), "fail"); // Day 2 실패 → 재부여 (2,1)
+  const targetMismatch = decideLog(cr, { ...base, expectedRev: cr.rev, day: 2, targetDay: 2, todayKst: dt(3) });
+  add(
+    "판정 decideLog",
+    "day·targetDay 불일치 → stale_state",
+    dayMismatch.status === "stale_state" && targetMismatch.status === "stale_state" && desc(todayStatus(cr, dt(3))) === "workout(2,1)",
+    `${dayMismatch.status}, ${targetMismatch.status}`,
+  );
+
+  const revMismatch = decideLog(newCycle({ rev: 3 }), { ...base, expectedRev: 2, day: 1, targetDay: 1 });
+  add("판정 decideLog", "rev 불일치 → conflict", revMismatch.status === "conflict", revMismatch.status);
+
+  const closed = decideLog(newCycle({ status: "abandoned", endedAt: nowIsoFor(D0) }), { ...base, expectedRev: 0, day: 1, targetDay: 1 });
+  add("판정 decideLog", "닫힌 사이클 → not_active", closed.status === "not_active", closed.status);
+});
+scenario("판정 decideLog", "day만 다른 요청(targetDay 일치) → stale_state", () => {
+  // Day 7 실패 → 회복 → 오늘 (7,5). Day 5 화면을 띄워 둔 낡은 탭은 {day 5, targetDay 5}를 보낸다 — targetDay만 보면 통과해 버린다.
+  let { c, date } = completeThrough(newCycle(), D0, 5);
+  const D = shiftDateString(date, 2);
+  c = log(c, D, "fail");
+  const T = shiftDateString(D, 2);
+  const st = desc(todayStatus(c, T));
+  const req = { expectedRev: c.rev, kind: "complete" as const, failed: null, todayKst: T, nowIso: nowIsoFor(T) };
+  const staleTab = decideLog(c, { ...req, day: 5, targetDay: 5 });
+  const fresh = decideLog(c, { ...req, day: 7, targetDay: 5 }); // 대조군 — 같은 입력에서 올바른 쌍은 받는다
+  add(
+    "판정 decideLog",
+    "day만 다른 요청(targetDay 일치) → stale_state",
+    st === "workout(7,5)" && staleTab.status === "stale_state" && fresh.status === "ok",
+    `${st} · (5,5)→${staleTab.status} · (7,5)→${fresh.status}`,
+  );
+});
+scenario("판정 decideLog", "사건은 서버 계산값", () => {
+  const c = newCycle({ rev: 4 });
+  const input = {
+    expectedRev: 4,
+    kind: "fail" as const,
+    day: 1,
+    targetDay: 1,
+    failed: { exercise: "pushup" as const, setIndex: 2, reps: 4 },
+    todayKst: dt(3),
+    nowIso: "2026-09-04T11:22:33.000Z",
+  };
+  const r = decideLog(c, input);
+  const r2 = decideLog(c, input);
+  const ok =
+    r.status === "ok" &&
+    r.event.date === dt(3) &&
+    r.event.at === "2026-09-04T11:22:33.000Z" &&
+    r.event.kind === "fail" &&
+    r.event.day === 1 &&
+    r.event.targetDay === 1 &&
+    eq(r.event.failed, { exercise: "pushup", setIndex: 2, reps: 4 }) &&
+    eq(r.event.reps, { pullup: [6, 5, 4, 0, 0], pushup: [9, 8, 4, 0, 0] }) &&
+    r.next.rev === 5 &&
+    r.next.events.length === 1 &&
+    eq(r.next.events[0], r.event) &&
+    c.rev === 4 &&
+    c.events.length === 0; // 입력 불변(순수)
+  add("판정 decideLog", "사건 date=today·at=nowIso·reps 서버 계산·rev+1·입력 불변", ok, r.status === "ok" ? S(r.event) : r.status);
+  add("판정 decideLog", "결정적(같은 입력 → 같은 출력, 트랜잭션 재시도 안전)·직렬화 가능", S(r) === S(r2) && isPlainData(r), "JSON 동일");
+
+  const over = decideLog(c, { ...input, failed: { exercise: "pushup", setIndex: 2, reps: 99 } });
+  add(
+    "판정 decideLog",
+    "실패 횟수 클램프가 사건 failed에도 반영(99 → 목표 7)",
+    over.status === "ok" && over.event.failed?.reps === 7 && eq(over.event.reps.pushup, [9, 8, 7, 0, 0]),
+    over.status === "ok" ? S(over.event.failed) : over.status,
+  );
+  const cmp = decideLog(c, { ...input, kind: "complete", failed: null });
+  add(
+    "판정 decideLog",
+    "complete 사건은 failed null·reps = 목표",
+    cmp.status === "ok" && cmp.event.failed === null && eq(cmp.event.reps, targetFor(BASE, 1)),
+    cmp.status === "ok" ? S(cmp.event) : cmp.status,
+  );
+  add("판정 decideLog", "fail인데 failed null → RangeError(입력 형태는 라우트 zod가 보장)", throws(() => decideLog(c, { ...input, failed: null })), "던짐");
+});
+scenario("판정 decideUndo", "취소", () => {
+  const empty = decideUndo(newCycle(), { expectedRev: 0 });
+  add("판정 decideUndo", "사건 0개 → empty", empty.status === "empty", empty.status);
+
+  // ABA — 탭 A가 rev 2를 보는 동안 탭 B가 취소 후 다시 기록(사건 수는 같아진다)
+  let c = log(newCycle(), D0, "complete");
+  c = log(c, dt(1), "complete"); // rev 2, 사건 2
+  const seenByA = c.rev;
+  const bUndo = decideUndo(c, { expectedRev: c.rev });
+  if (bUndo.status !== "ok") throw new Error("B undo 실패");
+  const bRelog = log(bUndo.next, dt(1), "fail"); // rev 4, 사건 2
+  const aUndo = decideUndo(bRelog, { expectedRev: seenByA });
+  add(
+    "판정 decideUndo",
+    "rev 불일치(ABA: 취소 후 다시 기록해 개수가 같아도) → conflict",
+    bRelog.events.length === 2 && bRelog.rev === 4 && aUndo.status === "conflict",
+    `사건 ${bRelog.events.length}개 rev ${bRelog.rev} → ${aUndo.status}`,
+  );
+  add(
+    "판정 decideUndo",
+    "취소 = 마지막 사건 제거·removed·rev+1·입력 불변",
+    bUndo.removed.day === 2 && bUndo.next.events.length === 1 && bUndo.next.rev === 3 && c.events.length === 2 && c.rev === 2,
+    S(bUndo.removed),
+  );
+
+  const closed = decideUndo(newCycle({ status: "completed", endedAt: nowIsoFor(D0), events: c.events, rev: 2 }), { expectedRev: 2 });
+  add("판정 decideUndo", "닫힌 사이클 → not_active", closed.status === "not_active", closed.status);
+
+  const { c: c23, date: d23 } = completeThrough(newCycle(), D0, 23);
+  const u = decideUndo(c23, { expectedRev: c23.rev });
+  const s = u.status === "ok" ? desc(todayStatus(u.next, shiftDateString(d23, 2))) : u.status;
+  add("판정 decideUndo", "Day 23 완료를 Day 25에 취소 → Day 23 운동", s === "workout(23,23)", s);
+
+  let cf = log(newCycle(), D0, "fail");
+  const uf = decideUndo(cf, { expectedRev: cf.rev });
+  let relog = "";
+  if (uf.status === "ok") {
+    cf = log(uf.next, D0, "complete");
+    relog = desc(todayStatus(cf, D0));
+  }
+  add("판정 decideUndo", "같은 날 fail → 취소 → complete 허용", relog === "recorded(complete,1,1)", relog || uf.status);
+});
+scenario("판정 decideStart", "사이클 시작", () => {
+  const input = { rm: { pullup: 13, pushup: 20 }, startDate: dt(1), expectedActiveCycleId: null, todayKst: D0, nowIso: nowIsoFor(D0) };
+
+  // 첫 시작
+  const first = decideStart([], input, "n1");
+  add(
+    "판정 decideStart",
+    "활성 없음 → created(cycleNo 1·rev 0·events []·base=makeBase(rm))",
+    first.status === "ok" &&
+      first.mode === "created" &&
+      first.record.id === "n1" &&
+      first.record.cycleNo === 1 &&
+      first.record.rev === 0 &&
+      first.record.events.length === 0 &&
+      first.record.status === "active" &&
+      first.record.endedAt === null &&
+      first.record.createdAt === nowIsoFor(D0) &&
+      first.record.startDate === dt(1) &&
+      eq(first.record.base, makeBase({ pullup: 13, pushup: 20 })) &&
+      first.closed === null &&
+      !first.closedHadEvents &&
+      first.writes.length === 1,
+    first.status === "ok" ? S({ mode: first.mode, cycleNo: first.record.cycleNo, writes: first.writes.length }) : first.status,
+  );
+
+  // expected 불일치
+  const active = newCycle({ id: "a1", cycleNo: 3 });
+  const stale = decideStart([active], { ...input, expectedActiveCycleId: null }, "n2");
+  const stale2 = decideStart([], { ...input, expectedActiveCycleId: "gone" }, "n2");
+  add(
+    "판정 decideStart",
+    "expectedActiveCycleId 불일치 → conflict(activeCycleId)",
+    stale.status === "conflict" && stale.activeCycleId === "a1" && stale2.status === "conflict" && stale2.activeCycleId === null,
+    `${S(stale)} ${S(stale2)}`,
+  );
+
+  // 사건 0개 활성 → 제자리 교체
+  const rep = decideStart([active], { ...input, expectedActiveCycleId: "a1" }, "n3");
+  add(
+    "판정 decideStart",
+    "사건 0개 활성 → replaced(id·cycleNo·createdAt 유지, rm·base·startDate 교체, rev+1)",
+    rep.status === "ok" &&
+      rep.mode === "replaced" &&
+      rep.record.id === "a1" &&
+      rep.record.cycleNo === 3 &&
+      rep.record.createdAt === active.createdAt &&
+      eq(rep.record.rm, { pullup: 13, pushup: 20 }) &&
+      eq(rep.record.base, makeBase({ pullup: 13, pushup: 20 })) &&
+      rep.record.startDate === dt(1) &&
+      rep.record.rev === active.rev + 1 &&
+      rep.record.status === "active" &&
+      rep.closed === null &&
+      !rep.closedHadEvents &&
+      rep.writes.length === 1,
+    rep.status === "ok" ? S({ mode: rep.mode, id: rep.record.id, cycleNo: rep.record.cycleNo, rev: rep.record.rev }) : rep.status,
+  );
+
+  // 사건 있는 활성 → 닫고 새로
+  const old = completeThrough(newCycle({ id: "a1", cycleNo: 3 }), D0, 4).c;
+  const closedPrev = newCycle({ id: "p1", cycleNo: 2, status: "completed", endedAt: nowIsoFor(D0), createdAt: "2026-08-01T00:00:00.000Z" });
+  const nowIso = nowIsoFor(dt(10));
+  const cr = decideStart([closedPrev, old], { ...input, expectedActiveCycleId: "a1", todayKst: dt(10), startDate: dt(10), nowIso }, "n4");
+  const closedW = cr.status === "ok" ? cr.writes.find((w) => w.id === "a1") : undefined;
+  add(
+    "판정 decideStart",
+    "사건 있는 활성 → closed(abandoned·endedAt·rev+1) + created(cycleNo max+1)",
+    cr.status === "ok" &&
+      cr.mode === "created" &&
+      cr.record.id === "n4" &&
+      cr.record.cycleNo === 4 &&
+      cr.record.events.length === 0 &&
+      eq(cr.closed, { id: "a1", status: "abandoned" }) &&
+      cr.closedHadEvents &&
+      cr.writes.length === 2 &&
+      closedW !== undefined &&
+      closedW.status === "abandoned" &&
+      closedW.endedAt === nowIso &&
+      closedW.rev === old.rev + 1 &&
+      closedW.events.length === old.events.length,
+    cr.status === "ok" ? S({ closed: cr.closed, cycleNo: cr.record.cycleNo, writes: cr.writes.map((w) => `${w.id}:${w.status}`) }) : cr.status,
+  );
+
+  // 20일을 다 마친 사이클을 마무리 휴식 중에 재측정 → completed
+  const { c: done23, date: d23 } = completeThrough(newCycle({ id: "a2" }), D0, 23);
+  const fin = decideStart([done23], { ...input, expectedActiveCycleId: "a2", todayKst: shiftDateString(d23, 2), startDate: shiftDateString(d23, 3) }, "n5");
+  add(
+    "판정 decideStart",
+    "20일 완료 사이클을 Day 25에 재측정 → closed completed",
+    fin.status === "ok" && eq(fin.closed, { id: "a2", status: "completed" }) && fin.record.cycleNo === 2,
+    fin.status === "ok" ? S(fin.closed) : fin.status,
+  );
+
+  // 레거시 활성 여러 개 — 가장 늦은 것을 대조 기준으로, 나머지도 전부 닫는다
+  const la = newCycle({ id: "L1", createdAt: "2026-09-01T00:00:00.000Z", cycleNo: 1 });
+  const lb = log(newCycle({ id: "L2", createdAt: "2026-09-02T00:00:00.000Z", cycleNo: 2 }), D0, "complete");
+  const multi = decideStart([la, lb], { ...input, expectedActiveCycleId: "L2" }, "n6");
+  add(
+    "판정 decideStart",
+    "레거시 다중 활성 → 가장 늦은 것 기준·나머지도 닫음(활성 1개로 수렴)",
+    multi.status === "ok" &&
+      eq(multi.closed, { id: "L2", status: "abandoned" }) &&
+      multi.writes.filter((w) => w.status === "active").length === 1 &&
+      multi.writes.some((w) => w.id === "L1" && w.status === "abandoned") &&
+      multi.record.cycleNo === 3,
+    multi.status === "ok" ? S(multi.writes.map((w) => `${w.id}:${w.status}`)) : multi.status,
+  );
+
+  add(
+    "판정 decideStart",
+    "잘못된 RM·시작일(오늘/내일 밖) → RangeError",
+    throws(() => decideStart([], { ...input, rm: { pullup: 0, pushup: 20 } }, "x")) &&
+      throws(() => decideStart([], { ...input, startDate: dt(5) }, "x")) &&
+      throws(() => decideStart([], { ...input, startDate: shiftDateString(D0, -1) }, "x")),
+    "rm 0·D+5·D−1",
+  );
+  const again = decideStart([closedPrev, old], { ...input, expectedActiveCycleId: "a1", todayKst: dt(10), startDate: dt(10), nowIso }, "n4");
+  add("판정 decideStart", "결정적(같은 입력 → 같은 출력)·직렬화 가능", S(again) === S(cr) && isPlainData(cr) && isPlainData(first), "JSON 동일");
+});
+scenario("판정 decideStart", "replaced + 레거시 다중 활성", () => {
+  // 선택된 활성(L2, 더 최근)은 사건 0개 → 제자리 교체. 여분 활성 L1(더 오래됨)도 닫아 활성 1개로 수렴해야 하고,
+  // L1에 사건이 있으면 closedHadEvents = true(Firestore prod-guard 신호). API의 closed는 선택된 활성만 말하므로 null.
+  const input = { rm: { pullup: 13, pushup: 20 }, startDate: dt(1), expectedActiveCycleId: "L2", todayKst: D0, nowIso: nowIsoFor(D0) };
+  const L1 = log(newCycle({ id: "L1", createdAt: "2026-08-20T00:00:00.000Z", cycleNo: 1 }), D0, "complete");
+  const L2 = newCycle({ id: "L2", createdAt: "2026-08-25T00:00:00.000Z", cycleNo: 2 });
+  const r = decideStart([L1, L2], input, "n7");
+  const w1 = r.status === "ok" ? r.writes.find((w) => w.id === "L1") : undefined;
+  const after = r.status === "ok" ? applyWrites([L1, L2], r.writes) : [];
+  const actives = after.filter((c) => c.status === "active");
+  add(
+    "판정 decideStart",
+    "replaced + 레거시 여분 활성(사건 있음) → 여분도 닫음·closedHadEvents true·closed null·활성 1개",
+    r.status === "ok" &&
+      r.mode === "replaced" &&
+      r.record.id === "L2" &&
+      r.record.cycleNo === 2 &&
+      r.closed === null &&
+      r.closedHadEvents === true &&
+      r.writes.length === 2 &&
+      w1 !== undefined &&
+      w1.status === "abandoned" &&
+      w1.endedAt === nowIsoFor(D0) &&
+      w1.rev === L1.rev + 1 &&
+      w1.events.length === 1 &&
+      actives.length === 1 &&
+      actives[0].id === "L2",
+    r.status === "ok" ? S({ mode: r.mode, writes: r.writes.map((w) => `${w.id}:${w.status}`), hadEvents: r.closedHadEvents, actives: actives.map((c) => c.id) }) : r.status,
+  );
+
+  // 여분 활성에 사건이 없으면 closedHadEvents = false(가드가 헛발동하지 않는다) — 그래도 닫는다
+  const E1 = newCycle({ id: "E1", createdAt: "2026-08-20T00:00:00.000Z", cycleNo: 1 });
+  const E2 = newCycle({ id: "E2", createdAt: "2026-08-25T00:00:00.000Z", cycleNo: 2 });
+  const r2 = decideStart([E1, E2], { ...input, expectedActiveCycleId: "E2" }, "n8");
+  const after2 = r2.status === "ok" ? applyWrites([E1, E2], r2.writes) : [];
+  add(
+    "판정 decideStart",
+    "replaced + 레거시 여분 활성(사건 0개) → 닫되 closedHadEvents false",
+    r2.status === "ok" &&
+      r2.mode === "replaced" &&
+      r2.closedHadEvents === false &&
+      r2.writes.some((w) => w.id === "E1" && w.status === "abandoned") &&
+      after2.filter((c) => c.status === "active").map((c) => c.id).join() === "E2",
+    r2.status === "ok" ? S({ writes: r2.writes.map((w) => `${w.id}:${w.status}`), hadEvents: r2.closedHadEvents }) : r2.status,
+  );
+});
+scenario("판정 decideStart", "cycleNo = 전체 max+1", () => {
+  // 활성(cycleNo 3)이 최대가 아닌 레거시 — 닫힌 사이클이 cycleNo 5. 활성+1(4)이나 개수+1(3)이 아니라 6이어야 한다.
+  const nowIso = nowIsoFor(dt(10));
+  const closed5 = newCycle({ id: "k5", cycleNo: 5, status: "completed", endedAt: "2026-08-30T03:00:00.000Z", createdAt: "2026-07-01T00:00:00.000Z" });
+  const act3 = completeThrough(newCycle({ id: "k3", cycleNo: 3 }), D0, 2).c;
+  const r = decideStart(
+    [act3, closed5],
+    { rm: { pullup: 12, pushup: 20 }, startDate: dt(10), expectedActiveCycleId: "k3", todayKst: dt(10), nowIso },
+    "k6",
+  );
+  add(
+    "판정 decideStart",
+    "cycleNo = 전체 max+1(활성 3·닫힌 5 → 6)",
+    r.status === "ok" && r.mode === "created" && r.record.cycleNo === 6 && eq(r.closed, { id: "k3", status: "abandoned" }),
+    r.status === "ok" ? `cycleNo ${r.record.cycleNo}` : r.status,
+  );
+});
+scenario("판정 closingStatus", "종료 판정", () => {
+  const { c: c23, date: d23 } = completeThrough(newCycle(), D0, 23);
+  const mid = completeThrough(newCycle(), D0, 10).c;
+  const ok =
+    closingStatus(c23) === "completed" && // Day 23 완료 당일
+    todayStatus(c23, shiftDateString(d23, 2)).kind === "rest" && // Day 25 — 판정은 사건 재생이라 날짜 무관
+    todayStatus(c23, shiftDateString(d23, 4)).kind === "retest" &&
+    closingStatus(mid) === "abandoned" &&
+    closingStatus(newCycle()) === "abandoned";
+  add("판정 closingStatus", "Day 23 완료 당일·Day 25·재측정 → completed / 도중·사건 0 → abandoned", ok, `23=${closingStatus(c23)} 10=${closingStatus(mid)} 0=${closingStatus(newCycle())}`);
+});
+scenario("판정 closingStatus", "경계 — nextDay 23은 abandoned", () => {
+  // Day 22까지만 / Day 23 실패 직후 / (23,22) 재부여 성공 직후 — 전부 nextDay 23이라 abandoned. (23,23) 보통 성공에서야 27 → completed.
+  const { c: c22, date: d22 } = completeThrough(newCycle(), D0, 22);
+  const D = shiftDateString(d22, 1);
+  const f23 = log(c22, D, "fail");
+  const rep = log(f23, shiftDateString(D, 2), "complete");
+  const fin = log(rep, shiftDateString(D, 3), "complete");
+  const seq = [c22, f23, rep, fin].map((c) => `${replay(c.events).nextDay}:${closingStatus(c)}`);
+  add(
+    "판정 closingStatus",
+    "경계 — Day 22까지·Day 23 실패·(23,22) 재부여 성공 → abandoned / (23,23) 성공 → completed",
+    eq(seq, ["23:abandoned", "23:abandoned", "23:abandoned", "27:completed"]) && rep.events[rep.events.length - 1].targetDay === 22,
+    seq.join(" → "),
+  );
+});
+
+// ===========================================================================
+// 6) 진행률·볼륨·일정·스냅샷
+// ===========================================================================
+scenario("진행·볼륨", "진행률·볼륨", () => {
+  // Day 1·2 완료 → Day 3 실패(풀업 3세트 2회) → (3,2) 재부여 성공 → Day 3 성공
+  let { c, date } = completeThrough(newCycle(), D0, 2);
+  const D = shiftDateString(date, 1);
+  c = log(c, D, "fail", { exercise: "pullup", setIndex: 2, reps: 2 });
+  c = log(c, shiftDateString(D, 2), "complete");
+  c = log(c, shiftDateString(D, 3), "complete");
+  const r = replay(c.events);
+  // 볼륨: Day1(20/35) + Day2(21/36) + 실패 Day3 목표[6,5,4,4,3]/[9,8,7,7,6] → 풀업 [6,5,2,0,0]=13, 푸시업 [9,8,0,0,0]=17
+  //       + 재부여 Day2(21/36) + Day3(22/37)
+  const expPu = 20 + 21 + 13 + 21 + 22;
+  const expPs = 35 + 36 + 17 + 36 + 37;
+  const snap = snapshot(c, shiftDateString(D, 4));
+  add(
+    "진행·볼륨",
+    "진행률 = 서로 다른 보통 완료 Day / 20(재부여 제외), Math.round",
+    eq(r.completedDays, [1, 2, 3]) && snap.progress.done === 3 && snap.progress.total === 20 && snap.progress.pct === 15,
+    S(snap.progress),
+  );
+  add(
+    "진행·볼륨",
+    "볼륨 = 모든 사건 reps 합(실패 부분·재부여 포함)·실패 수",
+    eq(r.volume, { pullup: expPu, pushup: expPs }) && eq(snap.volume, r.volume) && r.failCount === 1 && snap.failCount === 1 && r.failsByDay[3] === 1,
+    `${S(r.volume)} 기대 ${expPu}/${expPs} fails=${r.failCount}`,
+  );
+});
+scenario("진행·볼륨", "진행률 Math.round — done 0..20 전부", () => {
+  // done/20×100은 done=11일 때 55.00000000000001(부동소수 잡음) — 반올림이 빠지면 여기서만 드러난다.
+  let c = newCycle();
+  let date = D0;
+  let done = 0;
+  const bad: string[] = [];
+  let at11 = "";
+  const check = () => {
+    const p = snapshot(c, date).progress;
+    if (p.done !== done || p.total !== 20 || p.pct !== done * 5 || !Number.isInteger(p.pct)) bad.push(`${done}:${S(p)}`);
+    if (done === 11) at11 = S(p);
+  };
+  check();
+  for (let guard = 0; guard < 60 && done < 20; guard++) {
+    if (todayStatus(c, date).kind === "workout") {
+      c = log(c, date, "complete");
+      done += 1;
+      check();
+    }
+    date = shiftDateString(date, 1);
+  }
+  add(
+    "진행·볼륨",
+    "진행률 Math.round — done 0..20 전부 pct = done×5 정수(done 11 → 55)",
+    done === 20 && bad.length === 0 && at11 === S({ done: 11, total: 20, pct: 55 }),
+    bad.length ? bad.slice(0, 3).join(" ") : `21단계 일치 · 11 → ${at11}`,
+  );
+});
+scenario("진행·볼륨", "재부여 성공은 진행률 제외", () => {
+  // Day 1·2 완료 → Day 3 실패 → (3,2) 재부여 성공. 그 당일·다음 날·다음 날 또 실패 — 어느 시점에도 Day 3은 ✓가 아니고 done 2.
+  // (재부여 성공 뒤 곧바로 Day 3을 보통 완료하면 Set 중복 제거가 차이를 가린다 — 그래서 그 전에 본다)
+  let { c, date } = completeThrough(newCycle(), D0, 2);
+  const D = shiftDateString(date, 1);
+  c = log(c, D, "fail");
+  const R = shiftDateString(D, 2);
+  c = log(c, R, "complete");
+  const sR = snapshot(c, R);
+  const N = shiftDateString(R, 1);
+  const sN = snapshot(c, N);
+  const cF = log(c, N, "fail");
+  const sF = snapshot(cF, N);
+  const chk = (s: ReturnType<typeof snapshot>) =>
+    s.progress.done === 2 && s.progress.pct === 10 && s.plan[0].completed && s.plan[1].completed && !s.plan[2].completed;
+  add(
+    "진행·볼륨",
+    "재부여 성공은 진행률·✓ 제외(당일 repeat_complete·다음 날·또 실패 후)",
+    sR.today.kind === "recorded_today" &&
+      sR.today.outcome === "repeat_complete" &&
+      desc(sN.today) === "workout(3,3)" &&
+      chk(sR) &&
+      chk(sN) &&
+      chk(sF) &&
+      sF.plan[2].fails === 2 &&
+      eq(replay(cF.events).completedDays, [1, 2]),
+    `당일 ${S(sR.progress)} · 다음 날 ${S(sN.progress)} · 또 실패 ${S(sF.progress)} ✗${sF.plan[2].fails}`,
+  );
+});
+scenario("일정", "upcoming 시뮬레이션", () => {
+  let { c, date } = completeThrough(newCycle(), D0, 2);
+  const D = shiftDateString(date, 1);
+  c = log(c, D, "fail");
+  const up = upcoming(c, D, 3);
+  add(
+    "일정",
+    "실패 당일 upcoming → [회복, (X,X−1), (X,X)] (날짜 D+1..D+3)",
+    eq(
+      up.map((u) => desc(u.item)),
+      ["recovery(3)", "workout(3,2)", "workout(3,3)"],
+    ) && eq(
+      up.map((u) => u.date),
+      [1, 2, 3].map((i) => shiftDateString(D, i)),
+    ),
+    up.map((u) => `${u.date}:${desc(u.item)}`).join(" "),
+  );
+
+  const c4 = completeThrough(newCycle(), D0, 4);
+  const today5 = shiftDateString(c4.date, 1);
+  const up5 = upcoming(c4.c, today5, 3).map((u) => desc(u.item));
+  add("일정", "오늘이 운동일이면 오늘 성공을 가정(Day 5 → [rest 6, 7, 8])", eq(up5, ["rest(6,1/1)", "workout(7,7)", "workout(8,8)"]), up5.join(" "));
+
+  const pre = upcoming(newCycle({ startDate: dt(3) }), D0, 2);
+  add(
+    "일정",
+    "시작 전 날짜는 건너뛰고 시작일부터(날짜로 드러남)",
+    eq(
+      pre.map((u) => `${u.date}:${desc(u.item)}`),
+      [`${dt(3)}:workout(1,1)`, `${dt(4)}:workout(2,2)`],
+    ),
+    pre.map((u) => `${u.date}:${desc(u.item)}`).join(" "),
+  );
+  const { c: c23, date: d23 } = completeThrough(newCycle(), D0, 23);
+  const tail = upcoming(c23, d23, 5).map((u) => desc(u.item));
+  add("일정", "Day 23 완료 당일 → [24,25,26 마무리, 재측정, 재측정]", eq(tail, ["rest(24,1/3,end)", "rest(25,2/3,end)", "rest(26,3/3,end)", "retest", "retest"]), tail.join(" "));
+  add("일정", "n ≤ 0 → []", upcoming(c23, d23, 0).length === 0, "0");
+});
+scenario("스냅샷", "snapshot", () => {
+  let { c, date } = completeThrough(newCycle({ id: "s1", cycleNo: 2 }), D0, 5);
+  const D = shiftDateString(date, 2);
+  c = log(c, D, "fail"); // Day 7 실패
+  const today = shiftDateString(D, 1); // 회복
+  const snap = snapshot(c, today);
+  const row = (d: number) => snap.plan[d - 1];
+  const ok =
+    snap.cycleId === "s1" &&
+    snap.cycleNo === 2 &&
+    snap.rev === c.rev &&
+    snap.eventCount === 6 &&
+    snap.today.kind === "recovery" &&
+    snap.plan.length === 27 &&
+    row(1).completed &&
+    row(5).completed &&
+    !row(7).completed &&
+    row(7).fails === 1 &&
+    row(7).current &&
+    snap.plan.filter((r) => r.current).length === 1 &&
+    row(6).kind === "rest" &&
+    snap.progress.done === 5 &&
+    snap.progress.pct === 25 &&
+    snap.failCount === 1 &&
+    snap.upcoming.length === 3 &&
+    snap.lastEvent !== null &&
+    snap.lastEvent.kind === "fail" &&
+    isPlainData(snap); // 직렬화 가능(Date·undefined 없음 — RSC props)
+  add("스냅샷", "plan 27행(✓·✗ 수·▶)·progress·rev·upcoming 3·lastEvent·직렬화 가능", ok, `today=${desc(snap.today)} progress=${S(snap.progress)} up=${snap.upcoming.map((u) => desc(u.item)).join(",")}`);
+
+  const fresh = snapshot(newCycle({ startDate: dt(2) }), D0);
+  add(
+    "스냅샷",
+    "시작 전 — ▶ 없음·진행 0·lastEvent null",
+    fresh.today.kind === "not_started" && fresh.plan.every((r) => !r.current) && fresh.progress.done === 0 && fresh.progress.pct === 0 && fresh.lastEvent === null,
+    desc(fresh.today),
+  );
+});
+scenario("스냅샷", "✗는 슬롯 day 기준", () => {
+  // Day 7 실패(7,7) → (7,5) 재부여도 실패 — 두 번째 실패의 targetDay는 5지만 ✗는 슬롯 Day 7에 쌓인다.
+  let { c, date } = completeThrough(newCycle(), D0, 5);
+  const D = shiftDateString(date, 2);
+  c = log(c, D, "fail");
+  c = log(c, shiftDateString(D, 2), "fail");
+  const ev = c.events[c.events.length - 1];
+  const snap = snapshot(c, shiftDateString(D, 3));
+  const r = replay(c.events);
+  add(
+    "스냅샷",
+    "✗는 슬롯 day 기준 — (7,7) 실패 + (7,5) 재부여 실패 → Day 7 ✗2·Day 5 ✗0(✓ 유지)",
+    ev.day === 7 && ev.targetDay === 5 && snap.plan[6].fails === 2 && snap.plan[4].fails === 0 && snap.plan[4].completed && r.failsByDay[7] === 2 && r.failsByDay[5] === undefined,
+    `Day7 ✗${snap.plan[6].fails} · Day5 ✗${snap.plan[4].fails} · failsByDay=${S(r.failsByDay)}`,
+  );
+});
+{
+  const mk = (id: string, createdAt: string, status: WorkoutCycleRecord["status"] = "active") => newCycle({ id, createdAt, status });
+  const a = mk("a", "2026-09-01T00:00:00.000Z");
+  const b = mk("b", "2026-09-03T00:00:00.000Z");
+  const c = mk("c", "2026-09-02T00:00:00.000Z");
+  const z = mk("z", "2026-09-09T00:00:00.000Z", "completed");
+  const t1 = mk("t1", "2026-09-05T00:00:00.000Z");
+  const t2 = mk("t2", "2026-09-05T00:00:00.000Z");
+  const p1 = pickActiveWorkoutCycle([a, b, c, z])?.id;
+  const p2 = pickActiveWorkoutCycle([c, z, b, a])?.id;
+  const tie1 = pickActiveWorkoutCycle([t1, t2])?.id;
+  const tie2 = pickActiveWorkoutCycle([t2, t1])?.id;
+  add(
+    "활성 선택",
+    "pickActiveWorkoutCycle 다중 활성 → createdAt 가장 늦은 것(순서 무관·동률은 id로 결정적)·없으면 null",
+    p1 === "b" && p2 === "b" && tie1 === tie2 && pickActiveWorkoutCycle([z]) === null && pickActiveWorkoutCycle([]) === null,
+    `${p1},${p2} tie=${tie1},${tie2}`,
+  );
+}
+scenario("격리", "사이클 격리", () => {
+  const old = completeThrough(newCycle({ id: "o1" }), D0, 11).c;
+  const r = decideStart([old], { rm: { pullup: 12, pushup: 20 }, startDate: dt(20), expectedActiveCycleId: "o1", todayKst: dt(20), nowIso: nowIsoFor(dt(20)) }, "n1");
+  if (r.status !== "ok") throw new Error(r.status);
+  const snap = snapshot(r.record, dt(20));
+  add(
+    "격리",
+    "새 사이클은 이전 사건을 섞지 않는다(Day 1·볼륨 0·실패 0·진행 0)",
+    desc(snap.today) === "workout(1,1)" && snap.volume.pullup === 0 && snap.volume.pushup === 0 && snap.failCount === 0 && snap.progress.done === 0 && replay(r.record.events).nextDay === 1,
+    `${desc(snap.today)} vol=${S(snap.volume)}`,
+  );
+});
+{
+  // 지난 사이클 — RM 변화는 다음 cycleNo의 rm에서 파생(별도 필드 없음)
+  const c1 = newCycle({ id: "h1", cycleNo: 1, rm: { pullup: 10, pushup: 18 }, status: "completed", endedAt: "2026-09-28T03:00:00.000Z" });
+  const c2 = newCycle({ id: "h2", cycleNo: 2, rm: { pullup: 13, pushup: 20 }, status: "abandoned", endedAt: "2026-10-05T03:00:00.000Z" });
+  const c3 = newCycle({ id: "h3", cycleNo: 3, rm: { pullup: 14, pushup: 22 } });
+  const h = workoutHistory([c3, c1, c2]);
+  add(
+    "지난 사이클",
+    "workoutHistory — 닫힌 것만·cycleNo 내림차순·nextRm = 다음 사이클 rm",
+    h.length === 2 &&
+      h[0].id === "h2" &&
+      eq(h[0].nextRm, { pullup: 14, pushup: 22 }) &&
+      h[0].status === "abandoned" &&
+      h[1].id === "h1" &&
+      eq(h[1].nextRm, { pullup: 13, pushup: 20 }) &&
+      h[1].status === "completed",
+    S(h.map((r) => ({ id: r.id, rm: r.rm, nextRm: r.nextRm, status: r.status }))),
+  );
+  const solo = workoutHistory([newCycle({ id: "only", status: "completed" })]);
+  add("지난 사이클", "다음 사이클이 없으면 nextRm null", solo.length === 1 && solo[0].nextRm === null, S(solo[0]?.nextRm));
+}
+
+// ===========================================================================
+// 7) 정규화 (두 스토어 백엔드 공유 — Firestore는 undefined를 거부한다)
+// ===========================================================================
+{
+  const raw = {
+    id: "x",
+    createdAt: "2026-09-01T00:00:00.000Z",
+    cycleNo: 2,
+    startDate: "2026-09-02",
+    rm: { pullup: 10, pushup: 18 },
+    base: undefined,
+    status: "active",
+    rev: undefined,
+    events: [
+      { date: "2026-09-02", at: "2026-09-02T03:00:00.000Z", kind: "complete", day: 1, targetDay: 1, reps: { pullup: [6, 5, 4], pushup: [9, 8, 7, 6, 5] } },
+      { date: "2026-09-03", at: "2026-09-03T03:00:00.000Z", kind: "fail", day: 2, targetDay: 2, failed: { exercise: "pushup", setIndex: 1, reps: undefined }, reps: undefined },
+    ],
+  };
+  const n = normalizeWorkoutCycle(raw);
+  const json = S(n);
+  const ok =
+    n.endedAt === null &&
+    n.rev === 0 &&
+    eq(n.base, BASE) && // base 없으면 rm으로 재계산(방어)
+    n.events.length === 2 &&
+    n.events[0].failed === null &&
+    eq(n.events[0].reps.pullup, [6, 5, 4, 0, 0]) &&
+    n.events[1].failed !== null &&
+    n.events[1].failed.reps === null &&
+    eq(n.events[1].reps, { pullup: [0, 0, 0, 0, 0], pushup: [0, 0, 0, 0, 0] }) &&
+    isPlainData(n); // undefined가 하나라도 남으면 Firestore가 거부한다
+  add("정규화", "normalizeWorkoutCycle — undefined → null·기본값, base 없으면 rm으로, 배열 5칸", ok, json.slice(0, 160));
+  const junk = normalizeWorkoutCycle(undefined);
+  add(
+    "정규화",
+    "쓰레기 입력도 던지지 않고 안전한 닫힌 레코드",
+    junk.status === "abandoned" && Array.isArray(junk.events) && junk.events.length === 0 && junk.endedAt === null && junk.base.pullup.length === 5 && typeof junk.createdAt === "string",
+    S({ status: junk.status, rm: junk.rm }),
+  );
+  const e = normalizeWorkoutEvent({ kind: "complete", day: 3, targetDay: 3, failed: { exercise: "pullup", setIndex: 0, reps: 1 }, reps: { pullup: [1, -2, "x"], pushup: null } });
+  add(
+    "정규화",
+    "normalizeWorkoutEvent — complete의 failed는 null·음수/비숫자 → 0",
+    e.failed === null && eq(e.reps, { pullup: [1, 0, 0, 0, 0], pushup: [0, 0, 0, 0, 0] }) && e.date === "" && e.at === "",
+    S(e),
+  );
+  // 모르는 Day를 추측하지 않는다 — 예전엔 day 없음 → 1(끝에 있으면 사이클이 Day 2로 되감긴다), 2.5 → 2로 잘랐다
+  const noDay = normalizeWorkoutEvent({ date: D0, kind: "complete", targetDay: 3 });
+  const floatDay = normalizeWorkoutEvent({ date: D0, kind: "complete", day: 2.5, targetDay: 2 });
+  const noTarget = normalizeWorkoutEvent({ date: D0, kind: "complete", day: 3 });
+  add(
+    "정규화",
+    "normalizeWorkoutEvent — day·targetDay가 없거나 정수가 아니면 0(알 수 없음 — 사이클 정규화가 버린다)",
+    noDay.day === 0 && noDay.targetDay === 3 && floatDay.day === 0 && floatDay.targetDay === 2 && noTarget.day === 3 && noTarget.targetDay === 0 && isPlainData([noDay, floatDay, noTarget]),
+    S([noDay, floatDay, noTarget].map((x) => [x.day, x.targetDay])),
+  );
+}
+scenario("정규화", "깨진 레코드", () => {
+  // 손으로 고치거나 깨진 문서 — 예전엔 snapshot이 targetFor(Day 6)에서 RangeError를 던져 /workout이 500이 됐다(QA P2-5).
+  const t1 = targetFor(BASE, 1);
+  const t2 = targetFor(BASE, 2);
+  const ev = (over: Record<string, unknown>) => ({ at: "2026-09-01T03:00:00.000Z", kind: "complete", failed: null, reps: t1, ...over });
+  const raw = {
+    id: "bk",
+    createdAt: "garbage",
+    cycleNo: 1,
+    startDate: "2026-13-01",
+    rm: RM,
+    base: BASE,
+    status: "active",
+    endedAt: null,
+    rev: 7,
+    events: [
+      ev({ date: dt(0), day: 1, targetDay: 1 }), // 정상
+      ev({ date: dt(1), day: 6, targetDay: 6 }), // 휴식일 — 운동일 아님
+      ev({ date: dt(2), kind: "fail", day: 2, targetDay: 24, failed: FAIL_PU0 }), // targetDay 마무리 휴식
+      ev({ date: "", day: 2, targetDay: 2 }), // 날짜 없음
+      ev({ date: "2026-02-30", day: 2, targetDay: 2 }), // 달력 밖
+      ev({ date: dt(3), targetDay: 2 }), // day 없음
+      ev({ date: dt(4), day: 2.5, targetDay: 2 }), // 정수 아님
+      ev({ date: dt(5), day: 2, targetDay: 2, reps: t2 }), // 정상
+    ],
+  };
+  const { value: n, warns } = captureWarn(() => normalizeWorkoutCycle(raw));
+  const snap = snapshot(n, dt(6));
+  add(
+    "정규화",
+    "깨진 사건(운동일 아닌 day·targetDay, 날짜 없음·달력 밖, day 없음·소수) → 버리고 console.warn",
+    n.events.length === 2 &&
+      n.events[0].day === 1 &&
+      n.events[1].date === dt(5) &&
+      warns.length === 6 &&
+      warns.every((w) => w.startsWith("[workout]")) &&
+      n.rev === 7,
+    `남은 ${n.events.length}건 · 경고 ${warns.length}건 · ${warns[0] ?? ""}`,
+  );
+  add(
+    "정규화",
+    "createdAt이 ISO가 아니면 epoch ISO·startDate가 달력 밖이면 createdAt의 KST 일자로",
+    n.createdAt === "1970-01-01T00:00:00.000Z" && n.startDate === "1970-01-01",
+    `${n.createdAt} · ${n.startDate}`,
+  );
+  add(
+    "정규화",
+    "깨진 레코드 → 정규화 → snapshot이 던지지 않는다(페이지 500 방지)·직렬화 가능",
+    desc(snap.today) === "workout(3,3)" && snap.progress.done === 2 && snap.eventCount === 2 && isPlainData(snap),
+    `today=${desc(snap.today)} progress=${S(snap.progress)}`,
+  );
+
+  // QA 재현 그대로 — complete Day 6 다음 fail Day 7
+  const qa = { ...raw, createdAt: "2026-08-31T03:00:00.000Z", startDate: D0, events: [ev({ date: dt(0), day: 6, targetDay: 6 }), ev({ date: dt(1), kind: "fail", day: 7, targetDay: 7, failed: FAIL_PU0 })] };
+  const qn = captureWarn(() => normalizeWorkoutCycle(qa)).value;
+  const qs = snapshot(qn, dt(3));
+  add("정규화", "QA 재현(complete Day 6 → fail Day 7) → 정규화 후 snapshot 성공", qn.events.length === 1 && isPlainData(qs), `사건 ${qn.events.length}건 · today=${desc(qs.today)}`);
+
+  // 정상 ISO 변형은 그대로 둔다(쓰기 경계에서도 정규화가 돌므로 멀쩡한 값을 epoch로 덮으면 안 된다)
+  const keep = ["2026-09-01T00:00:00Z", "2026-09-01T09:00:00+09:00", "2026-09-01T00:00:00.123Z", "2026-09-01"];
+  const kept = keep.map((iso) => normalizeWorkoutCycle({ ...raw, createdAt: iso, events: [] }).createdAt);
+  const drop = ["2026-09-01T00:00:00", "September 1, 2026", "2026-02-30T00:00:00Z", "", "2026-09-01T25:00:00Z"];
+  const dropped = drop.map((iso) => normalizeWorkoutCycle({ ...raw, createdAt: iso, events: [] }).createdAt);
+  add(
+    "정규화",
+    "createdAt — ISO(타임존 있음·날짜만)는 유지, 타임존 없는 로컬 시각·영문·달력 밖·시각 범위 밖은 epoch",
+    eq(kept, keep) && dropped.every((x) => x === "1970-01-01T00:00:00.000Z"),
+    `${S(kept)} / ${S(dropped)}`,
+  );
+});
+
+// ===========================================================================
+// 8) 깨진 날짜·오늘 방어 (§19-2 "workout은 gap ≥ 1에서만" — 날짜 차를 모르면 기록을 받지 않는다)
+// ===========================================================================
+scenario("날짜 방어", "정규화 안 된 사건열", () => {
+  // 엔진도 정규화와 같은 규칙으로 깨진 사건을 없는 것으로 본다 — 스토어를 거치지 않은 호출자(eval·장래 코드)도 같은 답.
+  // Day 1을 D0에 완료한 뒤 날짜가 빈 사건이 끝에 붙은 경우: 예전엔 ""가 1900-01-01로 해석돼 D0에 두 번째 기록을 받았다.
+  const c1 = log(newCycle(), D0, "complete");
+  const brokenLast = { ...targetFor(BASE, 2) };
+  const raw: WorkoutCycleRecord = {
+    ...c1,
+    events: [...c1.events, { date: "", at: "", kind: "complete", day: 2, targetDay: 2, failed: null, reps: brokenLast }],
+  };
+  const norm = captureWarn(() => normalizeWorkoutCycle(raw)).value;
+  const st = todayStatus(raw, D0);
+  const second = decideLog(raw, { expectedRev: raw.rev, kind: "complete", day: 3, targetDay: 3, failed: null, todayKst: D0, nowIso: nowIsoFor(D0) });
+  const second2 = decideLog(raw, { expectedRev: raw.rev, kind: "complete", day: 2, targetDay: 2, failed: null, todayKst: D0, nowIso: nowIsoFor(D0) });
+  const next = decideLog(raw, { expectedRev: raw.rev, kind: "complete", day: 2, targetDay: 2, failed: null, todayKst: dt(1), nowIso: nowIsoFor(dt(1)) });
+  add(
+    "날짜 방어",
+    "날짜가 깨진 마지막 사건은 '오늘 기록'도 '아주 오래전'도 아니다 — 없는 것으로(정규화와 같은 답)·같은 날 두 번째 기록 거절",
+    desc(st) === "recorded(complete,1,1)" &&
+      eq(st, todayStatus(norm, D0)) &&
+      eq(snapshot(raw, dt(1)).today, snapshot(norm, dt(1)).today) &&
+      eq(replay(raw.events).completedDays, [1]) &&
+      second.status === "stale_state" &&
+      second2.status === "stale_state" &&
+      next.status === "ok" &&
+      next.event.day === 2,
+    `${desc(st)} · D0 (3,3)→${second.status} (2,2)→${second2.status} · D+1 (2,2)→${next.status}`,
+  );
+
+  // 운동일이 아닌 day 사건(QA 재현)을 정규화 없이 넘겨도 snapshot이 던지지 않는다
+  const qa: WorkoutCycleRecord = {
+    ...newCycle(),
+    events: [
+      { date: dt(0), at: "", kind: "complete", day: 6, targetDay: 6, failed: null, reps: brokenLast },
+      { date: dt(1), at: "", kind: "fail", day: 7, targetDay: 7, failed: FAIL_PU0, reps: brokenLast },
+    ],
+  };
+  let threw = "";
+  let qs: ReturnType<typeof snapshot> | null = null;
+  try {
+    qs = snapshot(qa, dt(3));
+  } catch (err) {
+    threw = (err as Error).message;
+  }
+  const qn = captureWarn(() => normalizeWorkoutCycle(qa)).value;
+  add(
+    "날짜 방어",
+    "운동일 아닌 day 사건을 정규화 없이 넘겨도 snapshot이 던지지 않는다(정규화와 같은 오늘 상태)",
+    threw === "" && qs !== null && isPlainData(qs) && eq(qs.today, todayStatus(qn, dt(3))),
+    threw ? `예외: ${threw}` : `today=${qs ? desc(qs.today) : "-"}`,
+  );
+});
+scenario("날짜 방어", "오늘이 형식 밖", () => {
+  // 서버는 kstTodayString()만 넘기지만, 형식 밖 오늘은 판정에선 RangeError(프로그래밍 오류), 읽기에선 던지지 않고
+  // "달력이 흐르지 않은 것"(마지막 사건일, 없으면 시작일에 멈춤)으로 본다 → 기록함/Day 1. 휴식 슬롯을 지난 것으로 치지 않는다.
+  const { c, date: d5 } = completeThrough(newCycle(), D0, 5);
+  const badToday = ["garbage", "2026-02-30", ""];
+  const reads = badToday.map((b) => todayStatus(c, b));
+  const snaps = badToday.map((b) => snapshot(c, b));
+  const frozen = snapshot(c, d5);
+  add(
+    "날짜 방어",
+    "형식 밖 오늘 → 읽기는 마지막 사건일에 멈춤(기록함·내일 = rest 6)·snapshot·upcoming 날짜 유효",
+    reads.every((s) => s.kind === "recorded_today" && s.day === 5 && desc(s.tomorrow) === "rest(6,1/1)") &&
+      snaps.every((s) => isPlainData(s) && eq(s.today, frozen.today) && eq(s.upcoming, frozen.upcoming)) &&
+      snaps.every((s) => s.upcoming.length === 3 && s.upcoming.every((u) => diffDateStrings(u.date, u.date) === 0)),
+    `${reads.map(desc).join(" / ")} · up=${snaps[0].upcoming.map((u) => `${u.date}:${desc(u.item)}`).join(" ")}`,
+  );
+  const pre = todayStatus(newCycle({ startDate: dt(2) }), "garbage");
+  const upBad = upcoming(newCycle({ startDate: "garbage" }), "garbage", 3);
+  add(
+    "날짜 방어",
+    "형식 밖 오늘·사건 없음 → 시작일에 멈춤(Day 1)·시작일도 깨졌으면 upcoming []",
+    desc(pre) === "workout(1,1)" && upBad.length === 0 && isPlainData(snapshot(newCycle({ startDate: "garbage" }), "garbage")),
+    `${desc(pre)} · up=${upBad.length}`,
+  );
+  const req = { expectedRev: c.rev, kind: "complete" as const, day: 7, targetDay: 7, failed: null, nowIso: nowIsoFor(D0) };
+  add(
+    "날짜 방어",
+    "판정 함수는 달력 밖 날짜(2026-02-30·평년 2월 29)를 RangeError로 거절",
+    throws(() => decideLog(c, { ...req, todayKst: "2026-02-30" })) &&
+      throws(() => decideStart([], { rm: RM, startDate: "2026-02-29", expectedActiveCycleId: null, todayKst: "2026-02-28", nowIso: nowIsoFor(D0) }, "x")) &&
+      throws(() => decideStart([], { rm: RM, startDate: "2026-03-01", expectedActiveCycleId: null, todayKst: "2026-02-29", nowIso: nowIsoFor(D0) }, "x")),
+    "decideLog 02-30 · decideStart 02-29",
+  );
+});
+
+// ===========================================================================
+// 9) 상단 스트릭 — 루틴을 지킨 날 (§17-7 workoutKeptDays · workoutStreakTodayLabel)
+//   센다: 사건일(complete·fail) · 엔진이 정한 휴식·회복·마무리 휴식 슬롯(오늘까지만) · 재측정 끝낸 날(completed의 endedAt KST)
+//   안 센다: 기록 없이 지난 운동일 · RM 안 넣고 지난 재측정일 · 시작 전·사이클 없던 날 · 오늘 뒤 슬롯
+// ===========================================================================
+const keptDays = workoutKeptDays;
+const todayLabel = workoutStreakTodayLabel;
+/** dt(a)..dt(b) 날짜 목록(양끝 포함) */
+const range = (a: number, b: number) => Array.from({ length: b - a + 1 }, (_, i) => dt(a + i));
+const streakAt = (cycles: readonly WorkoutCycleRecord[], today: string) => computeStreakFromDays(workoutKeptDays(cycles, today), today);
+const ZERO_REPS = (): SetPair => ({ pullup: [0, 0, 0, 0, 0], pushup: [0, 0, 0, 0, 0] });
+
+/** 손으로 만든 사건 — 엔진 판정을 거치지 않는다(불변식 밖 사건열·깨진 사건 시나리오 전용) */
+function rawEvent(date: string, kind: "complete" | "fail", day: number, targetDay = day): WorkoutEvent {
+  return { date, at: nowIsoFor(date), kind, day, targetDay, failed: kind === "fail" ? FAIL_PU0 : null, reps: ZERO_REPS() };
+}
+
+/** 사이클 새로 시작 — 서버 흐름 그대로(decideStart → writes를 id로 upsert). 거절되면 던진다(시나리오 구성용) */
+function restart(all: readonly WorkoutCycleRecord[], today: string, start: "today" | "tomorrow", newId: string): WorkoutCycleRecord[] {
+  const r = decideStart(
+    all,
+    {
+      rm: RM,
+      startDate: start === "today" ? today : shiftDateString(today, 1),
+      expectedActiveCycleId: pickActiveWorkoutCycle(all)?.id ?? null,
+      todayKst: today,
+      nowIso: nowIsoFor(today),
+    },
+    newId,
+  );
+  if (r.status !== "ok") throw new Error(`시나리오 오류: ${today} decideStart → ${r.status}`);
+  return applyWrites(all, r.writes);
+}
+
+/** 활성 사이클에 기록(log와 같은 서버 흐름) — 배열 안 그 사이클만 갈아끼운다 */
+function logActive(all: readonly WorkoutCycleRecord[], date: string, kind: "complete" | "fail"): WorkoutCycleRecord[] {
+  const active = pickActiveWorkoutCycle(all);
+  if (!active) throw new Error(`시나리오 오류: ${date} 활성 사이클 없음`);
+  const next = log(active, date, kind);
+  return all.map((c) => (c.id === next.id ? next : c));
+}
+
+/** §17-7 라벨 규칙을 오늘 상태(TodayStatus)에서 독립적으로 유도 — 엔진 라벨과 대조하는 기대값(오늘 안 했으면 null) */
+function labelFromStatus(st: TodayStatus): string | null {
+  switch (st.kind) {
+    case "recorded_today":
+      return st.outcome === "fail" ? `Day ${st.day} ✗` : st.outcome === "repeat_complete" ? `Day ${st.targetDay} 목표 ✓` : `Day ${st.day} ✓`;
+    case "rest":
+      return st.cycleEnd ? `마무리 휴식 ${st.index}/${st.of}` : "휴식";
+    case "recovery":
+      return "회복 휴식";
+    default:
+      return null;
+  }
+}
+
+scenario("운동 스트릭", "운동일 + Day 6 휴식이 이어진다", () => {
+  const { c, date } = completeThrough(newCycle(), D0, 7); // Day 1~5 = dt0~dt4, Day 6 휴식 = dt5, Day 7 = dt6
+  const k = keptDays([c], date);
+  const s = streakAt([c], date);
+  add(
+    "운동 스트릭",
+    "Day 1~5·Day 6 휴식·Day 7 → 7일 연속(휴식일이 끊지 않는다)·doneToday·라벨 'Day 7 ✓'",
+    date === dt(6) && eq(k, range(0, 6)) && s.current === 7 && s.doneToday && s.best === 7 && todayLabel([c], date) === "Day 7 ✓",
+    `date=${date} kept=${k.length}일 ${S(s)} 라벨=${todayLabel([c], date)}`,
+  );
+});
+
+scenario("운동 스트릭", "실패일·회복 휴식·재부여 성공", () => {
+  let c = completeThrough(newCycle(), D0, 5).c; // Day 5 = dt4, Day 6 휴식 = dt5
+  c = log(c, dt(6), "fail"); // Day 7 실패
+  const lFail = todayLabel([c], dt(6));
+  const lRecovery = todayLabel([c], dt(7));
+  const sRecovery = streakAt([c], dt(7));
+  c = log(c, dt(8), "complete"); // 재부여 (7, 5) 성공
+  const lRepeat = todayLabel([c], dt(8));
+  const k = keptDays([c], dt(8));
+  const s9 = streakAt([c], dt(9)); // Day 7 재도전일 — 아직 안 함
+  add(
+    "운동 스트릭",
+    "실패일·회복 휴식도 지킨 날 — 라벨 'Day 7 ✗' → '회복 휴식'(doneToday) → 'Day 5 목표 ✓', 9일 연속",
+    lFail === "Day 7 ✗" &&
+      lRecovery === "회복 휴식" &&
+      sRecovery.doneToday &&
+      lRepeat === "Day 5 목표 ✓" &&
+      eq(k, range(0, 8)) &&
+      s9.current === 9 &&
+      !s9.doneToday &&
+      todayLabel([c], dt(9)) === null,
+    `${lFail} → ${lRecovery} → ${lRepeat} · kept=${k.length}일 · 다음날=${S(s9)}`,
+  );
+});
+
+scenario("운동 스트릭", "운동일 건너뜀", () => {
+  let c = log(newCycle(), dt(0), "complete"); // Day 1
+  const kMid = keptDays([c], dt(1));
+  const sMid = streakAt([c], dt(1));
+  const lMid = todayLabel([c], dt(1));
+  c = log(c, dt(2), "complete"); // Day 2 — dt1은 기록 없이 지나간 운동일
+  const k = keptDays([c], dt(2));
+  const s = streakAt([c], dt(2));
+  add(
+    "운동 스트릭",
+    "운동일에 기록 없이 지나면 끊긴다 — 그날은 '오늘 아직'(어제까지 살아 있음, 라벨 null), 다음 기록은 1일부터",
+    eq(kMid, [dt(0)]) && sMid.current === 1 && !sMid.doneToday && lMid === null && eq(k, [dt(0), dt(2)]) && s.current === 1 && s.best === 1,
+    `당일=${S(sMid)} 라벨=${lMid} · 다음=${S(k)} ${S(s)}`,
+  );
+});
+
+scenario("운동 스트릭", "마무리 휴식·미래 휴식", () => {
+  const { c, date } = completeThrough(newCycle(), D0, 23); // Day 23 = dt22, 마무리 휴식 dt23~dt25
+  const k22 = keptDays([c], dt(22));
+  const k23 = keptDays([c], dt(23));
+  const labels = [22, 23, 24, 25].map((i) => todayLabel([c], dt(i)));
+  add(
+    "운동 스트릭",
+    "Day 23 당일엔 뒤 휴식(오늘 뒤)을 세지 않고, 마무리 휴식은 하루씩 — 라벨 'Day 23 ✓'·'마무리 휴식 1/3·2/3·3/3'",
+    date === dt(22) &&
+      eq(k22, range(0, 22)) &&
+      eq(k23, range(0, 23)) &&
+      eq(labels, ["Day 23 ✓", "마무리 휴식 1/3", "마무리 휴식 2/3", "마무리 휴식 3/3"]),
+    `당일 끝=${k22[k22.length - 1]} 다음날 끝=${k23[k23.length - 1]} · ${labels.join(" / ")}`,
+  );
+});
+
+scenario("운동 스트릭", "재측정 대기·끝낸 날", () => {
+  const { c } = completeThrough(newCycle(), D0, 23); // 재측정일(Day 27) = dt26
+  const waiting = keptDays([c], dt(27)); // dt26에 RM을 안 넣고 지나감
+  const lWaiting = todayLabel([c], dt(27));
+  let all = restart([c], dt(27), "tomorrow", "c2"); // dt27에 재측정 끝냄 → c1 completed, 새 사이클은 내일부터
+  const closed = all.find((x) => x.id === "c1");
+  const after = keptDays(all, dt(27));
+  const lRetest = todayLabel(all, dt(27));
+  all = logActive(all, dt(28), "complete"); // 새 사이클 Day 1
+  const s = streakAt(all, dt(28));
+  add(
+    "운동 스트릭",
+    "RM 안 넣고 지난 재측정일(dt26)은 빠지고, 재측정 끝낸 날(dt27)은 센다 — 라벨 '재측정 ✓' → 새 사이클 'Day 1 ✓'",
+    eq(waiting, range(0, 25)) &&
+      lWaiting === null &&
+      closed?.status === "completed" &&
+      eq(after, [...range(0, 25), dt(27)]) &&
+      lRetest === "재측정 ✓" &&
+      s.current === 2 &&
+      s.best === 26 &&
+      todayLabel(all, dt(28)) === "Day 1 ✓",
+    `대기 끝=${waiting[waiting.length - 1]} 라벨=${lWaiting} · 닫힘=${closed?.status} · ${lRetest} · ${S(s)}`,
+  );
+});
+
+scenario("운동 스트릭", "두 사이클 합집합", () => {
+  const { c } = completeThrough(newCycle(), D0, 23);
+  let all = restart([c], dt(26), "today", "c2"); // 재측정일에 재측정, 오늘 시작
+  all = logActive(all, dt(26), "complete"); // 같은 날 새 사이클 Day 1
+  const k = keptDays(all, dt(26));
+  const lToday = todayLabel(all, dt(26));
+  all = logActive(all, dt(27), "complete"); // 새 사이클 Day 2
+  const s = streakAt(all, dt(27));
+  add(
+    "운동 스트릭",
+    "지난 사이클 + 새 사이클 날을 합집합으로 — 끊김 없이 28일, 같은 날 재측정·Day 1이면 활성 사이클 라벨 'Day 1 ✓'",
+    eq(k, range(0, 26)) && lToday === "Day 1 ✓" && s.current === 28 && s.best === 28,
+    `kept=${k.length}일 라벨=${lToday} ${S(s)}`,
+  );
+});
+
+scenario("운동 스트릭", "중단 사이클", () => {
+  const { c } = completeThrough(newCycle(), D0, 5); // Day 5 = dt4, Day 6 휴식 슬롯 = dt5
+  let all = restart([c], dt(4), "tomorrow", "c2"); // Day 5 한 날 도중 재측정 → c1 abandoned(endedAt dt4)
+  const closed = all.find((x) => x.id === "c1");
+  const lClosed = todayLabel(all, dt(4));
+  const kBefore = keptDays(all, dt(5));
+  const lBefore = todayLabel(all, dt(5));
+  all = logActive(all, dt(5), "complete"); // 새 사이클 Day 1
+  const kAfter = keptDays(all, dt(5));
+  add(
+    "운동 스트릭",
+    "중단 사이클의 사건도 센다 · 휴식 슬롯은 닫힌 날(dt4)에서 자른다 · 오늘 사건이 닫힌 사이클에만 있으면 그 라벨('Day 5 ✓')",
+    closed?.status === "abandoned" &&
+      lClosed === "Day 5 ✓" &&
+      eq(kBefore, range(0, 4)) &&
+      lBefore === null &&
+      eq(kAfter, range(0, 5)),
+    `닫힘=${closed?.status} 라벨=${lClosed} · 새 Day 1 전=${kBefore.length}일(${lBefore}) 후=${kAfter.length}일`,
+  );
+});
+
+scenario("운동 스트릭", "도중 재측정한 날", () => {
+  // retestHint를 따라 운동일에 기록 없이 RM을 다시 잰 날 — "건너뛴 날"로 끊기면 앱 안내를 따른 벌이 된다(§17-7).
+  const { c } = completeThrough(newCycle(), D0, 5); // Day 5 = dt4, Day 6 휴식 = dt5, Day 7 운동일 = dt6
+  let all = restart([c], dt(6), "tomorrow", "c2"); // dt6: 기록 없이 도중 재측정 → c1 abandoned(사건 있음)
+  const closed = all.find((x) => x.id === "c1");
+  const k6 = keptDays(all, dt(6));
+  const l6 = todayLabel(all, dt(6));
+  all = logActive(all, dt(7), "complete"); // 새 사이클 Day 1
+  const s7 = streakAt(all, dt(7));
+  // 사건 0개로 닫힌 사이클(레거시 다중 활성 정리)의 닫힌 날은 루틴 밖 — 세지 않는다
+  const legacy = newCycle({ id: "L0", status: "abandoned", endedAt: nowIsoFor(dt(3)) });
+  const kLegacy = keptDays([legacy], dt(3));
+  add(
+    "운동 스트릭",
+    "사건 있는 사이클을 도중 재측정으로 닫은 날(abandoned)도 '재측정 ✓'로 센다 — 끊김 없이 8일 / 사건 0개 사이클이 닫힌 날은 안 센다",
+    closed?.status === "abandoned" &&
+      eq(k6, range(0, 6)) &&
+      l6 === "재측정 ✓" &&
+      s7.current === 8 &&
+      s7.doneToday &&
+      eq(kLegacy, []) &&
+      todayLabel([legacy], dt(3)) === null,
+    `닫힘=${closed?.status} dt6=${l6} · 새 Day 1 뒤 ${S(s7)} · 레거시=${S(kLegacy)}`,
+  );
+});
+
+scenario("운동 스트릭", "다음 사건 전날에서 자름", () => {
+  // 불변식 밖 사건열(손으로 고친 문서·사고) — Day 23 완료 다음 날 사건이 또 있다.
+  // Day 23의 마무리 휴식 슬롯(dt23~25)은 다음 사건 전날(dt22)에서 잘린다 → dt23은 사건, dt24는 그 실패의 회복, dt25는 세지 않는다.
+  const { c } = completeThrough(newCycle(), D0, 23);
+  const broken: WorkoutCycleRecord = { ...c, events: [...c.events, rawEvent(dt(23), "fail", 23)] };
+  const k = keptDays([broken], dt(26));
+  add("운동 스트릭", "슬롯은 다음 사건 전날에서 자른다(앞 사건의 휴식이 뒤 사건을 넘어 새지 않는다)", eq(k, range(0, 24)), `끝=${k[k.length - 1]} (${k.length}일)`);
+});
+
+scenario("운동 스트릭", "시작 전·사이클 없음", () => {
+  const pre = keptDays([newCycle({ startDate: dt(3) })], dt(5)); // 시작일 지났지만 기록 없음
+  const preNotYet = keptDays([newCycle({ startDate: dt(3) })], dt(1)); // 시작 전
+  const none = keptDays([], dt(5));
+  const late = log(newCycle(), dt(2), "complete"); // 시작일 dt0, 첫 운동은 dt2
+  const kLate = keptDays([late], dt(2));
+  add(
+    "운동 스트릭",
+    "시작 전·기록 없는 사이클·사이클 없음 → [] / 첫 사건 전 날(dt0·dt1)은 세지 않는다",
+    eq(pre, []) && eq(preNotYet, []) && eq(none, []) && todayLabel([], dt(5)) === null && todayLabel([newCycle({ startDate: dt(3) })], dt(1)) === null && eq(kLate, [dt(2)]),
+    `시작전=${S(preNotYet)} 기록없음=${S(pre)} 없음=${S(none)} 늦은시작=${S(kLate)}`,
+  );
+});
+
+scenario("운동 스트릭", "오늘 휴식이면 doneToday", () => {
+  const { c } = completeThrough(newCycle(), D0, 5); // dt5 = Day 6 휴식
+  const s = streakAt([c], dt(5));
+  add(
+    "운동 스트릭",
+    "오늘이 휴식 슬롯이면 doneToday=true('오늘 아직'으로 흐리게 두지 않는다)·current 6·라벨 '휴식'",
+    s.doneToday && s.current === 6 && todayLabel([c], dt(5)) === "휴식",
+    `${S(s)} 라벨=${todayLabel([c], dt(5))}`,
+  );
+});
+
+scenario("운동 스트릭", "깨진 사건·형식 밖 오늘·오늘 뒤 사건", () => {
+  const c1 = log(newCycle(), dt(0), "complete");
+  const withBroken: WorkoutCycleRecord = { ...c1, events: [...c1.events, rawEvent(dt(1), "complete", 6), rawEvent("2026-02-30", "complete", 2)] };
+  const kBroken = keptDays([withBroken], dt(1));
+  const kGarbage = keptDays([c1], "garbage");
+  const lGarbage = todayLabel([c1], "garbage");
+  const future: WorkoutCycleRecord = { ...c1, events: [...c1.events, rawEvent(dt(3), "complete", 2)] };
+  const kFuture = keptDays([future], dt(2));
+  add(
+    "운동 스트릭",
+    "깨진 사건(Day 6·2월 30일)은 없는 것으로 · 형식 밖 오늘 → [] / null(던지지 않음) · 오늘 뒤 사건(시계 어긋남)은 세지 않는다",
+    eq(kBroken, [dt(0)]) && todayLabel([withBroken], dt(1)) === null && eq(kGarbage, []) && lGarbage === null && eq(kFuture, [dt(0)]),
+    `깨짐=${S(kBroken)} 형식밖=${S(kGarbage)}/${lGarbage} 미래=${S(kFuture)}`,
+  );
+});
+
+scenario("운동 스트릭", "상태 기계와 일치", () => {
+  // 70일 시뮬레이션 — 운동일마다 패턴대로 성공·실패·건너뜀(마무리 휴식·재측정 대기까지 간다).
+  // 그날그날: "지킨 날" ⇔ 오늘 상태가 기록함·휴식·회복, 라벨 = 오늘 상태에서 유도한 §17-7 라벨.
+  // 끝에서 과거를 다시 접어도(다음 사건들이 붙은 뒤) 그날그날 판정과 같은 날짜 집합이어야 한다.
+  const pattern = ["complete", "complete", "skip", "complete", "fail", "complete", "complete", "complete", "skip"] as const;
+  let c = newCycle();
+  let p = 0;
+  const daily: string[] = [];
+  const bad: string[] = [];
+  const kinds = new Set<string>();
+  for (let i = 0; i < 70; i++) {
+    const d = dt(i);
+    if (todayStatus(c, d).kind === "workout") {
+      const act = pattern[p++ % pattern.length];
+      if (act !== "skip") c = log(c, d, act);
+    }
+    const st = todayStatus(c, d);
+    kinds.add(st.kind === "rest" && st.cycleEnd ? "cycle_rest" : st.kind);
+    const isKept = keptDays([c], d).includes(d);
+    const expectKept = st.kind === "recorded_today" || st.kind === "rest" || st.kind === "recovery";
+    const label = todayLabel([c], d);
+    if (isKept !== expectKept || label !== labelFromStatus(st)) bad.push(`${d}:${desc(st)}:${isKept}:${label}`);
+    if (isKept) daily.push(d);
+  }
+  const final = keptDays([c], dt(69));
+  add(
+    "운동 스트릭",
+    "70일 시뮬레이션 — 그날그날 지킨 날·라벨 = 상태 기계, 나중에 다시 접어도 같은 집합(정렬·중복 없음·직렬화 가능)",
+    bad.length === 0 && eq(final, daily) && eq(final, [...new Set(final)].sort()) && isPlainData(final) && kinds.has("cycle_rest") && kinds.has("retest") && kinds.has("recovery"),
+    bad.length === 0 ? `${daily.length}일 지킴 · 상태 ${[...kinds].join(",")}` : `불일치 ${bad.slice(0, 4).join(" ")}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+printTable(results);
+const failed = results.filter((r) => !r.pass);
+if (failed.length > 0) {
+  console.error(`FAIL — 운동 엔진 ${failed.length}개 항목 실패.`);
+  process.exit(1);
+}
+console.log(`PASS — 운동 엔진 ${results.length}개 항목 통과 (실호출 0회).`);

@@ -676,6 +676,8 @@ async function main() {
     jaKanjiQuizzes: [],
     // 대화 복습(J3)도 같은 이유로 빈 배열.
     jaDialogs: [],
+    // 아빠의 운동 사이클(§19)도 같은 이유로 빈 배열 — mergeDbForSeed가 mergeById라 기존 운동 기록은 그대로 남는다.
+    workoutCycles: [],
   };
 
   await mergeDbForSeed(db);

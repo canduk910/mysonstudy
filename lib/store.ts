@@ -4,6 +4,9 @@
  * [M4] 수학 설명 기록(`explanations`)이 더해졌다 — 영어 3종과 같은 백엔드,
  * 같은 인터페이스 뒤에 산다(docs/harness/math.md §9-2).
  *
+ * [§19] 아빠의 운동 사이클(`workoutCycles`) — 변경 세 개(시작·기록·취소)만 **원자 단위(파일 mutate /
+ * Firestore 트랜잭션) 안에서 순수 판정 함수를 부르는** 구조다(docs/SPEC.md §19-4).
+ *
  * [M3] 두 가지 `BookCardStore` 구현을 인터페이스 뒤에서 선택한다:
  * - Firestore(Native mode, Admin SDK + ADC) — `lib/store-firestore.ts` (운영)
  * - JSON 파일(data/db.json, 이 파일) — 로컬 데모·키 없는 개발용
@@ -57,7 +60,23 @@ import type { VocabQuizMode } from "./vocab-quiz";
 // 저장 계층이 AI에 묶이지 않는다(M2 챕터 리더 더블탭 담기).
 import { COLLECTED_VOCAB_DAY_LABEL, COLLECTED_VOCAB_TITLE_KO } from "./collected-vocab-contract";
 import type { SceneTier } from "./scene/types";
+// 아빠의 운동(SPEC §19-4) — 타입의 **단일 정의처는 순수 엔진 lib/workout.ts**다. store는 `import type`으로 가져와
+// 재수출만 한다. 판정(decide*)·정규화는 순수 함수라 값 import여도 저장 계층이 AI에 묶이지 않는다(런타임 의존성 ./kst뿐).
+// ⚠️ 방향은 store → workout 한쪽뿐 — 엔진이 store를 import하면 node:fs·firebase-admin이 클라이언트·eval로 샌다.
+import type {
+  ClosedCycleStatus,
+  DecideLogInput,
+  DecideStartInput,
+  DecideUndoInput,
+  FailedAt,
+  WorkoutCycleRecord,
+  WorkoutEvent,
+  WorkoutRm,
+} from "./workout";
+import { decideLog, decideStart, decideUndo, normalizeWorkoutCycle } from "./workout";
 import { FirestoreStore } from "./store-firestore";
+
+export type { ClosedCycleStatus, FailedAt, WorkoutCycleRecord, WorkoutEvent, WorkoutRm };
 
 // ---------------------------------------------------------------------------
 // 레코드 타입 (SPEC §5 데이터 모델)
@@ -481,6 +500,40 @@ export interface VocabQuizRecord {
   items: VocabQuizItem[];
 }
 
+// ---------------------------------------------------------------------------
+// 아빠의 운동 — 스토어 계약의 입력·결과 (SPEC §19-4 "스토어 계약")
+// 레코드 타입(WorkoutCycleRecord·WorkoutEvent)은 lib/workout.ts에 있고 위에서 재수출한다.
+// ---------------------------------------------------------------------------
+
+/**
+ * 사이클 시작·재측정 입력. `todayKst`·`nowIso`는 **라우트가 한 번 계산해** 넘긴다 — 판정이 트랜잭션 안에서
+ * 재시도돼도 같은 답을 내게(§19-4). `startDate`는 오늘 또는 내일(KST YYYY-MM-DD).
+ */
+export type StartWorkoutInput = DecideStartInput;
+
+/** 기록 입력 — `day`·`targetDay`는 "화면이 낡지 않았다" 대조용일 뿐, 사건의 값은 서버가 계산한다(§19-4). */
+export type LogWorkoutInput = DecideLogInput;
+
+/** 마지막 기록 취소 입력 — 사건 개수가 아니라 rev로 대조한다(ABA 방지, §19-4). */
+export type UndoWorkoutInput = DecideUndoInput;
+
+/**
+ * 시작 결과. `ok`면 `record`는 새로 만든(created) 또는 사건 0개라 제자리 교체한(replaced) 활성 사이클,
+ * `closed`는 이번에 닫은 활성 사이클(없으면 null). `conflict`는 화면이 본 활성 id와 서버 활성 id가 다를 때(연타·두 탭).
+ */
+export type StartWorkoutResult =
+  | { status: "ok"; record: WorkoutCycleRecord; mode: "created" | "replaced"; closed: { id: string; status: ClosedCycleStatus } | null }
+  | { status: "conflict"; activeCycleId: string | null };
+
+/**
+ * 기록·취소 결과 — 라우트가 그대로 상태 코드로 옮긴다(ok 200 · not_found 404 · 나머지 409).
+ * 거절이면 `record`는 손대지 않은 현재 레코드다.
+ */
+export type WorkoutMutationResult =
+  | { status: "ok"; record: WorkoutCycleRecord }
+  | { status: "not_found" }
+  | { status: "conflict" | "stale_state" | "not_active" | "empty"; record: WorkoutCycleRecord };
+
 // sortIndex도 제외한다 — id·createdAt처럼 **스토어가 매기는 값**이다. 신규 책은 항상
 // sortIndex=null로 태어나(맨 위), 이후 reorderBooks로만 값이 박힌다. 생성부는 넘기지 않는다.
 export type NewBook = Omit<BookRecord, "id" | "createdAt" | "sortIndex">;
@@ -736,6 +789,24 @@ export interface StudyStore {
    * **collected 단어장에만** 쓴다 — JLPT 단어장에 append 금지(§7-5, 라우트가 대상을 collected로 강제). 수정이라 prod-guard 무관.
    */
   appendJaVocabEntry(id: string, entry: JaVocabEntry): Promise<AppendJaVocabResult>;
+
+  // ---- workoutCycles — 아빠의 운동 (§19-4) ----
+  // 사이클 문서 하나가 사건 배열을 안는다(사이클당 수십 건). 저장하는 것은 사건뿐 — 현재 Day·실패·볼륨은 엔진이 재생한다.
+  // **검증과 쓰기는 한 원자 단위다**: 판정은 순수 함수(lib/workout.ts의 decideStart·decideLog·decideUndo)가 하고,
+  // 스토어는 그것을 파일은 `mutate` 콜백 안에서, Firestore는 `runTransaction` 안에서 부른다(applyVocabLink 관용구).
+  /** 전체 사이클, createdAt 내림차순. 날짜 필터 쿼리 없음(복합 인덱스 회피) — 활성은 `pickActiveWorkoutCycle`로 고른다. */
+  listWorkoutCycles(): Promise<WorkoutCycleRecord[]>;
+  getWorkoutCycle(id: string): Promise<WorkoutCycleRecord | null>;
+  /**
+   * 처음 시작·재측정·도중 재측정. 활성과 `expectedActiveCycleId`를 대조하고, 활성 사건 0개면 제자리 교체, 아니면
+   * `closingStatus`로 닫고 새 사이클(cycleNo = 전체 max+1). **prod-guard**: Firestore에서 사건 있는 활성을 닫을 때만
+   * (`closeWorkoutCycle`) — 최초 생성·제자리 교체는 가드 대상이 아니다.
+   */
+  startWorkoutCycle(input: StartWorkoutInput): Promise<StartWorkoutResult>;
+  /** 오늘 상태를 다시 계산·대조한 뒤 사건 append(date·at·reps는 서버 계산), rev+1. append라 prod-guard 없음. */
+  logWorkoutEvent(cycleId: string, input: LogWorkoutInput): Promise<WorkoutMutationResult>;
+  /** 활성 사이클의 마지막 사건 제거, rev+1. **prod-guard**(Firestore에서만, 첫 줄 — `undoWorkoutEvent`). */
+  undoWorkoutEvent(cycleId: string, input: UndoWorkoutInput): Promise<WorkoutMutationResult>;
 }
 
 /**
@@ -761,13 +832,15 @@ export interface DbShape {
   jaKanji: JaKanjiRecord[];
   jaKanjiQuizzes: JaKanjiQuizRecord[];
   jaDialogs: JaDialogRecord[];
+  /** 아빠의 운동 사이클(§19-4) — **필수 필드**. 빠뜨리면 emptyDb·readDb·mergeDbForSeed·seed.ts가 tsc에 걸린다 */
+  workoutCycles: WorkoutCycleRecord[];
 }
 
 const DB_DIR = path.join(process.cwd(), "data");
 const DB_PATH = path.join(DB_DIR, "db.json");
 
 function emptyDb(): DbShape {
-  return { books: [], cards: [], readings: [], explanations: [], vocabBooks: [], vocabQuizzes: [], jaVocabBooks: [], jaQuizzes: [], jaKanji: [], jaKanjiQuizzes: [], jaDialogs: [] };
+  return { books: [], cards: [], readings: [], explanations: [], vocabBooks: [], vocabQuizzes: [], jaVocabBooks: [], jaQuizzes: [], jaKanji: [], jaKanjiQuizzes: [], jaDialogs: [], workoutCycles: [] };
 }
 
 /**
@@ -822,6 +895,9 @@ async function readDb(): Promise<DbShape> {
       })),
       // J3 이전 db.json엔 이 키가 없다 — 같은 하위호환(없으면 빈 배열). 각 레코드는 normalizeJaDialogRecord로 방어.
       jaDialogs: (parsed.jaDialogs ?? []).map((d) => normalizeJaDialogRecord(d as JaDialogRecord)),
+      // §19 이전 db.json엔 이 키가 없다 — 같은 하위호환(없으면 빈 배열). 각 레코드는 엔진의 normalizeWorkoutCycle로
+      // 방어한다(두 백엔드 공유 단일 정의처 — 이후 get/list/decide*는 이 정규화된 값만 본다).
+      workoutCycles: (parsed.workoutCycles ?? []).map((c) => normalizeWorkoutCycle(c)),
     };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyDb();
@@ -1152,6 +1228,13 @@ export function normalizeJaDialogRecord(d: Partial<JaDialogRecord>): JaDialogRec
     createdAt: d.createdAt ?? new Date(0).toISOString(),
     sortIndex: d.sortIndex ?? null,
   };
+}
+
+/** 운동 사이클을 id로 upsert한다(파일 백엔드 전용) — decideStart의 writes·decideLog/Undo의 next를 반영할 때. */
+function upsertWorkoutCycle(db: DbShape, record: WorkoutCycleRecord): void {
+  const i = db.workoutCycles.findIndex((c) => c.id === record.id);
+  if (i >= 0) db.workoutCycles[i] = record;
+  else db.workoutCycles.push(record);
 }
 
 class JsonFileStore implements BookCardStore {
@@ -1776,6 +1859,57 @@ class JsonFileStore implements BookCardStore {
       return { record: normalizeJaVocabBook(book), appended: true };
     });
   }
+
+  // ---- workoutCycles — 아빠의 운동 (§19-4) ----
+  // 세 변경 모두 **판정과 쓰기를 한 mutate 콜백 안에서** 한다(applyLink 관용구). 판정을 mutate 밖에서 하면 큐에 먼저
+  // 들어간 요청이 쓴 뒤의 상태를 못 보고 낡은 판정(같은 Day 이중 기록 등)을 굳힌다. 판정은 lib/workout.ts의 순수 함수다.
+  // prod-guard는 Firestore(실데이터)에만 건다 — 파일 백엔드는 로컬이라 안전(deleteJaVocabBook 선례).
+
+  async listWorkoutCycles(): Promise<WorkoutCycleRecord[]> {
+    const db = await readDb(); // readDb가 normalizeWorkoutCycle을 이미 태웠다
+    return [...db.workoutCycles].sort(byCreatedAtDesc);
+  }
+
+  async getWorkoutCycle(id: string): Promise<WorkoutCycleRecord | null> {
+    const db = await readDb();
+    return db.workoutCycles.find((c) => c.id === id) ?? null;
+  }
+
+  async startWorkoutCycle(input: StartWorkoutInput): Promise<StartWorkoutResult> {
+    // 새 id는 판정 밖에서 한 번 만든다 — decideStart는 순수 함수라 id도 인자로 받는다(Firestore의 재시도 결정성과 같은 규약).
+    const newId = randomUUID();
+    return this.mutate((db): StartWorkoutResult => {
+      const r = decideStart(db.workoutCycles, input, newId);
+      if (r.status === "conflict") return { status: "conflict", activeCycleId: r.activeCycleId };
+      // writes = 이번에 닫은 사이클 + 새로 만든/제자리 교체한 사이클. 한 mutate = 한 번의 파일 쓰기라 함께 반영된다.
+      for (const w of r.writes) upsertWorkoutCycle(db, normalizeWorkoutCycle(w));
+      return { status: "ok", record: normalizeWorkoutCycle(r.record), mode: r.mode, closed: r.closed };
+    });
+  }
+
+  async logWorkoutEvent(cycleId: string, input: LogWorkoutInput): Promise<WorkoutMutationResult> {
+    return this.mutate((db): WorkoutMutationResult => {
+      const current = db.workoutCycles.find((c) => c.id === cycleId);
+      if (!current) return { status: "not_found" };
+      const r = decideLog(current, input);
+      if (r.status !== "ok") return { status: r.status, record: current };
+      const next = normalizeWorkoutCycle(r.next);
+      upsertWorkoutCycle(db, next);
+      return { status: "ok", record: next };
+    });
+  }
+
+  async undoWorkoutEvent(cycleId: string, input: UndoWorkoutInput): Promise<WorkoutMutationResult> {
+    return this.mutate((db): WorkoutMutationResult => {
+      const current = db.workoutCycles.find((c) => c.id === cycleId);
+      if (!current) return { status: "not_found" };
+      const r = decideUndo(current, input);
+      if (r.status !== "ok") return { status: r.status, record: current };
+      const next = normalizeWorkoutCycle(r.next);
+      upsertWorkoutCycle(db, next);
+      return { status: "ok", record: next };
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1853,5 +1987,7 @@ export async function mergeDbForSeed(seed: DbShape): Promise<void> {
     jaKanji: mergeById(cur.jaKanji, seed.jaKanji),
     jaKanjiQuizzes: mergeById(cur.jaKanjiQuizzes, seed.jaKanjiQuizzes),
     jaDialogs: mergeById(cur.jaDialogs, seed.jaDialogs),
+    // ⚠️ 반드시 mergeById — `seed.workoutCycles`를 그대로 넣으면 `npm run seed` 한 번에 운동 기록이 통째로 날아간다(§19-4).
+    workoutCycles: mergeById(cur.workoutCycles, seed.workoutCycles),
   });
 }
