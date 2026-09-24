@@ -33,7 +33,11 @@ import { isTtsLang } from "@/lib/tts-shared";
 const SAMPLE: Record<string, string> = {
   "en-US": "The quick brown fox jumps over the lazy dog.",
   "ja-JP": "こんにちは。今日はいい天気ですね。",
+  // 해설 낭독(§18) — 일본어 인용이 섞인 문장이라 "일본어는 일본어로" 혼합 낭독 지시가 먹는지 들어 볼 수 있다.
+  "ko-KR": "안녕하세요. 오늘은 「は」와 「が」의 차이를 알아볼게요.",
 };
+/** 언어 라벨 — 삼항(ja ? 일본어 : 영어)이면 새 언어(ko-KR)가 "영어"로 뜬다(§18-3). */
+const LANG_LABEL: Record<string, string> = { "en-US": "영어", "ja-JP": "일본어", "ko-KR": "한국어" };
 const ENGINE_LABEL: Record<TtsEngine, string> = { cloud: "클라우드", device: "기기" };
 
 const btn = (active: boolean) =>
@@ -71,9 +75,9 @@ export default function TtsEngineControl({ lang }: { lang: string }) {
     };
   }, [lang]);
 
-  if (!isTtsLang(lang)) return null; // 클라우드 대상(en·ja)만
+  if (!isTtsLang(lang)) return null; // 클라우드 대상(TTS_LANGS: en·ja·ko)만
 
-  const langLabel = lang === "ja-JP" ? "일본어" : "영어";
+  const langLabel = LANG_LABEL[lang] ?? lang;
 
   return (
     <div role="group" aria-label={`${langLabel} 발음 설정`} className="flex flex-col gap-1">

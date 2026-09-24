@@ -18,22 +18,40 @@
 import { isTtsLang, TTS_TEXT_MAX_CHARS } from "./tts-shared";
 import { setTtsFingerprintProvider, ttsCacheGet, ttsCachePut } from "./tts-cache";
 
-// 영속 캐시(IndexedDB)가 옛 목소리를 내지 않도록, 현재 voice|model을 **지문**으로 공급한다.
-// GET /api/tts는 env만 읽어(OpenAI 안 부름·키 불필요) 지문을 준다. 여기선 공급자만 꽂고, 실제 호출은 캐시가 지연 실행.
-if (typeof window !== "undefined") {
-  setTtsFingerprintProvider(async () => {
-    try {
-      const res = await fetch("/api/tts", { method: "GET" });
-      if (!res.ok) return null;
-      const cfg = (await res.json()) as { voice?: string; model?: string; instructions?: number };
-      // 지시 버전까지 지문에 넣는다 — 낭독 지시(언어·억양)가 바뀌면 옛 오디오를 비워야 한다.
-      // 안 그러면 중국어로 합성돼 캐시된 단어가 계속 중국어로 들린다(실사용에서 발견).
-      return cfg.voice && cfg.model ? `${cfg.voice}|${cfg.model}|i${cfg.instructions ?? 0}` : null;
-    } catch {
-      return null;
-    }
-  });
+/**
+ * 지문 공급자(GET /api/tts) 대기 상한. 망이 매달리면 initPromise를 함께 쓰는 **모든** 캐시 조회가 같이 매달려
+ * 이미 IDB에 있는 오디오도 못 쓴다(§18-2, 출퇴근 망). 넘으면 throw(일시 실패) — 캐시가 이번 조회만 메모리로 처리하고
+ * 다음 조회 때 다시 묻는다(최대 3회, lib/tts-cache.ts). 테스트는 `__setQueueTiming({ fingerprintMs })`로 줄인다.
+ */
+const FINGERPRINT_TIMEOUT_MS = 3000;
+
+/**
+ * 영속 캐시(IndexedDB)가 옛 목소리를 내지 않도록, 현재 voice|model을 **지문**으로 공급한다.
+ * GET /api/tts는 env만 읽어(OpenAI 안 부름·키 불필요) 지문을 준다.
+ * 반환 계약(setTtsFingerprintProvider): 지문 / **null = 서버가 명시적으로 없음**(200 아님·voice|model 없음 → 세션 내내 메모리만) /
+ * **throw = 일시 실패**(타임아웃·네트워크·응답 도중 끊김 → 다음 조회에서 다시).
+ */
+async function fetchTtsFingerprint(): Promise<string | null> {
+  // AbortSignal.timeout/any 대신 수동 결합(구형 iOS Safari 호환).
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), queueTiming.fingerprintMs);
+  try {
+    const res = await fetch("/api/tts", { method: "GET", signal: ac.signal });
+    if (!res.ok) return null;
+    const cfg = (await res.json()) as { voice?: string; model?: string; instructions?: number };
+    // 지시 버전까지 지문에 넣는다 — 낭독 지시(언어·억양)가 바뀌면 옛 오디오를 비워야 한다.
+    // 안 그러면 중국어로 합성돼 캐시된 단어가 계속 중국어로 들린다(실사용에서 발견).
+    return cfg.voice && cfg.model ? `${cfg.voice}|${cfg.model}|i${cfg.instructions ?? 0}` : null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
+
+// 여기선 공급자만 꽂고, 실제 호출은 캐시가 지연 실행(첫 조회 때).
+if (typeof window !== "undefined") setTtsFingerprintProvider(fetchTtsFingerprint);
+
+/** 테스트 전용 — 지문 공급자 그 자체(eval이 window 스텁 전에 이 모듈을 불러 공급자가 안 꽂히므로 직접 꽂는다). */
+export const __fetchTtsFingerprint = fetchTtsFingerprint;
 
 /** 발음 언어 **기본값** — 영어 원서용이라 미국식. `speak(text, lang)`으로 화면이 다른 언어를 넘길 수 있다
  *  (일본어=`ja-JP`, J1에서 사용). 인자를 생략하면 이 값이라 기존 영어 화면은 동작이 100% 그대로다. */
@@ -103,8 +121,12 @@ export type TtsEngine = "cloud" | "device";
 export const TTS_ENGINE_EVENT = "eunwoo:tts-engine";
 /** localStorage 키 접두어 — 언어 베이스별(예: `tts-engine-en`·`tts-engine-ja`). */
 const TTS_ENGINE_KEY_PREFIX = "tts-engine-";
-/** 기본 엔진(청취 근거): 영어=클라우드, 일본어=기기(Kyoko). 그 밖 언어는 기기. */
-const DEFAULT_ENGINE: Record<string, TtsEngine> = { en: "cloud", ja: "device" };
+/**
+ * 기본 엔진(청취 근거): 영어=클라우드, 일본어=기기(Kyoko), 한국어=클라우드. 그 밖 언어는 기기.
+ * 한국어가 클라우드인 이유(§18-3): 기기 한국어 음성은 해설 속 일본어 인용(「は」)을 한국어식으로 읽거나 건너뛴다.
+ * 그래서 해설 듣기의 기본 조합은 "한국어 해설자(클라우드) + 일본어 원어민(기기)"이다.
+ */
+const DEFAULT_ENGINE: Record<string, TtsEngine> = { en: "cloud", ja: "device", ko: "cloud" };
 
 /** "en-US" → "en". 엔진 설정·기본값은 언어 베이스 단위(지역 변형과 무관). */
 function langBase(lang: string): string {
@@ -352,6 +374,13 @@ let currentPlayStop: (() => void) | null = null;
  */
 let playToken = 0;
 
+/**
+ * 활성 큐(speakQueue)를 **동기로** 끝내는 함수(§18-2 정지·종료 계약). cancelPlayback()이 토큰을 올린 직후 부른다 —
+ * 그래서 다른 🔊·stopSpeaking()·새 speakQueue()가 오면 옛 큐의 onEnd("stopped")는 그 호출이 반환되기 전에,
+ * 새 큐의 onItem(0)보다 먼저 온다(비동기로 늦게 오면 화면이 "정지"로 돌아가는데 새 큐 소리는 계속 나는 사고).
+ */
+let activeQueueEnd: (() => void) | null = null;
+
 /** 재생 중인 클라우드 오디오를 멈추고 objectURL을 회수한다(누수 금지). */
 function stopCloudAudio(): void {
   const stop = currentPlayStop;
@@ -372,17 +401,21 @@ function stopCloudAudio(): void {
   currentAudioUrl = null;
 }
 
-/** 클라우드·기기 재생을 모두 취소하고 세대 토큰을 올린다(연타·화면 이탈 규약). */
+/** 클라우드·기기 재생을 모두 취소하고 세대 토큰을 올린다(연타·화면 이탈 규약). 활성 큐는 동기로 "stopped". */
 function cancelPlayback(): void {
   playToken++;
-  stopCloudAudio();
+  const endQueue = activeQueueEnd;
+  activeQueueEnd = null;
+  stopCloudAudio(); // 큐의 기기 대기(speakDeviceAwait)도 currentPlayStop으로 여기서 즉시 풀린다
   if (typeof window !== "undefined" && "speechSynthesis" in window) {
+    unlockUtterance = null; // cancel()이 잠금 해제 발화도 지운다
     try {
       window.speechSynthesis.cancel();
     } catch {
       /* noop */
     }
   }
+  endQueue?.(); // 반환 전에 동기로 — 옛 큐 onEnd("stopped")
 }
 
 /** 이 환경·입력이 클라우드 TTS를 쓸 수 있는가. 아니면 기기 음성으로 간다(§16-2). */
@@ -429,8 +462,23 @@ async function getAudioBlob(text: string, lang: string, speed: number, signal?: 
   return blob;
 }
 
-/** Blob을 재생한다. objectURL은 재생마다 새로 만들고 종료·에러·취소에 반드시 회수한다(누수 금지). */
-function playBlob(blob: Blob, token: number): Promise<void> {
+/**
+ * Blob을 재생한다. objectURL은 재생마다 새로 만들고 종료·에러·취소에 반드시 회수한다(누수 금지).
+ *
+ * `el`(선택): 재사용할 오디오 요소 — 큐(speakQueue)가 iOS 재생 잠금 때문에 요소 하나(`queueAudio`)를 돌려 쓴다(§18-2).
+ * 생략하면 지금처럼 재생마다 `new Audio` — speak() 경로는 그대로다. 요소를 재사용하므로 전역 정리의 동일성 검사는
+ * 요소가 아니라 **이번 호출의 url**(호출마다 유일)로 한다.
+ *
+ * `cap`(선택, 큐 전용): **재생 안전 타임아웃**(§18-2). `ended`가 끝내 안 오면 큐가 그 조각에서 영영 멈춘다 — 그래서
+ * 오디오 duration이 유한하면 `duration × 1000 + slackMs`, 모르면 `fallbackMs`(기기 추정식) 뒤에 소리를 끊고
+ * 끝난 것으로 본다(resolve → 다음 조각). 생략하면(speak() 경로) 지금처럼 상한 없음.
+ */
+function playBlob(
+  blob: Blob,
+  token: number,
+  el?: HTMLAudioElement,
+  cap?: { fallbackMs: number; slackMs: number },
+): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let url: string;
     try {
@@ -439,21 +487,45 @@ function playBlob(blob: Blob, token: number): Promise<void> {
       reject(e as Error);
       return;
     }
-    const audio = new Audio(url);
+    let audio: HTMLAudioElement;
+    if (el) {
+      // 이전 재생의 핸들러가 새 소스에 반응하지 않게 먼저 비운다.
+      el.onended = null;
+      el.onerror = null;
+      el.onpause = null;
+      audio = el;
+      try {
+        audio.src = url;
+      } catch (e) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          /* noop */
+        }
+        reject(e as Error);
+        return;
+      }
+    } else {
+      audio = new Audio(url);
+    }
     audio.playbackRate = 1; // 속도는 서버 speed로 이미 반영됨(이중 적용 금지)
 
     let settled = false;
+    let started = false; // 이번 play()가 실제로 시작됐는가(소스 교체로 생긴 낡은 pause 이벤트를 걸러 낸다)
+    let capTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = (act: () => void) => {
       if (settled) return;
       settled = true;
+      clearTimeout(capTimer);
       audio.onended = null;
       audio.onerror = null;
+      if (el) audio.onpause = null;
       try {
         URL.revokeObjectURL(url);
       } catch {
         /* noop */
       }
-      if (currentAudio === audio) {
+      if (currentAudioUrl === url) {
         currentAudio = null;
         currentAudioUrl = null;
         currentPlayStop = null;
@@ -474,7 +546,45 @@ function playBlob(blob: Blob, token: number): Promise<void> {
 
     audio.onended = () => finish(() => resolve());
     audio.onerror = () => finish(() => reject(new Error("audio play error")));
-    void audio.play().catch((e) => finish(() => reject(e as Error)));
+    if (el) {
+      // 우리가 일으키지 않은 pause(잠금 화면 ⏸·전화) = 정지로 본다 — ended가 안 와 큐가 막히지 않게(§18-2).
+      // 끝까지 재생될 때도 pause가 ended 직전에 오므로 audio.ended로 거른다. 우리 pause()는 finish가 먼저 핸들러를 뗀다.
+      audio.onpause = () => {
+        if (!settled && started && !audio.ended && token === playToken) cancelPlayback();
+      };
+    }
+    // 재생 안전 타임아웃 — 넘으면 소리를 끊고 "끝남"으로 본다(폴백 아님: 이 조각은 이미 소리를 냈다).
+    // pause()가 쏘는 pause 이벤트는 finish가 핸들러를 먼저 떼므로 외부 정지로 오판되지 않는다.
+    const armCap = (ms: number) => {
+      clearTimeout(capTimer);
+      capTimer = setTimeout(() => {
+        if (settled) return;
+        try {
+          audio.pause();
+        } catch {
+          /* noop */
+        }
+        finish(() => resolve());
+      }, ms);
+    };
+    // play()가 시작도 끝도 안 하고 매달려도 풀리게 먼저 추정 상한을 건다. 시작되고 길이를 알면 그 길이로 다시 건다.
+    if (cap) armCap(cap.fallbackMs);
+    void audio.play().then(
+      () => {
+        started = true;
+        const d = audio.duration;
+        if (cap && !settled && Number.isFinite(d) && d > 0) armCap(d * 1000 + cap.slackMs);
+      },
+      (e) => {
+        // 큐 요소의 play()가 AbortError로 끊겼다 = 시작 직전에 누가 멈췄다(우리 취소는 finish가 먼저 settled를 세운다).
+        // 잠금 화면 ⏸가 시작 순간에 온 경우 — 실패(기기 음성 폴백)가 아니라 정지로 본다.
+        if (el && !settled && token === playToken && (e as { name?: string } | null)?.name === "AbortError") {
+          cancelPlayback();
+          return;
+        }
+        finish(() => reject(e as Error));
+      },
+    );
 
     // 시작하자마자 낡은 토큰이면(그새 새 speak가 옴) 바로 접는다.
     if (token !== playToken) currentPlayStop?.();
@@ -649,4 +759,398 @@ export function stopSpeaking(): void {
 /** 테스트 전용 — 1차(메모리) 캐시를 비운다(새 세션 모사: 2차 IDB가 살아나는지 검증). */
 export function __clearTtsMemoryCache(): void {
   cloudCache.clear();
+}
+
+// ───────────────────────── 연속 재생 큐 (§18-2) ─────────────────────────
+//
+// 해설 전체를 순서대로 이어 읽는다(한국어 설명은 한국어로, 일본어 문장은 일본어로). speak()와 **같은 토큰 규약**을
+// 쓰므로 다른 🔊·stopSpeaking()·새 큐가 오면 곧바로 멈춘다. 조각마다 그 시점의 엔진·속도를 따른다(다음 조각부터 반영).
+
+/** 큐 조각 — 쪼개지 않는다(인덱스 보존). 300자를 넘는 조각은 그 조각만 기기 음성. */
+export interface SpeakQueueItem {
+  text: string;
+  lang: string;
+}
+
+/**
+ * 큐 핸들러. `onItem(i)`는 조각 i를 읽기 시작할 때, `onEnd`는 **정확히 한 번**(끝까지 = "done", 그 밖 = "stopped").
+ * ⚠️ 핸들러 안에서 speak()/speakQueue()를 부르지 않는다(재진입 금지 — 계약). 핸들러 예외는 큐를 깨지 않는다.
+ */
+export interface SpeakQueueHandlers {
+  onItem?: (index: number) => void;
+  onEnd?: (reason: "done" | "stopped") => void;
+}
+
+/** 큐가 돌려 쓰는 오디오 요소 하나 — iOS는 탭 밖에서 새 Audio의 play()를 막으므로, 탭 안에서 풀어 둔 요소를 재사용한다. */
+let queueAudio: HTMLAudioElement | null = null;
+/** 잠금 해제용 0.1초 무음 WAV의 objectURL — 한 번 만들고 상수처럼 쓴다(일부러 revoke하지 않는다). */
+let silentUrl: string | null = null;
+/** 큐의 기기 재생 발화 — 모듈 변수로 붙잡는다(GC로 onend가 사라지는 Chrome 버그). */
+let currentUtterance: SpeechSynthesisUtterance | null = null;
+/**
+ * 잠금 해제용 무음 발화가 아직 대기열에 있는가. 있으면 첫 기기 조각에서 cancel()하지 않고 뒤에 잇는다 —
+ * cancel() 직후의 speak()가 씹히는 iOS·Chrome 증상을 피한다(말하는 중일 때만 cancel 규약의 연장).
+ */
+let unlockUtterance: SpeechSynthesisUtterance | null = null;
+
+/** 큐 타이밍 상수 — 테스트가 `__setQueueTiming`으로 줄인다. */
+const QUEUE_TIMING_DEFAULT = {
+  /** 재생 안전 타임아웃 추정 = max(minMs, 글자수 × perCharMs ÷ rate + slackMs) — 기기 조각, 그리고 길이를 모르는 클라우드 조각 */
+  minMs: 3000,
+  perCharMs: 250,
+  slackMs: 2000,
+  /** 만료 시 아직 말하는 중이면 이만큼씩 연장(상한 = 추정 × capFactor) */
+  extendMs: 1000,
+  capFactor: 3,
+  /** 합성 대기 상한 — 큐가 그 조각을 기다리기 시작한 때부터. 넘으면 그 조각은 기기 음성(요청은 살려 둔다) */
+  fetchMs: 8000,
+  /** 클라우드 조각 재생 안전 타임아웃의 여유 — duration이 유한하면 duration × 1000 + 이 값 */
+  playSlackMs: 3000,
+  /** 지문 GET 대기 상한(큐 전용은 아니지만 테스트 훅을 하나로 둔다) */
+  fingerprintMs: FINGERPRINT_TIMEOUT_MS,
+};
+type QueueTiming = typeof QUEUE_TIMING_DEFAULT;
+let queueTiming: QueueTiming = { ...QUEUE_TIMING_DEFAULT };
+
+/** 재생 시간 추정(ms) = max(minMs, 글자수 × perCharMs ÷ rate + slackMs). 기기 조각 안전 타임아웃과 클라우드 조각 폴백 상한이 같이 쓴다. */
+function estimateSpeechMs(text: string, rate: number): number {
+  const r = rate > 0 ? rate : 1;
+  return Math.max(queueTiming.minMs, (text.length * queueTiming.perCharMs) / r + queueTiming.slackMs);
+}
+
+/** 소리를 낼 수 없는 조각이 연속 이만큼이면 큐를 "stopped"로 끝낸다(하이라이트만 번쩍이며 "done"이 되지 않게). */
+const QUEUE_SILENT_STOP = 3;
+/** 큐 look-ahead로 미리 받을 다음 클라우드 조각 수(device 조각은 세지 않는다). 해설 전체를 미리 합성하지 않는다(비용 가드). */
+const QUEUE_LOOKAHEAD = 2;
+
+/** 테스트 전용 — 큐 타이밍 상수를 바꾼다(null이면 기본값으로). `__clearTtsMemoryCache`와 같은 관용구. */
+export function __setQueueTiming(t: Partial<QueueTiming> | null): void {
+  queueTiming = t ? { ...queueTiming, ...t } : { ...QUEUE_TIMING_DEFAULT };
+}
+
+/** 0.1초 무음 WAV(8kHz·8bit·mono, 844바이트)의 objectURL. */
+function makeSilentWavUrl(): string {
+  const rate = 8000;
+  const n = 800;
+  const buf = new ArrayBuffer(44 + n);
+  const v = new DataView(buf);
+  const str = (off: number, s: string) => {
+    for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i));
+  };
+  str(0, "RIFF");
+  v.setUint32(4, 36 + n, true);
+  str(8, "WAVE");
+  str(12, "fmt ");
+  v.setUint32(16, 16, true); // fmt 청크 크기
+  v.setUint16(20, 1, true); // PCM
+  v.setUint16(22, 1, true); // mono
+  v.setUint32(24, rate, true);
+  v.setUint32(28, rate, true); // byteRate = rate × 1ch × 1byte
+  v.setUint16(32, 1, true); // blockAlign
+  v.setUint16(34, 8, true); // bits
+  str(36, "data");
+  v.setUint32(40, n, true);
+  new Uint8Array(buf, 44).fill(128); // 8bit PCM의 무음 = 128
+  return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+}
+
+/**
+ * iOS 재생 잠금 해제 — 큐 요소를 무음 WAV로 play()하고, 기기 음성도 볼륨 0 빈 발화를 한 번 말한다.
+ * `fromQueue`: speakQueue가 cancelPlayback() **다음에** 부를 때 true(무조건). 공개 unlockSpeechPlayback()은 false —
+ * 지금 재생 중인 것(큐 요소·기기 발화)을 끊지 않도록 쉬고 있을 때만 한다(재생 중이면 이미 풀려 있다).
+ */
+function unlockPlayback(fromQueue: boolean): void {
+  if (typeof window === "undefined") return;
+  if (typeof Audio !== "undefined") {
+    try {
+      if (!queueAudio) queueAudio = new Audio();
+      if (fromQueue || currentAudio !== queueAudio) {
+        if (!silentUrl) silentUrl = makeSilentWavUrl();
+        queueAudio.onended = null;
+        queueAudio.onerror = null;
+        queueAudio.onpause = null;
+        queueAudio.src = silentUrl;
+        const p = queueAudio.play();
+        // 곧바로 실제 소스로 바뀌면 이 play()는 AbortError로 끝난다 — 조각 실패가 아니므로 따로 삼킨다.
+        if (p && typeof p.catch === "function") p.catch(() => {});
+      }
+    } catch {
+      /* noop — 잠금 해제는 best-effort */
+    }
+  }
+  if (isSpeechSupported()) {
+    try {
+      const ss = window.speechSynthesis;
+      if (fromQueue || !(ss.speaking || ss.pending)) {
+        const u = new SpeechSynthesisUtterance(" ");
+        u.volume = 0;
+        const clear = () => {
+          if (unlockUtterance === u) unlockUtterance = null;
+        };
+        u.onend = clear;
+        u.onerror = clear;
+        unlockUtterance = u;
+        ss.speak(u);
+      }
+    } catch {
+      /* noop */
+    }
+  }
+}
+
+/**
+ * **탭 핸들러 안에서 동기로** 부른다 — iOS Safari의 재생 잠금을 푼다. 이후 탭 밖(타이머 콜백 등)의 speakQueue도
+ * 같은 오디오 요소를 쓰므로 소리가 날 가능성이 높다(§19 운동 안내가 쓴다). 재생 중이면 아무것도 끊지 않는다.
+ */
+export function unlockSpeechPlayback(): void {
+  unlockPlayback(false);
+}
+
+/**
+ * **기다릴 수 있는 기기 재생**(큐 전용). onend/onerror로 풀리고, `currentPlayStop`에 등록돼 cancelPlayback()이 이벤트를
+ * 기다리지 않고 즉시 푼다. 안전 타임아웃: 추정 시간이 지나도 말하는 중이면 extendMs씩 연장(상한 = 추정 × capFactor),
+ * 아니면(또는 상한) cancel() 후 다음 조각. 반환값 = 소리를 냈다고 볼 수 있는가(미지원·즉시 실패면 false).
+ * 기존 fallbackDevice(무조건 cancel·onend 없음)는 큐에서 재사용하지 않는다.
+ */
+function speakDeviceAwait(text: string, lang: string, token: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    if (token !== playToken) return resolve(true); // 이미 밀려났다 — 호출부가 토큰으로 물러난다
+    if (!isSpeechSupported()) return resolve(false);
+    const ss = window.speechSynthesis;
+    let u: SpeechSynthesisUtterance;
+    try {
+      u = new SpeechSynthesisUtterance(text);
+      u.lang = lang;
+      u.rate = getTtsRate();
+      const voice = resolveVoice(lang);
+      if (voice) u.voice = voice;
+    } catch {
+      return resolve(false);
+    }
+
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (sounded: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      u.onend = null;
+      u.onerror = null;
+      if (currentPlayStop === stop) currentPlayStop = null;
+      if (currentUtterance === u) currentUtterance = null;
+      resolve(sounded);
+    };
+    const stop = () => finish(true); // speechSynthesis.cancel()은 cancelPlayback이 따로 한다
+    currentPlayStop = stop;
+    currentUtterance = u;
+    u.onend = () => finish(true);
+    u.onerror = (e) => {
+      // 끊김(interrupted·canceled)은 소리 문제가 아니다. not-allowed·synthesis-failed 등은 "못 냄".
+      const err = (e as SpeechSynthesisErrorEvent | undefined)?.error;
+      finish(err === "interrupted" || err === "canceled");
+    };
+
+    const est = estimateSpeechMs(text, u.rate);
+    const cap = est * queueTiming.capFactor;
+    const t0 = Date.now();
+    const tick = () => {
+      if (settled) return;
+      let busy = false;
+      try {
+        busy = ss.speaking || ss.pending;
+      } catch {
+        /* noop */
+      }
+      if (busy && Date.now() - t0 + queueTiming.extendMs <= cap) {
+        timer = setTimeout(tick, queueTiming.extendMs);
+        return;
+      }
+      unlockUtterance = null;
+      try {
+        ss.cancel();
+      } catch {
+        /* noop */
+      }
+      finish(true);
+    };
+    timer = setTimeout(tick, est);
+
+    try {
+      // 말하는 중일 때만 cancel — 조각마다 무조건 cancel하면 iOS·Chrome에서 새 발화가 씹힌다.
+      // 잠금 해제용 무음 발화만 남아 있으면 끊지 않고 뒤에 잇는다.
+      if ((ss.speaking || ss.pending) && !unlockUtterance) ss.cancel();
+      ss.speak(u);
+    } catch {
+      finish(false);
+    }
+  });
+}
+
+/** 합성 **대기** 타임아웃 표식 — 요청 실패가 아니다(요청은 살아 있다). */
+const WAIT_TIMEOUT = new Error("tts wait timeout");
+
+/**
+ * 합성 결과를 **기다리는 것에만** 타임아웃을 건다(큐 전용, §18-2). 타이머는 이 함수를 부른 때 = 큐가 그 조각을
+ * 기다리기 시작한 때부터 돈다 — look-ahead가 요청을 먼저 보냈어도 앞 조각을 재생하던 시간은 세지 않는다.
+ * 넘으면 WAIT_TIMEOUT으로 reject(→ 그 조각만 기기 음성)하되 **요청은 끊지 않는다** — 늦게라도 끝나면 캐시에 남아
+ * 같은 문장·다음 재청취가 재합성 없이 쓴다. 요청은 큐가 끝날 때 큐의 AbortController가 정리한다.
+ * (setTimeout 수동 구현 — `AbortSignal.timeout/any`는 iOS 17.4+라 쓰지 않는다.)
+ */
+function waitWithTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(WAIT_TIMEOUT), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
+/**
+ * 조각 배열을 **순서대로 이어 읽는다**(§18-2). 반환값 = 멈추기 함수.
+ *
+ * ⚠️ **탭 핸들러 안에서 동기로** 부른다(await·setTimeout 뒤 금지) — 첫 await 전에 iOS 재생 잠금을 푼다.
+ * - 시작 시 이전 재생(단발·큐)을 끊는다. 옛 큐의 onEnd("stopped")는 이 호출 안에서, 새 onItem(0)보다 먼저 온다.
+ * - 멈추기 함수: 이미 끝났으면 no-op, 아직 이 큐의 세대면 재생 취소, 다른 재생에 밀려났으면 자기만 정리
+ *   (끝났거나 밀려난 큐의 stop이 그 뒤 시작된 다른 재생을 죽이지 않는다).
+ * - 빈 items(모두 공백): 취소 없이 onEnd("done")를 microtask로 한 번.
+ * - 조각마다 그 시점의 엔진·속도. cloud 실패(합성·재생·타임아웃)면 그 조각만 기기 음성. 501(키 없음)이면 이후 기기 직행.
+ */
+export function speakQueue(items: SpeakQueueItem[], handlers: SpeakQueueHandlers = {}): () => void {
+  const list = (items ?? []).map((it) => ({ text: (it?.text ?? "").trim(), lang: it?.lang || TTS_LANG }));
+  const call = (fn: () => void) => {
+    try {
+      fn();
+    } catch {
+      /* 핸들러 예외는 큐를 깨지 않는다 */
+    }
+  };
+  const noop = () => {};
+  if (list.every((it) => !it.text) || typeof window === "undefined") {
+    const reason = list.every((it) => !it.text) ? "done" : "stopped";
+    void Promise.resolve().then(() => call(() => handlers.onEnd?.(reason)));
+    return noop;
+  }
+
+  cancelPlayback(); // 옛 speak/큐 정지 + 옛 큐 onEnd("stopped") 동기 호출
+  const token = playToken;
+  unlockPlayback(true); // 첫 await 전(iOS) — 그래서 탭 핸들러 안에서 동기로 불려야 한다
+
+  const ac = new AbortController(); // 큐 전용 — 전역 prefetchAbort를 건드리지 않는다
+  /** 큐 로컬 진행 중 합성 — 재생 단계와 look-ahead가 같은 문장을 두 번 합성하지 않게(키 = 캐시 키). */
+  const pending = new Map<string, Promise<Blob>>();
+  let ended = false;
+  let cloudOff = false;
+  let silentRun = 0;
+
+  const end = (reason: "done" | "stopped") => {
+    if (ended) return;
+    ended = true;
+    if (activeQueueEnd === endStopped) activeQueueEnd = null;
+    ac.abort();
+    pending.clear();
+    call(() => handlers.onEnd?.(reason));
+  };
+  const endStopped = () => end("stopped");
+  activeQueueEnd = endStopped;
+  const alive = () => !ended && token === playToken;
+
+  const keyOf = (text: string, lang: string, speed: number) => `${lang}:${speed}:${text}`;
+  const isCloud = (it: SpeakQueueItem) => !cloudOff && getTtsEngine(it.lang) === "cloud" && canUseCloud(it.lang, it.text);
+  const noteError = (e: unknown) => {
+    if (e instanceof Error && e.message === "tts 501") cloudOff = true; // 키 없음 — 조각마다 요청을 되풀이하지 않는다
+  };
+  /** 합성 요청(재생 단계·look-ahead 공용). 타임아웃은 여기 아니라 **기다리는 쪽**(waitWithTimeout)에 건다. */
+  const blobFor = (text: string, lang: string, speed: number): Promise<Blob> => {
+    const key = keyOf(text, lang, speed);
+    let p = pending.get(key);
+    if (!p) {
+      p = getAudioBlob(text, lang, speed, ac.signal);
+      p.catch(noteError); // look-ahead만 하고 안 쓰여도 unhandled rejection이 나지 않게
+      pending.set(key, p);
+    }
+    return p;
+  };
+  /** 조각 i 재생 중 다음 클라우드 조각 QUEUE_LOOKAHEAD개를 순차로 미리 받는다. 발사 직전 엔진·cloudOff 재확인. */
+  const lookAhead = async (from: number) => {
+    const targets: number[] = [];
+    for (let j = from; j < list.length && targets.length < QUEUE_LOOKAHEAD; j++) {
+      if (list[j].text && isCloud(list[j])) targets.push(j);
+    }
+    for (const j of targets) {
+      if (!alive()) return;
+      const it = list[j];
+      if (!isCloud(it)) continue;
+      try {
+        await blobFor(it.text, it.lang, cloudSpeed());
+      } catch {
+        /* 재생 단계가 처리한다(그 조각은 기기 음성) */
+      }
+    }
+  };
+
+  void (async () => {
+    let completed = false;
+    try {
+      for (let i = 0; i < list.length; i++) {
+        if (!alive()) return;
+        const it = list[i];
+        if (!it.text) continue; // 공백 조각은 건너뛰되 인덱스는 보존
+        call(() => handlers.onItem?.(i));
+        if (!alive()) return;
+
+        let sounded = false;
+        if (isCloud(it)) {
+          const speed = cloudSpeed();
+          const key = keyOf(it.text, it.lang, speed);
+          const req = blobFor(it.text, it.lang, speed);
+          let timedOut = false;
+          try {
+            // 대기 타임아웃은 **지금**(이 조각을 기다리기 시작한 때)부터 잰다(§18-2).
+            const blob = await waitWithTimeout(req, queueTiming.fetchMs);
+            if (!alive()) return;
+            void lookAhead(i + 1);
+            await playBlob(blob, token, queueAudio ?? undefined, {
+              fallbackMs: estimateSpeechMs(it.text, getTtsRate()),
+              slackMs: queueTiming.playSlackMs,
+            });
+            sounded = true;
+          } catch (e) {
+            timedOut = e === WAIT_TIMEOUT;
+            noteError(e); // 합성·재생 실패·대기 타임아웃 → 아래에서 그 조각만 기기 음성(한 방향 폴백)
+          } finally {
+            const drop = () => {
+              if (pending.get(key) === req) pending.delete(key);
+            };
+            // 대기만 타임아웃이면 요청은 아직 진행 중 — 끝날 때까지 맵에 둬서 같은 문장이 두 번 합성되지 않게 한다.
+            if (timedOut) req.then(drop, drop);
+            else drop();
+          }
+          if (!alive()) return;
+        }
+        if (!sounded) {
+          void lookAhead(i + 1);
+          sounded = await speakDeviceAwait(it.text, it.lang, token);
+          if (!alive()) return;
+        }
+        silentRun = sounded ? 0 : silentRun + 1;
+        if (silentRun >= QUEUE_SILENT_STOP) return; // 소리를 낼 수 없다 → stopped
+      }
+      completed = true;
+    } finally {
+      end(completed && token === playToken ? "done" : "stopped");
+    }
+  })();
+
+  return () => {
+    if (ended) return;
+    if (token === playToken) cancelPlayback(); // 아직 이 큐의 세대 — 재생까지 끊는다(onEnd는 그 안에서 동기로)
+    else end("stopped"); // 이미 밀려났다 — 다른 재생은 건드리지 않고 자기만 정리
+  };
 }

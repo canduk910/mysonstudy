@@ -84,6 +84,12 @@ export interface SynthesizeInput {
  */
 export const TTS_INSTRUCTIONS_VERSION = 2;
 
+/**
+ * ko-KR(§18-3)은 대화 해설 낭독용 — 한국어 설명 속에 일본어 인용(「は」)이 섞인다. 그래서 "일본어 부분은 일본어로,
+ * 중국어 금지"를 못박는다. ⚠️ 새 언어 **추가**는 기존 캐시 키와 겹치지 않아 버전을 올리지 않았다(2 유지 — 올리면
+ * 영어·일본어 캐시까지 통째로 비워져 재합성 비용이 난다). 나중에 ko 지시를 **튜닝**하면 버전을 올려야 하고,
+ * 그러면 전 언어 캐시가 비워진다 — 그 비용을 감수할 때만 고친다.
+ */
 const TTS_INSTRUCTIONS: Record<TtsLang, string> = {
   "ja-JP":
     "Read the text in Japanese. The text is Japanese, never Chinese — read kanji with their Japanese readings. " +
@@ -91,7 +97,16 @@ const TTS_INSTRUCTIONS: Record<TtsLang, string> = {
   "en-US":
     "Read the text in English with a natural American accent. " +
     "Speak clearly and warmly, like a teacher reading a word or sentence for a young learner.",
+  "ko-KR":
+    "Read the text in Korean with a clear, standard Seoul accent. " +
+    "Parts written in Japanese (kana or kanji, especially inside 「」) must be read in Japanese with Japanese readings — never Chinese. " +
+    "Speak calmly and clearly, like a teacher explaining a lesson to an adult learner.",
 };
+
+/** 언어별 낭독 지시(합성·eval 공용). tsx eval은 타입 검사를 안 하므로 모든 TTS_LANGS가 채워졌는지 이걸로 확인한다. */
+export function ttsInstructionsFor(lang: TtsLang): string {
+  return TTS_INSTRUCTIONS[lang] ?? "";
+}
 
 export interface SynthesizedAudio {
   audio: Buffer;
@@ -112,7 +127,7 @@ export async function synthesizeSpeech({ text, speed, lang }: SynthesizeInput): 
     voice,
     input: text,
     // 언어를 지시로 못박는다 — 안 주면 한자 텍스트를 중국어로 읽는다(위 SynthesizeInput.lang 주석).
-    instructions: TTS_INSTRUCTIONS[lang],
+    instructions: ttsInstructionsFor(lang),
     response_format: "mp3",
     speed: clampTtsSpeed(speed),
   });

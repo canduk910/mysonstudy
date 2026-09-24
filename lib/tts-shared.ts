@@ -9,8 +9,11 @@
  * 이 파일은 브라우저/서버 어디서 import해도 안전하다 — 값·타입뿐, 부작용 없음.
  */
 
-/** 클라우드 TTS를 적용할 언어(BCP-47). 그 밖의 언어는 기기 음성으로 폴백한다. */
-export const TTS_LANGS = ["en-US", "ja-JP"] as const;
+/**
+ * 클라우드 TTS를 적용할 언어(BCP-47). 그 밖의 언어는 기기 음성으로 폴백한다.
+ * ko-KR(§18-3): 대화 해설 낭독의 한국어 설명. 라우트 zod enum이 이 배열을 쓰므로 자동으로 허용된다.
+ */
+export const TTS_LANGS = ["en-US", "ja-JP", "ko-KR"] as const;
 export type TtsLang = (typeof TTS_LANGS)[number];
 
 /** 주어진 문자열이 클라우드 TTS 대상 언어인지 (클라이언트 사전판정·서버 검증 공용). */

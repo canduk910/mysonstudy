@@ -5,11 +5,12 @@
  * 말풍선(JaDialogTranscript) → 총평·잘한 점·고칠 점·어휘(담기 J5)·연습(JaDialogCoachingView). 제목 인라인 수정, "해설 다시 만들기".
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { prefetchSpeech } from "@/lib/speech";
 import JaDialogTranscript from "@/components/ja-dialog-transcript";
 import JaDialogCoachingView from "@/components/ja-dialog-coaching-view";
+import { coachingJaTexts } from "@/lib/ja-coaching-script";
 import {
   JA_DIALOG_TITLE_MAX,
   type JaDialogCoaching,
@@ -35,8 +36,15 @@ export default function JaDialogDetailView({
   partial: boolean;
 }) {
   const router = useRouter();
-  // 프리페치(§16): 말풍선 문장들의 발음을 미리 캐시 → 🔊 첫 재생 지연 제거. 화면 이탈 시 자동 중단.
-  useEffect(() => prefetchSpeech(turns.map((t) => t.ja), "ja-JP"), [turns]);
+  // 프리페치(§16·§18-5): 말풍선 문장 + 해설의 일본어 문장을 **한 배열로 한 번에** 미리 캐시 → 🔊 첫 재생 지연 제거.
+  // 따로 부르면 prefetchSpeech가 직전 배치를 끊는데 효과는 자식→부모 순이라 해설 쪽이 항상 끊긴다 — 그래서 해설 뷰는
+  // prefetch={false}. 의존성은 문자열 키: router.refresh()로 참조만 바뀌면 다시 시작하지 않는다(중단된 합성 요금 낭비 방지).
+  // 한국어 해설은 미리 받지 않는다(이어 듣기 look-ahead가 맡는다).
+  const prefetchKey = useMemo(
+    () => [...turns.map((t) => t.ja), ...(coaching ? coachingJaTexts(coaching) : [])].join("\u0001"),
+    [turns, coaching],
+  );
+  useEffect(() => prefetchSpeech(prefetchKey.split("\u0001"), "ja-JP"), [prefetchKey]);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(titleKo);
   const [saving, setSaving] = useState(false);
@@ -140,7 +148,7 @@ export default function JaDialogDetailView({
         </div>
         {coachMsg && <p className={`t-caption ${coachPhase === "error" ? s.err : ""}`}>{coachMsg}</p>}
         {coaching ? (
-          <JaDialogCoachingView coaching={coaching} dialogId={id} />
+          <JaDialogCoachingView coaching={coaching} dialogId={id} prefetch={false} />
         ) : (
           <p className={s.noCoach}>아직 해설이 없어요. 위 "해설 만들기"로 잘한 점·고칠 점·어휘·연습을 채워 보세요.</p>
         )}
