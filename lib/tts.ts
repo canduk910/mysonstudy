@@ -118,19 +118,29 @@ export interface SynthesizedAudio {
 /**
  * 텍스트 → mp3 오디오 바이트. 실패는 throw(라우트가 500으로 잡고, 클라이언트는 기기 음성으로 폴백).
  * mp3는 어디서나 `<audio>`로 재생되고 용량이 작다(§16-1).
+ *
+ * `signal`(선택): 클라이언트가 요청을 끊으면(프리페치 배치 교체·화면 이탈·큐 종료) 라우트가 `req.signal`을 넘긴다 —
+ * openai SDK(`RequestOptions.signal`)가 상류 요청과 본문 읽기를 함께 끊는다(APIUserAbortError, 재시도 없음).
+ * 버려질 합성을 끝까지 돌리지 않으려는 비용 가드다(§16-5).
  */
-export async function synthesizeSpeech({ text, speed, lang }: SynthesizeInput): Promise<SynthesizedAudio> {
+export async function synthesizeSpeech(
+  { text, speed, lang }: SynthesizeInput,
+  signal?: AbortSignal,
+): Promise<SynthesizedAudio> {
   const model = resolveTtsModel();
   const voice = resolveTtsVoice();
-  const res = await getTtsClient().audio.speech.create({
-    model,
-    voice,
-    input: text,
-    // 언어를 지시로 못박는다 — 안 주면 한자 텍스트를 중국어로 읽는다(위 SynthesizeInput.lang 주석).
-    instructions: ttsInstructionsFor(lang),
-    response_format: "mp3",
-    speed: clampTtsSpeed(speed),
-  });
+  const res = await getTtsClient().audio.speech.create(
+    {
+      model,
+      voice,
+      input: text,
+      // 언어를 지시로 못박는다 — 안 주면 한자 텍스트를 중국어로 읽는다(위 SynthesizeInput.lang 주석).
+      instructions: ttsInstructionsFor(lang),
+      response_format: "mp3",
+      speed: clampTtsSpeed(speed),
+    },
+    { signal },
+  );
   const audio = Buffer.from(await res.arrayBuffer());
   return { audio, contentType: "audio/mpeg", model, voice };
 }

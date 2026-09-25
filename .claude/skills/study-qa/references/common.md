@@ -23,7 +23,7 @@ OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_
 
 | 스크립트 | 대상 | import 경계 | 출력 영역 (항목 수는 2026-09-25 실측) |
 |---|---|---|---|
-| `scripts/eval-speech.ts` | `lib/ja-coaching-script.ts` 대본·쪼개기, `lib/speech.ts` 큐, `lib/tts-shared.ts`·`lib/tts.ts` 상수, `lib/tts-cache.ts` 지문 | store 금지. `lib/speech`·`lib/tts`·`lib/tts-cache`는 fetch 스텁을 깔고 키를 비운 **뒤에** dynamic import한다 | 대본·쪼개기·상수·엔진·큐·지문·안전 (71) |
+| `scripts/eval-speech.ts` | `lib/ja-coaching-script.ts` 대본·쪼개기, `lib/speech.ts` 큐, `lib/tts-shared.ts`·`lib/tts.ts` 상수, `lib/tts-cache.ts` 지문 | store 금지. `lib/speech`·`lib/tts`·`lib/tts-cache`는 fetch 스텁을 깔고 키를 비운 **뒤에** dynamic import한다 | 대본(12)·쪼개기(12)·상수·엔진(5)·큐(34)·단발(30)·지문(7)·안전(1) — 합계 (101) |
 | `scripts/eval-streak.ts` | `lib/streak.ts`의 `computeStreak`·`computeStreakFromDays`, `lib/kst.ts`(`formatKstDate`·`isZonedIsoTimestamp` 포함) | `../lib/streak`·`../lib/kst`만 | KST 환산(formatKstDate 경계표를 TZ Asia/Seoul·UTC·America/Los_Angeles로 다시 돌림 — 실행 기기 TZ 무관)·연속 판정·0문항 제외·사람 분리·날짜 코어 (41) |
 | `scripts/eval-workout.ts` | `lib/workout.ts` 전체, `diffDateStrings` | `../lib/workout`·`../lib/kst`·`../lib/streak`만 | 베이스·계획·스텝·휴식(세트 사이 [1,3,5,7]·휴식 뒤 [2,4,6,8]·음성 안내 대상 4개)·세트 목록 순서(`roundDisplayOrder` — 스텝 0~9 × 축하 유무의 순서·완료 구역 시작 위치, 푸시업 ✓ 탭 순간·풀업 ✓ 무재배치, 무효 held 무시)·횟수·상태·판정(`decideLog`·`decideUndo`·`decideStart`·`closingStatus`)·활성 선택·격리·정규화(createdAt ISO 경계 = `isZonedIsoTimestamp`)·날짜 방어·진행·볼륨·일정·스냅샷·지난 사이클·운동 스트릭(endedAt ISO 경계 포함) (134) |
 
@@ -38,10 +38,16 @@ OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_
 | 검증 | 방법 | 실패의 의미 |
 |---|---|---|
 | 화면이 관문을 우회하지 않는다 | `grep -rna "speechSynthesis\|SpeechSynthesisUtterance\|/api/tts\|new Audio" app components` 결과에서 `app/api/tts` 밖은 주석뿐이어야 한다. 효과음용 `AudioContext`(`components/workout-session.tsx`)는 발음이 아니라 대상 밖이다 | 속도·엔진·폴백·취소가 화면마다 갈린다 |
-| `speak()` 회귀 | `speak(text, lang = TTS_LANG)` 시그니처가 그대로인지 본다. eval ⑰은 `speak()`가 재생마다 `new Audio`를 쓰고 큐 요소를 재사용하지 않는지 확인한다 | 영어 6화면·일본어 화면 전부 회귀 |
+| `speak()` 회귀 | `speak(text, lang = TTS_LANG)` 시그니처가 그대로인지 본다. 2026-09-25부터 `speak()`도 큐 요소 하나를 재사용한다(§16-5) — eval ⑰은 재생마다 `new Audio`를 **만들지 않는지**, "단발" F1은 `speak()`가 반환되는 그 순간(동기) 큐 요소 src=무음 WAV + `play()` 1회·cancel 뒤 볼륨 0 빈 발화가 끝나 있는지, F2·F3은 연타와 `speak` ↔ `speakQueue` 상호 취소(동기 정지·onEnd 1회·URL 회수)를 본다. F7은 합성이 늦게 온 옛 speak가 공유 요소에서 재생 중인 새 speak를 뺏지 못하는지(`playViaCloud`의 합성 뒤 토큰 가드), F8은 300자 초과가 cloud 엔진이어도 POST 0·잠금 해제 0으로 기기 직행하는지(사전 판정), F12는 밀려난 speak의 대기 타임아웃이 진단 ✓를 덮지 않는지 본다 | 영어 6화면·일본어 화면 전부 회귀. 잠금 해제가 await 뒤로 밀리면 iOS에서 클라우드 🔊가 무음이 된다. 토큰 가드가 빠지면 새 🔊가 끝나지 않고 objectURL이 샌다 |
+| 기기 음성 폴백의 cancel | F4 — device 직행은 cancel 1회(`cancelPlayback` 것)뿐, 클라우드 실패 뒤엔 빈 발화(말하는 중이어도)를 끊지 않고 잇고, 남의 발화가 말하는 중일 때만 cancel | 대체 재생까지 씹혀 앱이 조용해진다 |
+| iOS paused 복구 | F13 — 스텁 `pauseOnCancel`(cancel() 뒤 paused로 굳고 이후 speak()는 이벤트 없이 무시)에서 `fallbackDevice`(device 단발 로그가 정확히 `cancel,resume,speak:…`·클라우드 실패 대체)·잠금 해제 빈 발화(`cancel → resume → 빈 발화`)·`speakDeviceAwait`(조각 사이에 굳어도) 세 곳 모두 실제로 발화되는지 본다. 세 곳의 `resumeIfPaused`를 하나씩 지우는 변이가 각각 잡혀야 한다 | 기기 음성이 한동안 무음이다가 설정을 만지면 다시 난다 — 2026-09-25 사용자 관찰("기기랑 클라우드가 꼬인 것 같다") |
+| 설정 변경 시 프리페치 재실행 | F6 — device로 연 화면에서 cloud로 바꾸면 POST 0 → n, 속도를 바꾸면 새 speed로 n, 같은 설정 재탭은 진행 중 요청을 abort하지 않음, device로 바꾸면 중단, 화면 stop 뒤엔 재실행 없음(F6은 디바운스를 20ms로 줄여 돈다). F9 상한 `PREFETCH_MAX_ITEMS`(200개 → 90·재실행 90), F10 다음 화면의 배치가 직전 배치를 끊음(새 POST 0·abort 2·동시 ≤ 2), F11 화면 이탈 stop이 진행 중 요청을 abort | 첫 🔊마다 합성 대기 — iOS 차단 여지와 지연. 상한·abort가 빠지면 비용이 샌다 |
+| 속도 연타 비용 | F14 — 속도 재실행은 trailing 디바운스(`RATE_PREFETCH_DEBOUNCE_MS` 600ms, eval은 `rateDebounceMs` 150ms): 간격 60ms로 5회 연타하는 동안 POST 0 → 마지막 속도 배치만, 연타 끝이 이미 받은 속도면 POST 0, 옛 속도 배치가 도는 중에 바꾸면 진행 중 요청을 누르는 순간 abort하고 옛 속도 새 POST 0. 엔진 cloud 전환은 디바운스 없이 즉시(F6) | 연타마다 배치를 쏘고 버려 상류 합성이 쌓인다(QA 실측 5회 연타 = 8건 전부 버려짐) |
+| 진행 중 합성 공유 | F15 — 같은 캐시 키를 🔊·프리페치(어느 쪽이 먼저든)가 동시에 원하면 POST 1. 프리페치 stop은 🔊가 같이 기다리는 요청을 끊지 않고(abort 0·클라우드 재생), 혼자면 끊는다(abort 1). 큐 합성 대기 중 같은 문장 🔊 → 큐 요청은 abort되고 🔊는 끊긴 요청에 붙지 않고 새로 보낸다(기기 0). F16 — 대기 상한(`fetchMs`)을 넘긴 요청에는 새로 붙지 않는다(매달린 합성 뒤 다시 누른 🔊가 새 POST로 클라우드). 끊긴 요청 거르기는 두 겹(표에서 빼기 + aborted 확인)이라 한쪽만 지우는 변이는 살아남는다 — 둘 다 지우면 잡힌다 | 같은 문장을 두 번 합성(요금)하거나, 한 소비자의 abort가 남의 🔊를 기기 음성으로 떨어뜨린다 |
+| 폰 진단 | F5 — 성공 `{ok}`·501 `synth/tts 501/device`·재생 거부 `play/NotAllowedError/device`·대기 상한 `synth/timeout/device`·기기 음성 미지원 `fallback none`·큐 조각 기록과 언어별 분리. 화면은 `TtsEngineControl`이 마운트 후에만 읽는다(렌더 중 `getTtsPlaybackDiag` 금지) | 실기기 신고를 서버 로그 없이 가를 방법이 없다 |
 | 폴백은 조용해야 한다 | eval ⑥(POST 500이면 그 조각만 기기 음성), ⑦(501을 한 번 받으면 이후 POST 0). 키를 비운 dev에서 🔊를 눌러 `/api/tts` 501 → 기기 음성으로 가고 에러 UI가 뜨지 않는지 본다 | 앱이 조용해진다(§16-2) |
 | 상한의 정의처는 하나다 | `TTS_TEXT_MAX_CHARS`(300)는 `lib/tts-shared.ts`에서 정의하고, 라우트 zod·`lib/speech.ts`·`lib/ja-coaching-script.ts`가 import한다 | 클라이언트는 보내는데 서버는 400을 준다 |
-| 라우트 | `app/api/tts/route.ts` POST는 키 검사(501)를 파싱보다 **먼저** 한다. zod는 text(trim 1~300)·lang(`TTS_LANGS` enum)·speed(0.25~4)다. GET은 OpenAI를 부르지 않고 `{voice, model, instructions}`만 준다 | |
+| 라우트 | `app/api/tts/route.ts` POST는 키 검사(501)를 파싱보다 **먼저** 한다. zod는 text(trim 1~300)·lang(`TTS_LANGS` enum)·speed(0.25~4)다. GET은 OpenAI를 부르지 않고 `{voice, model, instructions}`만 준다. POST는 `req.signal`을 `synthesizeSpeech(input, signal)` → openai `RequestOptions.signal`로 넘겨, 클라이언트가 끊으면 상류 합성도 끊고 499 `client_closed`(에러 로그 없음)로 끝난다. 오프라인 eval로는 못 잡으므로 루프백 스텁으로 "클라이언트 abort → 스텁이 연결 종료를 봄"을 확인한다 | 버려진 프리페치·큐 요청이 상류에서 끝까지 합성돼 요금이 난다 |
 | 번들 경계 | `lib/speech.ts`의 값 import가 `./tts-shared`·`./tts-cache`뿐인지, `lib/ja-coaching-script.ts`는 `./tts-shared`와 `import type`뿐인지 본다. build 뒤 `.next/static`을 `grep -rla`해 openai SDK의 흔적(기본 주소 `api.openai.com`)과 키가 0건인지 확인한다 | openai가 폰 번들로 내려간다 |
 | 캐시 지문 | eval에서 `TTS_INSTRUCTIONS_VERSION === 2`를 확인한다. 값이 올라갔으면 이유를 묻는다. 올리면 전 언어의 영속 캐시가 비워지는 비용이 난다(§18-3) | 재합성 요금 |
 | 기본 엔진 | `DEFAULT_ENGINE`은 ko=cloud·ja=device·en=cloud여야 한다(eval "상수·엔진") | 해설의 일본어 인용을 한국어식으로 읽는다 |
@@ -166,6 +172,8 @@ eval을 통과한 엔진에서 규칙 위반을 더 찾거나, eval이 무엇을
 에뮬레이션과 스텁으로는 판정할 수 없다. 리포트에 아빠 iPhone Safari 확인 목록으로 넘긴다.
 
 - **iOS 탭 밖 재생 잠금**: `🎧 해설 전체 듣기`의 첫 조각이 합성 대기(~1초) 뒤 정상으로 나는지, 한국어(클라우드)와 일본어(기기 Kyoko) 조각이 끊김 없이 이어지는지 본다. 무음 WAV와 볼륨 0 빈 발화로 잠금이 실제로 풀리는지가 핵심이다.
+- **단발 🔊(클라우드) — 2026-09-25 무음 신고의 재확인**: 일본어 단어장에서 엔진을 "클라우드"로 바꾸고 속도를 "빠르게"로 바꾼 **직후** 🔊를 눌러 소리가 나는지, 소리 설정 옆 캡션이 `마지막 재생: 클라우드 ✓`인지 본다. 실패 캡션이면 문구(단계·이유)를 그대로 받아 적는다 — `재생 NotAllowedError`면 잠금 해제가, `합성 tts 5xx`·`timeout`이면 서버·망이 원인이다. 스텁과 Chromium의 sticky activation으로는 iOS의 요소별 잠금을 재현할 수 없어 흉내(init script)까지만 한다.
+- **기기 음성 멈춤(iOS paused) 복구**: 일본어 엔진 "기기"에서 🔊를 빠르게 여러 번, 이어서 다른 단어 🔊 → 매번 Kyoko가 나는지, "클라우드"로 두고 비행기 모드에서 ▶ 미리듣기(대체 기기 음성)가 나는지 본다. 예전에는 한동안 무음이다가 속도를 만지면 다시 났다(2026-09-25 관찰). 스텁은 버그를 흉내만 낸다.
 - **자연 종료 판정**: 조각을 끝까지 재생했을 때 `pause`가 오는 시점에 `audio.ended === true`인지 본다. 아니면 조각마다 큐가 멈춘다.
 - **잠금 화면 ⏸·전화 수신**: 큐가 `"stopped"`로 끝나고 저절로 다시 재생되지 않는지 본다. 화면을 끈 채 이어 듣기는 보장하지 않는다(§18-0). "일본어도 클라우드" 설정에서 이어지는지는 관찰만 한다.
 - **실제 합성 품질**: 한국어 해설 속 「は」「が」를 일본어로 읽는지(소리 설정의 ▶ 미리듣기) 확인한다. 한자만 있는 일본어를 중국어로 읽은 전례가 있어서 **사람이 들어야** 한다. 이건 실호출이라 QA가 하지 않는다.

@@ -9,6 +9,12 @@
  * - B. 쪼개기 splitForTts — 규칙·불변식 (§18-1)
  * - C. 상수·엔진 — TTS_LANGS·지시문·기본 엔진 (§18-3)
  * - D. 연속 재생 큐 speakQueue — 가짜 window·Audio·speechSynthesis·fetch·URL을 전역에 깐 뒤 dynamic import (§18-2)
+ * - E. 지문 공급자·영속 캐시 재시도 (§18-2)
+ * - F. 단발 재생 speak() — 첫 await 전 잠금 해제·재사용 요소, speak ↔ speakQueue 상호 취소, fallbackDevice cancel 규칙,
+ *      폰 진단(getTtsPlaybackDiag·TTS_DIAG_EVENT), 설정 변경 시 프리페치 재실행 (§16-5, 2026-09-25 iPhone 무음 신고),
+ *      그리고 후속(같은 날 QA·사용자 관찰 "기기랑 클라우드가 꼬인 것 같다"): 늦게 온 옛 합성 토큰 가드(F7)·300자 사전 판정(F8)·
+ *      프리페치 상한·배치 교체·stop abort(F9~F11)·밀려난 speak 진단(F12)·iOS paused 복구(F13)·속도 디바운스(F14)·
+ *      진행 중 합성 공유와 abort 의미(F15)·매달린 요청에 새로 붙지 않음(F16)
  *
  * ⚠️ 네트워크 0: fetch를 **맨 먼저** 스텁으로 갈아 끼운다. lib/tts.ts(C의 지시문 확인)는 openai 패키지를 로드하지만
  * 클라이언트는 지연 생성이라 만들지 않고, 합성 함수도 부르지 않는다. 혹시 몰라 OPENAI_API_KEY도 비운다.
@@ -356,12 +362,23 @@ interface Env {
   audioDuration: number;
   /** true면 클라우드 오디오의 ended가 끝내 안 온다(재생 안전 타임아웃 검증). 무음 WAV는 영향 없음. */
   audioNeverEnds: boolean;
+  /** 이름이 있으면 클라우드 오디오의 play()가 그 이름의 DOMException으로 거부된다(iOS 'NotAllowedError' 모사). 무음 WAV는 영향 없음. */
+  playRejectName: string | null;
   deviceMs: number;
+  /** 잠금 해제용 빈 발화(" ")가 말하는 시간(ms). 기본 0(다음 틱). 길게 두면 "빈 발화가 아직 말하는 중"에 폴백이 오는 경우를 만든다. */
+  blankMs: number;
   postStatus: (text: string) => Status;
   /** 지문 GET 응답 — 숫자 = 상태 코드, "hang" = 안 끝남(abort로만 끝남), "neterr" = 네트워크 실패(TypeError) */
   getStatus: number | "hang" | "neterr";
   deviceMode: "normal" | "silent" | { speakingMs: number };
+  /** true면 cancel()이 speechSynthesis를 paused로 굳힌다(iOS WebKit 버그 모사 — 이후 speak()는 resume() 전까지 조용히 무시) */
+  pauseOnCancel: boolean;
+  /** paused 상태에서 무시된 발화(텍스트) — 실기기에선 에러도 이벤트도 없다 */
+  ignored: string[];
+  resumes: number;
   posts: string[];
+  /** 합성 요청의 speed(posts와 같은 순서) — 속도를 바꾸면 프리페치가 새 속도로 다시 도는지 본다 */
+  postSpeeds: number[];
   /** 우리 쪽 abort로 끊긴 합성 요청(텍스트) */
   postAborted: string[];
   gets: number;
@@ -387,11 +404,17 @@ const env: Env = {
   audioMs: 5,
   audioDuration: NaN,
   audioNeverEnds: false,
+  playRejectName: null,
   deviceMs: 5,
+  blankMs: 0,
   postStatus: () => 200,
   getStatus: 200,
   deviceMode: "normal",
+  pauseOnCancel: false,
+  ignored: [],
+  resumes: 0,
   posts: [],
+  postSpeeds: [],
   postAborted: [],
   gets: 0,
   urlCreated: 0,
@@ -410,11 +433,18 @@ function resetEnv(): void {
   env.audioMs = 5;
   env.audioDuration = NaN;
   env.audioNeverEnds = false;
+  env.playRejectName = null;
   env.deviceMs = 5;
+  env.blankMs = 0;
   env.postStatus = () => 200;
   env.getStatus = 200;
   env.deviceMode = "normal";
+  env.pauseOnCancel = false;
+  env.ignored = [];
+  env.resumes = 0;
+  synth.paused = false;
   env.posts = [];
+  env.postSpeeds = [];
   env.postAborted = [];
   env.gets = 0;
   env.urlCreated = 0;
@@ -488,6 +518,11 @@ class FakeAudio {
           return;
         }
         const silent = this._src.startsWith("blob:silent/");
+        if (!silent && env.playRejectName) {
+          this.paused = true;
+          reject(new DOMException("play() not allowed", env.playRejectName)); // iOS 탭 밖 재생 차단 모사
+          return;
+        }
         if (!silent) this.duration = env.audioDuration;
         resolve();
         if (!silent && env.audioNeverEnds) return; // ended가 끝내 안 온다
@@ -525,6 +560,13 @@ class FakeUtterance {
 const synth = {
   _speaking: false,
   pending: false,
+  /** iOS WebKit: cancel() 뒤 paused로 굳으면 speak()가 조용히 무시된다(env.pauseOnCancel). resume()으로만 풀린다. */
+  paused: false,
+  resume() {
+    env.resumes++;
+    env.log.push("resume");
+    this.paused = false;
+  },
   /** 잠금 해제용 무음 발화(" ")가 말하는 중 — 실브라우저처럼 그동안 speaking이 true다. */
   blank: null as FakeUtterance | null,
   get speaking(): boolean {
@@ -536,6 +578,12 @@ const synth = {
   current: null as FakeUtterance | null,
   timer: undefined as ReturnType<typeof setTimeout> | undefined,
   speak(u: FakeUtterance) {
+    if (this.paused) {
+      // iOS 버그 모사 — 대기열에도 안 들어가고 onend/onerror도 안 온다(그래서 앱은 무음인 줄 모른다)
+      env.ignored.push(u.text);
+      env.log.push(`ignored:${u.text}`);
+      return;
+    }
     env.spoken.push({ text: u.text, lang: u.lang, volume: u.volume });
     env.log.push(`speak:${u.text}`);
     if (!u.text.trim()) {
@@ -545,7 +593,7 @@ const synth = {
         if (this.blank !== u) return;
         this.blank = null;
         u.onend?.({});
-      }, 0);
+      }, env.blankMs);
       return;
     }
     this.current = u;
@@ -576,6 +624,7 @@ const synth = {
     this.current = null;
     this.blank = null;
     this.speaking = false;
+    if (env.pauseOnCancel) this.paused = true;
     if (u) setTimeout(() => u.onerror?.({ error: "interrupted" }), 0);
     if (b) setTimeout(() => b.onerror?.({ error: "interrupted" }), 0);
   },
@@ -647,8 +696,11 @@ function installFetchStub(): void {
       if (gs !== 200) return new Response(JSON.stringify({ error: "x" }), { status: gs });
       return new Response(JSON.stringify({ voice: "alloy", model: "stub", instructions: 2 }), { status: 200 });
     }
-    const body = JSON.parse(String(init?.body ?? "{}")) as { text: string };
+    // 실제 fetch처럼: 이미 abort된 signal이면 보내지 않고 곧바로 AbortError(POST로 세지 않는다)
+    if (signal?.aborted) throw abortError();
+    const body = JSON.parse(String(init?.body ?? "{}")) as { text: string; speed?: number };
     env.posts.push(body.text);
+    env.postSpeeds.push(Number(body.speed));
     const status = env.postStatus(body.text);
     if (status === "hang") {
       return new Promise<Response>((_, reject) => {
@@ -869,14 +921,16 @@ async function main(): Promise<void> {
     sp.speak("still playing", "en-US");
     await waitFor(() => playingTts() !== null);
     const b = playingTts();
+    // speak()도 큐 요소를 재사용하므로(§16-5) pause 수는 누적값이 아니라 **이 시점부터의 증가분**으로 본다.
+    const p0 = b?.pauseCalls ?? 0;
     const cancels = env.cancels;
     a.stop();
     await waitFor(() => b?.ended === true, 500);
     add(
       "큐",
       "⑤ 끝난 큐의 stop → 다른 speak 재생 안 죽음(pause 0·cancel 0·끝까지 재생)",
-      !!b && b.pauseCalls === 0 && env.cancels === cancels && b.ended && JSON.stringify(a.ends) === JSON.stringify(["done"]),
-      `pause=${b?.pauseCalls} cancel+${env.cancels - cancels} ended=${b?.ended} A=${a.ends.join(",")}`,
+      !!b && b.pauseCalls === p0 && env.cancels === cancels && b.ended && JSON.stringify(a.ends) === JSON.stringify(["done"]),
+      `pause+${(b?.pauseCalls ?? 0) - p0} cancel+${env.cancels - cancels} ended=${b?.ended} A=${a.ends.join(",")}`,
     );
     await settle(sp);
   }
@@ -969,6 +1023,7 @@ async function main(): Promise<void> {
     sp.speak("keep playing", "en-US");
     await waitFor(() => playingTts() !== null);
     const b = playingTts();
+    const p0 = b?.pauseCalls ?? 0; // 공유 요소 — 증가분으로 본다
     const cancels = env.cancels;
     const r = startQueue(sp, [ko("   "), { text: "", lang: "ja-JP" }], "E");
     const syncEnds = r.ends.length;
@@ -976,8 +1031,8 @@ async function main(): Promise<void> {
     add(
       "큐",
       "⑪ 빈 items → onEnd('done') microtask 1회, 진행 중 speak 오디오 pause 0·cancel 0",
-      syncEnds === 0 && JSON.stringify(r.ends) === JSON.stringify(["done"]) && r.items.length === 0 && b?.pauseCalls === 0 && env.cancels === cancels,
-      `sync=${syncEnds} ends=${r.ends.join(",")} pause=${b?.pauseCalls} cancel+${env.cancels - cancels}`,
+      syncEnds === 0 && JSON.stringify(r.ends) === JSON.stringify(["done"]) && r.items.length === 0 && !!b && b.pauseCalls === p0 && env.cancels === cancels,
+      `sync=${syncEnds} ends=${r.ends.join(",")} pause+${(b?.pauseCalls ?? 0) - p0} cancel+${env.cancels - cancels}`,
     );
     await settle(sp);
   }
@@ -1048,7 +1103,8 @@ async function main(): Promise<void> {
     await settle(sp);
   }
 
-  // ⑰ 기존 speak() 경로 불변 — 재생마다 new Audio
+  // ⑰ speak()도 큐 요소 하나를 재사용한다(§16-5, 2026-09-25 — iOS가 합성 대기 뒤 new Audio의 play()를 막아 무음이던 사고).
+  // 예전 단언("재생마다 new Audio")을 뒤집었다. 탭 안에서 풀어 둔 요소를 돌려 써야 비동기 뒤 재생이 통한다.
   {
     env.audioMs = 5;
     const before = env.audios.length;
@@ -1056,7 +1112,13 @@ async function main(): Promise<void> {
     await sleep(30);
     sp.speak("two", "en-US");
     await sleep(30);
-    add("큐", "⑰ speak()는 지금처럼 재생마다 new Audio(큐 요소 재사용 안 함)", env.audios.length - before === 2, `new Audio ${env.audios.length - before}개`);
+    const qa = queueEls()[0];
+    add(
+      "큐",
+      "⑰ speak()도 재생마다 new Audio 대신 큐 요소 하나를 재사용(§16-5) — 새 요소 0·POST 2·기기 음성 0",
+      env.audios.length - before === 0 && queueEls().length === 1 && (qa?.src ?? "").startsWith("blob:") && env.posts.length === 2 && deviceTexts().length === 0,
+      `new Audio ${env.audios.length - before}개 큐요소=${queueEls().length} POST=${env.posts.join("|")} device=${deviceTexts().join("|") || "0"}`,
+    );
     await settle(sp);
   }
 
@@ -1202,6 +1264,714 @@ async function main(): Promise<void> {
       "㉓ ended 안 옴 + duration 모름(NaN) → 기기 추정식(40ms) 뒤 소리 끊고 다음 조각·done",
       JSON.stringify(r.ends) === JSON.stringify(["done"]) && JSON.stringify(r.items) === "[0,1]" && el >= 75 && el < 1500 && (qa?.pauseCalls ?? 0) - pz >= 2 && env.liveUrls.size === 0,
       `${el}ms pause+${(qa?.pauseCalls ?? 0) - pz} ends=${r.ends.join(",")}`,
+    );
+    await settle(sp);
+  }
+
+  // -------------------------------------------------------------------------
+  // F. 단발 재생 speak() — iOS 잠금 해제·재사용 요소·폴백 cancel·폰 진단·프리페치 재실행 (§16-5, 2026-09-25 추가)
+  //    사용자 신고: iPhone Safari에서 일본어 엔진을 "클라우드"로 두면 🔊가 무음(합성 대기 뒤 new Audio.play()가 막힘 →
+  //    대체 기기 음성도 cancel 직후 speak라 씹힘). 여기 항목들은 그 두 고리와 진단·프리페치 공백을 잠근다.
+  // -------------------------------------------------------------------------
+  interface DiagLike {
+    at: string;
+    lang: string;
+    ok: boolean;
+    stage: string | null;
+    reason: string | null;
+    fallback: string | null;
+  }
+  const spx = sp as unknown as { getTtsPlaybackDiag?: (lang: string) => DiagLike | null; TTS_DIAG_EVENT?: string };
+  const diagOf = (lang: string): DiagLike | null => (typeof spx.getTtsPlaybackDiag === "function" ? spx.getTtsPlaybackDiag(lang) : null);
+  const diagEvents: { lang?: string }[] = [];
+  if (typeof spx.TTS_DIAG_EVENT === "string") {
+    (globalThis as unknown as EventTarget).addEventListener(spx.TTS_DIAG_EVENT, (e) => {
+      diagEvents.push(((e as CustomEvent).detail ?? {}) as { lang?: string });
+    });
+  }
+  const dshort = (d: DiagLike | null) => (d ? `${d.ok ? "ok" : "fail"}/${d.stage}/${d.reason}/${d.fallback}` : "(없음)");
+
+  // F1 — speak()(cloud)이 반환되는 그 순간(동기)에 잠금 해제가 끝나 있어야 한다(⑭의 speak 판).
+  {
+    sp.setTtsEngine("ja-JP", "cloud");
+    env.audioMs = 20;
+    const qa = queueEls()[0];
+    const pc0 = qa?.playCalls ?? 0;
+    const audiosBefore = env.audios.length;
+    sp.speak("ねこ", "ja-JP");
+    const syncPlay = (qa?.playCalls ?? 0) === pc0 + 1;
+    const syncSrc = qa?.src ?? "";
+    const lastCancel = env.log.lastIndexOf("cancel");
+    const blankIdx = env.log.indexOf("speak: ");
+    const blank = env.spoken.find((s) => s.text === " ");
+    const played = await waitFor(() => (qa?.src ?? "").startsWith("blob:tts/") && qa?.ended === true, 1000);
+    await sleep(10);
+    add(
+      "단발",
+      "F1 speak()(cloud)이 첫 await 전에 잠금 해제 — 반환 순간 큐 요소 src=무음 WAV + play() 1회, cancel 뒤 볼륨0 빈 발화",
+      syncPlay && syncSrc.startsWith("blob:silent/") && lastCancel >= 0 && blankIdx > lastCancel && blank?.volume === 0,
+      `play+${(qa?.playCalls ?? 0) - pc0} src=${syncSrc || "(없음)"} log=${env.log.slice(0, 3).join(",")}`,
+    );
+    add(
+      "단발",
+      "F1 합성 뒤 재생도 그 재사용 요소로 — new Audio 0·POST 1·기기 음성 0·URL 생성 == 회수",
+      played && env.audios.length === audiosBefore && queueEls().length === 1 && env.posts.join("|") === "ねこ" && deviceTexts().length === 0 && env.urlCreated === 1 && env.urlRevoked === 1,
+      `재생=${played} 새 요소 ${env.audios.length - audiosBefore} POST=${env.posts.join("|")} device=${deviceTexts().join("|") || "0"} URL ${env.urlCreated}/${env.urlRevoked}`,
+    );
+    await settle(sp);
+  }
+
+  // F2 — 연타: 두 번째 🔊가 첫 재생을 **동기로** 끊는다(같은 요소 — pause·URL 회수). 기기 폴백·진단 실패 0.
+  {
+    env.audioMs = 60;
+    sp.speak("いち", "ja-JP");
+    await waitFor(() => playingTts() !== null);
+    const qa = playingTts();
+    const firstUrl = qa?.src ?? "";
+    const p0 = qa?.pauseCalls ?? 0;
+    sp.speak("に", "ja-JP");
+    const firstRevokedSync = firstUrl !== "" && !env.liveUrls.has(firstUrl);
+    const pausedSync = (qa?.pauseCalls ?? 0) > p0;
+    // 무음 WAV(잠금 해제)도 ended가 되므로 "둘째 TTS URL이 만들어지고 회수될 때까지"를 기다린다.
+    const ended = await waitFor(() => env.urlCreated >= 2 && env.liveUrls.size === 0 && (qa?.src ?? "").startsWith("blob:tts/") && qa?.ended === true, 1000);
+    add(
+      "단발",
+      "F2 연타: 두 번째 speak가 첫 재생을 반환 전에 끊음(pause·URL 회수) → 같은 요소로 둘째 재생, 기기 폴백 0·URL 2/2",
+      pausedSync && firstRevokedSync && ended && deviceTexts().length === 0 && env.urlCreated === 2 && env.urlRevoked === 2 && queueEls().length === 1,
+      `pause동기=${pausedSync} 첫URL회수=${firstRevokedSync} 끝=${ended} device=${deviceTexts().join("|") || "0"} URL ${env.urlCreated}/${env.urlRevoked}`,
+    );
+    await settle(sp);
+  }
+
+  // F3 — speak ↔ speakQueue 상호 취소·onEnd 규약: 공유 요소에서도 서로를 동기로 끊는다.
+  {
+    env.audioMs = 60;
+    sp.speak("うた", "ja-JP");
+    await waitFor(() => playingTts() !== null);
+    const speakUrl = playingTts()?.src ?? "";
+    const r = startQueue(sp, [ko("큐 하나."), ko("큐 둘.")], "SQ");
+    const speakStoppedSync = speakUrl !== "" && !env.liveUrls.has(speakUrl);
+    await waitFor(() => r.ends.length > 0, 1500);
+    const r2 = startQueue(sp, [ko("둘째 큐 하나."), ko("둘째 큐 둘.")], "SQ2");
+    await waitFor(() => playingTts() !== null && r2.items.length > 0);
+    sp.speak("おわり", "ja-JP");
+    env.log.push("speak-returned");
+    const iEnd = env.log.indexOf("SQ2:end:stopped");
+    const iRet = env.log.indexOf("speak-returned");
+    const fin = await waitFor(() => env.posts.includes("おわり") && env.liveUrls.size === 0 && playingTts() === null, 1500);
+    add(
+      "단발",
+      "F3 speak 재생 중 speakQueue → speak 오디오 동기 정지(URL 회수)·큐 done / 큐 재생 중 speak → 옛 onEnd('stopped') 1회가 speak 반환 전에, 기기 폴백 0",
+      speakStoppedSync && JSON.stringify(r.ends) === '["done"]' && JSON.stringify(r.items) === "[0,1]" && iEnd >= 0 && iEnd < iRet && JSON.stringify(r2.ends) === '["stopped"]' && fin && deviceTexts().length === 0 && env.urlCreated === env.urlRevoked,
+      `speak동기정지=${speakStoppedSync} SQ=${r.ends.join(",")}/${r.items.join(",")} SQ2.end@${iEnd} ret@${iRet} SQ2=${r2.ends.join(",")} device=${deviceTexts().join("|") || "0"} URL ${env.urlCreated}/${env.urlRevoked}`,
+    );
+    await settle(sp);
+  }
+
+  // F4 — fallbackDevice의 cancel 규칙(§18-2 speakDeviceAwait와 같게): 쉬고 있으면 cancel 안 함, 잠금 해제 빈 발화 뒤엔 잇고,
+  //      정말로 다른 발화가 말하는 중일 때만 cancel.
+  {
+    sp.setTtsEngine("ja-JP", "device");
+    env.log = [];
+    sp.speak("いぬ", "ja-JP");
+    const logDevice = [...env.log];
+    await sleep(20);
+
+    sp.setTtsEngine("ja-JP", "cloud");
+    env.postStatus = () => 500;
+    env.log = [];
+    sp.speak("さる", "ja-JP");
+    await waitFor(() => deviceTexts().includes("さる"), 500);
+    const iBlank = env.log.indexOf("speak: ");
+    const iText = env.log.indexOf("speak:さる");
+    const between = iBlank >= 0 && iText > iBlank ? env.log.slice(iBlank + 1, iText) : ["(순서 틀림)"];
+    await sleep(20);
+
+    // 빈 발화가 **아직 말하는 중**(speaking=true)에 합성 실패가 온다 — 그래도 cancel하지 않고 뒤에 잇는다(잠금 해제 예외).
+    env.blankMs = 60;
+    env.log = [];
+    sp.speak("くま", "ja-JP");
+    await waitFor(() => deviceTexts().includes("くま"), 500);
+    const iBlank2 = env.log.indexOf("speak: ");
+    const iKuma = env.log.indexOf("speak:くま");
+    const between2 = iBlank2 >= 0 && iKuma > iBlank2 ? env.log.slice(iBlank2 + 1, iKuma) : ["(순서 틀림)"];
+    env.blankMs = 0;
+    await sleep(80);
+
+    env.deviceMs = 200;
+    env.log = [];
+    sp.speak("とら", "ja-JP");
+    synth.speak(new FakeUtterance("다른 발화")); // 우리 것이 아닌 발화가 말하는 중
+    await waitFor(() => deviceTexts().includes("とら"), 500);
+    const iOther = env.log.indexOf("speak:다른 발화");
+    const iTora = env.log.indexOf("speak:とら");
+    const cancelBetween = iOther >= 0 && iTora > iOther && env.log.slice(iOther + 1, iTora).includes("cancel");
+    add(
+      "단발",
+      "F4 fallbackDevice: device 직행은 cancel 1회(cancelPlayback 것)뿐·클라우드 실패 뒤엔 빈 발화를 cancel하지 않고 잇고·남의 발화가 말하는 중일 때만 cancel",
+      JSON.stringify(logDevice) === JSON.stringify(["cancel", "speak:いぬ"]) &&
+        !between.includes("cancel") &&
+        !between.includes("(순서 틀림)") &&
+        !between2.includes("cancel") &&
+        !between2.includes("(순서 틀림)") &&
+        cancelBetween,
+      `device=[${logDevice.join(",")}] cloud500 빈발화~본문=[${between.join(",")}] 빈발화 말하는 중=[${between2.join(",")}] 남의발화중 cancel=${cancelBetween}`,
+    );
+    await settle(sp);
+  }
+
+  // F5 — 폰 진단(서버 로그 대신): 성공·501·재생 거부(NotAllowedError)·대기 타임아웃·대체 불가 + 이벤트 + 언어별 분리
+  {
+    sp.setTtsEngine("ja-JP", "cloud");
+    env.audioMs = 5;
+    const ev0 = diagEvents.length;
+    sp.speak("はな", "ja-JP");
+    await waitFor(() => diagOf("ja-JP")?.ok === true, 500);
+    const dOk = diagOf("ja-JP");
+    add(
+      "단발",
+      "F5 진단 성공: {ok, lang ja-JP, stage·reason·fallback null, at=ISO} + TTS_DIAG_EVENT(detail.lang)",
+      !!dOk && dOk.ok && dOk.lang === "ja-JP" && dOk.stage === null && dOk.reason === null && dOk.fallback === null && Number.isFinite(Date.parse(dOk.at)) && diagEvents.slice(ev0).some((e) => e.lang === "ja-JP"),
+      `${dshort(dOk)} 이벤트+${diagEvents.length - ev0}`,
+    );
+    await settle(sp);
+
+    env.postStatus = () => 501;
+    sp.speak("みず", "ja-JP");
+    await waitFor(() => deviceTexts().includes("みず") && diagOf("ja-JP")?.ok === false, 500);
+    const d501 = diagOf("ja-JP");
+    add(
+      "단발",
+      "F5 진단 501: 합성 단계 'tts 501' → 기기 음성으로 대체(그리고 실제로 기기가 말함)",
+      d501?.ok === false && d501.stage === "synth" && d501.reason === "tts 501" && d501.fallback === "device" && deviceTexts().includes("みず"),
+      `${dshort(d501)} device=${deviceTexts().join("|")}`,
+    );
+    await settle(sp);
+
+    env.playRejectName = "NotAllowedError";
+    sp.speak("そら", "ja-JP");
+    await waitFor(() => deviceTexts().includes("そら") && diagOf("ja-JP")?.reason === "NotAllowedError", 500);
+    const dNa = diagOf("ja-JP");
+    add(
+      "단발",
+      "F5 진단 재생 거부: 재생 단계 'NotAllowedError' → 기기 음성으로 대체, URL 회수",
+      dNa?.ok === false && dNa.stage === "play" && dNa.reason === "NotAllowedError" && dNa.fallback === "device" && deviceTexts().includes("そら") && env.liveUrls.size === 0,
+      `${dshort(dNa)} device=${deviceTexts().join("|")} 남은URL=${env.liveUrls.size}`,
+    );
+    await settle(sp);
+
+    sp.__setQueueTiming({ fetchMs: 40 });
+    env.postStatus = (t) => (t === "やま" ? "hang" : 200);
+    const t0 = Date.now();
+    sp.speak("やま", "ja-JP");
+    await waitFor(() => deviceTexts().includes("やま"), 1000);
+    const el = Date.now() - t0;
+    const dTo = diagOf("ja-JP");
+    add(
+      "단발",
+      "F5 진단 대기 타임아웃: 합성이 안 끝나면 fetchMs 뒤 'timeout' → 기기 음성(무음으로 매달리지 않음)",
+      dTo?.ok === false && dTo.stage === "synth" && dTo.reason === "timeout" && dTo.fallback === "device" && deviceTexts().includes("やま") && el >= 35 && el < 1000,
+      `${dshort(dTo)} ${el}ms`,
+    );
+    await settle(sp);
+
+    const g = globalThis as unknown as Record<string, unknown>;
+    delete g.speechSynthesis;
+    env.postStatus = () => 500;
+    sp.speak("かわ", "ja-JP");
+    await waitFor(() => diagOf("ja-JP")?.reason === "tts 500", 500);
+    g.speechSynthesis = synth;
+    const dNone = diagOf("ja-JP");
+    add("단발", "F5 진단 대체 불가: 기기 음성 미지원 + 'tts 500' → fallback 'none'", dNone?.ok === false && dNone.reason === "tts 500" && dNone.fallback === "none", dshort(dNone));
+    await settle(sp);
+
+    // 큐의 클라우드 조각도 같은 진단을 남기고, 언어별로 따로 둔다(ko 실패가 ja 기록을 덮지 않음).
+    const jaBefore = diagOf("ja-JP");
+    env.postStatus = (t) => (t === "큐 실패 조각." ? 500 : 200);
+    const r = startQueue(sp, [ko("큐 실패 조각.")], "DQ");
+    await waitFor(() => r.ends.length > 0);
+    const dKo = diagOf("ko-KR");
+    add(
+      "단발",
+      "F5 진단 큐 조각: ko-KR 'tts 500' → 기기 음성 기록, ja-JP 기록은 그대로(언어별)",
+      dKo?.ok === false && dKo.lang === "ko-KR" && dKo.stage === "synth" && dKo.reason === "tts 500" && dKo.fallback === "device" && JSON.stringify(diagOf("ja-JP")) === JSON.stringify(jaBefore),
+      `ko=${dshort(dKo)} ja=${dshort(diagOf("ja-JP"))}`,
+    );
+    await settle(sp);
+  }
+
+  // F6 — 설정 변경 시 프리페치 재실행(화면 코드 수정 없이 speech.ts 한 곳에서): device → cloud 전환, 속도 변경,
+  //      같은 설정 재탭(진행 중 요청을 끊지 않음), device 전환(중단), 화면 이탈 뒤(재실행 없음).
+  {
+    const texts = ["いぬ", "ねこ", "とり"];
+    sp.__setQueueTiming({ rateDebounceMs: 20 }); // 속도 재실행 디바운스(기본 600ms)를 줄인다 — 디바운스 자체는 F14가 잠근다
+    sp.setTtsEngine("ja-JP", "device");
+    const stop = sp.prefetchSpeech(texts, "ja-JP");
+    await sleep(20);
+    const postsDevice = env.posts.length;
+
+    env.fetchDelayMs = 30;
+    sp.setTtsEngine("ja-JP", "cloud");
+    await sleep(5);
+    sp.setTtsEngine("ja-JP", "cloud"); // 같은 설정 재탭 — 진행 중 배치를 끊고 다시 돌면 안 된다
+    await waitFor(() => env.posts.length >= 3, 1000);
+    await sleep(80);
+    const afterCloud = [...env.posts];
+    const abortedCloud = env.postAborted.length;
+    const speedsCloud = [...env.postSpeeds];
+
+    env.fetchDelayMs = 3;
+    sp.setTtsRate(0.7); // 천천히 → 클라우드 0.85
+    await waitFor(() => env.posts.length >= 6, 1000);
+    await sleep(20);
+    const speedsSlow = env.postSpeeds.slice(3);
+    sp.setTtsRate(0.7); // 같은 속도 재탭
+    await sleep(20);
+    const postsSameRate = env.posts.length;
+
+    env.fetchDelayMs = 40;
+    sp.setTtsRate(1.1); // 빠르게 → 1.15(디바운스 뒤 재실행), 2개가 날아가는 중에
+    await waitFor(() => env.posts.length >= 8, 500);
+    sp.setTtsEngine("ja-JP", "device"); // device로 바꾸면 그 언어 배치 중단
+    await sleep(80);
+    const postsAfterDevice = env.posts.length;
+    const abortedDevice = env.postAborted.length;
+
+    stop(); // 화면 이탈
+    env.fetchDelayMs = 3;
+    sp.setTtsEngine("ja-JP", "cloud");
+    sp.setTtsRate(0.9);
+    await sleep(60); // 디바운스(20ms)가 지난 뒤에도
+    const postsAfterStop = env.posts.length;
+
+    add(
+      "단발",
+      "F6 device 언어의 프리페치도 기억 → 엔진을 cloud로 바꾸는 순간 새 설정으로 재실행(POST 0 → 3, speed 1.0)·같은 설정 재탭은 진행 중 요청을 안 끊음",
+      postsDevice === 0 && afterCloud.length === 3 && [...afterCloud].sort().join("|") === [...texts].sort().join("|") && speedsCloud.every((v) => v === 1) && abortedCloud === 0,
+      `device POST ${postsDevice} → cloud POST ${afterCloud.join("|")} speed=${speedsCloud.join(",")} abort=${abortedCloud}`,
+    );
+    add(
+      "단발",
+      "F6 속도 변경 → 마지막 프리페치를 새 클라우드 속도로 재실행(3개 @0.85)·같은 속도 재탭은 POST 0",
+      speedsSlow.length === 3 && speedsSlow.every((v) => v === 0.85) && postsSameRate === 6,
+      `slow speeds=${speedsSlow.join(",")} 같은속도 뒤 POST ${postsSameRate}`,
+    );
+    add(
+      "단발",
+      "F6 device로 바꾸면 그 언어 배치 즉시 중단(진행 중 2개 abort·추가 POST 없음) / 화면 이탈(stop) 뒤엔 설정을 바꿔도 재실행 없음",
+      postsAfterDevice === 8 && abortedDevice === 2 && postsAfterStop === postsAfterDevice,
+      `device 전환 뒤 POST ${postsAfterDevice} abort ${abortedDevice} / stop 뒤 POST ${postsAfterStop}`,
+    );
+    sp.setTtsEngine("ja-JP", "device");
+    await settle(sp);
+  }
+
+  // F7 — 늦게 온 옛 합성이 공유 요소의 새 재생을 뺏지 못한다(playViaCloud의 **합성 뒤** 토큰 가드). speak가 큐 요소를 같이 쓰게
+  //      되면서 이 가드가 핵심이 됐다 — 빠지면 합성이 느린 옛 speak가 재생 중인 새 speak의 src를 바꿔 새 재생이 끝나지 않고
+  //      objectURL이 샌다(2026-09-25 QA #1, 원형 G1).
+  {
+    sp.setTtsEngine("ja-JP", "cloud");
+    env.audioMs = 150;
+    env.fetchDelayFor = (t) => (t === "おそい" ? 80 : 3);
+    sp.speak("おそい", "ja-JP");
+    await sleep(10);
+    sp.speak("はやい", "ja-JP");
+    await waitFor(() => playingTts() !== null, 500);
+    const b = playingTts();
+    const bSrc = b?.src ?? "";
+    const p0 = b?.pauseCalls ?? 0;
+    await sleep(120); // おそい 합성 도착(80ms) 뒤에도 はやい가 계속 재생 중이어야 한다
+    const stillSame = bSrc !== "" && (b?.src ?? "") === bSrc && !b?.paused;
+    await waitFor(() => b?.ended === true, 600);
+    await sleep(20);
+    add(
+      "단발",
+      "F7 늦게 온 옛 speak 합성이 공유 요소의 새 재생을 안 뺏음(src 유지·pause 0·끝까지·URL 1/1·남은 URL 0)",
+      stillSame && b?.pauseCalls === p0 && b?.ended === true && env.urlCreated === 1 && env.urlRevoked === 1 && env.liveUrls.size === 0,
+      `같은src·재생중=${stillSame} pause+${(b?.pauseCalls ?? 0) - p0} ended=${b?.ended} URL ${env.urlCreated}/${env.urlRevoked} live=${env.liveUrls.size} POST=${env.posts.join("|")}`,
+    );
+    await settle(sp);
+  }
+
+  // F8 — 300자 초과는 cloud 엔진이어도 speak가 **사전에** 기기로 보낸다: POST 0·잠금 해제 0(큐 요소 play·빈 발화 없음)·기기 1(§16-1, 원형 G3)
+  {
+    sp.setTtsEngine("en-US", "cloud");
+    const long = "a ".repeat(160).trim() + " end."; // 324자
+    const qa = queueEls()[0];
+    const pc0 = qa?.playCalls ?? 0;
+    env.log = [];
+    sp.speak(long, "en-US");
+    await waitFor(() => deviceTexts().includes(long), 300);
+    await sleep(20);
+    add(
+      "단발",
+      "F8 300자 초과 speak → POST 0·큐 요소 play 0·빈 발화 0·기기 음성 1(사전 판정)",
+      long.length > TTS_TEXT_MAX_CHARS && env.posts.length === 0 && (qa?.playCalls ?? 0) === pc0 && !env.log.includes("speak: ") && deviceTexts().includes(long),
+      `len=${long.length} POST=${env.posts.length} play+${(qa?.playCalls ?? 0) - pc0} log=${env.log.slice(0, 3).map((l) => short(l, 24)).join(",")}`,
+    );
+    await settle(sp);
+  }
+
+  // F9 — 프리페치 개수 상한 PREFETCH_MAX_ITEMS(비용 가드): 200개를 줘도 첫 배치 90, 속도 변경 재실행도 90(원형 G4)
+  {
+    sp.setTtsEngine("en-US", "cloud");
+    sp.__setQueueTiming({ rateDebounceMs: 10 });
+    const texts = Array.from({ length: 200 }, (_, i) => `word${i}`);
+    env.fetchDelayMs = 0;
+    const stop = sp.prefetchSpeech(texts, "en-US");
+    await waitFor(() => env.posts.length >= sp.PREFETCH_MAX_ITEMS, 3000);
+    await sleep(50);
+    const n1 = env.posts.length;
+    sp.setTtsRate(0.7);
+    await waitFor(() => env.posts.length - n1 >= sp.PREFETCH_MAX_ITEMS, 3000);
+    await sleep(50);
+    const n2 = env.posts.length - n1;
+    stop();
+    sp.setTtsRate(0.9);
+    add(
+      "단발",
+      "F9 프리페치 상한 PREFETCH_MAX_ITEMS: 200개 입력 → 첫 배치 POST 90·속도 변경 재실행 POST 90",
+      sp.PREFETCH_MAX_ITEMS === 90 && n1 === sp.PREFETCH_MAX_ITEMS && n2 === sp.PREFETCH_MAX_ITEMS,
+      `첫=${n1} 재실행=${n2} (상한 ${sp.PREFETCH_MAX_ITEMS})`,
+    );
+    await settle(sp);
+  }
+
+  /** 클라이언트 쪽 동시 진행 POST 수를 재는 fetch 덮개(abort되면 그 순간 닫힌 것으로 센다 — 브라우저가 요청을 버리는 시점). */
+  const countInflight = () => {
+    const g = globalThis as unknown as { fetch: (i: unknown, init?: RequestInit) => Promise<Response> };
+    const realFetch = g.fetch;
+    const m = { now: 0, max: 0, restore: () => void (g.fetch = realFetch) };
+    g.fetch = async (i: unknown, init?: RequestInit) => {
+      if ((init?.method ?? "GET").toUpperCase() !== "POST") return realFetch(i, init);
+      m.now++;
+      m.max = Math.max(m.max, m.now);
+      let open = true;
+      const close = () => {
+        if (open) {
+          open = false;
+          m.now--;
+        }
+      };
+      init?.signal?.addEventListener("abort", close, { once: true });
+      try {
+        return await realFetch(i, init);
+      } finally {
+        close();
+      }
+    };
+    return m;
+  };
+
+  // F10 — 새 배치(다른 화면의 prefetchSpeech — 자식·부모 효과 순서처럼 앞 화면이 stop하기 전에 온다)는 직전 배치를 끊는다:
+  //       끊긴 배치의 새 POST 0·진행 중 2개 abort·동시 진행 POST ≤ 2(원형 G5, 속도 경로는 F14)
+  {
+    sp.setTtsEngine("en-US", "cloud");
+    const a = Array.from({ length: 20 }, (_, i) => `screenA${i}`);
+    const b = Array.from({ length: 6 }, (_, i) => `screenB${i}`);
+    const m = countInflight();
+    env.fetchDelayMs = 20;
+    const stopA = sp.prefetchSpeech(a, "en-US");
+    await sleep(30);
+    const countA = () => env.posts.filter((t) => t.startsWith("screenA")).length;
+    const aBefore = countA();
+    const stopB = sp.prefetchSpeech(b, "en-US");
+    await waitFor(() => env.posts.filter((t) => t.startsWith("screenB")).length >= b.length, 1000);
+    await sleep(40);
+    const aAfter = countA() - aBefore;
+    const abortedA = env.postAborted.filter((t) => t.startsWith("screenA")).length;
+    m.restore();
+    stopA();
+    stopB();
+    add(
+      "단발",
+      "F10 다음 화면의 프리페치가 직전 배치를 끊음 — 끊긴 배치 새 POST 0·진행 중 2개 abort·동시 진행 POST ≤ 2",
+      aAfter === 0 && abortedA === 2 && m.max <= 2 && env.posts.filter((t) => t.startsWith("screenB")).length === b.length,
+      `A: 전환 전 ${aBefore}·뒤 +${aAfter}·abort ${abortedA} / B ${env.posts.filter((t) => t.startsWith("screenB")).length} / 최대 동시 ${m.max}`,
+    );
+    await settle(sp);
+  }
+
+  // F11 — 화면 이탈(prefetch 중단 함수): 진행 중 요청 abort·이후 POST 0(원형 G6)
+  {
+    sp.setTtsEngine("en-US", "cloud");
+    const texts = Array.from({ length: 10 }, (_, i) => `leave${i}`);
+    env.fetchDelayMs = 30;
+    const stop = sp.prefetchSpeech(texts, "en-US");
+    await sleep(10);
+    stop();
+    const n0 = env.posts.length;
+    await sleep(150);
+    add(
+      "단발",
+      "F11 prefetch stop(화면 이탈) → 진행 중 2개 abort·이후 POST 0",
+      n0 === 2 && env.postAborted.length === 2 && env.posts.length === n0,
+      `stop 시 POST ${n0} → ${env.posts.length}, abort ${env.postAborted.length}`,
+    );
+    await settle(sp);
+  }
+
+  // F12 — 밀려난 speak의 대기 타임아웃이 새 재생의 진단(✓)을 덮지 않고 기기 음성도 내지 않는다(catch의 토큰 가드, 원형 G7)
+  {
+    sp.setTtsEngine("ja-JP", "cloud");
+    sp.__setQueueTiming({ fetchMs: 40 });
+    env.audioMs = 5;
+    env.postStatus = (t) => (t === "まつ" ? "hang" : 200);
+    sp.speak("まつ", "ja-JP");
+    await sleep(5);
+    sp.speak("いま", "ja-JP");
+    await waitFor(() => diagOf("ja-JP")?.ok === true && env.urlRevoked >= 1, 300);
+    await sleep(80); // まつ의 40ms 대기 상한이 지난 뒤
+    const d = diagOf("ja-JP");
+    add(
+      "단발",
+      "F12 밀려난 speak의 타임아웃이 진단을 덮지 않음(마지막 = ✓)·기기 음성 0",
+      !!d && d.ok && deviceTexts().length === 0,
+      `diag=${dshort(d)} device=${deviceTexts().join("|") || "0"}`,
+    );
+    await settle(sp);
+  }
+
+  // F13 — iOS WebKit 멈춤 복구: cancel() 뒤 speechSynthesis가 paused로 굳어 이후 speak()가 조용히 무시되는 버그(스텁 pauseOnCancel).
+  //       기기 음성으로 **말하기 직전**마다(fallbackDevice·잠금 해제 빈 발화·speakDeviceAwait) paused면 resume()해야 들린다.
+  //       사용자 관찰(2026-09-25) "기기랑 클라우드가 꼬인 것 같다. 속도를 바꾸다 보면 다시 나오기도 한다"의 기기 쪽 고리.
+  {
+    // (a) device 엔진 단발 — cancelPlayback의 cancel()로 굳음 → fallbackDevice가 resume 뒤 발화
+    sp.setTtsEngine("ja-JP", "device");
+    env.pauseOnCancel = true;
+    env.log = [];
+    sp.speak("しろ", "ja-JP");
+    const logA = env.log.join(",");
+    const aOk = deviceTexts().includes("しろ") && !env.ignored.includes("しろ");
+    await sleep(20);
+    // (c) cloud 실패 → 기기 대체 — 합성 대기 중 굳어도(시스템) fallbackDevice가 resume 뒤 발화
+    sp.setTtsEngine("ja-JP", "cloud");
+    env.postStatus = () => 500;
+    env.fetchDelayMs = 20;
+    env.ignored = [];
+    sp.speak("あか", "ja-JP");
+    synth.paused = true;
+    await waitFor(() => deviceTexts().includes("あか") || env.ignored.includes("あか"), 500);
+    const cOk = deviceTexts().includes("あか") && !env.ignored.includes("あか");
+    await sleep(10);
+    add(
+      "단발",
+      "F13 iOS paused 복구 — fallbackDevice: device 단발(cancel → resume → 발화)·클라우드 실패 대체(대기 중 굳어도) 모두 실제 발화(무시 0)",
+      aOk && logA === "cancel,resume,speak:しろ" && cOk,
+      `device 단발=${aOk} log=[${logA}] 실패 대체=${cOk} 무시=${env.ignored.join("|") || "0"}`,
+    );
+    await settle(sp);
+
+    // (b) cloud 단발의 잠금 해제 빈 발화 — cancel()로 굳음 → 빈 발화가 무시되면 탭 밖 기기 대체가 안 풀린다
+    sp.setTtsEngine("ja-JP", "cloud");
+    env.pauseOnCancel = true;
+    env.log = [];
+    const urls0 = env.urlCreated;
+    sp.speak("くろ", "ja-JP");
+    const iCancel = env.log.lastIndexOf("cancel");
+    const iResume = env.log.indexOf("resume");
+    const iBlank = env.log.indexOf("speak: ");
+    const bOk = iCancel >= 0 && iResume > iCancel && iBlank > iResume && !env.ignored.includes(" ");
+    await waitFor(() => env.urlCreated > urls0 && env.liveUrls.size === 0, 500);
+    add(
+      "단발",
+      "F13 iOS paused 복구 — 잠금 해제 빈 발화: cancel → resume → 볼륨0 빈 발화(무시 0)",
+      bOk,
+      `log=[${env.log.slice(0, 5).join(",")}] 무시=${env.ignored.map((t) => JSON.stringify(t)).join("|") || "0"}`,
+    );
+    await settle(sp);
+
+    // (d) 큐의 기기 조각 — 조각 사이에 굳어도 speakDeviceAwait가 resume 뒤 발화
+    sp.setTtsEngine("ko-KR", "device");
+    sp.__setQueueTiming({ minMs: 30, perCharMs: 0, slackMs: 0, extendMs: 10 }); // 무시되면 안전 타임아웃으로 빨리 끝나게
+    const ends: string[] = [];
+    sp.speakQueue([ko("기기 조각 하나."), ko("기기 조각 둘.")], {
+      onItem: (i) => {
+        if (i === 1) synth.paused = true; // 앞 조각이 끝난 뒤 굳음
+      },
+      onEnd: (r) => void ends.push(r),
+    });
+    await waitFor(() => ends.length > 0, 1000);
+    const dOk = deviceTexts().includes("기기 조각 둘.") && !env.ignored.includes("기기 조각 둘.");
+    add(
+      "단발",
+      "F13 iOS paused 복구 — 큐 기기 조각(speakDeviceAwait): 조각 사이에 굳어도 resume 뒤 발화·done",
+      dOk && JSON.stringify(ends) === '["done"]',
+      `device=${deviceTexts().join("|")} 무시=${env.ignored.join("|") || "0"} ends=${ends.join(",")}`,
+    );
+    sp.setTtsEngine("ko-KR", "cloud");
+    await settle(sp);
+  }
+
+  // F14 — 속도 연타 비용 가드(2026-09-25 QA #2: 5회 연타에 합성 8건이 전부 버려짐): 재실행은 마지막 조작 뒤 한 번(trailing 디바운스),
+  //       연타 끝이 이미 받은 속도면 POST 0, 옛 속도 배치는 누르는 순간 멈춘다(디바운스를 기다리는 동안 옛 속도 합성을 더 쌓지 않음).
+  {
+    sp.setTtsEngine("en-US", "cloud");
+    sp.__setQueueTiming({ rateDebounceMs: 150 });
+    const texts = ["tap one", "tap two", "tap three", "tap four", "tap five", "tap six"];
+    env.fetchDelayMs = 3;
+    const stop = sp.prefetchSpeech(texts, "en-US"); // 보통(0.9) → 클라우드 1.0
+    await waitFor(() => env.posts.length >= texts.length, 1000);
+    await sleep(20);
+    const n0 = env.posts.length;
+    // 간격(60ms) < 디바운스(150ms) < 연타 전체(240ms) — 조작마다 타이머를 다시 걸지 않으면 중간 속도 배치가 샌다
+    for (const r of [1.1, 0.7, 1.1, 0.7, 1.1]) {
+      sp.setTtsRate(r);
+      await sleep(60);
+    }
+    await sleep(40); // 마지막 조작 뒤 ~100ms — 디바운스(150ms) 전
+    const duringTaps = env.posts.length - n0;
+    await waitFor(() => env.posts.length - n0 >= texts.length, 1000);
+    await sleep(60);
+    const burst = env.postSpeeds.slice(n0);
+
+    stop();
+    sp.setTtsRate(0.9);
+    await sleep(200); // 디바운스가 지나도 stop 뒤라 재실행 없음
+    // 새 화면: 보통(1.0)으로 다 받은 뒤, 아직 안 받은 속도(0.85·1.15)를 거쳐 받은 속도(보통)로 돌아온다
+    const texts3 = ["back one", "back two", "back three"];
+    env.fetchDelayMs = 3;
+    const stop3 = sp.prefetchSpeech(texts3, "en-US");
+    await waitFor(() => texts3.every((t) => env.posts.includes(t)), 1000);
+    await sleep(20);
+    const n1 = env.posts.length;
+    for (const r of [0.7, 1.1, 0.7, 0.9]) {
+      sp.setTtsRate(r); // 끝은 이미 받은 속도(보통 → 1.0)
+      await sleep(60);
+    }
+    await sleep(250);
+    const backToCached = env.posts.length - n1;
+    stop3();
+
+    // 옛 속도 배치가 도는 중에 속도를 바꾼다
+    const texts2 = ["slow one", "slow two", "slow three", "slow four"];
+    env.fetchDelayMs = 60;
+    const stop2 = sp.prefetchSpeech(texts2, "en-US"); // 1.0
+    await sleep(10); // 2개 진행 중
+    const n2 = env.posts.length;
+    sp.setTtsRate(0.7); // → 0.85
+    await sleep(80); // 진행 중 2개가 끝났을 시각, 디바운스(150ms) 전
+    const abortedAtTap = env.postAborted.filter((t) => texts2.includes(t)).length;
+    const oldSpeedAfterTap = env.postSpeeds.slice(n2).filter((v) => v === 1).length;
+    await waitFor(() => env.postSpeeds.filter((v) => v === 0.85).length >= texts2.length, 1500);
+    await sleep(20);
+    const newBatch = env.posts.slice(n2).filter((_, k) => env.postSpeeds[n2 + k] === 0.85).length;
+    stop2();
+    sp.setTtsRate(0.9);
+    add(
+      "단발",
+      "F14 속도 5회 연타 → 누르는 동안 POST 0, 마지막 조작 뒤 마지막 속도 배치만(6개 @1.15)",
+      duringTaps === 0 && burst.length === texts.length && burst.every((v) => v === 1.15),
+      `연타 중 POST ${duringTaps} → 뒤 ${burst.length}개 speed=${[...new Set(burst)].join(",")}`,
+    );
+    add("단발", "F14 연타 끝이 이미 받은 속도 → 재실행 POST 0", backToCached === 0, `POST +${backToCached}`);
+    add(
+      "단발",
+      "F14 옛 속도 배치 진행 중 속도 변경 → 진행 중 2개 즉시 abort·옛 속도 새 POST 0 → 디바운스 뒤 새 속도 배치",
+      abortedAtTap === 2 && oldSpeedAfterTap === 0 && newBatch === texts2.length,
+      `abort ${abortedAtTap} 옛속도 POST ${oldSpeedAfterTap} 새 배치 ${newBatch}`,
+    );
+    await settle(sp);
+  }
+
+  // F15 — 진행 중 합성 공유(in-flight): 같은 문장을 🔊·프리페치·큐가 동시에 원하면 합성 요청은 하나(QA #2 — 속도 바꾼 직후 🔊가
+  //       재실행 프리페치와 같은 문장을 두 번 합성). abort 의미: 한 소비자가 떠나도 다른 소비자가 기다리는 요청은 안 끊고,
+  //       마지막 소비자가 떠나면 끊고(서버·상류까지), 끊긴 요청에는 새 소비자가 붙지 않는다(새로 보낸다).
+  {
+    sp.setTtsEngine("en-US", "cloud");
+    env.fetchDelayMs = 40;
+    env.audioMs = 5;
+    const count = (t: string) => env.posts.filter((p) => p === t).length;
+    const played = (n: number) => env.urlCreated >= n && env.liveUrls.size === 0 && env.urlRevoked >= n;
+
+    sp.speak("shared first", "en-US"); // 🔊 먼저
+    await sleep(5);
+    const stopA = sp.prefetchSpeech(["shared first", "other a"], "en-US");
+    await waitFor(() => played(1) && count("other a") === 1, 1000);
+    await sleep(50);
+    const a = { post: count("shared first"), device: deviceTexts().length, url: env.urlCreated };
+    stopA();
+    await settle(sp);
+
+    env.fetchDelayMs = 40;
+    env.audioMs = 5;
+    const stopB = sp.prefetchSpeech(["shared second"], "en-US"); // 프리페치 먼저
+    await sleep(5);
+    sp.speak("shared second", "en-US");
+    await waitFor(() => played(1), 1000);
+    const b = { post: count("shared second"), device: deviceTexts().length };
+    stopB();
+    await settle(sp);
+    add(
+      "단발",
+      "F15 🔊 ↔ 프리페치 같은 문장 동시 → 합성 POST 1(어느 쪽이 먼저든)·🔊는 클라우드로 재생",
+      a.post === 1 && a.device === 0 && a.url === 1 && b.post === 1 && b.device === 0,
+      `🔊먼저 POST ${a.post}·device ${a.device}·URL ${a.url} / 프리페치먼저 POST ${b.post}·device ${b.device}`,
+    );
+
+    env.fetchDelayMs = 40;
+    env.audioMs = 5;
+    const stopC = sp.prefetchSpeech(["shared third"], "en-US");
+    await sleep(5);
+    sp.speak("shared third", "en-US");
+    await sleep(5);
+    stopC(); // 화면 이탈 — 🔊가 기다리는 요청은 끊지 않는다
+    await waitFor(() => played(1), 1000);
+    await sleep(20);
+    const c = { post: count("shared third"), aborted: env.postAborted.length, device: deviceTexts().length, url: env.urlCreated };
+    await settle(sp);
+
+    env.fetchDelayMs = 40;
+    const stopD = sp.prefetchSpeech(["alone"], "en-US");
+    await sleep(5);
+    stopD(); // 혼자 기다리던 소비자 — 요청을 끊는다
+    await sleep(70);
+    const d = { aborted: env.postAborted.join("|") };
+    await settle(sp);
+    add(
+      "단발",
+      "F15 abort 의미 — 프리페치 stop은 🔊가 같이 기다리는 요청을 안 끊음(POST 1·abort 0·클라우드 재생) / 혼자면 끊음(abort 1)",
+      c.post === 1 && c.aborted === 0 && c.device === 0 && c.url === 1 && d.aborted === "alone",
+      `공유 POST ${c.post}·abort ${c.aborted}·device ${c.device}·URL ${c.url} / 혼자 abort=${d.aborted || "0"}`,
+    );
+
+    env.fetchDelayMs = 40;
+    env.audioMs = 5;
+    const r = startQueue(sp, [ko("같이 쓰는 문장.")], "IF");
+    await sleep(5);
+    sp.speak("같이 쓰는 문장.", "ko-KR"); // 큐 취소 → 큐 혼자 기다리던 요청 abort → 🔊는 끊긴 요청에 붙지 않고 새로
+    await waitFor(() => played(1) && count("같이 쓰는 문장.") === 2, 1000);
+    await sleep(60);
+    const dk = diagOf("ko-KR");
+    add(
+      "단발",
+      "F15 끊긴 요청에 새 소비자가 안 붙음 — 큐 합성 대기 중 같은 문장 🔊 → 큐 요청 abort·🔊는 새 POST로 클라우드 재생(기기 0)",
+      JSON.stringify(r.ends) === '["stopped"]' && count("같이 쓰는 문장.") === 2 && env.postAborted.join("|") === "같이 쓰는 문장." && deviceTexts().length === 0 && env.urlCreated === 1 && !!dk?.ok,
+      `큐=${r.ends.join(",")} POST ${count("같이 쓰는 문장.")} abort=${env.postAborted.join("|") || "0"} device=${deviceTexts().join("|") || "0"} URL ${env.urlCreated} diag=${dshort(dk)}`,
+    );
+    await settle(sp);
+  }
+
+  // F16 — 합성 대기 상한(fetchMs)을 넘긴 요청에는 새로 붙지 않는다: 매달린 합성으로 기기 대체된 뒤 같은 🔊를 다시 누르면
+  //       새로 요청해 클라우드로 난다(진행 중 공유가 매달린 요청에 계속 묶어 두지 않게).
+  {
+    sp.setTtsEngine("ja-JP", "cloud");
+    sp.__setQueueTiming({ fetchMs: 40 });
+    env.audioMs = 5;
+    let n = 0;
+    env.postStatus = (t) => (t === "つる" && n++ === 0 ? "hang" : 200);
+    sp.speak("つる", "ja-JP");
+    await waitFor(() => deviceTexts().includes("つる"), 500);
+    await sleep(15);
+    sp.speak("つる", "ja-JP");
+    await waitFor(() => env.urlCreated >= 1 && env.urlRevoked >= 1 && env.liveUrls.size === 0, 500);
+    await sleep(20);
+    const d = diagOf("ja-JP");
+    add(
+      "단발",
+      "F16 매달린 요청(대기 상한 초과)에는 안 붙음 — 다시 누른 🔊는 새 POST로 클라우드 재생(기기 대체는 첫 번째 1회뿐)",
+      env.posts.filter((t) => t === "つる").length === 2 && deviceTexts().filter((t) => t === "つる").length === 1 && env.urlCreated === 1 && !!d?.ok,
+      `POST ${env.posts.filter((t) => t === "つる").length} device ${deviceTexts().filter((t) => t === "つる").length} URL ${env.urlCreated} diag=${dshort(d)}`,
     );
     await settle(sp);
   }

@@ -6,6 +6,8 @@
  *   - 501 no_api_key   : `OPENAI_API_KEY` 미설정(로컬 데모)
  *   - 400 invalid_input: 본문 형식·언어 화이트리스트·길이 상한·속도 범위 위반
  *   - 500 tts_failed   : 네트워크·API 실패
+ *   - 499 client_closed: 클라이언트가 먼저 끊었다(프리페치 배치 교체·화면 이탈·큐 종료). 아무도 받지 않는 응답이고,
+ *                        `req.signal`을 합성에 넘겨 상류 OpenAI 요청도 함께 끊는다(§16-5 비용 가드). 에러 로그를 남기지 않는다.
  *
  * lib/ai/client.ts(Structured Outputs)와 섞지 않는다 — 합성은 lib/tts.ts의 독립 클라이언트가 한다.
  */
@@ -53,7 +55,8 @@ export async function POST(req: Request) {
   if (!parsed.success) return fail("invalid_input", 400);
 
   try {
-    const { audio, contentType } = await synthesizeSpeech(parsed.data);
+    // 클라이언트가 끊으면 상류 합성도 멈춘다 — Next는 응답 소켓이 먼저 닫히면 req.signal을 abort한다.
+    const { audio, contentType } = await synthesizeSpeech(parsed.data, req.signal);
     return new NextResponse(new Uint8Array(audio), {
       status: 200,
       headers: {
@@ -64,6 +67,7 @@ export async function POST(req: Request) {
       },
     });
   } catch (err) {
+    if (req.signal.aborted) return fail("client_closed", 499); // 정상 흐름(연타·배치 교체) — 로그 소음 없이
     console.error("[/api/tts] 합성 실패:", err);
     return fail("tts_failed", 500);
   }

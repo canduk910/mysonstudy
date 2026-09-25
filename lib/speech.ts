@@ -26,6 +26,13 @@ import { setTtsFingerprintProvider, ttsCacheGet, ttsCachePut } from "./tts-cache
 const FINGERPRINT_TIMEOUT_MS = 3000;
 
 /**
+ * 속도 변경 뒤 프리페치 재실행까지 기다리는 시간(trailing 디바운스, §16-5). 속도 버튼을 연달아 눌러도 마지막 조작 뒤
+ * 한 번만 새 속도로 다시 받는다. 짧으면 연타마다 배치가 새로 돌고, 길면 속도를 바꾼 직후의 🔊가 합성을 기다린다
+ * (그 🔊 자신은 디바운스와 무관하게 새 속도로 바로 합성한다). 테스트는 `__setQueueTiming({ rateDebounceMs })`로 줄인다.
+ */
+const RATE_PREFETCH_DEBOUNCE_MS = 600;
+
+/**
  * 영속 캐시(IndexedDB)가 옛 목소리를 내지 않도록, 현재 voice|model을 **지문**으로 공급한다.
  * GET /api/tts는 env만 읽어(OpenAI 안 부름·키 불필요) 지문을 준다.
  * 반환 계약(setTtsFingerprintProvider): 지문 / **null = 서버가 명시적으로 없음**(200 아님·voice|model 없음 → 세션 내내 메모리만) /
@@ -109,6 +116,31 @@ export function setTtsRate(rate: number): void {
     /* 저장 실패는 비치명 — 이번 세션 동안은 currentRate로 동작 */
   }
   window.dispatchEvent(new CustomEvent(TTS_RATE_EVENT, { detail: rate }));
+  // 클라우드 캐시 키에 속도가 들어가므로(`${lang}:${speed}:${text}`) 속도를 바꾸면 미리 받아 둔 소리가 전부 빗나간다 —
+  // 마지막 프리페치를 새 속도로 다시 돌린다(§16-5). 안 그러면 🔊마다 합성을 기다려 iOS가 재생을 막을 여지가 커진다.
+  // 단 **마지막 조작 뒤 한 번만**(trailing 디바운스) — 속도를 연타하면 누를 때마다 배치를 새로 쏘고 곧바로 버려
+  // 상류 합성이 쌓였다(2026-09-25 QA: 5회 연타에 합성 8건이 전부 버려짐).
+  scheduleRatePrefetchRerun();
+}
+
+/** 속도 변경 → 프리페치 재실행 디바운스 타이머(마지막 조작 뒤 `rateDebounceMs`). */
+let ratePrefetchTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * 속도를 바꿨을 때: 옛 속도로 돌던 마지막 프리페치 배치는 **지금** 멈추고(새 속도가 정해지는 동안 버려질 합성을 더 쌓지
+ * 않는다 — 끊긴 요청은 서버도 상류 합성을 멈춘다), 새 속도 배치는 마지막 조작 `rateDebounceMs` 뒤 한 번만 돈다.
+ * 같은 속도 재탭은 아무것도 끊지 않는다. 엔진 cloud 전환(setTtsEngine)은 디바운스 없이 즉시다.
+ */
+function scheduleRatePrefetchRerun(): void {
+  const req = lastPrefetch;
+  if (req && !req.stopped && req.controller && !req.controller.signal.aborted && req.speed !== cloudSpeed()) {
+    req.controller.abort();
+  }
+  if (ratePrefetchTimer !== null) clearTimeout(ratePrefetchTimer);
+  ratePrefetchTimer = setTimeout(() => {
+    ratePrefetchTimer = null;
+    rerunLastPrefetch(); // 그새 화면을 떠났거나(stopped) device로 바꿨거나 같은 설정이면 여기서 걸러진다
+  }, queueTiming.rateDebounceMs);
 }
 
 // ───────────────────────── 발음 엔진 (언어별 cloud/device 선택) ─────────────────────────
@@ -166,7 +198,10 @@ export function setTtsEngine(lang: string, engine: TtsEngine): void {
   }
   window.dispatchEvent(new CustomEvent(TTS_ENGINE_EVENT, { detail: { lang, engine } }));
   // device로 바꾸면 그 언어로 진행 중이던 프리페치를 즉시 중단한다(클라우드 호출 0 보장).
+  // cloud로 바꾸면 화면을 다시 열지 않아도 그 언어의 마지막 프리페치를 지금 돌린다(§16-5 — device 기본인 일본어가
+  // 화면을 연 뒤 cloud로 바꾸면 캐시가 비어 첫 🔊마다 합성을 기다리던 공백).
   if (engine === "device") stopPrefetchForLang(lang);
+  else rerunLastPrefetch(lang);
 }
 
 /**
@@ -418,6 +453,63 @@ function cancelPlayback(): void {
   endQueue?.(); // 반환 전에 동기로 — 옛 큐 onEnd("stopped")
 }
 
+// ───────────────────────── 폰 진단 — 마지막 클라우드 재생 결과 (§16-5) ─────────────────────────
+//
+// 서버 로그를 볼 수 없는 폰에서 "클라우드가 왜 안 나는지"를 소리 설정 옆 캡션 한 줄(TtsEngineControl)로 보여 준다.
+// 언어 베이스별 **마지막 1건**만 메모리에 둔다(세션 한정·본문 텍스트 없음). 단발(speak)과 큐(speakQueue) 조각이 같이 쓴다.
+
+/** 실패 단계 — cache: 캐시 조회(지문 GET·IndexedDB), synth: `/api/tts` 합성, play: 오디오 재생. */
+export type TtsPlaybackStage = "cache" | "synth" | "play";
+
+/** 마지막 클라우드 재생 결과. 성공이면 stage·reason·fallback이 null. */
+export interface TtsPlaybackDiag {
+  /** 기록 시각(ISO) */
+  at: string;
+  /** 재생 언어(BCP-47) */
+  lang: string;
+  /** 클라우드 오디오가 실제로 재생을 시작했는가 */
+  ok: boolean;
+  stage: TtsPlaybackStage | null;
+  /** 실패 이유 — `tts 501`(키 없음)·`tts 500`·`timeout`(합성 대기 상한)·`network`·`NotAllowedError`(iOS 재생 차단) 등 */
+  reason: string | null;
+  /** 실패 뒤 기기 음성으로 대체했는가("none" = 기기 음성도 못 냄) */
+  fallback: "device" | "none" | null;
+}
+
+/** 진단이 바뀌면 쏘는 이벤트. detail: TtsPlaybackDiag */
+export const TTS_DIAG_EVENT = "eunwoo:tts-diag";
+
+const playbackDiag = new Map<string, TtsPlaybackDiag>();
+
+/** 이 언어의 마지막 클라우드 재생 결과(없으면 null). 렌더 중이 아니라 **마운트 후**에 읽는다(hydration). */
+export function getTtsPlaybackDiag(lang: string): TtsPlaybackDiag | null {
+  return playbackDiag.get(langBase(lang)) ?? null;
+}
+
+const DIAG_OK = { ok: true, stage: null, reason: null, fallback: null } as const;
+
+function noteCloudResult(lang: string, r: Omit<TtsPlaybackDiag, "at" | "lang">): void {
+  const d: TtsPlaybackDiag = { at: new Date().toISOString(), lang, ...r };
+  playbackDiag.set(langBase(lang), d);
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new CustomEvent(TTS_DIAG_EVENT, { detail: d }));
+  } catch {
+    /* 진단은 best-effort */
+  }
+}
+
+/** 실패 이유를 캡션용 짧은 문자열로. 합성 HTTP 실패는 `tts {status}`, 대기 상한은 `timeout`, 재생 거부는 DOMException 이름. */
+function failureReason(e: unknown): string {
+  if (e === WAIT_TIMEOUT) return "timeout";
+  const msg = e instanceof Error ? e.message : "";
+  if (/^tts (\d{3}|empty)$/.test(msg)) return msg;
+  const name = (e as { name?: unknown } | null)?.name;
+  if (name === "TypeError") return "network"; // fetch 네트워크 실패(Safari "Load failed"·Chrome "Failed to fetch")
+  if (typeof name === "string" && name && name !== "Error") return name.slice(0, 40); // NotAllowedError·NotSupportedError…
+  return (msg || String(e)).slice(0, 40) || "unknown";
+}
+
 /** 이 환경·입력이 클라우드 TTS를 쓸 수 있는가. 아니면 기기 음성으로 간다(§16-2). */
 function canUseCloud(lang: string, text: string): boolean {
   if (typeof window === "undefined") return false; // SSR 방어(재생은 클릭 시점이라 실제로는 안 걸린다)
@@ -427,57 +519,180 @@ function canUseCloud(lang: string, text: string): boolean {
   return true;
 }
 
+/** 우리 쪽 중단(소비자 abort)을 알리는 오류 — fetch가 abort로 끊길 때와 같은 이름(AbortError). */
+function abortError(): Error {
+  try {
+    return new DOMException("The operation was aborted.", "AbortError");
+  } catch {
+    const e = new Error("The operation was aborted.");
+    e.name = "AbortError";
+    return e;
+  }
+}
+
+/**
+ * **진행 중 합성 공유**(in-flight, §16-5). 같은 캐시 키를 🔊(speak)·프리페치·큐 look-ahead가 동시에 원하면
+ * `/api/tts` 요청은 하나다 — 예전엔 속도를 바꾼 직후 🔊가 재실행 프리페치와 같은 문장을 두 번 합성했다(2026-09-25 QA).
+ *
+ * abort 의미 보존: 소비자는 자기 `signal`로만 **자기가 기다리는 것을** 그만둔다(AbortError로 reject). 공유 요청은
+ * **기다리는 소비자가 0이 될 때만** 끊고(서버가 req.signal로 상류 합성까지 멈춘다) 곧바로 표에서 뺀다 — 그래서 뒤에 온
+ * 소비자는 끊긴 요청에 붙지 않고 새로 보낸다. signal 없는 소비자(speak)는 끝까지 기다리는 쪽으로 센다(대기 상한이 지나도
+ * 요청은 살려 둬 늦게라도 캐시에 남긴다 — 예전 동작 그대로).
+ */
+interface InflightSynth {
+  key: string;
+  promise: Promise<Blob>;
+  /** 공유 요청 자체의 중단기(소비자 signal과 별개) */
+  controller: AbortController;
+  /** 아직 기다리는 소비자 수 */
+  consumers: number;
+  settled: boolean;
+  /** 지금 단계(진단) — 붙어 있는 소비자들의 trace에 함께 적는다 */
+  stage: TtsPlaybackStage;
+  traces: Set<{ stage: TtsPlaybackStage }>;
+  startedAt: number;
+}
+const inflightSynth = new Map<string, InflightSynth>();
+
+/** 공유 요청 하나를 시작한다: 2차(IndexedDB) 조회 → 없으면 `/api/tts` 합성 → 두 겹 캐시에 넣는다. */
+function startSynthesis(key: string, text: string, lang: string, speed: number): InflightSynth {
+  const controller = new AbortController();
+  const entry = {
+    key,
+    controller,
+    consumers: 0,
+    settled: false,
+    stage: "cache",
+    traces: new Set(),
+    startedAt: Date.now(),
+  } as InflightSynth; // promise는 바로 아래에서 채운다(setStage가 entry를 참조하므로 먼저 만든다)
+  const setStage = (s: TtsPlaybackStage) => {
+    entry.stage = s;
+    for (const t of entry.traces) t.stage = s;
+  };
+  entry.promise = (async () => {
+    // 2차(IndexedDB) 히트: 앱을 닫았다 열어도 산다 → 재합성·재요금 없음. IDB 불가면 null(조용히 통과).
+    const persisted = await ttsCacheGet(key);
+    if (persisted) {
+      cloudCache.set(key, persisted); // 1차로 승격
+      return persisted;
+    }
+    if (controller.signal.aborted) throw abortError(); // 조회 도중 모두 떠났다 — 보내지 않는다
+
+    setStage("synth");
+    const res = await fetch("/api/tts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text, lang, speed }),
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`tts ${res.status}`); // 키 없음(501)·검증 실패(400)·합성 실패(500)
+    const blob = await res.blob();
+    if (blob.size === 0) throw new Error("tts empty");
+
+    cloudCache.set(key, blob); // 1차
+    if (cloudCache.size > CLOUD_CACHE_MAX) {
+      const oldest = cloudCache.keys().next().value;
+      if (oldest !== undefined) cloudCache.delete(oldest);
+    }
+    void ttsCachePut(key, blob); // 2차(best-effort, 비동기) — 실패해도 재생엔 지장 없음
+    return blob;
+  })();
+  const drop = () => {
+    entry.settled = true;
+    if (inflightSynth.get(key) === entry) inflightSynth.delete(key);
+  };
+  entry.promise.then(drop, drop); // 소비자가 모두 떠나 끊겨도 unhandled rejection이 나지 않게 여기서 받는다
+  return entry;
+}
+
+/** 공유 요청에 소비자 하나로 붙는다. 자기 signal이 abort되면 자기만 떠나고, 마지막 소비자면 요청을 끊는다. */
+function joinSynthesis(entry: InflightSynth, signal?: AbortSignal, trace?: { stage: TtsPlaybackStage }): Promise<Blob> {
+  entry.consumers++;
+  if (trace) {
+    trace.stage = entry.stage;
+    entry.traces.add(trace);
+  }
+  return new Promise<Blob>((resolve, reject) => {
+    let left = false;
+    const leave = (): boolean => {
+      if (left) return false;
+      left = true;
+      signal?.removeEventListener("abort", onAbort);
+      if (trace) entry.traces.delete(trace);
+      entry.consumers--;
+      return true;
+    };
+    const onAbort = () => {
+      if (!leave()) return;
+      if (entry.consumers === 0 && !entry.settled) {
+        // 아무도 안 기다린다 — 표에서 먼저 빼고(뒤에 온 소비자는 새로 보낸다) 요청을 끊는다(서버·상류 합성도 멈춘다).
+        if (inflightSynth.get(entry.key) === entry) inflightSynth.delete(entry.key);
+        entry.controller.abort();
+      }
+      reject(abortError());
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    entry.promise.then(
+      (blob) => {
+        if (leave()) resolve(blob);
+      },
+      (e) => {
+        if (leave()) reject(e);
+      },
+    );
+  });
+}
+
 /**
  * 캐시 확인 → 없으면 `/api/tts` 합성 후 캐시에 넣는다. 200이 아니면(501·400·500) throw → 호출부가
- * 기기 음성으로 폴백(재생)하거나 조용히 무시(프리페치). `signal`은 프리페치가 화면 이탈 시 중단하는 용도.
+ * 기기 음성으로 폴백(재생)하거나 조용히 무시(프리페치). `signal`은 프리페치·큐가 중단하는 용도 — 같은 키를 다른 소비자가
+ * 기다리고 있으면 요청은 계속되고 이 호출만 AbortError로 물러난다(진행 중 합성 공유, 위 InflightSynth).
+ * `trace`(선택, 진단용): 지금 어느 단계인지(cache → synth)를 적어 둔다 — 실패·타임아웃이 난 단계를 캡션에 보이려고.
  */
-async function getAudioBlob(text: string, lang: string, speed: number, signal?: AbortSignal): Promise<Blob> {
+function getAudioBlob(
+  text: string,
+  lang: string,
+  speed: number,
+  signal?: AbortSignal,
+  trace?: { stage: TtsPlaybackStage },
+): Promise<Blob> {
   const key = `${lang}:${speed}:${text}`;
+  if (trace) trace.stage = "cache";
   const cached = cloudCache.get(key);
-  if (cached) return cached; // 1차(메모리) 히트: 네트워크 0
+  if (cached) return Promise.resolve(cached); // 1차(메모리) 히트: 네트워크 0
+  if (signal?.aborted) return Promise.reject(abortError());
 
-  // 2차(IndexedDB) 히트: 앱을 닫았다 열어도 산다 → 재합성·재요금 없음. IDB 불가면 null(조용히 통과).
-  const persisted = await ttsCacheGet(key);
-  if (persisted) {
-    cloudCache.set(key, persisted); // 1차로 승격
-    return persisted;
+  let entry = inflightSynth.get(key);
+  // 합성 대기 상한(fetchMs)을 넘긴 요청에는 새로 붙지 않는다 — 매달린 요청에 묶여 다시 눌러도 영영 클라우드를 못 쓰는 일이
+  // 없게(그 요청은 기존 소비자를 위해 살려 둔다). 끊긴 요청은 이미 표에서 빠져 있지만 한 번 더 거른다.
+  if (entry && (entry.controller.signal.aborted || Date.now() - entry.startedAt > queueTiming.fetchMs)) entry = undefined;
+  if (!entry) {
+    entry = startSynthesis(key, text, lang, speed);
+    inflightSynth.set(key, entry);
   }
-
-  const res = await fetch("/api/tts", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text, lang, speed }),
-    signal,
-  });
-  if (!res.ok) throw new Error(`tts ${res.status}`); // 키 없음(501)·검증 실패(400)·합성 실패(500)
-  const blob = await res.blob();
-  if (blob.size === 0) throw new Error("tts empty");
-
-  cloudCache.set(key, blob); // 1차
-  if (cloudCache.size > CLOUD_CACHE_MAX) {
-    const oldest = cloudCache.keys().next().value;
-    if (oldest !== undefined) cloudCache.delete(oldest);
-  }
-  void ttsCachePut(key, blob); // 2차(best-effort, 비동기) — 실패해도 재생엔 지장 없음
-  return blob;
+  return joinSynthesis(entry, signal, trace);
 }
 
 /**
  * Blob을 재생한다. objectURL은 재생마다 새로 만들고 종료·에러·취소에 반드시 회수한다(누수 금지).
  *
- * `el`(선택): 재사용할 오디오 요소 — 큐(speakQueue)가 iOS 재생 잠금 때문에 요소 하나(`queueAudio`)를 돌려 쓴다(§18-2).
- * 생략하면 지금처럼 재생마다 `new Audio` — speak() 경로는 그대로다. 요소를 재사용하므로 전역 정리의 동일성 검사는
- * 요소가 아니라 **이번 호출의 url**(호출마다 유일)로 한다.
+ * `el`(선택): 재사용할 오디오 요소 — iOS 재생 잠금 때문에 탭 안에서 풀어 둔 요소 하나(`queueAudio`)를 돌려 쓴다.
+ * 큐(speakQueue, §18-2)와 단발(speak, §16-5 — 2026-09-25부터)이 모두 넘긴다. 생략하면 재생마다 `new Audio`
+ * (요소를 못 만든 환경의 폴백). 요소를 재사용하므로 전역 정리의 동일성 검사는 요소가 아니라 **이번 호출의 url**(호출마다 유일)로 한다.
  *
  * `cap`(선택, 큐 전용): **재생 안전 타임아웃**(§18-2). `ended`가 끝내 안 오면 큐가 그 조각에서 영영 멈춘다 — 그래서
  * 오디오 duration이 유한하면 `duration × 1000 + slackMs`, 모르면 `fallbackMs`(기기 추정식) 뒤에 소리를 끊고
- * 끝난 것으로 본다(resolve → 다음 조각). 생략하면(speak() 경로) 지금처럼 상한 없음.
+ * 끝난 것으로 본다(resolve → 다음 조각). 생략하면(speak() 경로) 상한 없음.
+ *
+ * `onStart`(선택, 진단용): play()가 실제로 시작됐을 때 한 번(이미 취소됐으면 부르지 않는다).
  */
 function playBlob(
   blob: Blob,
   token: number,
   el?: HTMLAudioElement,
   cap?: { fallbackMs: number; slackMs: number },
+  onStart?: () => void,
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let url: string;
@@ -572,6 +787,13 @@ function playBlob(
     void audio.play().then(
       () => {
         started = true;
+        if (!settled && onStart) {
+          try {
+            onStart();
+          } catch {
+            /* 진단 콜백 예외는 재생을 깨지 않는다 */
+          }
+        }
         const d = audio.duration;
         if (cap && !settled && Number.isFinite(d) && d > 0) armCap(d * 1000 + cap.slackMs);
       },
@@ -591,37 +813,66 @@ function playBlob(
   });
 }
 
-/** 기기 음성(speechSynthesis)으로 읽는다 — 클라우드가 못 될 때의 폴백(§16-2). 에러를 띄우지 않는다. */
-function fallbackDevice(text: string, lang: string, token: number): void {
-  if (token !== playToken) return; // 취소로 인한 실패면 폴백도 하지 않는다
-  if (!isSpeechSupported()) return;
+/**
+ * iOS WebKit 멈춤 복구(§16-5, 2026-09-25): `cancel()` 뒤 speechSynthesis가 **paused 상태로 굳어** 이후 `speak()`가 에러도
+ * 이벤트도 없이 무시되는 알려진 버그가 있다 — "기기랑 클라우드가 꼬인 것 같다, 속도를 바꾸다 보면 다시 나오기도 한다"는
+ * 관찰의 기기 쪽 고리다(우리는 🔊·큐·폴백마다 cancel한다). 그래서 기기 음성으로 **말하기 직전**(fallbackDevice·
+ * speakDeviceAwait·잠금 해제 빈 발화) paused면 `resume()`한다. 앱은 speechSynthesis.pause()를 쓰지 않으므로 paused는 이
+ * 버그(또는 시스템)뿐이라 풀어도 잃을 것이 없다. 지원하지 않거나 던지면 조용히 넘어간다.
+ */
+function resumeIfPaused(ss: SpeechSynthesis): void {
   try {
-    window.speechSynthesis.cancel();
+    if (ss.paused && typeof ss.resume === "function") ss.resume();
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * 기기 음성(speechSynthesis)으로 읽는다 — 클라우드가 못 될 때의 폴백(§16-2)이자 device 엔진의 단발 재생. 에러를 띄우지 않는다.
+ * 반환값 = 발화를 실제로 걸었는가(진단의 "기기 음성으로 대체" 여부).
+ *
+ * cancel 규칙은 `speakDeviceAwait`(§18-2)와 같다 — **말하는 중·대기 중일 때만** cancel하고, 잠금 해제용 빈 발화만 남아
+ * 있으면 끊지 않고 뒤에 잇는다. 쉬고 있을 때 무조건 cancel() 직후 speak()하면 iOS·Chrome에서 새 발화가 씹혀,
+ * 클라우드 실패 뒤의 대체 재생까지 무음이 됐다(2026-09-25 신고, §16-5).
+ */
+function fallbackDevice(text: string, lang: string, token: number): boolean {
+  if (token !== playToken) return false; // 취소로 인한 실패면 폴백도 하지 않는다
+  if (!isSpeechSupported()) return false;
+  try {
+    const ss = window.speechSynthesis;
+    if ((ss.speaking || ss.pending) && !unlockUtterance) ss.cancel();
+    resumeIfPaused(ss); // iOS: cancel 뒤 paused로 굳어 있으면 이 발화가 조용히 무시된다
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = lang;
     utterance.rate = getTtsRate();
     const voice = resolveVoice(lang); // 고품질 음성 자동/수동 선택(§16) — 없으면 브라우저 기본
     if (voice) utterance.voice = voice;
-    window.speechSynthesis.speak(utterance);
+    ss.speak(utterance);
+    return true;
   } catch {
-    /* noop — 조용히 무음(에러 화면 금지) */
+    return false; // 조용히 무음(에러 화면 금지)
   }
 }
 
-/** 클라우드 시도 → 실패면 기기 음성. 세대 토큰으로 늦게 끝난 작업을 걸러 낸다. */
+/**
+ * 클라우드 시도 → 실패면 기기 음성. 세대 토큰으로 늦게 끝난 작업을 걸러 낸다. 호출 전에 speak()가 **동기로**
+ * 재생 잠금을 풀어 두고(unlockPlayback), 여기선 그 재사용 요소(`queueAudio`)로 재생한다 — iOS는 합성 대기(비동기) 뒤
+ * `new Audio().play()`를 막는다(NotAllowedError). 합성 대기에는 큐와 같은 상한(`fetchMs`)을 둬, 망이 매달려도 무음으로
+ * 멈추지 않고 기기 음성으로 간다(요청은 끊지 않는다 — 늦게 와도 캐시에 남는다). 결과는 폰 진단에 남긴다.
+ */
 async function playViaCloud(text: string, lang: string, speed: number, token: number): Promise<void> {
-  if (!canUseCloud(lang, text)) {
-    fallbackDevice(text, lang, token);
-    return;
-  }
+  const trace: { stage: TtsPlaybackStage } = { stage: "cache" };
   try {
-    const blob = await getAudioBlob(text, lang, speed);
+    const blob = await waitWithTimeout(getAudioBlob(text, lang, speed, undefined, trace), queueTiming.fetchMs);
     if (token !== playToken) return; // 합성 도중 새 재생이 왔다 → 버린다(폴백 안 함)
-    await playBlob(blob, token);
+    trace.stage = "play";
+    await playBlob(blob, token, queueAudio ?? undefined, undefined, () => noteCloudResult(lang, DIAG_OK));
     // 정상 종료·취소 모두 여기로 온다. 취소면 token이 이미 달라 아무 일도 안 한다.
-  } catch {
-    if (token !== playToken) return; // 취소로 인한 실패는 폴백하지 않는다
-    fallbackDevice(text, lang, token); // 진짜 실패(fetch/재생) → 기기 음성
+  } catch (e) {
+    if (token !== playToken) return; // 취소로 인한 실패는 폴백·기록하지 않는다
+    const fell = fallbackDevice(text, lang, token); // 진짜 실패(캐시·합성·재생·대기 상한) → 기기 음성
+    noteCloudResult(lang, { ok: false, stage: trace.stage, reason: failureReason(e), fallback: fell ? "device" : "none" });
   }
 }
 
@@ -673,6 +924,66 @@ async function runPrefetch(targets: string[], lang: string, speed: number, signa
 }
 
 /**
+ * 화면이 부른 프리페치 요청 하나. 설정(엔진·속도)이 바뀌면 이 요청을 새 설정으로 다시 돌린다(§16-5) —
+ * 그래서 device 언어라 네트워크 없이 끝난 요청도 기억한다(나중에 cloud로 바꾸면 그 자리에서 돈다).
+ */
+interface PrefetchRequest {
+  texts: string[];
+  lang: string;
+  /** 이 요청의 현재 배치(아직 안 돌았으면 null). 설정이 바뀌어 다시 돌면 새 컨트롤러로 바뀐다. */
+  controller: AbortController | null;
+  /** 그 배치를 돌린 클라우드 속도(캐시 키의 일부) */
+  speed: number;
+  /** 화면이 중단 함수를 불렀다(화면 이탈) — 다시 돌지 않는다 */
+  stopped: boolean;
+}
+
+/** 가장 최근의 프리페치 요청(화면이 중단하면 null). 새 요청이 오면 바뀐다 — "마지막 요청만 다시 돈다". */
+let lastPrefetch: PrefetchRequest | null = null;
+
+/** 요청을 지금 설정으로 돌린다. device 언어면 아무것도 안 한다(네트워크 0 — 직전 배치도 건드리지 않는다). */
+function startPrefetch(req: PrefetchRequest): void {
+  if (getTtsEngine(req.lang) !== "cloud") return; // device 언어는 클라우드를 안 쓰니 프리페치도 안 한다(네트워크 0)
+
+  prefetchAbort?.abort(); // 직전 배치 중단(화면 전환 시 겹침 방지)
+  const controller = new AbortController();
+  prefetchAbort = controller;
+  prefetchLang = langBase(req.lang); // 엔진을 device로 바꿀 때 이 언어 배치만 끊기 위해
+  req.controller = controller;
+  const speed = cloudSpeed(); // 재생(클라우드)과 같은 키가 되도록 클라우드 속도로 받는다
+  req.speed = speed;
+
+  const seen = new Set<string>();
+  const targets: string[] = [];
+  for (const raw of req.texts) {
+    const text = (raw ?? "").trim();
+    if (!text || text.length > TTS_TEXT_MAX_CHARS) continue;
+    const key = `${req.lang}:${speed}:${text}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (cloudCache.has(key)) continue; // 이미 있으면 건너뛴다(네트워크 0)
+    targets.push(text);
+    if (targets.length >= PREFETCH_MAX_ITEMS) break; // 개수 상한(비용 가드)
+  }
+  if (targets.length === 0) return;
+  void runPrefetch(targets, req.lang, speed, controller.signal);
+}
+
+/**
+ * 설정이 바뀌었을 때(setTtsEngine → cloud, setTtsRate) 마지막 프리페치를 새 설정으로 다시 돌린다(§16-5).
+ * `lang`을 주면 그 언어의 요청일 때만. 같은 설정으로 이미 돌고 있거나 다 받았으면 건드리지 않는다 —
+ * 같은 버튼을 다시 눌러 진행 중 요청을 끊으면 합성 요금만 버린다.
+ */
+function rerunLastPrefetch(lang?: string): void {
+  const req = lastPrefetch;
+  if (!req || req.stopped) return;
+  if (lang !== undefined && langBase(req.lang) !== langBase(lang)) return;
+  if (getTtsEngine(req.lang) !== "cloud") return;
+  if (req.controller && !req.controller.signal.aborted && req.speed === cloudSpeed()) return;
+  startPrefetch(req);
+}
+
+/**
  * 화면에 보이는 문장들을 **미리 합성해 캐시에 채운다**(재생하지 않는다). 이후 `speak()`가 캐시 히트로
  * 네트워크 없이 즉시 울린다 — 첫 재생 ~1초 지연 제거가 목적.
  *
@@ -681,35 +992,29 @@ async function runPrefetch(targets: string[], lang: string, speed: number, signa
  *
  * **반환값은 중단 함수**다 — 화면 이탈 시 중단하도록 `useEffect(() => prefetchSpeech(texts, lang), [deps])`
  * 한 줄로 쓰면 cleanup에서 자동 abort된다. 새 프리페치가 오면 직전 배치도 자동 중단한다.
+ *
+ * 설정 변경(§16-5): 이 요청은 "마지막 프리페치"로 기억된다. 화면이 떠 있는 동안 그 언어 엔진을 cloud로 바꾸거나
+ * 속도를 바꾸면 **화면 코드 수정 없이** 새 설정으로 다시 돈다(device로 바꾸면 중단). 엔진 전환은 즉시, 속도는 옛 배치를
+ * 곧바로 멈추고 마지막 조작 `RATE_PREFETCH_DEBOUNCE_MS` 뒤 한 번 돈다(연타 비용 가드). 중단 함수를 부르면 잊는다.
+ * 같은 문장을 🔊·큐가 동시에 원하면 합성 요청을 함께 쓴다(getAudioBlob의 진행 중 합성 공유).
  */
 export function prefetchSpeech(texts: string[], lang: string = TTS_LANG): () => void {
   const noop = () => {};
   if (typeof window === "undefined" || typeof fetch === "undefined") return noop;
   if (!isTtsLang(lang)) return noop; // 화이트리스트 밖 언어는 어차피 기기 음성이라 프리페치 무의미
-  if (getTtsEngine(lang) !== "cloud") return noop; // device 언어는 클라우드를 안 쓰니 프리페치도 안 한다(네트워크 0)
 
-  prefetchAbort?.abort(); // 직전 배치 중단(화면 전환 시 겹침 방지)
-  const controller = new AbortController();
-  prefetchAbort = controller;
-  prefetchLang = langBase(lang); // 엔진을 device로 바꿀 때 이 언어 배치만 끊기 위해
-  const speed = cloudSpeed(); // 재생(클라우드)과 같은 키가 되도록 클라우드 속도로 받는다
-
-  const seen = new Set<string>();
-  const targets: string[] = [];
-  for (const raw of texts) {
-    const text = (raw ?? "").trim();
-    if (!text || text.length > TTS_TEXT_MAX_CHARS) continue;
-    const key = `${lang}:${speed}:${text}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    if (cloudCache.has(key)) continue; // 이미 있으면 건너뛴다(네트워크 0)
-    targets.push(text);
-    if (targets.length >= PREFETCH_MAX_ITEMS) break; // 개수 상한(비용 가드)
-  }
-  if (targets.length === 0) return () => controller.abort();
-
-  void runPrefetch(targets, lang, speed, controller.signal);
-  return () => controller.abort();
+  const req: PrefetchRequest = { texts: [...texts], lang, controller: null, speed: NaN, stopped: false };
+  lastPrefetch = req; // device 언어여도 기억한다 — 나중에 cloud로 바꾸면 그 자리에서 돈다
+  startPrefetch(req);
+  return () => {
+    req.stopped = true;
+    req.controller?.abort();
+    if (req.controller && prefetchAbort === req.controller) {
+      prefetchAbort = null;
+      prefetchLang = null;
+    }
+    if (lastPrefetch === req) lastPrefetch = null;
+  };
 }
 
 // ───────────────────────── 공개 API (시그니처 불변) ─────────────────────────
@@ -723,17 +1028,23 @@ export function prefetchSpeech(texts: string[], lang: string = TTS_LANG): () => 
  * `lang`은 발음 언어(BCP-47). **생략하면 `TTS_LANG`(en-US)** — 기존 영어 호출부는 인자 없이 부르므로
  * 동작이 그대로다(회귀 0). 일본어 화면은 `speak(surface, "ja-JP")`로 넘긴다. 속도(getTtsRate)·cancel
  * 규약은 언어·소스(클라우드/기기)와 무관하게 동일하다.
+ *
+ * iOS(§16-5, 2026-09-25): 클라우드 경로는 **첫 await 전에 동기로** 재생 잠금을 푼다(speakQueue와 같은 unlockPlayback —
+ * 재사용 요소에 무음 WAV play + 볼륨 0 빈 발화). 🔊 onClick에서 불리면 그 순간 잠금이 풀려, 합성(~1초) 뒤 같은 요소의
+ * play()와 실패 시 기기 음성 대체가 탭 밖에서도 난다. 탭 밖(effect의 자동 낭독)에서 불리면 무음 play()가 거부될 뿐
+ * (조용히 삼킨다) 예전보다 나빠지지 않는다 — 한 번이라도 탭으로 풀린 요소를 재사용하므로 오히려 날 가능성이 높다.
  */
 export function speak(text: string, lang: string = TTS_LANG): void {
   const trimmed = (text ?? "").trim();
   if (!trimmed) return;
-  cancelPlayback(); // 이전 것(클라우드·기기) 취소 + 토큰 증가
+  cancelPlayback(); // 이전 것(클라우드·기기·큐) 취소 + 토큰 증가 — 활성 큐의 onEnd("stopped")는 여기서 동기로
   const token = playToken; // 방금 올린 최신 세대
-  // 이 언어의 엔진이 device면 클라우드를 아예 시도하지 않고 기기 음성으로 직행한다(불필요한 네트워크·지연 없음).
-  if (getTtsEngine(lang) !== "cloud") {
+  // 이 언어의 엔진이 device거나 클라우드를 쓸 수 없는 입력(300자 초과·화이트리스트 밖)이면 기기 음성으로 직행한다.
+  if (getTtsEngine(lang) !== "cloud" || !canUseCloud(lang, trimmed)) {
     fallbackDevice(trimmed, lang, token);
     return;
   }
+  unlockPlayback(true); // 첫 await 전(iOS) — 취소 다음에, 재사용 요소·기기 음성 잠금 해제
   void playViaCloud(trimmed, lang, cloudSpeed(), token); // 클라우드는 별도 속도 매핑
 }
 
@@ -759,6 +1070,7 @@ export function stopSpeaking(): void {
 /** 테스트 전용 — 1차(메모리) 캐시를 비운다(새 세션 모사: 2차 IDB가 살아나는지 검증). */
 export function __clearTtsMemoryCache(): void {
   cloudCache.clear();
+  inflightSynth.clear(); // 새 세션에는 진행 중 요청도 없다(앞 검증의 매달린 요청에 다음 검증이 붙지 않게)
 }
 
 // ───────────────────────── 연속 재생 큐 (§18-2) ─────────────────────────
@@ -781,7 +1093,10 @@ export interface SpeakQueueHandlers {
   onEnd?: (reason: "done" | "stopped") => void;
 }
 
-/** 큐가 돌려 쓰는 오디오 요소 하나 — iOS는 탭 밖에서 새 Audio의 play()를 막으므로, 탭 안에서 풀어 둔 요소를 재사용한다. */
+/**
+ * 큐와 단발 재생(speak, §16-5)이 돌려 쓰는 오디오 요소 하나 — iOS는 탭 밖(합성 대기 뒤 포함)에서 새 Audio의 play()를
+ * 막으므로, 탭 안에서 풀어 둔 요소를 재사용한다. 둘은 같은 세대 토큰·cancelPlayback으로 서로를 동기로 끊는다.
+ */
 let queueAudio: HTMLAudioElement | null = null;
 /** 잠금 해제용 0.1초 무음 WAV의 objectURL — 한 번 만들고 상수처럼 쓴다(일부러 revoke하지 않는다). */
 let silentUrl: string | null = null;
@@ -808,6 +1123,8 @@ const QUEUE_TIMING_DEFAULT = {
   playSlackMs: 3000,
   /** 지문 GET 대기 상한(큐 전용은 아니지만 테스트 훅을 하나로 둔다) */
   fingerprintMs: FINGERPRINT_TIMEOUT_MS,
+  /** 속도 변경 → 프리페치 재실행 trailing 디바운스(마지막 조작 뒤 이만큼). 큐 전용은 아니지만 테스트 훅을 하나로 둔다 */
+  rateDebounceMs: RATE_PREFETCH_DEBOUNCE_MS,
 };
 type QueueTiming = typeof QUEUE_TIMING_DEFAULT;
 let queueTiming: QueueTiming = { ...QUEUE_TIMING_DEFAULT };
@@ -856,15 +1173,15 @@ function makeSilentWavUrl(): string {
 
 /**
  * iOS 재생 잠금 해제 — 큐 요소를 무음 WAV로 play()하고, 기기 음성도 볼륨 0 빈 발화를 한 번 말한다.
- * `fromQueue`: speakQueue가 cancelPlayback() **다음에** 부를 때 true(무조건). 공개 unlockSpeechPlayback()은 false —
- * 지금 재생 중인 것(큐 요소·기기 발화)을 끊지 않도록 쉬고 있을 때만 한다(재생 중이면 이미 풀려 있다).
+ * `afterCancel`: speakQueue·speak(cloud)가 cancelPlayback() **다음에** 부를 때 true(무조건). 공개 unlockSpeechPlayback()은
+ * false — 지금 재생 중인 것(큐 요소·기기 발화)을 끊지 않도록 쉬고 있을 때만 한다(재생 중이면 이미 풀려 있다).
  */
-function unlockPlayback(fromQueue: boolean): void {
+function unlockPlayback(afterCancel: boolean): void {
   if (typeof window === "undefined") return;
   if (typeof Audio !== "undefined") {
     try {
       if (!queueAudio) queueAudio = new Audio();
-      if (fromQueue || currentAudio !== queueAudio) {
+      if (afterCancel || currentAudio !== queueAudio) {
         if (!silentUrl) silentUrl = makeSilentWavUrl();
         queueAudio.onended = null;
         queueAudio.onerror = null;
@@ -881,7 +1198,7 @@ function unlockPlayback(fromQueue: boolean): void {
   if (isSpeechSupported()) {
     try {
       const ss = window.speechSynthesis;
-      if (fromQueue || !(ss.speaking || ss.pending)) {
+      if (afterCancel || !(ss.speaking || ss.pending)) {
         const u = new SpeechSynthesisUtterance(" ");
         u.volume = 0;
         const clear = () => {
@@ -890,6 +1207,7 @@ function unlockPlayback(fromQueue: boolean): void {
         u.onend = clear;
         u.onerror = clear;
         unlockUtterance = u;
+        resumeIfPaused(ss); // iOS: 바로 앞 cancelPlayback의 cancel()로 paused가 되면 잠금 해제 발화부터 무시된다
         ss.speak(u);
       }
     } catch {
@@ -910,7 +1228,7 @@ export function unlockSpeechPlayback(): void {
  * **기다릴 수 있는 기기 재생**(큐 전용). onend/onerror로 풀리고, `currentPlayStop`에 등록돼 cancelPlayback()이 이벤트를
  * 기다리지 않고 즉시 푼다. 안전 타임아웃: 추정 시간이 지나도 말하는 중이면 extendMs씩 연장(상한 = 추정 × capFactor),
  * 아니면(또는 상한) cancel() 후 다음 조각. 반환값 = 소리를 냈다고 볼 수 있는가(미지원·즉시 실패면 false).
- * 기존 fallbackDevice(무조건 cancel·onend 없음)는 큐에서 재사용하지 않는다.
+ * fallbackDevice(onend 없음 — 기다릴 수 없다)는 큐에서 재사용하지 않는다. cancel 규칙은 둘이 같다(§16-5).
  */
 function speakDeviceAwait(text: string, lang: string, token: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
@@ -979,6 +1297,7 @@ function speakDeviceAwait(text: string, lang: string, token: number): Promise<bo
       // 말하는 중일 때만 cancel — 조각마다 무조건 cancel하면 iOS·Chrome에서 새 발화가 씹힌다.
       // 잠금 해제용 무음 발화만 남아 있으면 끊지 않고 뒤에 잇는다.
       if ((ss.speaking || ss.pending) && !unlockUtterance) ss.cancel();
+      resumeIfPaused(ss); // iOS: 앞 조각·cancelPlayback의 cancel 뒤 paused로 굳어 있으면 조각이 조용히 무시된다
       ss.speak(u);
     } catch {
       finish(false);
@@ -988,6 +1307,9 @@ function speakDeviceAwait(text: string, lang: string, token: number): Promise<bo
 
 /** 합성 **대기** 타임아웃 표식 — 요청 실패가 아니다(요청은 살아 있다). */
 const WAIT_TIMEOUT = new Error("tts wait timeout");
+
+/** 큐의 합성 요청 → 그 요청이 지금 어느 단계인지(진단용). look-ahead가 먼저 만든 요청도 같은 표를 쓴다. */
+const blobStage = new WeakMap<Promise<Blob>, { stage: TtsPlaybackStage }>();
 
 /**
  * 합성 결과를 **기다리는 것에만** 타임아웃을 건다(큐 전용, §18-2). 타이머는 이 함수를 부른 때 = 큐가 그 조각을
@@ -1071,7 +1393,9 @@ export function speakQueue(items: SpeakQueueItem[], handlers: SpeakQueueHandlers
     const key = keyOf(text, lang, speed);
     let p = pending.get(key);
     if (!p) {
-      p = getAudioBlob(text, lang, speed, ac.signal);
+      const trace: { stage: TtsPlaybackStage } = { stage: "cache" };
+      p = getAudioBlob(text, lang, speed, ac.signal, trace);
+      blobStage.set(p, trace); // 진단 — 실패·대기 상한이 캐시·합성 중 어디서 났는지
       p.catch(noteError); // look-ahead만 하고 안 쓰여도 unhandled rejection이 나지 않게
       pending.set(key, p);
     }
@@ -1111,19 +1435,32 @@ export function speakQueue(items: SpeakQueueItem[], handlers: SpeakQueueHandlers
           const key = keyOf(it.text, it.lang, speed);
           const req = blobFor(it.text, it.lang, speed);
           let timedOut = false;
+          let playing = false;
           try {
             // 대기 타임아웃은 **지금**(이 조각을 기다리기 시작한 때)부터 잰다(§18-2).
             const blob = await waitWithTimeout(req, queueTiming.fetchMs);
             if (!alive()) return;
             void lookAhead(i + 1);
-            await playBlob(blob, token, queueAudio ?? undefined, {
-              fallbackMs: estimateSpeechMs(it.text, getTtsRate()),
-              slackMs: queueTiming.playSlackMs,
-            });
+            playing = true;
+            await playBlob(
+              blob,
+              token,
+              queueAudio ?? undefined,
+              { fallbackMs: estimateSpeechMs(it.text, getTtsRate()), slackMs: queueTiming.playSlackMs },
+              () => noteCloudResult(it.lang, DIAG_OK),
+            );
             sounded = true;
           } catch (e) {
             timedOut = e === WAIT_TIMEOUT;
             noteError(e); // 합성·재생 실패·대기 타임아웃 → 아래에서 그 조각만 기기 음성(한 방향 폴백)
+            if (alive()) {
+              noteCloudResult(it.lang, {
+                ok: false,
+                stage: playing ? "play" : (blobStage.get(req)?.stage ?? "synth"),
+                reason: failureReason(e),
+                fallback: isSpeechSupported() ? "device" : "none",
+              });
+            }
           } finally {
             const drop = () => {
               if (pending.get(key) === req) pending.delete(key);

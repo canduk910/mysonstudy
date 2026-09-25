@@ -39,6 +39,7 @@
 | 404 `not_found` | 대상이 없다 | 메시지 표시 | |
 | 409 | 요청이 **지금 서버 상태**와 충돌한다. 다른 탭이나 연타로 상태가 이미 바뀌었거나(`conflict`·`stale_state`·`not_active`·`empty`), 이 상태에서는 허용되지 않는다(카드 마지막 1장 삭제 `last_card`) | 메시지를 보이고 `router.refresh()` | 운동 3라우트, `/api/cards/[id]` |
 | 501 `no_api_key` | 키가 없다 | 발음은 조용히 기기 음성으로 간다. 생성 기능은 안내를 띄운다 | AI 라우트, `/api/tts` |
+| 499 `client_closed` | 클라이언트가 먼저 끊었다(프리페치 배치 교체·화면 이탈·큐 종료). 라우트가 `req.signal`로 상류 호출도 끊었다 | 없음(받는 쪽이 없다). 에러 로그를 남기지 않는다 | `/api/tts` |
 | 500 | 저장이나 호출 실패 | 재시도 안내 | |
 
 판독 실패는 예외가 아니다. 200과 명시적 폴백 신호로 돌려준다(과목별 문서).
@@ -114,16 +115,20 @@
 
 | API | 쓸 때 | 규약 |
 |---|---|---|
-| `speak(text, lang?)` | 🔊 한 번 재생 | lang을 생략하면 `en-US`다. 이전 재생을 취소하고 시작한다. 시그니처는 바꾸지 않는다(§16-1) |
+| `speak(text, lang?)` | 🔊 한 번 재생 | lang을 생략하면 `en-US`다. 이전 재생(단발·큐)을 취소하고 시작한다. 시그니처는 바꾸지 않는다(§16-1). **onClick 안에서 그대로 부른다** — 클라우드 경로는 첫 await 전에 동기로 iOS 재생 잠금을 풀고, 합성 뒤 재생도 큐와 같은 재사용 요소(`queueAudio`)로 한다(§16-5). 합성 대기 상한은 큐와 같은 `fetchMs`(8초)다. 탭 밖(effect의 자동 낭독)에서 불러도 예전보다 나빠지지 않는다 |
 | `speakSequence(words, lang?)` | 단어 배열을 한 문장처럼 읽기 | `join(" ")`한 뒤 `speak`를 1회 부른다. 단어마다 쪼개면 로봇처럼 들린다 |
 | `stopSpeaking()` | 화면 이탈, 다음 문제로 넘어갈 때 | 단발 재생과 큐를 모두 멈춘다 |
-| `prefetchSpeech(texts, lang)` | 화면에 보이는 문장을 미리 합성 | 반환값은 중단 함수다. `useEffect(() => prefetchSpeech(…), [key])`로 쓴다. 새 배치가 오면 직전 배치를 끊는다. 한 화면에서 부모와 자식이 따로 부르면 자식 쪽 효과가 먼저 돌아서 끊긴다. 그러니 한 곳에서 합쳐 부르고, 의존성은 배열 참조가 아니라 문자열 키로 준다(`components/ja-dialog-detail-view.tsx`). device 엔진 언어면 아무것도 하지 않는다. 한 번에 최대 `PREFETCH_MAX_ITEMS`(90)개다 |
+| `prefetchSpeech(texts, lang)` | 화면에 보이는 문장을 미리 합성 | 반환값은 중단 함수다. `useEffect(() => prefetchSpeech(…), [key])`로 쓴다. 새 배치가 오면 직전 배치를 끊는다. 한 화면에서 부모와 자식이 따로 부르면 자식 쪽 효과가 먼저 돌아서 끊긴다. 그러니 한 곳에서 합쳐 부르고, 의존성은 배열 참조가 아니라 문자열 키로 준다(`components/ja-dialog-detail-view.tsx`). device 엔진 언어면 네트워크 0이지만 요청은 "마지막 프리페치"로 기억한다 — 그 언어 엔진을 cloud로 바꾸면 즉시, 속도를 바꾸면 옛 속도 배치를 누르는 순간 멈추고 마지막 조작 `RATE_PREFETCH_DEBOUNCE_MS`(600ms) 뒤 한 번, 화면 코드 없이 새 설정으로 다시 돈다(§16-5 — 연타마다 배치를 쏘면 상류 합성이 쌓인다). 그러니 화면이 설정 변경에 맞춰 프리페치를 다시 부르지 않는다. 한 번에 최대 `PREFETCH_MAX_ITEMS`(90)개다 |
 | `speakQueue(items, { onItem, onEnd })` | 여러 조각 이어 읽기 | **탭 핸들러 안에서 동기로** 부른다. 첫 await 전에 iOS 재생 잠금을 풀기 때문이다. 반환값은 멈추기 함수다. 정지할 때는 `stopSpeaking`이 아니라 이 함수를 써야 다른 🔊를 죽이지 않는다. `onEnd`는 정확히 한 번 온다. 핸들러 안에서 `speak`/`speakQueue`를 다시 부르면 안 된다(재진입 금지) |
 | `unlockSpeechPlayback()` | 탭 밖(타이머 콜백 등)에서 나중에 소리 낼 화면 | 탭 핸들러 안에서 동기로 부른다. 지금 나고 있는 소리는 끊지 않는다(`components/workout-session.tsx`의 ✓ 탭) |
 
 - 공유 상수는 `lib/tts-shared.ts`(런타임 의존 0)에만 둔다. `lib/speech.ts`가 `lib/tts.ts`를 import하면 openai가 폰 번들에 내려간다.
 - 새 발음 언어는 `TTS_LANGS`에 추가하면 라우트 zod enum이 따라온다. `lib/tts.ts`의 `TTS_INSTRUCTIONS_VERSION`(지금 2)은 영속 캐시 지문 전체에 걸려 있다. 올리면 **전 언어의 캐시가 비워져** 재합성 비용이 난다. 지시문을 고칠 때만, 그 비용을 감수하고 올린다.
 - 폴백이 핵심이다. 키가 없으면(501) 실패하거나 300자를 넘기면 에러 UI 없이 기기 음성으로 간다. 키를 비운 로컬에서 🔊가 기기 음성으로 나는 것이 정상이다. 속도는 전역값 하나를 localStorage에 보존한다(`components/tts-speed-control.tsx`). 엔진 선택 UI는 `components/tts-engine-control.tsx`다.
+- 기기 음성으로 말하는 곳(`fallbackDevice`·`speakDeviceAwait`)의 cancel 규칙은 하나다 — **말하는 중·대기 중일 때만** `cancel()`하고, 잠금 해제용 빈 발화만 남았으면 끊지 않고 뒤에 잇는다. 쉬고 있을 때 `cancel()` 직후 `speak()`하면 iOS·Chrome에서 새 발화가 씹힌다(2026-09-25 무음 신고의 두 번째 고리).
+- 그리고 **말하기 직전에 `speechSynthesis.paused`면 `resume()`한다**(`resumeIfPaused` — `fallbackDevice`·`speakDeviceAwait`·잠금 해제 빈 발화 세 곳). iOS WebKit은 `cancel()` 뒤 paused로 굳어 이후 `speak()`를 에러·이벤트 없이 무시한다 — "기기랑 클라우드가 꼬인 것 같다, 속도를 바꾸다 보면 다시 나온다"(2026-09-25 관찰)의 기기 쪽 고리다. 앱은 `pause()`를 쓰지 않으므로 풀어도 잃을 것이 없다. 기기 음성으로 말하는 곳을 새로 만들면 cancel 규칙과 이 줄을 함께 쓴다(eval "단발" F13이 세 곳을 따로 잠근다).
+- **같은 문장의 합성 요청은 하나다**(`getAudioBlob`의 진행 중 공유, 캐시 키 단위). 🔊·프리페치·큐 look-ahead가 동시에 원하면 요청 하나를 함께 기다린다. 소비자는 자기 `signal`로 **자기만** 물러나고(AbortError), 기다리는 소비자가 0이 될 때만 요청을 끊고 곧바로 표에서 뺀다 — 뒤에 온 소비자는 끊긴 요청에 붙지 않고 새로 보낸다. 대기 상한(`fetchMs`)을 넘긴 요청에도 새로 붙지 않는다(매달린 요청에 묶여 다시 눌러도 클라우드를 못 쓰는 일 방지). `/api/tts`는 `req.signal`을 `synthesizeSpeech(input, signal)` → openai `RequestOptions.signal`로 넘겨, 끊긴 요청은 상류 합성도 멈추고 499 `client_closed`(에러 로그 없음)로 끝난다.
+- 폰 진단: 마지막 클라우드 재생 결과(성공 / 캐시·합성·재생 단계와 이유 / 기기 음성 대체 여부)를 `getTtsPlaybackDiag(lang)`·`TTS_DIAG_EVENT`로 읽는다. 화면은 `TtsEngineControl`의 캡션 한 줄로만 보이고, 마운트 후에 읽는다(hydration). 실기기 신고를 받으면 먼저 이 캡션 문구를 물어본다.
 
 **낭독 대본 — `speakQueue`에 넘길 조각은 순수 함수가 만든다** (`lib/ja-coaching-script.ts`, SPEC §18-1)
 
