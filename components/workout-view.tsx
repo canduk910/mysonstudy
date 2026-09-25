@@ -21,7 +21,15 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { prefetchSpeech, unlockSpeechPlayback } from "@/lib/speech";
 import { STREAK_REFRESH_EVENT } from "@/lib/streak";
-import { CYCLE_DAYS, DEFAULT_RM, SETS_PER_EXERCISE, TOTAL_WORKOUT_DAYS, type DayKind, type WorkoutExercise } from "@/lib/workout";
+import {
+  CYCLE_DAYS,
+  DEFAULT_RM,
+  SETS_PER_EXERCISE,
+  supersetSteps,
+  TOTAL_WORKOUT_DAYS,
+  type DayKind,
+  type WorkoutExercise,
+} from "@/lib/workout";
 import type {
   CycleSnapshot,
   TodayStatus,
@@ -56,6 +64,7 @@ import {
   SAVE_ERROR_KO,
   SetTable,
   STALE_FALLBACK_KO,
+  stepName,
   tomorrowText,
   upcomingText,
   WORKOUT_CAUTIONS,
@@ -122,13 +131,15 @@ export default function WorkoutView({ today, tomorrow, snapshot: snap, history }
 
   // 세션
   const [sessionOpen, setSessionOpen] = useState(false);
-  /** 저장된 진행이 있으면 "이어서 하기 (n/10)" — 마운트 후 effect에서만 읽는다 */
+  /** 저장된 진행이 있으면 "이어서 하기 · 푸시업 2세트부터" — 마운트 후 effect에서만 읽는다 */
   const [resumeStep, setResumeStep] = useState<number | null>(null);
   const sessionOpenRef = useRef(false);
   const prefetchStopRef = useRef<(() => void) | null>(null);
 
   const t = snap?.today ?? null;
   const locked = busy !== null || isPending;
+  /** 저장된 진행이 이어질 스텝(엔진 순서 그대로) — "이어서 하기" 버튼 글자가 세션 무대 제목과 같은 이름을 쓴다 */
+  const resumeAt = resumeStep !== null && t && t.kind === "workout" ? supersetSteps(t.target)[resumeStep] : undefined;
 
   const refresh = () => startTransition(() => router.refresh());
 
@@ -257,15 +268,17 @@ export default function WorkoutView({ today, tomorrow, snapshot: snap, history }
   // 세션
   // ---------------------------------------------------------------------------
 
-  /** ▶ 탭 — 오디오를 **탭 안에서 동기로** 풀고, 음성 안내가 켜져 있으면 휴식 뒤 안내 문구 9개를 미리 받는다 */
+  /**
+   * ▶ 탭 — 오디오를 **탭 안에서 동기로** 풀고, 음성 안내가 켜져 있으면 휴식 뒤 안내 문구 4개를 미리 받는다.
+   * 휴식은 세트(풀업+푸시업) 사이에만 있어 휴식 끝에 읽히는 건 2~5세트 풀업 안내뿐이다 — 대상 고르기는 sessionPhrases 한 곳(§19-6).
+   */
   function openSession() {
     if (!t || t.kind !== "workout" || locked) return;
     ensureWorkoutAudio();
     if (readVoicePref()) {
       unlockSpeechPlayback();
       prefetchStopRef.current?.();
-      // 첫 스텝(풀업 1세트) 안내는 휴식 뒤에 나오지 않으므로 빼고 받는다(합성 1건 낭비 방지)
-      prefetchStopRef.current = prefetchSpeech(sessionPhrases(t.target).slice(1), "ko-KR");
+      prefetchStopRef.current = prefetchSpeech(sessionPhrases(t.target), "ko-KR");
     }
     setErrorKo(null);
     setVerify(null);
@@ -336,8 +349,8 @@ export default function WorkoutView({ today, tomorrow, snapshot: snap, history }
                 RM은 반동 없는 정자세로 한 번에 할 수 있는 최대 개수예요. 이걸로 27일 사다리를 계산해요.
               </p>
               <p className="t-caption mt-2">
-                풀업 1세트 → 2~3분 휴식 → 푸시업 1세트 → … 5세트씩. 6일 블록 4개(5일 운동 + 1일 휴식) 뒤 마무리 휴식 3일, 27일째에 RM을
-                다시 재요.
+                풀업 1세트 → 쉬지 않고 푸시업 1세트 → 2~3분 휴식 → 풀업 2세트 → … 5세트. 6일 블록 4개(5일 운동 + 1일 휴식) 뒤
+                마무리 휴식 3일, 27일째에 RM을 다시 재요.
               </p>
             </div>
             <WorkoutRmForm
@@ -399,7 +412,7 @@ export default function WorkoutView({ today, tomorrow, snapshot: snap, history }
               <SetTable target={t.target} caption={t.isRepeat ? `Day ${t.targetDay} 목표` : undefined} />
               <div className="flex flex-col gap-2">
                 <button type="button" className="u-btn u-btn-primary" onClick={openSession} disabled={locked}>
-                  ▶ {resumeStep !== null ? `이어서 하기 (${resumeStep + 1}/${SETS_PER_EXERCISE * 2} 스텝)` : "운동 시작"}
+                  ▶ {resumeAt ? `이어서 하기 · ${stepName(resumeAt)}부터` : "운동 시작"}
                 </button>
                 <div className="grid grid-cols-2 gap-2">
                   <button type="button" className="u-btn u-btn-secondary" onClick={logComplete} disabled={locked}>

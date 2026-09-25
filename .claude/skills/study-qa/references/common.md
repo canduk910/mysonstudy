@@ -25,7 +25,7 @@ OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_
 |---|---|---|---|
 | `scripts/eval-speech.ts` | `lib/ja-coaching-script.ts` 대본·쪼개기, `lib/speech.ts` 큐, `lib/tts-shared.ts`·`lib/tts.ts` 상수, `lib/tts-cache.ts` 지문 | store 금지. `lib/speech`·`lib/tts`·`lib/tts-cache`는 fetch 스텁을 깔고 키를 비운 **뒤에** dynamic import한다 | 대본·쪼개기·상수·엔진·큐·지문·안전 (71) |
 | `scripts/eval-streak.ts` | `lib/streak.ts`의 `computeStreak`·`computeStreakFromDays`, `lib/kst.ts`(`formatKstDate`·`isZonedIsoTimestamp` 포함) | `../lib/streak`·`../lib/kst`만 | KST 환산(formatKstDate 경계표를 TZ Asia/Seoul·UTC·America/Los_Angeles로 다시 돌림 — 실행 기기 TZ 무관)·연속 판정·0문항 제외·사람 분리·날짜 코어 (41) |
-| `scripts/eval-workout.ts` | `lib/workout.ts` 전체, `diffDateStrings` | `../lib/workout`·`../lib/kst`·`../lib/streak`만 | 베이스·계획·스텝·횟수·상태·판정(`decideLog`·`decideUndo`·`decideStart`·`closingStatus`)·활성 선택·격리·정규화(createdAt ISO 경계 = `isZonedIsoTimestamp`)·날짜 방어·진행·볼륨·일정·스냅샷·지난 사이클·운동 스트릭(endedAt ISO 경계 포함) (124) |
+| `scripts/eval-workout.ts` | `lib/workout.ts` 전체, `diffDateStrings` | `../lib/workout`·`../lib/kst`·`../lib/streak`만 | 베이스·계획·스텝·휴식(세트 사이 [1,3,5,7]·휴식 뒤 [2,4,6,8]·음성 안내 대상 4개)·세트 목록 순서(`roundDisplayOrder` — 스텝 0~9 × 축하 유무의 순서·완료 구역 시작 위치, 푸시업 ✓ 탭 순간·풀업 ✓ 무재배치, 무효 held 무시)·횟수·상태·판정(`decideLog`·`decideUndo`·`decideStart`·`closingStatus`)·활성 선택·격리·정규화(createdAt ISO 경계 = `isZonedIsoTimestamp`)·날짜 방어·진행·볼륨·일정·스냅샷·지난 사이클·운동 스트릭(endedAt ISO 경계 포함) (134) |
 
 - **import 경계 자체가 검증 항목이다.** eval이 store를 import하면 어느 DB를 향할지 모르는 스크립트가 된다. 판정은 두 단계로 한다.
   - `grep -an 'lib/store' scripts/eval-speech.ts scripts/eval-streak.ts scripts/eval-workout.ts`가 **0줄**이어야 한다.
@@ -102,11 +102,11 @@ eval:workout이 잠그는 것은 이렇다. **원안 오라클**: 원안 Python 
 | zod | 코드에 `.nullish()`가 없어야 한다(`log` 라우트에는 금지 이유를 적은 주석 한 줄이 있다. 그건 정상이다). RM 경계는 `RM_MIN`/`RM_MAX` 상수를, log의 day는 `LAST_WORKOUT_DAY`·`isWorkoutDay`를 쓰는지 본다 |
 | DbShape 네 곳 | `emptyDb`·`readDb`·`mergeDbForSeed`(`mergeById`)·`scripts/seed.ts`. `npm run seed` 전후로 `workoutCycles` 개수가 같은지 본다(백업한 db.json으로) |
 | 이관 제외 | `scripts/migrate-to-firestore.ts`의 목록에 `workoutCycles`가 없어야 한다 |
-| 화면 | 409면 `messageKo` 표시, `router.refresh()`, 스트릭 이벤트가 따라오는지. 세션 진행(`workout-session:v1`)을 마운트 후 effect에서만 읽는지, cycleId·rev·day·targetDay·dateKst가 전부 같을 때만 복원하는지 본다 |
+| 화면 | 409면 `messageKo` 표시, `router.refresh()`, 스트릭 이벤트가 따라오는지. 세션 진행(`workout-session:v1`)을 마운트 후 effect에서만 읽는지, cycleId·rev·day·targetDay·dateKst가 전부 같을 때만 복원하는지 본다. 휴식은 세트(풀업+푸시업) 사이에만 — 풀업 ✓ 뒤 타이머 없음·푸시업 ✓ 뒤 휴식·마지막 ✓ 곧바로 완료, 프리페치 `/api/tts` POST가 4건(2~5세트 풀업 문구)인지, 옛 저장값(홀수 스텝 + `restEndsAt`)을 복원하면 휴식만 버리는지 본다(§19-1·§19-6). **목록 순서**(2026-09-25): 지금 할 세트 맨 위 → 남은 세트 → 완료 세트 맨 아래인지, 푸시업 ✓ 뒤 약 1초 축하("🎉 n세트 완료!")가 뜨고 그 행이 맨 아래로 FLIP 이동하는지, 풀업 ✓는 체크 팝만(재배치 없음)인지, 축하 중에도 휴식 타이머·비프 예약·저장이 탭 즉시 됐는지(애니메이션이 상태를 붙잡지 않는지), 새로고침 복원은 애니메이션 없이 최종 순서인지, `prefers-reduced-motion` 에뮬레이션에서 즉시 재배치되는지, 320/360/390에서 칸 넘침이 없는지, DOM 클래스에 `undefined`가 없는지 본다. 작은 폰(375×548·320×568 — 목록이 첫 화면 밖)에서도 휴식 무대의 캡션 자리에 "🎉 n세트 완료!"가 약 1초 보이는지(움직임 줄이기에서도 움직임 없이, 알림은 숨은 `role="status"` 한 곳), 푸시업 ✓를 60ms 간격으로 두 번 탭해 두 번째 탭이 `3분`에 떨어져도 휴식·비프 예약이 그대로인지(`CHAIN_TAP_GUARD_MS` 뒤엔 정상 동작) 본다 |
 
 **409 재현**: `/workout`을 열어 둔 채 db.json에 사건 하나를 추가하고 rev를 +1해 "다른 탭이 이미 기록함"을 흉내 낸다. 그다음 `✓ 전부 해냈어요`를 누른다.
 
-**"세션 소리가 안 나" 신고는 먼저 가른다** — 비프(Web Audio, 발음 관문 밖)인지 음성 안내(`speakQueue` ko-KR)인지. 코드로 대조할 것(`components/workout-session.tsx`, `ai-harness-impl/references/app-patterns.md` §14): `▶`·`✓` 탭 핸들러 안에서 **동기로** `ensureWorkoutAudio()`를 부르는지, 휴식 시작 때 `scheduleBeep`로 종료 시각에 미리 예약하는지, 길이 변경·`+30초`에서 `rescheduleBeep`가 도는지, `finishRest`가 예약분 미재생 시 즉시 울리고(컨텍스트 `running`일 때만) 예약분을 취소하는지, 복원 시 `running`일 때만 재예약하는지, `✓` 탭에서 `unlockSpeechPlayback()`을 부르는지, 음성 토글(`workout-voice:v1`)이 새로고침 뒤에도 유지되는지. 음성 쪽은 §1·§2의 발음 경로 검증을 그대로 쓴다(ko 엔진이 cloud인지 device인지부터).
+**"세션 소리가 안 나" 신고는 먼저 가른다** — 비프(Web Audio, 발음 관문 밖)인지 음성 안내(`speakQueue` ko-KR)인지. 코드로 대조할 것(`components/workout-session.tsx`, `ai-harness-impl/references/app-patterns.md` §14): `▶`·`✓` 탭 핸들러 안에서 **동기로** `ensureWorkoutAudio()`를 부르는지(휴식을 시작하지 않는 풀업 `✓` 포함), 휴식 시작(푸시업 `✓`) 때 `scheduleBeep`로 종료 시각에 미리 예약하는지, 길이 변경·`+30초`에서 `rescheduleBeep`가 도는지, `finishRest`가 예약분 미재생 시 즉시 울리고(컨텍스트 `running`일 때만) 예약분을 취소하는지, 복원 시 `running`일 때만 재예약하는지, `✓` 탭에서 `unlockSpeechPlayback()`을 부르는지, 음성 토글(`workout-voice:v1`)이 새로고침 뒤에도 유지되는지. 음성 쪽은 §1·§2의 발음 경로 검증을 그대로 쓴다(ko 엔진이 cloud인지 device인지부터).
 
 ## 5. 목록 순서변경·읽기 속도 (§15-1·§15-2)
 

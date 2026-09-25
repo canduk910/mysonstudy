@@ -56,7 +56,7 @@ description: "은우학습(영어 북카드 + 수학코치 + 아빠의 일본어
 
 **일본어**: 영어와 같은 구성 — ai-engineer(호출 A~D 프롬프트·스키마) → qa-inspector(증분) → app-builder → qa-inspector(전체). 스펙은 `docs/harness/japanese.md`.
 
-**운동**: AI가 없어 ai-engineer·prompt-tuner가 빠진다 — app-builder(순수 엔진 `lib/workout.ts` → 저장소·라우트 → 화면) → qa-inspector. 엔진은 **스펙만 보고 만든 독립 참조 모델과의 무작위 차분 테스트**로 검증하고(참조 모델·시뮬레이터는 저장소에 없다 — qa-inspector가 **구현을 읽기 전에** SPEC §19만 보고 scratch에 새로 쓰고, `decide*`로 수천 개 무작위 사용자 시나리오를 돌려 날마다 `todayStatus`·볼륨·진행률을 대조한다. 코드로 남기면 구현과 같이 틀려 독립성이 사라진다), 오프라인 `npm run eval:workout`이 회귀 가드다(eval 자체는 실호출 0). 저장은 원자적(`decide*`를 `mutate`/`runTransaction` 안에서)·`rev` 토큰 규약을 깨지 마라(SPEC §19-4). **단 운동 화면은 무비용이 아니다** — 세션 음성 안내(기본 켬)가 `ko-KR`로 `/api/tts`를 거치고, 한국어는 기본 엔진이 클라우드다(`lib/speech.ts` `DEFAULT_ENGINE`). `▶ 운동 시작` 탭에서 `openSession()`이 휴식 뒤 안내 문구 9개를 `prefetchSpeech(…, "ko-KR")`로 미리 받고, 휴식이 끝날 때마다 `speakQueue`가 다음 안내 문장을 클라우드로 읽는다(캐시에 없으면 그때 합성, SPEC §19-6). 그래서 운동 UI 확인은 반드시 키를 비운 dev 서버에서 한다.
+**운동**: AI가 없어 ai-engineer·prompt-tuner가 빠진다 — app-builder(순수 엔진 `lib/workout.ts` → 저장소·라우트 → 화면) → qa-inspector. 엔진은 **스펙만 보고 만든 독립 참조 모델과의 무작위 차분 테스트**로 검증하고(참조 모델·시뮬레이터는 저장소에 없다 — qa-inspector가 **구현을 읽기 전에** SPEC §19만 보고 scratch에 새로 쓰고, `decide*`로 수천 개 무작위 사용자 시나리오를 돌려 날마다 `todayStatus`·볼륨·진행률을 대조한다. 코드로 남기면 구현과 같이 틀려 독립성이 사라진다), 오프라인 `npm run eval:workout`이 회귀 가드다(eval 자체는 실호출 0). 저장은 원자적(`decide*`를 `mutate`/`runTransaction` 안에서)·`rev` 토큰 규약을 깨지 마라(SPEC §19-4). **단 운동 화면은 무비용이 아니다** — 세션 음성 안내(기본 켬)가 `ko-KR`로 `/api/tts`를 거치고, 한국어는 기본 엔진이 클라우드다(`lib/speech.ts` `DEFAULT_ENGINE`). `▶ 운동 시작` 탭에서 `openSession()`이 휴식 뒤 안내 문구 4개(휴식은 풀업+푸시업 한 세트 뒤에만 있다)를 `prefetchSpeech(…, "ko-KR")`로 미리 받고, 휴식이 끝날 때마다 `speakQueue`가 다음 안내 문장을 클라우드로 읽는다(캐시에 없으면 그때 합성, SPEC §19-6). 그래서 운동 UI 확인은 반드시 키를 비운 dev 서버에서 한다.
 
 **과목 공통 기능**(클라우드 발음 §16·스트릭 §17·해설 낭독 §18·순서변경 §15-1): 운동과 같은 구성 — app-builder → qa-inspector(subject=`common`). 회귀 가드는 오프라인 `npm run eval:speech`·`eval:streak`(실호출 0). 단 발음은 AI 하네스 밖이어도 **`/api/tts`가 OpenAI 실호출 경로**다 — 키를 비우지 않은 dev 서버에서는 엔진이 클라우드인 언어의 화면에 들어서기만 해도 프리페치 합성이 나간다(기본값: 영어·한국어 클라우드, 일본어 기기 음성).
 
@@ -107,7 +107,7 @@ qa-inspector 호출 → 리포트 작성. 발견 이슈는 **보고만** 한다.
 
 - **eval 밖의 실호출 경로도 있다** — 키를 넣은 dev 서버에서 화면을 여는 것(`/api/tts` 프리페치), 사진 판독·생성 버튼을 누르는 것. 전부 키를 비우면 501로 막힌다.
   - 프리페치는 **엔진이 클라우드인 언어**에서만 나간다(`prefetchSpeech`가 `getTtsEngine(lang) !== "cloud"`면 아무것도 안 보낸다). 기본값은 `lib/speech.ts` `DEFAULT_ENGINE` — 영어 `en`·한국어 `ko`는 클라우드, 일본어 `ja`는 기기 음성. 그래서 영어 카드·챕터 리더·단어장·시험·오답노트는 마운트만으로 최대 `PREFETCH_MAX_ITEMS`(90)개를 보내고, 일본어 화면은 사용자가 일본어 엔진을 클라우드로 바꿨을 때만 보낸다.
-  - **AI가 없는 운동도 이 경로를 탄다.** 세션 음성 안내가 `ko-KR`(기본 클라우드)이라 `▶ 운동 시작` 탭 한 번에 안내 문구 9개를 프리페치하고, 휴식이 끝날 때마다 `speakQueue`가 안내 문장 하나를 클라우드로 읽는다(캐시에 없으면 그때 합성). 해설 낭독의 한국어 해설 조각도 재생할 때 같은 경로로 합성된다.
+  - **AI가 없는 운동도 이 경로를 탄다.** 세션 음성 안내가 `ko-KR`(기본 클라우드)이라 `▶ 운동 시작` 탭 한 번에 안내 문구 4개를 프리페치하고, 휴식이 끝날 때마다 `speakQueue`가 안내 문장 하나를 클라우드로 읽는다(캐시에 없으면 그때 합성). 해설 낭독의 한국어 해설 조각도 재생할 때 같은 경로로 합성된다.
 - 프롬프트·스키마 수정이 남아 있으면 eval을 **나중에 한 번만** 돌린다. 먼저 돌리면 수정 후 다시 돌려야 해서 비용이 배가 된다.
 - 무비용 검증 수단을 에이전트에게 알려라: `tsc`·`build`·`seed`·순수 함수 테스트·**루프백 스텁**(`OPENAI_BASE_URL`을 로컬 서버로 고정).
 

@@ -77,14 +77,22 @@ export function tomorrowText(u: Upcoming): string {
   }
 }
 
-/** 슈퍼세트 한 스텝 — `풀업 1세트 · 6회` */
-export function stepLabel(st: WorkoutStep): string {
-  return `${exerciseKo(st.exercise)} ${st.setIndex + 1}세트 · ${st.reps}회`;
+/**
+ * 슈퍼세트 한 스텝의 이름 — `풀업 1세트`. 세트 번호는 곧 라운드 번호다(한 세트 = 풀업 + 푸시업, 휴식은 세트 사이 — §19-1).
+ * 세션 무대 제목·실패 제목·"이어서 하기" 버튼이 같은 이름을 쓴다.
+ */
+export function stepName(st: WorkoutStep): string {
+  return `${exerciseKo(st.exercise)} ${st.setIndex + 1}세트`;
 }
 
-/** 휴식 끝 음성 안내 — `다음, 푸시업 1세트 9회` (§19-6 문구 그대로) */
+/** 슈퍼세트 한 스텝 — `풀업 1세트 · 6회` */
+export function stepLabel(st: WorkoutStep): string {
+  return `${stepName(st)} · ${st.reps}회`;
+}
+
+/** 휴식 끝 음성 안내 — `다음, 풀업 2세트 7회` (§19-6 문구 형식 그대로) */
 export function stepPhrase(st: WorkoutStep): string {
-  return `다음, ${exerciseKo(st.exercise)} ${st.setIndex + 1}세트 ${st.reps}회`;
+  return `다음, ${stepName(st)} ${st.reps}회`;
 }
 
 /** 기록 한 건을 한 줄로(취소 확인 패널) — 사건 값만 옮긴다 */
@@ -98,8 +106,8 @@ export function eventText(e: WorkoutEvent): string {
 }
 
 /**
- * 세트표 — 1~5세트 × 풀업/푸시업 + 합계. 행 순서가 곧 슈퍼세트 진행 순서(풀업1 → 푸시업1 → 풀업2 …)라
- * 위에서 아래로, 왼쪽에서 오른쪽으로 읽으면 된다.
+ * 세트표 — 1~5세트 × 풀업/푸시업 + 합계. 행 순서가 곧 슈퍼세트 진행 순서(풀업1 → 푸시업1 → 휴식 → 풀업2 …)라
+ * 위에서 아래로, 왼쪽에서 오른쪽으로 읽으면 된다. 한 행 = 한 세트(라운드), 휴식은 행 사이에만 있다(§19-1).
  */
 export function SetTable({ target, caption }: { target: SetPair; caption?: string }) {
   const totals = setTotals(target);

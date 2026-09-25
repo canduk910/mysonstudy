@@ -44,7 +44,7 @@ model: opus
 
 ## 로컬 실행 — 실호출·프로덕션 DB를 명령으로 막는다
 
-화면을 띄워 확인할 때도 `.env`의 실키가 살아 있으면 비용이 난다. 단어장·카드·챕터 리더 같은 영어 화면은 열자마자 `prefetchSpeech()`가 `/api/tts` 합성을 최대 `PREFETCH_MAX_ITEMS`(90)개까지 미리 보낸다(영어의 기본 엔진이 클라우드라서다 — `lib/speech.ts` `DEFAULT_ENGINE`). AI가 없는 운동도 예외가 아니다. 세션 음성 안내가 `ko-KR`(기본 클라우드)로 `/api/tts`를 거쳐, `▶ 운동 시작` 탭 한 번에 안내 문구 9개를 프리페치하고(`components/workout-view.tsx` `openSession`) 휴식이 끝날 때마다 `speakQueue`로 다음 안내를 읽는다(`components/workout-session.tsx`). 그래서 운동 UI 확인도 포함해 dev 서버는 항상 키를 비우고 띄운다:
+화면을 띄워 확인할 때도 `.env`의 실키가 살아 있으면 비용이 난다. 단어장·카드·챕터 리더 같은 영어 화면은 열자마자 `prefetchSpeech()`가 `/api/tts` 합성을 최대 `PREFETCH_MAX_ITEMS`(90)개까지 미리 보낸다(영어의 기본 엔진이 클라우드라서다 — `lib/speech.ts` `DEFAULT_ENGINE`). AI가 없는 운동도 예외가 아니다. 세션 음성 안내가 `ko-KR`(기본 클라우드)로 `/api/tts`를 거쳐, `▶ 운동 시작` 탭 한 번에 휴식 뒤 안내 문구 4개(휴식은 세트 사이에만 — 2~5세트 풀업)를 프리페치하고(`components/workout-view.tsx` `openSession`) 휴식이 끝날 때마다 `speakQueue`로 다음 안내를 읽는다(`components/workout-session.tsx`). 그래서 운동 UI 확인도 포함해 dev 서버는 항상 키를 비우고 띄운다:
 
 ```bash
 OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run dev

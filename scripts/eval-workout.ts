@@ -22,6 +22,10 @@ import {
   nextWorkoutDay,
   restDaysBetween,
   supersetSteps,
+  restFollowsStep,
+  stepFollowsRest,
+  stepsAfterRest,
+  roundDisplayOrder,
   repsForEvent,
   replay,
   todayStatus,
@@ -380,7 +384,7 @@ add(
 );
 
 // ===========================================================================
-// 3) 스텝·횟수 (§19-1 슈퍼세트·§19-2 수행 횟수)
+// 3) 스텝·휴식·세트 목록 순서·횟수 (§19-1 슈퍼세트·§19-6 세트 사이 휴식·음성 안내 대상·세트 목록 순서·§19-2 수행 횟수)
 // ===========================================================================
 {
   const t = targetFor(BASE, 1);
@@ -393,6 +397,173 @@ add(
     steps[5].exercise === "pushup" &&
     steps[5].setIndex === 2;
   add("스텝·횟수", "10스텝 교차 순서·스텝 5 = 푸시업 setIndex 2", ok, order);
+}
+{
+  // 휴식은 세트(풀업+푸시업) 사이에만 — 2026-09-25 사용자 정정(§19-1 슈퍼세트·§19-6). 기대값은 스펙 문장에서 손으로 적는다.
+  const range = Array.from({ length: 15 }, (_, i) => i - 2); // −2..12 (범위 밖 포함)
+  const restAfter = range.filter((k) => restFollowsStep(k));
+  const afterRest = range.filter((k) => stepFollowsRest(k));
+  const oddballs = [2.5, 1.5, Number.NaN, Number.POSITIVE_INFINITY, -1, 9, 10];
+  const noOddball = oddballs.every((k) => !restFollowsStep(k) && !stepFollowsRest(k));
+  add(
+    "스텝·휴식",
+    "휴식은 푸시업 스텝 [1,3,5,7] 뒤에만(풀업 ✓·마지막 ✓ 뒤엔 없음) · 범위 밖·정수 아님 → false",
+    eq(restAfter, [1, 3, 5, 7]) && noOddball,
+    `휴식 앞=${S(restAfter)}`,
+  );
+  add("스텝·휴식", "휴식 뒤 스텝 = [2,4,6,8](2~5세트 풀업)", eq(afterRest, [2, 4, 6, 8]), `휴식 뒤=${S(afterRest)}`);
+  // 엔진 스텝과 맞물리는지 — 휴식 앞은 전부 푸시업(세트 끝), 휴식 뒤는 전부 풀업(세트 시작), 휴식 4번 = 세트 5개 − 1
+  const steps = supersetSteps(targetFor(BASE, 1));
+  const aligned =
+    steps.filter((st) => restFollowsStep(st.step)).every((st) => st.exercise === "pushup" && st.setIndex < 4) &&
+    steps.filter((st) => stepFollowsRest(st.step)).every((st) => st.exercise === "pullup" && st.setIndex > 0) &&
+    steps.filter((st) => restFollowsStep(st.step)).length === 4;
+  add("스텝·휴식", "휴식 앞 = 1~4세트 푸시업 · 휴식 뒤 = 2~5세트 풀업 · 휴식 4번", aligned, steps.map((st) => (restFollowsStep(st.step) ? `${st.step}|` : `${st.step}`)).join(" "));
+}
+{
+  // 음성 안내 프리페치 대상 — 휴식 끝에 읽히는 스텝 정확히 4개(2~5세트 풀업). 픽스처 4종(보통·Day 23·평평한 1RM·두 자리 수)
+  const fixtures: [string, SetPair][] = [
+    ["Day 1 (10/18RM)", targetFor(BASE, 1)],
+    ["Day 23 (10/18RM)", targetFor(BASE, 23)],
+    ["1/1RM 평평", targetFor(makeBase({ pullup: 1, pushup: 1 }), 1)],
+    ["150/150RM 두 자리", targetFor(makeBase({ pullup: 150, pushup: 150 }), 1)],
+  ];
+  const bad: string[] = [];
+  for (const [name, t] of fixtures) {
+    const picked = stepsAfterRest(t);
+    const ok =
+      picked.length === 4 &&
+      eq(
+        picked.map((st) => st.step),
+        [2, 4, 6, 8],
+      ) &&
+      picked.every((st, i) => st.exercise === "pullup" && st.setIndex === i + 1 && st.reps === t.pullup[i + 1]);
+    if (!ok) bad.push(`${name}:${S(picked.map((st) => `${st.exercise}${st.setIndex}x${st.reps}`))}`);
+  }
+  add(
+    "스텝·휴식",
+    "음성 안내 대상 stepsAfterRest = 정확히 4개(2~5세트 풀업, 목표 횟수 그대로) — 픽스처 4종",
+    bad.length === 0,
+    bad.length === 0 ? `Day1 → ${S(stepsAfterRest(targetFor(BASE, 1)).map((st) => `pu${st.setIndex + 1}x${st.reps}`))}` : bad.join(" "),
+  );
+}
+// 세트 목록 순서(§19-6 — 2026-09-25 사용자 요청 "완료한 세트는 아래로, 해야 할 세트가 위로 실시간"): 지금 할 세트 맨 위 →
+// 남은 세트(번호순) → 완료 세트 맨 아래(번호순). 축하 중인 세트(held)는 축하가 끝날 때까지 제자리(맨 위), 풀업 ✓에는 재배치 없음.
+// 기대값은 스펙 문장에서 **손으로** 적는다(구현을 따라 계산하지 않는다). 세트 번호 0..4 = 1~5세트, doneFrom = 완료 구역이 시작하는 위치.
+{
+  type Row = { order: number[]; doneFrom: number };
+  const show = (x: Row) => `${x.order.slice(0, x.doneFrom).join("")}|${x.order.slice(x.doneFrom).join("")}`;
+  const NO_HELD: [number, number[], number][] = [
+    [0, [0, 1, 2, 3, 4], 5], // 1세트 풀업 — 끝낸 세트 없음(구분선 없음)
+    [1, [0, 1, 2, 3, 4], 5], // 1세트 푸시업
+    [2, [1, 2, 3, 4, 0], 4], // 2세트 풀업 — 1세트는 맨 아래
+    [3, [1, 2, 3, 4, 0], 4],
+    [4, [2, 3, 4, 0, 1], 3],
+    [5, [2, 3, 4, 0, 1], 3],
+    [6, [3, 4, 0, 1, 2], 2],
+    [7, [3, 4, 0, 1, 2], 2],
+    [8, [4, 0, 1, 2, 3], 1],
+    [9, [4, 0, 1, 2, 3], 1], // 5세트 푸시업(마지막 스텝)
+  ];
+  scenario("세트 목록 순서", "스텝 0~9(축하 없음) = [지금 → 남은(번호순) → 완료(번호순)]·완료 구역 시작 위치", () => {
+    const bad = NO_HELD.filter(([k, order, doneFrom]) => !eq(roundDisplayOrder(k, null), { order, doneFrom })).map(
+      ([k]) => `step${k}:${show(roundDisplayOrder(k, null))}`,
+    );
+    add(
+      "세트 목록 순서",
+      "스텝 0~9(축하 없음) = [지금 → 남은(번호순) → 완료(번호순)]·완료 구역 시작 위치",
+      bad.length === 0,
+      bad.length === 0 ? NO_HELD.map(([k]) => show(roundDisplayOrder(k, null))).join(" ") : bad.join(" "),
+    );
+  });
+  // 방금 끝낸 세트(= 지금 세트 바로 앞)를 축하 중 — 맨 위 제자리(탭 직전 순서 그대로). 홀수 스텝은 축하 중 휴식을 건너뛰고 풀업 ✓한 경우
+  const HELD: [number, number, number[], number][] = [
+    [2, 0, [0, 1, 2, 3, 4], 5],
+    [3, 0, [0, 1, 2, 3, 4], 5],
+    [4, 1, [1, 2, 3, 4, 0], 4],
+    [5, 1, [1, 2, 3, 4, 0], 4],
+    [6, 2, [2, 3, 4, 0, 1], 3],
+    [7, 2, [2, 3, 4, 0, 1], 3],
+    [8, 3, [3, 4, 0, 1, 2], 2],
+    [9, 3, [3, 4, 0, 1, 2], 2],
+  ];
+  scenario("세트 목록 순서", "스텝 2~9 + 방금 끝낸 세트 축하 중 → 그 세트가 맨 위 제자리(완료 구역에 아직 안 내려감)", () => {
+    const bad = HELD.filter(([k, h, order, doneFrom]) => !eq(roundDisplayOrder(k, h), { order, doneFrom })).map(
+      ([k, h]) => `step${k}/held${h}:${show(roundDisplayOrder(k, h))}`,
+    );
+    add(
+      "세트 목록 순서",
+      "스텝 2~9 + 방금 끝낸 세트 축하 중 → 그 세트가 맨 위 제자리(완료 구역에 아직 안 내려감)",
+      bad.length === 0,
+      bad.length === 0 ? HELD.map(([k, h]) => `${k}/${h}=${show(roundDisplayOrder(k, h))}`).join(" ") : bad.join(" "),
+    );
+  });
+  scenario("세트 목록 순서", "푸시업 ✓(세트 끝) 탭 순간 재배치 없음 → 축하가 끝나면 끝낸 세트는 완료 구역 맨 아래·다음 세트가 맨 위", () => {
+    const bad: string[] = [];
+    for (let r = 0; r <= 3; r++) {
+      const before = roundDisplayOrder(2 * r + 1, null); // r+1세트 푸시업 차례
+      const atTap = roundDisplayOrder(2 * r + 2, r); // ✓ 직후(스텝은 이미 다음 세트) — 축하 중
+      const after = roundDisplayOrder(2 * r + 2, null); // 축하 끝
+      const ok =
+        eq(atTap, before) &&
+        after.order[0] === r + 1 &&
+        after.order[after.order.length - 1] === r &&
+        after.doneFrom === before.doneFrom - 1;
+      if (!ok) bad.push(`r${r}:${show(before)}→${show(atTap)}→${show(after)}`);
+    }
+    add(
+      "세트 목록 순서",
+      "푸시업 ✓(세트 끝) 탭 순간 재배치 없음 → 축하가 끝나면 끝낸 세트는 완료 구역 맨 아래·다음 세트가 맨 위",
+      bad.length === 0,
+      bad.length === 0 ? "1~4세트 끝 전부 탭 순간 = 탭 직전, 축하 끝 = 끝낸 세트 맨 아래" : bad.join(" "),
+    );
+  });
+  scenario("세트 목록 순서", "풀업 ✓(같은 세트의 푸시업으로) 직후 재배치 없음 — 축하 없음·앞 세트 축하 중 둘 다", () => {
+    const bad: string[] = [];
+    for (let r = 0; r <= 4; r++) {
+      for (const h of r >= 1 ? [null, r - 1] : [null]) {
+        const a = roundDisplayOrder(2 * r, h);
+        const b = roundDisplayOrder(2 * r + 1, h);
+        if (!eq(a, b)) bad.push(`r${r}/held${h}:${show(a)}→${show(b)}`);
+      }
+    }
+    add("세트 목록 순서", "풀업 ✓(같은 세트의 푸시업으로) 직후 재배치 없음 — 축하 없음·앞 세트 축하 중 둘 다", bad.length === 0, bad.length === 0 ? "1~5세트 풀업 ✓ 9경우" : bad.join(" "));
+  });
+  scenario("세트 목록 순서", "아직 안 끝난 세트·범위 밖·정수 아닌 held는 무시(축하 없음과 같다)", () => {
+    const bad: string[] = [];
+    for (const [k] of NO_HELD) {
+      const cur = Math.floor(k / 2);
+      const junk = [...Array.from({ length: 5 - cur }, (_, i) => cur + i), -1, 5, 1.5, Number.NaN];
+      for (const h of junk) if (!eq(roundDisplayOrder(k, h), roundDisplayOrder(k, null))) bad.push(`step${k}/held${h}:${show(roundDisplayOrder(k, h))}`);
+    }
+    add("세트 목록 순서", "아직 안 끝난 세트·범위 밖·정수 아닌 held는 무시(축하 없음과 같다)", bad.length === 0, bad.length === 0 ? "스텝 0~9 × 무효 held" : bad.slice(0, 6).join(" "));
+  });
+  scenario("세트 목록 순서", "held가 두 세트 이상 뒤여도 held만 맨 위 — 다른 끝낸 세트는 완료 구역(번호순) · 모든 입력에서 0..4 순열", () => {
+    // 지금은 축하(1초) < 연타 가드(1.2초)라 도달하지 않는 조합이지만, 두 상수가 바뀌어도 끝낸 세트가 남은 구역에 끼지 않게 잠근다
+    const deep = [
+      [roundDisplayOrder(6, 0), { order: [0, 3, 4, 1, 2], doneFrom: 3 }],
+      [roundDisplayOrder(8, 1), { order: [1, 4, 0, 2, 3], doneFrom: 2 }],
+    ] as const;
+    const deepOk = deep.every(([got, want]) => eq(got, want));
+    const weird: string[] = [];
+    const stepsAll = [-3, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 99, 2.5, Number.NaN];
+    const heldAll: (number | null)[] = [null, -1, 0, 1, 2, 3, 4, 5, 1.5, Number.NaN];
+    for (const k of stepsAll) {
+      for (const h of heldAll) {
+        const x = roundDisplayOrder(k, h);
+        const doneZone = x.order.slice(x.doneFrom);
+        const perm = eq([...x.order].sort((a, b) => a - b), [0, 1, 2, 3, 4]);
+        const asc = doneZone.every((v, i) => i === 0 || doneZone[i - 1] < v);
+        if (!perm || !asc || x.doneFrom < 1 || x.doneFrom > 5) weird.push(`step${k}/held${h}:${show(x)}`);
+      }
+    }
+    add(
+      "세트 목록 순서",
+      "held가 두 세트 이상 뒤여도 held만 맨 위 — 다른 끝낸 세트는 완료 구역(번호순) · 모든 입력에서 0..4 순열",
+      deepOk && weird.length === 0,
+      `${deep.map(([got]) => show(got)).join(" ")}${weird.length ? ` 이상=${weird.slice(0, 4).join(" ")}` : ""}`,
+    );
+  });
 }
 {
   const t = targetFor(BASE, 1);

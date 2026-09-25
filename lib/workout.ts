@@ -435,6 +435,51 @@ export function supersetSteps(target: SetPair): WorkoutStep[] {
   });
 }
 
+/**
+ * 이 스텝의 ✓ 뒤에 휴식이 오는가 — **세트(라운드)를 끝내는 푸시업 스텝**(홀수), 마지막 스텝 제외 → [1,3,5,7] (§19-1 슈퍼세트·§19-6).
+ * 풀업(짝수 스텝)의 ✓는 쉬지 않고 같은 세트의 푸시업으로, 마지막 스텝의 ✓는 곧바로 완료 기록이다.
+ * 휴식 규칙의 **유일한 정의처** — 세션의 ✓ 처리·휴식 끝 음성 안내 대상·진행 복원 정규화·목록의 휴식 줄이 전부 이것(과 stepFollowsRest)을 본다.
+ * 스텝 번호 규칙(k 짝수 = 풀업, 홀수 = 푸시업, 세트 = floor(k/2))은 supersetSteps와 같다. 범위 밖·정수 아님 → false.
+ */
+export function restFollowsStep(k: number): boolean {
+  return Number.isInteger(k) && k >= 0 && k < SETS_PER_EXERCISE * 2 - 1 && k % 2 === 1;
+}
+
+/** 이 스텝이 휴식 뒤에 오는가 → [2,4,6,8](= 2~5세트의 풀업). 쉬는 중 "다음"이 가리킬 수 있는 스텝, 휴식 끝 음성 안내가 읽는 스텝 */
+export function stepFollowsRest(k: number): boolean {
+  return Number.isInteger(k) && k > 0 && restFollowsStep(k - 1);
+}
+
+/**
+ * 휴식 끝에 음성으로 안내할 스텝 — 휴식 뒤 스텝(2~5세트 풀업) **정확히 4개**, 스텝 순. 세션 시작 탭의 프리페치 대상이다(§19-6).
+ * 첫 스텝과 푸시업 스텝은 휴식 뒤에 오지 않아 읽히지 않으므로 뺀다(합성 낭비 방지). 문구로 옮기는 것은 화면(stepPhrase)이 한다.
+ */
+export function stepsAfterRest(target: SetPair): WorkoutStep[] {
+  return supersetSteps(target).filter((st) => stepFollowsRest(st.step));
+}
+
+/**
+ * 세션 세트(라운드) 목록의 표시 순서(§19-6 — 2026-09-25 사용자 요청) — **지금 할 세트가 맨 위**, 그 아래 남은 세트(번호순),
+ * **끝낸 세트는 맨 아래**(번호순). 현재 스텝에서 파생한다(순서를 저장하지 않으므로 새로고침 복원·재진입은 곧바로 최종 순서다).
+ * `held` = 축하 중인 세트 — 방금 끝냈지만 축하가 끝날 때까지 맨 위 제자리에 붙잡아 두는 세트(표시만 늦출 뿐 진행 상태가 아니다).
+ * **이미 끝낸 세트(지금 세트보다 앞)일 때만** 맨 위에 두고, 나머지는 완료 여부로 가른다 — held가 두 세트 이상 뒤여도 다른 끝낸 세트가
+ * 남은 구역에 끼지 않는다. 아직 안 끝난 세트·범위 밖·정수 아닌 held는 무시한다.
+ * 돌려주는 값: 세트 번호(0..4)의 표시 순서와 완료 구역이 시작하는 위치 `doneFrom`(이 앞은 held·지금·남은 세트).
+ * 화면(components/workout-session.tsx)이 쓰고, eval:workout "세트 목록 순서"가 스텝 0~9 × 축하 유무로 잠근다.
+ */
+export function roundDisplayOrder(step: number, held: number | null): { order: number[]; doneFrom: number } {
+  const last = SETS_PER_EXERCISE - 1;
+  const cur = Number.isInteger(step) ? Math.min(last, Math.max(0, Math.floor(step / 2))) : 0;
+  const top = held !== null && Number.isInteger(held) && held >= 0 && held < cur ? [held] : [];
+  const ahead: number[] = [];
+  const done: number[] = [];
+  for (let r = 0; r <= last; r++) {
+    if (top.includes(r)) continue;
+    (r >= cur ? ahead : done).push(r);
+  }
+  return { order: [...top, ...ahead, ...done], doneFrom: top.length + ahead.length };
+}
+
 /** 실패 지점 형태 검사 — 입력 형태는 라우트 zod가 보장하므로 어긋나면 프로그래밍 오류(RangeError) */
 function assertFailedAt(failed: FailedAt | null | undefined): FailedAt {
   if (

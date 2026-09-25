@@ -78,6 +78,29 @@
   color: var(--ink-2);
 }
 
+/* 휴식 무대 캡션 자리 — 축하 중엔 같은 자리에 "🎉 n세트 완료!"(.stageCheer, §19-6). 목록이 첫 화면 밖인 작은 폰(보이는 높이
+ * 약 620px 미만)에서도 축하가 보이게 늘 첫 화면에 있는 무대에 둔다. 높이를 축하 문구(17px × 1.3 + 위아래 2px)에 맞춰 늘 잡아 두어
+ * 문구가 뜨고 사라질 때 아래 버튼(2분/3분·+30초·건너뛰기)이 움직이지 않는다 */
+.restCaption {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(var(--fs-list-title) * 1.3 + 4px);
+  margin: 0;
+}
+.stageCheer {
+  display: inline-block;
+  padding: 2px 12px;
+  border-radius: var(--radius-chip);
+  background: var(--accent);
+  color: var(--bg);
+  font-size: var(--fs-list-title);
+  font-weight: var(--fw-bold);
+  line-height: 1.3;
+  white-space: nowrap;
+  animation: stageCheerInOut 1000ms ease-out both; /* 목록 배지(cheerInOut)와 같은 1초 — 제자리에서 튀어 올랐다 사라진다 */
+}
+
 /* 휴식 카운트다운 */
 .clock {
   margin: 4px 0 8px;
@@ -118,45 +141,280 @@
   gap: 8px 12px;
 }
 
-/* ── 10스텝 목록 ── */
-.steps {
+/* ── 세트(라운드) 목록 — 한 세트 = 풀업 + 푸시업, 휴식은 세트 사이(§19-1) ──
+ * 한 줄 = 한 세트(오늘 카드의 세트표와 같은 읽기 방향: 세트 | 풀업 | 푸시업). 상태는 명도 차 + 글리프:
+ * 완료 = ink-3 + ✓(accent), 지금 = 칸 accent-soft + ▶, 지금 세트 = 테두리 accent, 쉬는 중 = 그 휴식 줄 accent.
+ * 순서(§19-6): 지금 할 세트 맨 위 → 남은 세트 → "끝낸 세트" 구분선 → 완료 세트. 휴식 줄은 그 휴식 뒤 세트의 위에 붙는다. */
+.rounds {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
-.stepRow {
+/* 재배치(FLIP) 단위 — 휴식 줄 + 세트 상자. 축하 중인 행은 버스트가 이웃 행 위로 보이게 한 층 올린다 */
+.roundItem {
+  position: relative;
+}
+.roundItem.holding {
+  z-index: 1;
+}
+.round {
+  position: relative;
+  transition:
+    background-color 300ms ease,
+    border-color 300ms ease,
+    color 300ms ease;
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 40px;
-  padding: 6px 12px;
+  min-height: 44px;
+  padding: 4px 4px 4px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius-box);
+  background: var(--bg); /* 불투명 — 재배치(FLIP) 중 미끄러지는 행이 지나가는 행·휴식 줄을 덮는다(글자가 겹쳐 보이지 않게) */
   font-size: var(--fs-vocab-example);
   color: var(--ink);
 }
-.stepMark {
+.roundName {
   flex: none;
-  width: 24px;
-  text-align: center;
-  font-weight: var(--fw-bold);
+  min-width: 3em;
+  font-weight: var(--fw-medium);
   font-variant-numeric: tabular-nums;
 }
-.done {
+.pair {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+.cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 34px;
+  padding: 4px 8px;
+  border-radius: calc(var(--radius-box) - 4px);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.mark {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  font-weight: var(--fw-bold);
+}
+/* 세트 사이 휴식 줄 — 그 휴식 뒤에 오는 세트 상자 바로 위 */
+.restGap {
+  margin: 0;
+  padding: 0 0 6px;
+  text-align: center;
+  font-size: var(--fs-caption);
   color: var(--ink-3);
 }
-.done .stepMark {
+/* 완료 구역 머리 — 이 아래가 끝낸 세트(번호순) */
+.doneDivider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: var(--fs-caption);
+  color: var(--ink-3);
+}
+.doneDivider::before,
+.doneDivider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--line);
+}
+
+/* 상태 — 세트 상자 */
+.round.done {
+  color: var(--ink-3);
+}
+.round.current {
+  border-color: var(--accent);
+}
+/* 상태 — 칸(풀업/푸시업) */
+.cell.done {
+  color: var(--ink-3);
+}
+.cell.done .mark {
   color: var(--accent);
 }
-.current {
-  border-color: var(--accent);
+.cell.current {
   background: var(--accent-soft);
   color: var(--accent-ink);
   font-weight: var(--fw-medium);
 }
-.todo .stepMark {
-  color: var(--ink-3);
+/* 상태 — 휴식 줄 */
+.restGap.current {
+  color: var(--accent);
+  font-weight: var(--fw-medium);
+}
+
+/* ── 세트 완료 축하(표시 전용, §19-6) — 체크 팝 · 이모지 버스트 · "🎉 n세트 완료!" 뒤 완료 구역으로 FLIP ──
+ * 색은 기존 토큰만(accent·accent-soft·bg) — 초록·빨강 금지(DESIGN §2). */
+.round.celebrate {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  animation: roundBump 420ms ease-out;
+}
+.mark.pop {
+  animation: checkPop 460ms cubic-bezier(0.3, 1.6, 0.5, 1) both;
+}
+.burst {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.burst i {
+  position: absolute;
+  left: 0;
+  top: 0;
+  font-style: normal;
+  font-size: 20px;
+  line-height: 1;
+  animation: burstOut 900ms ease-out both;
+}
+.cheer {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  padding: 4px 12px;
+  border-radius: var(--radius-chip);
+  background: var(--accent);
+  color: var(--bg);
+  font-size: var(--fs-list-title);
+  font-weight: var(--fw-bold);
+  line-height: 1.3;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: cheerInOut 1000ms ease-out both;
+}
+
+@keyframes roundBump {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.03);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes checkPop {
+  0% {
+    transform: scale(0.2);
+    opacity: 0;
+  }
+  55% {
+    transform: scale(1.5);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+@keyframes burstOut {
+  0% {
+    transform: translate(-50%, -50%) scale(0.4);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(calc(-50% + var(--dx, 0px)), calc(-50% + var(--dy, 0px))) scale(1.15);
+    opacity: 0;
+  }
+}
+@keyframes stageCheerInOut {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  18% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+  30% {
+    transform: scale(1);
+  }
+  85% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.96);
+    opacity: 0;
+  }
+}
+@keyframes cheerInOut {
+  0% {
+    transform: translate(-50%, -30%) scale(0.6);
+    opacity: 0;
+  }
+  18% {
+    transform: translate(-50%, -65%) scale(1.08);
+    opacity: 1;
+  }
+  30% {
+    transform: translate(-50%, -60%) scale(1);
+  }
+  82% {
+    transform: translate(-50%, -60%) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -80%) scale(0.96);
+    opacity: 0;
+  }
+}
+
+/* 움직임 줄이기 — 화면은 축하를 붙잡지 않고(즉시 재배치) 여기서 남은 움직임도 끈다.
+ * 휴식 무대의 "🎉 n세트 완료!"(.stageCheer)는 움직임 없이 같은 시간 그대로 보인다(문구는 움직임이 아니다) */
+@media (prefers-reduced-motion: reduce) {
+  .round {
+    transition: none;
+  }
+  .round.celebrate,
+  .mark.pop,
+  .burst i,
+  .cheer,
+  .stageCheer {
+    animation: none;
+  }
+  .burst,
+  .cheer {
+    display: none;
+  }
+}
+
+/* ── 좁은 폭(320px급) — 두 자리 횟수("푸시업 75회")가 칸을 넘지 않게 여백만 줄인다(글자 크기는 그대로) ── */
+@media (max-width: 359px) {
+  .round {
+    gap: 6px;
+    padding-left: 8px;
+  }
+  .roundName {
+    min-width: 2.6em;
+  }
+  .cell {
+    gap: 2px;
+    padding: 4px 5px;
+  }
+  .mark {
+    width: 12px;
+  }
 }
