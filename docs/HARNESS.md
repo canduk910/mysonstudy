@@ -5,14 +5,14 @@
 > **하네스란?** LLM 호출을 감싸는 뼈대입니다 — 프롬프트, 출력 스키마, 검증, 재시도, 로깅을 한 세트로 묶은 것.
 > 말과 마차를 잇는 마구(harness)처럼, 모델의 힘이 정확한 방향으로만 나가게 잡아주는 장치예요.
 
-이 저장소는 AI를 쓰는 과목 셋을 기릅니다 — **영어(북카드)**, **수학(수학코치)**, **일본어(아빠의 일본어)**. 과목마다 프롬프트도 스키마도
+이 저장소는 AI를 쓰는 과목 넷을 기릅니다 — **영어(북카드)**, **수학(수학코치)**, **일본어(아빠의 일본어)**, **토익스피킹(아빠의 영어)**. 과목마다 프롬프트도 스키마도
 다르지만 **호출을 감싸는 방식은 같습니다.** 이 문서는 그 공통분모만 담습니다. 프롬프트 원문·출력
 스키마·평가 항목처럼 과목마다 갈리는 것은 전부 과목별 문서에 있습니다.
 
 
 > **절 번호 표기 규칙.** 코드 주석·리포트에 `HARNESS §N`처럼 문서명 없이 적힌 참조는
 > **그 코드가 속한 과목의 스펙**을 가리킨다 — `lib/ai/english/`·`app/api/` 영어 경로면
-> `docs/harness/english.md`, 수학 경로면 `docs/harness/math.md`, 일본어 경로(`lib/ai/japanese/`·`app/api/japanese/`)면 `docs/harness/japanese.md`다. 이 공통 문서를 가리킬
+> `docs/harness/english.md`, 수학 경로면 `docs/harness/math.md`, 일본어 경로(`lib/ai/japanese/`·`app/api/japanese/`)면 `docs/harness/japanese.md`, 토익 경로(`lib/ai/toeic/`·`app/api/toeic/`)면 `docs/harness/toeic.md`다. 이 공통 문서를 가리킬
 > 때는 반드시 `docs/HARNESS.md §N`처럼 파일명을 함께 적는다. 과목 분리(2026-08-17) 이전에
 > 쓰인 참조가 40곳 이상이라 관례를 유지하는 쪽을 택했다.
 
@@ -23,12 +23,14 @@
 | **영어 (북카드)** | [`docs/harness/english.md`](./harness/english.md) | `lib/ai/english/` | `scripts/eval-english.ts` | `npm run eval:english` |
 | **수학 (수학코치)** | [`docs/harness/math.md`](./harness/math.md) | `lib/ai/math/` | `scripts/eval-math.ts` | `npm run eval:math` |
 | **일본어 (아빠의 일본어)** | [`docs/harness/japanese.md`](./harness/japanese.md) | `lib/ai/japanese/` | `scripts/eval-japanese.ts` | `npm run eval:japanese` |
+| **토익스피킹 (아빠의 영어)** | [`docs/harness/toeic.md`](./harness/toeic.md) | `lib/ai/toeic/` | `scripts/eval-toeic.ts` | `npm run eval:toeic` |
 
 앱 전체 명세는 [`docs/SPEC.md`](./SPEC.md), 디자인 원본은 `design/`에 있습니다.
 
 **하네스(이 문서의 `callWithSchema()` 규약) 밖에 있는 것 두 종류:**
-- **LLM을 쓰지 않는 기능** — **아빠의 운동**(러시안 파이터 루틴, SPEC §19)은 규칙이 전부 결정적이라 순수 함수 엔진(`lib/workout.ts`)이 하고, 회귀 가드는 오프라인 `npm run eval:workout`입니다. **학습 스트릭**(SPEC §17, `eval:streak`)도 AI가 없습니다.
+- **LLM을 쓰지 않는 기능** — **아빠의 운동**(러시안 파이터 루틴, SPEC §19)은 규칙이 전부 결정적이라 순수 함수 엔진(`lib/workout.ts`)이 하고, 회귀 가드는 오프라인 `npm run eval:workout`입니다. **학습 스트릭**(SPEC §17, `eval:streak`)도 AI가 없습니다. 토익스피킹 안에서도 표현 시험 출제·모의고사 형식표·Q1–2 지문 대조·추정 총점은 LLM이 아닌 순수 함수입니다(`docs/harness/toeic.md` §5-4·§5-5·§6).
 - **AI를 쓰지만 Structured Outputs 하네스 밖인 호출** — **클라우드 발음**(SPEC §16·§16-5, `lib/tts.ts`)은 OpenAI 유료 호출이지만 스키마 없는 오디오 호출이라 `callWithSchema()`·zod·재요청·토큰 로그를 거치지 않고, 키 규약(`OPENAI_API_KEY`, 없으면 501 → 기기 음성)만 공유합니다. 대화 해설 **낭독**(SPEC §18)은 일본어 해설 화면의 기능이고, 그 연속 재생 엔진(`speakQueue`)은 과목 공용이며 `eval:speech`가 잠급니다. 운동 세션의 음성 안내도 이 발음 경로를 거칩니다.
+  토익스피킹의 **관문 P**(모의고사 Q3–4 사진 생성, `lib/toeic-image.ts`)와 **관문 T**(답변 음성 전사, `lib/toeic-transcribe.ts`)도 같은 부류입니다 — 이미지·오디오 바이트를 주고받는 호출이라 `callWithSchema()`·zod·재요청을 거치지 않고, 각자 **독립 OpenAI 클라이언트**를 쥐고(`lib/ai/client.ts`에 과목 분기를 넣지 않는다) 키 규약만 공유합니다(키가 없으면 네트워크 호출 없이 `no_api_key` → 라우트 501). 모델은 `OPENAI_IMAGE_MODEL`·`OPENAI_IMAGE_QUALITY`·`OPENAI_TRANSCRIBE_MODEL`(빈 값이면 기본값 — SPEC §11). 로그에는 모델·크기·ms 같은 숫자만 남기고 프롬프트·사진·전사문·오디오는 남기지 않습니다. 전사에는 기대 문장을 `prompt`로 넣지 않습니다(`docs/harness/toeic.md` §5-0).
 
 **작업할 때는 해당 과목의 문서만 읽으세요.** 여러 과목을 함께 읽으면 컨텍스트만 늘고 프롬프트가 섞입니다.
 
@@ -80,12 +82,17 @@ lib/ai/client.ts          # 공통 래퍼 + OpenAI 클라이언트 — 과목 �
 lib/ai/english/           # 영어 전용 프롬프트·스키마
 lib/ai/math/              # 수학 전용 프롬프트·스키마·검산 파이프라인
 lib/ai/japanese/          # 일본어 전용 프롬프트·스키마
+lib/ai/toeic/             # 토익스피킹 전용 프롬프트·스키마·후처리(호출 A~D)
+lib/toeic-image.ts        # 토익 관문 P(사진 생성) — 하네스 밖, lib/tts.ts와 같은 부류(서버 전용)
+lib/toeic-transcribe.ts   # 토익 관문 T(음성 전사) — 하네스 밖(서버 전용)
 scripts/eval-english.ts   # 영어 평가 하네스
 scripts/eval-math.ts      # 수학 평가 하네스
 scripts/eval-japanese.ts  # 일본어 평가 하네스
+scripts/eval-toeic.ts     # 토익스피킹 평가 하네스
 docs/harness/english.md   # 영어 스펙 (단일 진실 원천)
 docs/harness/math.md      # 수학 스펙
 docs/harness/japanese.md  # 일본어 스펙
+docs/harness/toeic.md     # 토익스피킹 스펙
 ```
 
 ## 4. 운영 규칙
@@ -100,3 +107,9 @@ docs/harness/japanese.md  # 일본어 스펙
   **영어·수학 eval의 실호출 경로**는 실제 OpenAI 호출이 발생하므로 CI가 아니라 수동 실행이고, 비용 승인 없이 반복하지 않는다.
   오프라인 항목(`EVAL_OFFLINE_ONLY=1`)·일본어 eval(현재 오프라인 전용 — 실호출 게이트 `EVAL_JAPANESE`는 자리만)·
   `eval:speech`·`eval:workout`·`eval:streak`는 실호출이 없어 언제든 돌려도 된다.
+  **토익스피킹 eval(`eval:toeic`)은 기본이 오프라인**(무비용 — zod 반례·후처리·시험 출제·형식표·Q1–2 대조·추정 총점·스트릭 트랙 분리·
+  spec-sync 바이트 대조와 JSON Schema 8개 의미 동치)이라 언제든 돌려도 된다. 실호출은 **`EVAL_TOEIC=1`일 때만** 호출 A(사진 경로
+  `EVAL_TOEIC_PHOTO`가 있을 때만)·B(표현 7개)·C(파트 하나, `EVAL_TOEIC_PART` 기본 opinion)·D(픽스처 전사문 하나)를 한 번씩 부르고,
+  `EVAL_OFFLINE_ONLY=1`이면 게이트를 켜도 건너뛴다(네트워크 자체를 막는 2차 방어선). 관문 P·T는 실호출 점검 대상이 아니다 —
+  오프라인에서 env 빈 값 폴백·키 없음(`no_api_key`)·전사 `prompt` 부재 같은 계약을 잠근다. 교재 가져오기 파일 검증은 `data/private/`에 파일이 있을 때만 돌고
+  없으면 SKIP이다(공개 저장소·CI 기준). 게이트 실호출도 비용이 드는 검증이라 **사용자 동의 후 오케스트레이터가** 실행한다.

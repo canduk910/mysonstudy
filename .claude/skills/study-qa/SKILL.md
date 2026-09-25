@@ -1,6 +1,6 @@
 ---
 name: study-qa
-description: "qa-inspector 에이전트가 검증 작업을 수행할 때 로드하는 스킬(과목 공통 — english·math·japanese·common). 구현이 스펙과 일치하는지, 프롬프트↔JSON Schema↔zod↔eval 4중 정의와 프롬프트↔스펙(spec-sync)이 어긋나지 않는지, API↔프론트 경계면이 맞물리는지, 과목별 정확성 장치(영어 grounding 가드·수학 검산·일본어 토큰 무결성과 모드 분리)와 과목 공통 기능(클라우드 발음 폴백·학습 스트릭·해설 낭독·아빠의 운동 엔진)이 반례를 실제로 거부하는지 교차 검증하는 방법론·체크리스트·리포트 형식을 담는다. subject별 정합성 매트릭스는 references/english.md·math.md·japanese.md·common.md에 있다. 사용자의 검증·QA 요청 진입점은 study-orchestrator 스킬이다."
+description: "qa-inspector 에이전트가 검증 작업을 수행할 때 로드하는 스킬(과목 공통 — english·math·japanese·toeic·common). 구현이 스펙과 일치하는지, 프롬프트↔JSON Schema↔zod↔eval 4중 정의와 프롬프트↔스펙(spec-sync)이 어긋나지 않는지, API↔프론트 경계면이 맞물리는지, 과목별 정확성 장치(영어 grounding 가드·수학 검산·일본어 토큰 무결성과 모드 분리·토익 환각 차단 zod·전사 무유도·모드 분리)와 과목 공통 기능(클라우드 발음 폴백·학습 스트릭·해설 낭독·아빠의 운동 엔진)이 반례를 실제로 거부하는지 교차 검증하는 방법론·체크리스트·리포트 형식을 담는다. subject별 정합성 매트릭스는 references/english.md·math.md·japanese.md·toeic.md·common.md에 있다. 사용자의 검증·QA 요청 진입점은 study-orchestrator 스킬이다."
 ---
 
 # Study QA — 통합 정합성 검증 (과목 공통)
@@ -16,6 +16,7 @@ description: "qa-inspector 에이전트가 검증 작업을 수행할 때 로드
 | `english` (북카드·단어장·챕터 리더) | `references/english.md` | 4중 정의 매트릭스, 카드 구조 개수·비율, grounding 가드, 단어장 병합·보강 |
 | `math` (수학코치) | `references/math.md` | 답 정확성(심판 2겹), 장면 검산, iframe 격리 |
 | `japanese` (아빠의 일본어) | `references/japanese.md` | 후리가나 토큰 무결성, 제외·포함·레벨 후처리, 시험 모드별 숙련도 분리, 대화 병합 |
+| `toeic` (아빠의 영어 · 토익스피킹) | `references/toeic.md` | 환각 차단 zod(exampleSpan·index·chunks·said), 모드별 숙련도·보기 거르기, 원자적 저장(재완료 409·동시 채점·빈 파트·사진), 응시 화면 오디오 세션 순서, 비용 가드(버튼·501·전사 prompt 없음), 공개 저장소 오염 스캔, iPhone 실기기 목록 |
 | `common` (과목 공통 기능·아빠의 운동) | `references/common.md` | 발음 폴백·캐시 지문, 스트릭 KST·사람/트랙 분리, 해설 낭독 대본·큐, 운동 엔진·원자적 저장·`rev` |
 
 아빠의 운동은 AI를 쓰지 않아 과목 하네스 밖이다(`docs/HARNESS.md` §0) — `common`으로 검증한다.
@@ -39,6 +40,7 @@ description: "qa-inspector 에이전트가 검증 작업을 수행할 때 로드
 | 배치 병렬 호출 간 표기 불일치 | 스텁은 늘 같은 응답을 준다. **실물 산출물**을 사람이 읽어야 보인다 |
 | 클라우드 TTS가 한자만인 일본어(`約束`·`学`)를 중국어로 읽음 | "모델이 텍스트로 언어를 판별한다"는 가정이 코드에 숨어 있었다. **실제로 들어야** 드러났다(`lib/tts.ts`의 언어 지시로 수정) |
 | 폰 폭에서 스트릭 헤드라인의 💪 운동 트랙이 첫 화면 밖으로 밀림 | 데스크톱 폭에서는 멀쩡했다. **390px 실측**에서만 보였다(SPEC §17-7) |
+| 토익 응시에서 질문 음성이 전부 무음인데 "질문 보기" 안전망이 안 뜸 | `speakQueue`와 응시 화면이 각각 계약대로였다. 1~2조각 큐는 전부 무음이어도 `"done"`이었다. **가짜 음성 실패로 응시를 끝까지 돌려야** 보였다(`qa_report_toeic_m2_1.md` P2-A — `onEnd` 둘째 인자 `sounded`로 수정) |
 
 여기서 나오는 원칙: **"규칙이 존재한다"가 아니라 "틀린 입력을 실제로 거부한다"를 확인하라.**
 
@@ -54,6 +56,9 @@ description: "qa-inspector 에이전트가 검증 작업을 수행할 때 로드
 | japanese | 토큰 무결성 zod | `surface`를 이으면 원문과 한 글자 다른 토큰 배열 → 거부되는가 |
 | japanese | `applyVocabPostprocess` | 제외 목록 단어가 섞인 결과 → 걸러지는가, 단 include 단어는 남는가 |
 | japanese | 모드별 집계(`aggregateJaStatsByMode`) | `kanji-to-kana` 오답이 `ko-to-word` 통계를 오염시키는가 |
+| toeic | 호출 B zod(`buildPointsZod`) | 교재 예문에 없는 `exampleSpan`, 받지 않은 index → 거부되는가 |
+| toeic | 호출 D zod(`isSaidInTranscript`) | 순서를 바꾸거나 사이 단어를 뺀 `said` → 거부되는가(쉼표 빠진 인용은 통과) |
+| toeic | 응시 finish(`decideAttemptFinish`) | 이미 닫힌 응시에 두 번째 finish → 409이고 기록이 그대로인가 |
 | common | 스트릭 사람·트랙 분리 | 운동 날짜가 일본어 트랙에 섞이면 연속이 거짓으로 이어지는가 |
 | common | 운동 `decideLog`·`decideUndo` | `expectedRev`가 낡은 요청 → `conflict`가 나는가 |
 
@@ -61,7 +66,7 @@ description: "qa-inspector 에이전트가 검증 작업을 수행할 때 로드
 
 | 명령 | 실호출 |
 |---|---|
-| `EVAL_OFFLINE_ONLY=1 npm run eval:english` / `eval:math` / `eval:japanese` | 0회 (게이트가 `globalThis.fetch`까지 막는다) |
+| `EVAL_OFFLINE_ONLY=1 npm run eval:english` / `eval:math` / `eval:japanese` / `eval:toeic` | 0회 (게이트가 `globalThis.fetch`까지 막는다) |
 | `npm run eval:speech` / `eval:streak` / `eval:workout` | 0회 (순수 함수만, store를 import하지 않는다) |
 
 **eval 실호출 구간은 돌리지 않는다.** 오케스트레이터가 사용자 동의를 받아 실행한다.
@@ -78,14 +83,14 @@ description: "qa-inspector 에이전트가 검증 작업을 수행할 때 로드
 ## 비용·안전 (이 프로젝트 특유)
 
 - **OpenAI 실호출 금지.** 무비용 검증(`tsc`·`build`·`seed`·오프라인 eval·루프백 스텁·키 비운 dev 서버 렌더)만 한다.
-- **화면 렌더도 비용이 난다.** 엔진이 클라우드인 언어의 화면은 마운트 시 `prefetchSpeech()`가 `/api/tts` 합성을 최대 `PREFETCH_MAX_ITEMS`(90)개 보낸다. 기본 엔진은 `lib/speech.ts` `DEFAULT_ENGINE`이 정한다 — 영어(en-US: 카드·챕터 리더·단어장·시험·오답노트)와 한국어(ko-KR: 해설 낭독의 해설 조각, 운동 세션 음성 안내)가 클라우드다. 운동은 `▶ 운동 시작` 탭에서 휴식 뒤 안내 문구 4개(휴식은 세트 사이에만 — 2~5세트 풀업)를 프리페치하고, 휴식이 끝날 때마다 `speakQueue`로 한 문장을 읽는다. 일본어(ja-JP)는 기본이 기기 음성이라 `prefetchSpeech`가 아무것도 보내지 않고, 사용자가 일본어 엔진을 클라우드로 바꿨을 때만 `/api/tts`를 부른다. 키를 비우면 501 → 기기 음성으로 떨어져 0원이 된다.
+- **화면 렌더도 비용이 난다.** 엔진이 클라우드인 언어의 화면은 마운트 시 `prefetchSpeech()`가 `/api/tts` 합성을 최대 `PREFETCH_MAX_ITEMS`(90)개 보낸다. 기본 엔진은 `lib/speech.ts` `DEFAULT_ENGINE`이 정한다 — 영어(en-US: 카드·챕터 리더·단어장·시험·오답노트, 토익 표현 카드·시험·모의고사 학습 보기·응시 결과·응시 시작 탭의 지시문·질문)와 한국어(ko-KR: 해설 낭독의 해설 조각, 운동 세션 음성 안내)가 클라우드다. 운동은 `▶ 운동 시작` 탭에서 휴식 뒤 안내 문구 4개(휴식은 세트 사이에만 — 2~5세트 풀업)를 프리페치하고, 휴식이 끝날 때마다 `speakQueue`로 한 문장을 읽는다. 일본어(ja-JP)는 기본이 기기 음성이라 `prefetchSpeech`가 아무것도 보내지 않고, 사용자가 일본어 엔진을 클라우드로 바꿨을 때만 `/api/tts`를 부른다. 키를 비우면 501 → 기기 음성으로 떨어져 0원이 된다. **토익 모의고사 학습 보기는 열리자마자 pending 사진 두 장을 자동 생성 요청**한다(관문 P, 이미지 생성) — 키를 넣은 서버에서 이 화면을 열면 발음보다 비싼 호출이 나간다.
 - **로컬 실행은 `STORE_BACKEND=file`을 명시한다.** 이 저장소는 로컬 실행이 프로덕션 Firestore를 향할 수 있었고, 실제로 그 경로로 데이터가 지워진 적이 있다(CLAUDE.md 서문). 삭제는 `lib/prod-guard.ts`가 막지만 **생성·수정은 여전히 통한다.** 운동 기록(append)도 prod-guard 대상이 아니다.
 - 검증에 쓴 임시 데이터는 **원상 복구하고 잔존 0건을 확인**한다. 접두사 기반 정리는 UUID를 쓴 잔존물을 놓친다 — 개수로도 대조하라.
 - **코드를 고치지 마라.** 검증·보고만 한다. 수정은 담당 에이전트가 한다.
 
 ## 리포트 형식
 
-`_workspace/qa_report_{subject}_{tag}_{n}.md` — subject는 `english|math|japanese|common`, tag는 기능 이름(없으면 생략), n은 회차.
+`_workspace/qa_report_{subject}_{tag}_{n}.md` — subject는 `english|math|japanese|toeic|common`, tag는 기능 이름(없으면 생략), n은 회차.
 
 ```
 # QA 리포트 {n} — {subject} · {검증 범위}

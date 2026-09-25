@@ -9,7 +9,7 @@ description: "프로젝트 문서(CLAUDE.md·docs/·스킬 references·에이전
 
 ## 이 저장소의 함정 — 어기면 CI가 깨지거나 코드 참조가 끊긴다
 
-1. **spec-sync 프롬프트 블록은 손대지 마라.** `docs/harness/english.md`·`math.md`·`japanese.md`의 "시스템 프롬프트 (원문 그대로 사용)" 코드블록은 `lib/ai/*/prompts.ts`와 **바이트 단위로 일치**해야 하고, **`japanese.md`는 JSON Schema 코드블록(§2-3·§3-3·§4-3·§12-2-2)까지 의미 동치로 대조**된다(`SPEC_SYNC_TARGETS`가 각 과목 eval에서 대조). 이건 코드에서 동기화되는 값이지 손으로 고치는 산문이 아니다. **문서의 프롬프트 코드블록을 절대 수정하지 마라.** 프롬프트가 바뀌었다면 그건 코드(prompts.ts) 변경 시 함께 갱신됐어야 하는 것이고, 이 스킬 범위 밖이다.
+1. **spec-sync 프롬프트 블록은 손대지 마라.** `docs/harness/english.md`·`math.md`·`japanese.md`·`toeic.md`의 "시스템 프롬프트 (원문 그대로 사용)" 코드블록은 `lib/ai/*/prompts.ts`와 **바이트 단위로 일치**해야 하고, **`japanese.md`는 JSON Schema 코드블록(§2-3·§3-3·§4-3·§12-2-2)까지 의미 동치로 대조**된다(`SPEC_SYNC_TARGETS`가 각 과목 eval에서 대조). **`toeic.md`는 대조 범위가 가장 넓다** — 시스템 프롬프트에 더해 사용자 메시지 템플릿(§2-2·§3-2·§4-7·§5-2)과 사진 프롬프트 접미사(§4-10)까지 14개 코드블록을 바이트로, JSON Schema 8개(§2-3·§3-3·§4-8 파트 5·§5-3)를 의미 동치로 대조하고, 스펙의 `toeic_*` JSON 블록 수가 정확히 8이어야 하며, **"temperature X, maxOutputTokens Y, call 라벨 `Z`" 산문 문장까지 정규식으로 읽어** 호출 옵션과 대조한다(`scripts/eval-toeic.ts`). 그래서 `toeic.md`에서는 이 옵션 문장의 모양을 바꾸거나, `"name": "toeic_…"`로 시작하는 JSON 블록을 새로 넣지 마라. 또 저장소가 PUBLIC이라 **교재 원문을 문서에 인용하지 마라**(예시는 지어낸 영어). 이건 코드에서 동기화되는 값이지 손으로 고치는 산문이 아니다. **문서의 프롬프트 코드블록을 절대 수정하지 마라.** 프롬프트가 바뀌었다면 그건 코드(prompts.ts) 변경 시 함께 갱신됐어야 하는 것이고, 이 스킬 범위 밖이다.
 2. **harness §번호를 다시 매기지 마라.** 코드 주석 수십 곳이 `§7-5`, `§2A-1`처럼 절 번호를 참조한다. 새 절은 **append**만 하고, 기존 §번호·순서는 절대 바꾸지 마라(끊긴 참조가 조용히 생긴다).
 3. **CLAUDE.md 변경 이력 표는 append.** `| 날짜 | 변경 내용 | 대상 | 사유 |` 표에 **한 줄 추가**한다. 날짜는 **절대 날짜**로(상대 날짜 금지). 과거 행을 다시 쓰지 마라.
 4. **"This is NOT the Next.js you know" 블록은 손대지 마라.** CLAUDE.md의 그 블록은 `next dev`가 자동으로 쓰고 재삽입한다(`node_modules/next/dist/server/lib/generate-agent-files.js`). 손으로 고치면 되돌려진다.
@@ -29,7 +29,7 @@ description: "프로젝트 문서(CLAUDE.md·docs/·스킬 references·에이전
 - `CLAUDE.md` — 서문 경고·하네스 개요·**변경 이력 표**·에이전트/스킬 구성.
 - `README.md` — 앱 소개·실행법.
 - `docs/SPEC.md` — 앱 전체 명세. `docs/HARNESS.md` — 과목 공통 AI 규약. `docs/DESIGN.md` — 디자인 토큰.
-- `docs/harness/english.md`·`math.md`·`japanese.md` — 과목별 AI 호출 명세(§ append만, 프롬프트 블록 불가침 — japanese.md는 JSON Schema 블록도).
+- `docs/harness/english.md`·`math.md`·`japanese.md`·`toeic.md` — 과목별 AI 호출 명세(§ append만, 프롬프트 블록 불가침 — japanese.md·toeic.md는 JSON Schema 블록도, toeic.md는 사용자 메시지 템플릿·호출 옵션 문장도).
 - `.claude/skills/*/SKILL.md` + `references/*.md` — 에이전트 스킬·다이얼·정합성 매트릭스.
 - `.claude/agents/*.md` — 에이전트 역할 정의(6개).
 각 변경이 **어느 문서의 어느 절**에 걸리는지 목록으로 적는다. 안 걸리면 안 건드린다(불필요한 diff 금지).
@@ -42,7 +42,7 @@ description: "프로젝트 문서(CLAUDE.md·docs/·스킬 references·에이전
 - 확신 없는 사실은 **코드를 열어 확인 후** 쓴다.
 
 ### 4. 검증 (무비용)
-- **spec-sync 안 깨졌는지**: `OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npm run eval:english` (실호출 0). 프롬프트↔스펙 바이트 일치 항목이 통과해야 한다 — 실수로 프롬프트 블록을 건드렸으면 여기서 잡힌다. 건드린 과목에 따라 `eval:math`·`eval:japanese`도 같은 접두어로(일본어는 JSON Schema 블록까지 대조한다).
+- **spec-sync 안 깨졌는지**: `OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npm run eval:english` (실호출 0). 프롬프트↔스펙 바이트 일치 항목이 통과해야 한다 — 실수로 프롬프트 블록을 건드렸으면 여기서 잡힌다. 건드린 과목에 따라 `eval:math`·`eval:japanese`·`eval:toeic`도 같은 접두어로(일본어·토익은 JSON Schema 블록까지, 토익은 호출 옵션 문장까지 대조한다).
 - `git diff` 를 다시 읽어 **지어낸 사실·모순·낡은 파일명**이 없는지 자기 점검(brainstorming 스펙 자기검토 요령).
 - 코드는 안 건드렸으니 tsc/build는 불필요(단, 실수로 .ts를 만졌으면 원복).
 

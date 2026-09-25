@@ -23,8 +23,8 @@ OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_
 
 | 스크립트 | 대상 | import 경계 | 출력 영역 (항목 수는 2026-09-25 실측) |
 |---|---|---|---|
-| `scripts/eval-speech.ts` | `lib/ja-coaching-script.ts` 대본·쪼개기, `lib/speech.ts` 큐, `lib/tts-shared.ts`·`lib/tts.ts` 상수, `lib/tts-cache.ts` 지문 | store 금지. `lib/speech`·`lib/tts`·`lib/tts-cache`는 fetch 스텁을 깔고 키를 비운 **뒤에** dynamic import한다 | 대본(12)·쪼개기(12)·상수·엔진(5)·큐(34)·단발(30)·지문(7)·안전(1) — 합계 (101) |
-| `scripts/eval-streak.ts` | `lib/streak.ts`의 `computeStreak`·`computeStreakFromDays`, `lib/kst.ts`(`formatKstDate`·`isZonedIsoTimestamp` 포함) | `../lib/streak`·`../lib/kst`만 | KST 환산(formatKstDate 경계표를 TZ Asia/Seoul·UTC·America/Los_Angeles로 다시 돌림 — 실행 기기 TZ 무관)·연속 판정·0문항 제외·사람 분리·날짜 코어 (41) |
+| `scripts/eval-speech.ts` | `lib/ja-coaching-script.ts` 대본·쪼개기, `lib/speech.ts` 큐, `lib/tts-shared.ts`·`lib/tts.ts` 상수, `lib/tts-cache.ts` 지문 | store 금지. `lib/speech`·`lib/tts`·`lib/tts-cache`는 fetch 스텁을 깔고 키를 비운 **뒤에** dynamic import한다 | 대본(12)·쪼개기(12)·상수·엔진(5)·큐(46 — 2026-09-26 `onEnd` 둘째 인자 S1~S5 12개 추가)·단발(30)·지문(7)·안전(1) — 합계 (113) |
+| `scripts/eval-streak.ts` | `lib/streak.ts`의 `computeStreak`·`computeStreakFromDays`, `lib/kst.ts`(`formatKstDate`·`isZonedIsoTimestamp` 포함), `lib/toeic-streak.ts`(아빠 🎙️ 영어 트랙 입력) | `../lib/streak`·`../lib/kst`·`../lib/toeic-streak`만(마지막 것은 런타임 import 0 — 타입만) | KST 환산(formatKstDate 경계표를 TZ Asia/Seoul·UTC·America/Los_Angeles로 다시 돌림 — 실행 기기 TZ 무관)·연속 판정·0문항 제외·사람 분리·날짜 코어·영어 트랙(6 — 2026-09-26: 표현 시험 답한 문항≥1·응시 녹음된 문항≥1, 다른 트랙과 섞지 않음) (47) |
 | `scripts/eval-workout.ts` | `lib/workout.ts` 전체, `diffDateStrings` | `../lib/workout`·`../lib/kst`·`../lib/streak`만 | 베이스·계획·스텝·휴식(세트 사이 [1,3,5,7]·휴식 뒤 [2,4,6,8]·음성 안내 대상 4개)·세트 목록 순서(`roundDisplayOrder` — 스텝 0~9 × 축하 유무의 순서·완료 구역 시작 위치, 푸시업 ✓ 탭 순간·풀업 ✓ 무재배치, 무효 held 무시)·횟수·상태·판정(`decideLog`·`decideUndo`·`decideStart`·`closingStatus`)·활성 선택·격리·정규화(createdAt ISO 경계 = `isZonedIsoTimestamp`)·날짜 방어·진행·볼륨·일정·스냅샷·지난 사이클·운동 스트릭(endedAt ISO 경계 포함) (134) |
 
 - **import 경계 자체가 검증 항목이다.** eval이 store를 import하면 어느 DB를 향할지 모르는 스크립트가 된다. 판정은 두 단계로 한다.
@@ -62,6 +62,7 @@ OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_
 | 밀려난 큐의 stop이 뒤에 시작한 재생을 죽이지 않는다 | ⑤·⑤′ |
 | `onEnd`는 정확히 1회 온다 | ①, ②, ⑪(빈 items는 microtask로 `"done"` 1회, 진행 중인 `speak` 오디오를 멈추지 않는다) |
 | 폴백은 조각 단위로 한 방향이다 | ⑥, ⑦, ⑩(ko 엔진이 device면 POST 0), ⑫(합성 대기 타임아웃이면 그 조각만 기기 음성), ⑬(연속 3조각이 무음이면 `"stopped"`), ㉑(대기 기산점은 큐가 기다리기 시작한 때), ㉒(타임아웃이 나도 요청은 유지) |
+| `onEnd(reason, { sounded })` — 둘째 인자는 끝까지 소리를 냈다고 본 조각 수다(2026-09-26 하위 호환 추가, 토익 QA m2_1 P2-A). 3조각 규칙은 그대로라 **짧은 큐는 전부 무음이어도 `"done"`·`sounded 0`** 이고, 소리가 꼭 나야 하는 호출부(토익 응시 `toeicSpeechOutcome`)가 이 값으로 다시 판정한다 | S1(전부 소리·중간 stop·501 뒤 기기 폴백·안전 타임아웃은 소리로 셈·빈 items 0), S2(⑬의 sounded 0), S3(1·2조각 전부 무음 → `"done"`·0), S4(3조각 규칙 불변), S5(인자 하나짜리 기존 onEnd 하위 호환 — 해설 낭독·운동·토익 학습 보기 호출부) |
 | look-ahead는 중복 합성이 없고 2개에서 멈춘다 | ①(POST 수 == 고유 조각 수), ⑱(다음 cloud 조각 2개만 받고 device 조각은 세지 않는다) |
 | objectURL을 회수한다 | ⑨(정상 종료와 중간 정지 모두 create 수 == revoke 수, 무음 URL은 제외), ㉓(남은 URL 0) |
 | iOS 재생 잠금 | ①(오디오 요소 하나 재사용), ⑭(첫 await 전 잠금 해제: 큐 요소 src=무음 WAV + `play()`), ⑮(외부 pause가 오면 `"stopped"`), ⑲(말하는 중일 때만 cancel), ⑳(무음 재생 중 src를 바꿀 때 오는 낡은 pause는 무시), ㉓(재생 안전 타임아웃) |
