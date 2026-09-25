@@ -224,7 +224,9 @@ export default function JaQuizRunner({
   const answered = selected !== null;
   const progress = total > 0 ? ((current + (answered ? 1 : 0)) / total) * 100 : 0;
   const entry = entryByWord.current.get(q.word);
-  const promptIsJa = q.mode !== "ko-to-word" && q.mode !== "word-to-ko"; // 문제 텍스트가 일본어인 모드
+  // 문제 텍스트가 일본어인 모드 — ko-to-word만 한국어 뜻이 문제다. word-to-ko의 문제는 `표기(읽기)`라 일본어다
+  // (예전엔 여기서 빠져 lang="ko"가 붙어 일본어 줄바꿈 규칙(.promptText:lang(ja))이 안 걸렸다, 2026-09-25 QA).
+  const promptIsJa = q.mode !== "ko-to-word";
 
   return (
     <div className={s.wrap}>

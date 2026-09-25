@@ -148,6 +148,16 @@
   color: var(--ink-3);
   text-decoration: line-through;
 }
+/* 인용·고친 문장은 JaRuby 밖의 평문 일본어라 .line의 줄바꿈 규칙이 적용되지 않는다. 그래서 같은 규칙을 여기 둔다.
+   strict는 ゃっー 같은 글자가 줄 머리에 오지 않게 한다. anywhere는 공백 없는 긴 영숫자(URL 등)를 마지막 수단으로 끊고,
+   min-content도 줄여서 flex 줄(.jaRow) 안에서 화면을 밀지 않게 한다(2026-09-25 QA: 46자 영숫자 인용 한 건에 페이지 폭 655px). */
+.quote,
+.fixOrig,
+.fixBetter {
+  word-break: normal;
+  line-break: strict;
+  overflow-wrap: anywhere;
+}
 .arrow {
   color: var(--accent-ink);
   font-weight: 800;

@@ -13,6 +13,7 @@
 }
 .bubble {
   max-width: 84%;
+  min-width: 0; /* flex 자식의 최소폭이 긴 문장 폭으로 커져 화면을 밀지 않게 */
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -56,7 +57,8 @@
 .ja {
   font-size: 20px;
   color: var(--ink);
-  line-height: 1.5;
+  /* line-height와 줄바꿈 규칙은 JaRuby(.line)가 정한다 — 여기서 덮지 않는다. 예전 값 1.5는 말풍선이 여러 줄로
+     감기자 후리가나가 윗줄 본문에 간격 0px로 붙었다(2026-09-25 QA). */
 }
 .feedback {
   margin: 2px 0 0;

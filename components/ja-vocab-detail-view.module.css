@@ -199,6 +199,12 @@
   font-weight: 800;
   color: var(--ink);
 }
+/* 긴 가타카나 표제어가 두 줄이 될 때 마지막 한두 글자만 떨어지지 않게(コミュニケーショ/ン → コミュニ/ケーション).
+   줄바꿈 자체는 JaRuby 규칙(금칙)을 그대로 쓰고, 줄 길이만 고르게 나눈다. 지원 안 하는 브라우저는 무시한다. */
+.word,
+.cardWord {
+  text-wrap: balance;
+}
 .levelChip {
   margin-left: auto;
 }

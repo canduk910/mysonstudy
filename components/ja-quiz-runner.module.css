@@ -70,7 +70,24 @@
   font-weight: 700;
   color: var(--ink);
   line-height: 1.4;
+  /* 한국어 문제(ko-to-word의 뜻)는 어절 단위로 끊는다. */
   word-break: keep-all;
+  /* 마지막 수단 — 한 덩어리가 줄보다 길면 언어와 상관없이 끊어서 페이지를 가로로 밀지 않는다. */
+  overflow-wrap: anywhere;
+}
+/* 일본어 문제(cloze·kanji-to-kana 평문, def-to-word 루비 정의)는 띄어쓰기가 없다. 위의 keep-all이 걸리면 공백·구두점 없는
+   구간을 끊지 못해 페이지를 가로로 밀었다(2026-09-25 QA: 360px에서 cloze 7문항 중 2문항이 415·664px).
+   JaRuby(.line)와 같은 규칙을 쓴다 — 글자 사이 줄바꿈 + 금칙(strict, 、。ゃっー가 줄 머리에 오지 않게).
+   `:lang(ja)`로 명시도를 올려 두었다. def-to-word에서는 JaRuby의 .line과 한 요소에 합쳐지는데, 이렇게 하면 CSS 청크 순서와
+   상관없이 이 값이 적용된다. */
+.promptText:lang(ja) {
+  word-break: normal;
+  line-break: strict;
+}
+/* 후리가나가 있는 문제(def-to-word의 루비 정의)는 JaRuby의 줄 간격(2.2)을 쓴다 — 위 .promptText의 1.4가 이기면
+   여러 줄 정의에서 독음이 윗줄 본문에 붙는다(2026-09-25 QA). 평문 일본어 문제(cloze 등)는 1.4 그대로. */
+.promptText:lang(ja):has(ruby) {
+  line-height: 2.2;
 }
 .speaker {
   flex: 0 0 auto;
