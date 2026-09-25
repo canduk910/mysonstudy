@@ -1,0 +1,65 @@
+/* 모의고사 Q8–10 표 — 응시 화면·결과 화면 공용(학습 보기의 표 모양과 같은 토큰). 새 색조 없음. */
+.table {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+}
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.meta,
+.notes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.notes {
+  color: var(--ink-3);
+  font-size: 13px;
+}
+.rows {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.rows th,
+.rows td {
+  padding: 6px 6px;
+  border-top: 1px solid var(--line);
+  vertical-align: top;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.rows th {
+  width: 38%;
+  color: var(--ink-2);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.rows td {
+  color: var(--ink);
+}

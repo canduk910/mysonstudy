@@ -1,0 +1,469 @@
+/* 모의고사 응시 결과 (아빠의 영어 T5) — 성인 학습자용, 정보 밀도 우선. 토큰 재사용(새 색조 없음 — 흰색·그레이·accent).
+ * 빠진 단어는 취소선, 바뀐 단어는 accent 밑줄 — 빨강·초록을 쓰지 않는다(파랑 체계). */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.kicker {
+  margin: 0;
+  color: var(--accent-ink);
+  font-size: 13px;
+  font-weight: var(--fw-bold);
+}
+.title {
+  margin: 2px 0 0;
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+}
+.caption {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.label {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 13px;
+  font-weight: var(--fw-bold);
+}
+.labelRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* 추정 총점 */
+.estimate {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+.estimateLabel {
+  margin: 0;
+  color: var(--accent-ink);
+  font-size: 13px;
+  font-weight: var(--fw-bold);
+}
+.estimateScore {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--fs-stat-number);
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
+}
+.estimateUnit {
+  color: var(--ink-3);
+  font-size: 16px;
+  font-weight: var(--fw-medium);
+}
+.band {
+  padding: 2px 10px;
+  border-radius: var(--radius-chip);
+  background: var(--accent);
+  color: #fff;
+  font-size: 15px;
+}
+
+.alert {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.alert p {
+  margin: 0;
+}
+
+.scoreBox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.settings {
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+}
+.settingsSummary {
+  min-height: 32px;
+  color: var(--ink-2);
+  font-size: 14px;
+  cursor: pointer;
+}
+.settingsBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+/* 문항 카드 */
+.item {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+}
+.itemHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.qBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--radius-chip);
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
+}
+.partName {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: var(--fw-bold);
+}
+.scoreChip {
+  flex: 0 0 auto;
+  padding: 2px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  color: var(--ink-2);
+  font-size: 14px;
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+}
+.scoreOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: var(--fw-bold);
+}
+
+.photo {
+  display: block;
+  width: 100%;
+  max-width: 420px;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+}
+.scene {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 15px;
+  line-height: 1.6;
+  word-break: keep-all;
+}
+.intro {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 15px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.question {
+  margin: 0;
+  padding: 10px 12px;
+  border-left: 4px solid var(--accent);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: var(--fw-medium);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.tableBox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tableSummary {
+  min-height: 32px;
+  color: var(--ink-2);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.audio {
+  width: 100%;
+  max-width: 420px;
+  height: 40px;
+}
+.diagLine {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.jobLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+.transcript {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.noResp {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 15px;
+  font-weight: var(--fw-medium);
+}
+
+/* Q1–2 지문 대조 */
+.passage {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 17px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.readStats {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.missing {
+  color: var(--ink-3);
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+}
+.substituted {
+  background: transparent;
+  color: var(--accent-ink);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+.heard {
+  margin-left: 2px;
+  color: var(--ink-3);
+  font-size: 13px;
+}
+.legend {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.notice {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 14px;
+  word-break: keep-all;
+}
+
+/* Q3–11 피드백 */
+.feedback {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+.summary {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: var(--fw-medium);
+  line-height: 1.6;
+  word-break: keep-all;
+}
+.list {
+  margin: 0;
+  padding-left: 20px;
+  list-style: disc;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.6;
+  word-break: keep-all;
+}
+.fixes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.fix {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+}
+.said {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 15px;
+  line-height: 1.5;
+  text-decoration: line-through;
+  text-decoration-color: var(--line-strong);
+  overflow-wrap: anywhere;
+}
+.better {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: var(--fw-medium);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.fixTag {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 6px;
+  border-radius: var(--radius-chip);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: var(--fw-bold);
+  text-decoration: none;
+  vertical-align: 1px;
+}
+.why {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.answerBox {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.answerText {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.tryList {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+.used {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+.model {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+}
+.modelSummary {
+  min-height: 32px;
+  color: var(--ink-2);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.play {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  color: var(--ink-2);
+  font-size: 14px;
+  cursor: pointer;
+}
+.playOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}

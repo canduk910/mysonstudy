@@ -1,0 +1,513 @@
+/* 모의고사 학습 보기 (아빠의 영어 T3) — 성인 학습자용, 정보 밀도 우선. 토큰 재사용(새 색조 없음 — 흰색·그레이·accent). */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.error {
+  margin: 4px 0 0;
+  color: var(--danger);
+  font-size: var(--fs-vocab-example);
+  word-break: keep-all;
+}
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.caption {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.label {
+  margin: 4px 0 0;
+  color: var(--ink-3);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+}
+
+/* 막 만든 안내 */
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: var(--radius-box);
+  background: var(--accent-soft);
+}
+.bannerText {
+  flex: 1 1 auto;
+  margin: 0;
+  color: var(--accent-ink);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.bannerClose {
+  flex: 0 0 auto;
+  min-width: 36px;
+  min-height: 36px;
+  border: 0;
+  background: transparent;
+  color: var(--accent-ink);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+/* 제목 + 인라인 수정 */
+.titleView {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.titleView h1 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.titleEdit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.titleInput {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+/* 응시 · 파트 이동 · 소리 설정 */
+.takeBox {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+.takeNote {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.partNav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.partNav a {
+  text-decoration: none;
+}
+.navMissing {
+  border-style: dashed;
+  color: var(--ink-3);
+}
+.settingsSummary {
+  display: flex;
+  align-items: center;
+  min-height: var(--tap-min);
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  cursor: pointer;
+}
+.settingsBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0 8px;
+}
+
+/* 파트 */
+.part {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* 파트 이동 링크로 왔을 때 스트릭 헤드라인(sticky) 밑에 숨지 않게 */
+  scroll-margin-top: calc(var(--streak-h, 0px) + 12px);
+}
+.partHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid var(--line);
+}
+.partTitleRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  min-width: 0;
+}
+.partTime {
+  color: var(--ink-3);
+  font-size: var(--fs-meta-chip);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.practiceBtn {
+  min-height: 40px;
+  padding: 6px 14px;
+  font-size: 14px;
+}
+.missing {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+.missingText {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+/* 문항 카드 */
+.item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+}
+.itemHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.itemHead .play {
+  margin-left: auto;
+}
+.qBadge {
+  flex: 0 0 auto;
+  padding: 1px 10px;
+  border-radius: var(--radius-chip);
+  background: var(--ink);
+  color: var(--bg);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.en,
+.question {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.question {
+  font-weight: 600;
+}
+.tip {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.5;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.tips,
+.outline {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding-left: 1.25rem;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.5;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.tips {
+  list-style: disc;
+}
+.outline {
+  list-style: decimal;
+}
+
+/* 🔊 듣기 버튼 */
+.play {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 14px;
+  cursor: pointer;
+}
+.play:hover {
+  border-color: var(--line-strong);
+}
+.playOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+
+/* Q1–2 지문 — 끊어 읽기·강세 */
+.passage {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 17px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+.chunkSep {
+  color: var(--accent);
+  font-weight: 700;
+}
+.stress {
+  color: var(--accent-ink);
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-underline-offset: 3px;
+}
+.legendNote {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-meta-chip);
+}
+
+/* 모범답변 */
+.answer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius-box) var(--radius-box) 0;
+  background: var(--surface);
+}
+.answerHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.answerHead .label {
+  margin: 0;
+}
+.answerText {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+/* 모범답변 속 활용한 표현 — 표현집 exampleSpan과 같은 모양(accent 연한 배경 + 굵기 + 밑줄) */
+.used {
+  padding: 0 2px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-underline-offset: 3px;
+}
+.usedList {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+.usedLabel {
+  color: var(--ink-3);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+}
+
+/* Q3–4 사진 */
+.photo {
+  margin: 0;
+}
+.photoImg {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 3 / 2;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+.photoFallback {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+.photoMaking {
+  border-color: var(--accent);
+}
+.photoStatus {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+}
+.photoMaking .photoStatus {
+  color: var(--accent-ink);
+}
+.scene {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.6;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.photoMsg {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+/* Q8–10 표 */
+.table {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+}
+.tableHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.tableTitle {
+  margin: 0;
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.meta,
+.notes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.notes {
+  color: var(--ink-3);
+  font-size: 13px;
+}
+.rows {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.rows th,
+.rows td {
+  padding: 6px 6px;
+  border-top: 1px solid var(--line);
+  vertical-align: top;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.rows th {
+  width: 38%;
+  color: var(--ink-2);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.rows td {
+  color: var(--ink);
+}
+
+/* 활용할 표현 · 응시 기록 */
+.exprBox {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+}
+.exprSummary {
+  min-height: 32px;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.emptyNote {
+  margin: 0;
+  padding: 16px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-box);
+  color: var(--ink-3);
+  font-size: var(--fs-vocab-example);
+  text-align: center;
+  word-break: keep-all;
+}
+.attemptList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}

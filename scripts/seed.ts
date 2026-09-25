@@ -678,6 +678,12 @@ async function main() {
     jaDialogs: [],
     // 아빠의 운동 사이클(§19)도 같은 이유로 빈 배열 — mergeDbForSeed가 mergeById라 기존 운동 기록은 그대로 남는다.
     workoutCycles: [],
+    // 아빠의 영어(toeic.md §7) 5개 컬렉션도 같은 이유로 빈 배열 — 교재 내용은 저장소에 넣지 않는다(§0-2, 앱의 "파일로 가져오기").
+    toeicSets: [],
+    toeicQuizzes: [],
+    toeicMocks: [],
+    toeicImages: [],
+    toeicAttempts: [],
   };
 
   await mergeDbForSeed(db);

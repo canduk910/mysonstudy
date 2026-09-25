@@ -13,7 +13,8 @@
     "eval:japanese": "tsx scripts/eval-japanese.ts",
     "eval:streak": "tsx scripts/eval-streak.ts",
     "eval:speech": "tsx scripts/eval-speech.ts",
-    "eval:workout": "tsx scripts/eval-workout.ts"
+    "eval:workout": "tsx scripts/eval-workout.ts",
+    "eval:toeic": "tsx scripts/eval-toeic.ts"
   },
   "dependencies": {
     "firebase-admin": "^14.2.0",

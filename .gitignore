@@ -21,3 +21,6 @@ npm-debug.log*
 # Firebase Hosting
 .firebase/
 firebase-debug.log
+
+# 교재 사진(저작권) — PUBLIC 저장소에 올리지 않는다 (docs/harness/toeic.md §0-2). 전사본은 data/private/(위 data/ 규칙)
+design/*_o.jpeg

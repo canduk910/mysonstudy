@@ -1,0 +1,194 @@
+/* 모의고사 목록 · 새로 만들기 (아빠의 영어 T3) — 성인 학습자용. 토큰 재사용(새 색조 없음 — 흰색·그레이·accent). */
+
+.createBox {
+  display: flex;
+  flex-direction: column;
+}
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+}
+.fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.legend {
+  margin-bottom: 8px;
+  padding: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  font-weight: 500;
+  word-break: keep-all;
+}
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* 목표 등급 — 세 칸 */
+.choices {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.choice {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: var(--tap-min);
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+  cursor: pointer;
+}
+.choice:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.choiceOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.choiceTitle {
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 700;
+}
+.choiceOn .choiceTitle {
+  color: var(--accent-ink);
+}
+.choiceDesc {
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+  line-height: 1.4;
+  word-break: keep-all;
+}
+
+/* 파트 체크 */
+.partList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.partItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 15px;
+  cursor: pointer;
+}
+.partItem input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+.partOn {
+  border-color: var(--accent);
+}
+.warn {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-vocab-example);
+}
+
+/* 주제 칩 */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  min-height: 36px;
+  max-width: 100%;
+  padding: 4px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.chipOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+.hintRow {
+  display: flex;
+  gap: 8px;
+}
+.hintRow > input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.hintRow > button {
+  flex: 0 0 auto;
+}
+
+.info {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.actions > :first-child {
+  flex: 1 1 12rem;
+}
+.progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius-box);
+  background: var(--accent-soft);
+}
+.progressText {
+  margin: 0;
+  color: var(--accent-ink);
+  font-size: var(--fs-vocab-example);
+  font-variant-numeric: tabular-nums;
+  word-break: keep-all;
+}
+.progressParts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}

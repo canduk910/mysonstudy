@@ -1,9 +1,12 @@
 /**
  * 과목 선택 `/` — 서버 컴포넌트(정적).
  *
- * 진입점은 넷이다(영어, 수학 = 수학코치, 일본어 = 아빠의 일본어, 운동 = 아빠의 운동). 접속하면 여기서 갈린다.
- * 영어·수학은 은우(아이)용, 일본어·운동은 **아빠 본인**이 쓴다(docs/harness/japanese.md §0-1, docs/SPEC.md §19) — 그래서
- * 2×2 그리드로 **은우 줄(영어·수학) / 아빠 줄(일본어·운동)** 을 나눴다. 폰(<640px)은 1열 그대로 위에서부터 이 순서.
+ * 진입점은 다섯이다(영어, 수학 = 수학코치, 일본어 = 아빠의 일본어, 영어(토익스피킹) = 아빠의 영어, 운동 = 아빠의 운동).
+ * 접속하면 여기서 갈린다. 영어·수학은 은우(아이)용, 일본어·영어(토익)·운동은 **아빠 본인**이 쓴다(docs/harness/japanese.md
+ * §0-1, docs/harness/toeic.md §0-1·§8, docs/SPEC.md §19) — 그래서 **은우 줄(영어·수학) / 아빠 줄(일본어·영어) / 아빠 운동 한 줄
+ * (sm:col-span-2)** 로 나눴다. 폰(<640px)은 1열 그대로 위에서부터 이 순서.
+ * 은우의 "영어"(북카드·단어장, `/english`)와 아빠의 영어(토익스피킹, `/toeic`)는 **다른 과목**이다 — 경로·컬렉션·스트릭이
+ * 전부 갈린다(toeic.md §0-1). 그래서 아빠 쪽은 "아빠의 영어"로 부르고 부제 "토익스피킹"을 단다.
  * 영어는 그 아래 다시 북카드·단어장 두 학습 메뉴로 갈리므로, `/english`는 기능 없이
  * 그 둘을 고르는 **허브**다(북카드 홈은 `/english/books`, 단어장은 `/english/vocab`).
  * 이 화면(`/`)은 과목 갈림길만 담당하고 기능은 하나도 갖지 않는다.
@@ -23,7 +26,7 @@ import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "은우학습",
-  description: "영어책 학습 카드, 수학 문제 풀이 설명, 그리고 아빠의 일본어와 운동을 한곳에서.",
+  description: "영어책 학습 카드, 수학 문제 풀이 설명, 그리고 아빠의 일본어·영어(토익스피킹)·운동을 한곳에서.",
 };
 
 export default function SubjectPickerPage() {
@@ -35,8 +38,8 @@ export default function SubjectPickerPage() {
         <p className="t-lead mt-1">과목을 골라 주세요. 언제든 여기로 돌아올 수 있어요.</p>
       </header>
 
-      {/* 큰 진입 버튼 4개(2×2) — 이 화면의 전부. 주요(영어)만 accent 배경 (DESIGN §5).
-          은우 줄(영어·수학)이 윗줄, 아빠 줄(일본어·운동)이 아랫줄. */}
+      {/* 큰 진입 버튼 5개 — 이 화면의 전부. 주요(영어)만 accent 배경 (DESIGN §5).
+          은우 줄(영어·수학)이 윗줄, 아빠 줄(일본어·영어)이 가운데, 아빠 운동이 아랫줄 한 칸(sm:col-span-2). */}
       <div className="grid gap-3 sm:grid-cols-2">
         <Link href="/english" className="u-entry u-entry-primary">
           <span className="u-entry-icon" aria-hidden>
@@ -71,7 +74,18 @@ export default function SubjectPickerPage() {
           </span>
         </Link>
 
-        <Link href="/workout" className="u-entry u-entry-secondary">
+        <Link href="/toeic" className="u-entry u-entry-secondary">
+          <span className="u-entry-icon" aria-hidden>
+            🎙️
+          </span>
+          <span className="u-entry-title">아빠의 영어 · 토익스피킹</span>
+          <span className="u-entry-desc">
+            아빠가 토익스피킹을 준비하는 곳. 표현집을 찍거나 파일로 넣어 발화 포인트와 함께 외우고, 소리 내어 말하는 시험을 봐요.
+          </span>
+        </Link>
+
+        {/* 아빠 운동 — 아빠 줄 아래 한 줄 전체(sm:col-span-2) */}
+        <Link href="/workout" className="u-entry u-entry-secondary sm:col-span-2">
           <span className="u-entry-icon" aria-hidden>
             💪
           </span>

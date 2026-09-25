@@ -8,7 +8,9 @@
  * - A. 낭독 대본(lib/ja-coaching-script.ts) — buildCoachingScript·normalizeKoForTts·coachingJaTexts (§18-1)
  * - B. 쪼개기 splitForTts — 규칙·불변식 (§18-1)
  * - C. 상수·엔진 — TTS_LANGS·지시문·기본 엔진 (§18-3)
- * - D. 연속 재생 큐 speakQueue — 가짜 window·Audio·speechSynthesis·fetch·URL을 전역에 깐 뒤 dynamic import (§18-2)
+ * - D. 연속 재생 큐 speakQueue — 가짜 window·Audio·speechSynthesis·fetch·URL을 전역에 깐 뒤 dynamic import (§18-2).
+ *      onEnd 둘째 인자 `{ sounded }`(소리를 낸 조각 수 — 하위 호환 추가, 토익 응시 QA P2-A): 짧은 큐 전부 무음 → "done"·0,
+ *      연속 3조각 무음 → 여전히 "stopped"(규칙 불변), 인자 하나짜리 기존 핸들러 그대로(S1~S5)
  * - E. 지문 공급자·영속 캐시 재시도 (§18-2)
  * - F. 단발 재생 speak() — 첫 await 전 잠금 해제·재사용 요소, speak ↔ speakQueue 상호 취소, fallbackDevice cancel 규칙,
  *      폰 진단(getTtsPlaybackDiag·TTS_DIAG_EVENT), 설정 변경 시 프리페치 재실행 (§16-5, 2026-09-25 iPhone 무음 신고),
@@ -371,6 +373,8 @@ interface Env {
   /** 지문 GET 응답 — 숫자 = 상태 코드, "hang" = 안 끝남(abort로만 끝남), "neterr" = 네트워크 실패(TypeError) */
   getStatus: number | "hang" | "neterr";
   deviceMode: "normal" | "silent" | { speakingMs: number };
+  /** 이 문장이면 기기 발화가 곧바로 onerror("synthesis-failed") — 소리를 못 낸 조각(클라우드 불가와 겹치는 이중 실패, 토익 QA E5 조건) */
+  deviceFailFor: ((text: string) => boolean) | null;
   /** true면 cancel()이 speechSynthesis를 paused로 굳힌다(iOS WebKit 버그 모사 — 이후 speak()는 resume() 전까지 조용히 무시) */
   pauseOnCancel: boolean;
   /** paused 상태에서 무시된 발화(텍스트) — 실기기에선 에러도 이벤트도 없다 */
@@ -410,6 +414,7 @@ const env: Env = {
   postStatus: () => 200,
   getStatus: 200,
   deviceMode: "normal",
+  deviceFailFor: null,
   pauseOnCancel: false,
   ignored: [],
   resumes: 0,
@@ -439,6 +444,7 @@ function resetEnv(): void {
   env.postStatus = () => 200;
   env.getStatus = 200;
   env.deviceMode = "normal";
+  env.deviceFailFor = null;
   env.pauseOnCancel = false;
   env.ignored = [];
   env.resumes = 0;
@@ -597,6 +603,15 @@ const synth = {
       return;
     }
     this.current = u;
+    if (env.deviceFailFor?.(u.text)) {
+      // 합성 실패 — 말하지 않고 곧바로 onerror(실브라우저: synthesis-failed·audio-busy 등). speaking은 false.
+      setTimeout(() => {
+        if (this.current !== u) return;
+        this.current = null;
+        u.onerror?.({ error: "synthesis-failed" });
+      }, 0);
+      return;
+    }
     const mode = env.deviceMode;
     if (mode === "normal") {
       this.speaking = true;
@@ -723,18 +738,21 @@ type SpeechMod = typeof import("../lib/speech");
 interface Run {
   items: number[];
   ends: string[];
+  /** onEnd 둘째 인자의 sounded(소리를 낸 조각 수) — ends와 같은 순서 */
+  sounded: number[];
   stop: () => void;
 }
 function startQueue(sp: SpeechMod, items: { text: string; lang: string }[], tag = "Q", throwOnItem = false): Run {
-  const run: Run = { items: [], ends: [], stop: () => {} };
+  const run: Run = { items: [], ends: [], sounded: [], stop: () => {} };
   run.stop = sp.speakQueue(items, {
     onItem: (i) => {
       run.items.push(i);
       env.log.push(`${tag}:item${i}`);
       if (throwOnItem) throw new Error("handler boom");
     },
-    onEnd: (r) => {
+    onEnd: (r, info) => {
       run.ends.push(r);
+      run.sounded.push(info.sounded);
       env.log.push(`${tag}:end:${r}`);
     },
   });
@@ -825,6 +843,7 @@ async function main(): Promise<void> {
       `POST ${env.posts.length} / 고유 ${unique} : ${env.posts.join("|")}`,
     );
     add("큐", "① 기기 음성 0(전부 클라우드로 재생)", deviceTexts().length === 0, `device=${deviceTexts().join("|")}`);
+    add("큐", "S1 onEnd 둘째 인자: 전부 소리 냄 → sounded == 조각 수(6)", JSON.stringify(r.sounded) === "[6]", `sounded=${r.sounded.join(",")}`);
     add(
       "큐",
       "① 오디오 요소 하나 재사용(iOS 재생 잠금 — 조각마다 new Audio 안 함)",
@@ -876,6 +895,7 @@ async function main(): Promise<void> {
       `sync=${syncEnds.join(",")} final=${r.ends.join(",")}`,
     );
     add("큐", "② stop 이후 onItem 없음·재생 중 오디오 pause 호출", r.items.length === itemsAtStop && (qa?.pauseCalls ?? 0) > pausesBefore, `items=${r.items.join(",")} pause+${(qa?.pauseCalls ?? 0) - pausesBefore}`);
+    add("큐", "S1 중간 stop의 sounded = 끝까지 낸 조각만(0번 끝·1번 도중 정지 → 1)", JSON.stringify(r.sounded) === "[1]", `sounded=${r.sounded.join(",")} items=${r.items.join(",")}`);
     add("큐", "⑨ 중간 정지: createObjectURL 수 == revoke 수(무음 URL 제외)", env.urlCreated === env.urlRevoked && env.liveUrls.size === 0, `create ${env.urlCreated} / revoke ${env.urlRevoked}`);
     await settle(sp);
   }
@@ -972,6 +992,7 @@ async function main(): Promise<void> {
       env.posts.length === 1 && JSON.stringify(deviceTexts()) === JSON.stringify(["하나.", "둘.", "셋."]) && JSON.stringify(r.ends) === JSON.stringify(["done"]),
       `POST ${env.posts.length} device=${deviceTexts().join("|")}`,
     );
+    add("큐", "S1 501 → 기기 음성으로 전부 냄 → sounded 3(클라우드 실패 뒤 기기 폴백도 소리 낸 조각)", JSON.stringify(r.sounded) === "[3]", `sounded=${r.sounded.join(",")}`);
     await settle(sp);
   }
 
@@ -984,6 +1005,8 @@ async function main(): Promise<void> {
     await waitFor(() => r.ends.length > 0, 2000);
     const el = Date.now() - t0;
     add("큐", "⑧ 기기 onend 안 옴 → 안전 타임아웃으로 다음 조각·done", JSON.stringify(r.items) === JSON.stringify([0, 1]) && JSON.stringify(r.ends) === JSON.stringify(["done"]) && el >= 55, `${el}ms items=${r.items.join(",")}`);
+    // 알 수 없음(오류 이벤트가 없다)은 소리 낸 것으로 본다 — 무음 판정은 명시적 실패(미지원·오류)만. 과민 일시정지를 막는 쪽으로 기운다.
+    add("큐", "S1 안전 타임아웃으로 끝난 기기 조각은 소리 낸 것으로 센다(sounded 2 — 오류 이벤트가 없으면 무음이라 단정하지 않음)", JSON.stringify(r.sounded) === "[2]", `sounded=${r.sounded.join(",")}`);
     await settle(sp);
 
     sp.__setQueueTiming({ minMs: 30, perCharMs: 0, slackMs: 0, extendMs: 20 });
@@ -1034,6 +1057,7 @@ async function main(): Promise<void> {
       syncEnds === 0 && JSON.stringify(r.ends) === JSON.stringify(["done"]) && r.items.length === 0 && !!b && b.pauseCalls === p0 && env.cancels === cancels,
       `sync=${syncEnds} ends=${r.ends.join(",")} pause+${(b?.pauseCalls ?? 0) - p0} cancel+${env.cancels - cancels}`,
     );
+    add("큐", "S1 빈 items → onEnd('done', { sounded: 0 })", JSON.stringify(r.sounded) === "[0]", `sounded=${r.sounded.join(",")}`);
     await settle(sp);
   }
 
@@ -1061,6 +1085,80 @@ async function main(): Promise<void> {
     await waitFor(() => r.ends.length > 0);
     g.speechSynthesis = synth;
     add("큐", "⑬ 연속 3조각 무음(미지원+cloud 불가) → onEnd('stopped'), 이후 조각 안 감", JSON.stringify(r.ends) === JSON.stringify(["stopped"]) && JSON.stringify(r.items) === JSON.stringify([0, 1, 2]), `items=${r.items.join(",")} ends=${r.ends.join(",")}`);
+    add("큐", "S2 ⑬의 sounded 0", JSON.stringify(r.sounded) === "[0]", `sounded=${r.sounded.join(",")}`);
+    await settle(sp);
+  }
+
+  // S3 짧은 큐(1~2조각)가 전부 무음 — 클라우드 불가(501) + 기기 음성 오류(synthesis-failed). 토익 응시 QA P2-A의 조건.
+  //    "stopped" 규칙(연속 3조각)은 그대로라 "done"이지만 sounded 0으로 알린다 — 호출부(응시 질문 음성)가 다시 판정한다.
+  for (const n of [1, 2]) {
+    env.postStatus = () => 501;
+    env.deviceFailFor = () => true;
+    const items = [ko("질문 도입."), ko("질문 본문.")].slice(0, n);
+    const r = startQueue(sp, items, `Z${n}`);
+    await waitFor(() => r.ends.length > 0);
+    add(
+      "큐",
+      `S3 짧은 큐 ${n}조각 전부 무음(501 + 기기 synthesis-failed) → 기기 폴백 시도 후 onEnd('done', { sounded: 0 }) — 3조각 규칙 불변, 무음은 인자로`,
+      JSON.stringify(r.ends) === '["done"]' && JSON.stringify(r.sounded) === "[0]" && JSON.stringify(r.items) === JSON.stringify(items.map((_, i) => i)) && JSON.stringify(deviceTexts()) === JSON.stringify(items.map((i) => i.text)),
+      `ends=${r.ends.join(",")} sounded=${r.sounded.join(",")} items=${r.items.join(",")} device=${deviceTexts().join("|")}`,
+    );
+    await settle(sp);
+  }
+
+  // S4 기존 3조각 규칙 유지 — 같은 이중 실패로 정확히 3조각이면 "stopped"(0), 앞에 소리 낸 조각이 있어도 연속 3이면 "stopped"(1),
+  //    무음이 연속 2에서 끊기면(사이에 소리 낸 조각) 끝까지 "done"(2). 무음 조각은 기기 오류로만 만든다(클라우드 501).
+  {
+    const cases: { label: string; texts: string[]; fail: string[]; ends: string; sounded: number; items: number[] }[] = [
+      { label: "3조각 전부 무음", texts: ["일.", "이.", "삼."], fail: ["일.", "이.", "삼."], ends: "stopped", sounded: 0, items: [0, 1, 2] },
+      { label: "소리 1 + 무음 3(+뒤 1)", texts: ["소리.", "일.", "이.", "삼.", "뒤."], fail: ["일.", "이.", "삼."], ends: "stopped", sounded: 1, items: [0, 1, 2, 3] },
+      { label: "무음 2 · 소리 · 무음 2 · 소리", texts: ["일.", "이.", "소리.", "삼.", "사.", "끝."], fail: ["일.", "이.", "삼.", "사."], ends: "done", sounded: 2, items: [0, 1, 2, 3, 4, 5] },
+    ];
+    for (const c of cases) {
+      env.postStatus = () => 501;
+      env.deviceFailFor = (t) => c.fail.includes(t);
+      const r = startQueue(sp, c.texts.map(ko), "T");
+      await waitFor(() => r.ends.length > 0);
+      add(
+        "큐",
+        `S4 3조각 규칙 유지(${c.label}) → ${c.ends}·sounded ${c.sounded}`,
+        JSON.stringify(r.ends) === JSON.stringify([c.ends]) && JSON.stringify(r.sounded) === JSON.stringify([c.sounded]) && JSON.stringify(r.items) === JSON.stringify(c.items),
+        `ends=${r.ends.join(",")} sounded=${r.sounded.join(",")} items=${r.items.join(",")}`,
+      );
+      await settle(sp);
+    }
+  }
+
+  // S5 하위 호환 — 인자 하나짜리 기존 핸들러(일본어 해설·운동 안내·토익 전체 듣기의 모양)는 그대로 동작하고,
+  //    둘째 인자는 늘 넘어온다(모든 끝 경로: done·stop·빈 items).
+  {
+    const legacy: string[] = [];
+    const argc: number[] = [];
+    const stopA = sp.speakQueue([ko("하나."), ko("둘.")], {
+      onEnd: (r) => {
+        legacy.push(r);
+      },
+    });
+    await waitFor(() => legacy.length > 0);
+    const b = sp.speakQueue([ko("멈출 조각."), ko("안 갈 조각.")], {
+      onEnd: function (...args: unknown[]) {
+        argc.push(args.length);
+      },
+    });
+    b();
+    sp.speakQueue([ko("  ")], {
+      onEnd: function (...args: unknown[]) {
+        argc.push(args.length);
+      },
+    });
+    await waitFor(() => argc.length >= 2);
+    stopA(); // 끝난 큐의 stop — no-op
+    add(
+      "큐",
+      "S5 하위 호환: 인자 하나짜리 onEnd는 그대로 done / 둘째 인자는 stop·빈 items 경로에도 늘 넘어온다",
+      JSON.stringify(legacy) === '["done"]' && JSON.stringify(argc) === "[2,2]",
+      `legacy=${legacy.join(",")} argc=${argc.join(",")}`,
+    );
     await settle(sp);
   }
 

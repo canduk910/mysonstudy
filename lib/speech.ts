@@ -1085,12 +1085,24 @@ export interface SpeakQueueItem {
 }
 
 /**
+ * `onEnd`의 둘째 인자 — **하위 호환 추가**(인자 하나짜리 기존 핸들러는 그대로 동작한다. 늘 넘기지만 읽을지는 호출부 몫).
+ * `sounded` = 끝까지 **소리를 냈다고 본** 조각 수(클라우드 재생이 끝났거나, 기기 음성이 onend·끊김·안전 타임아웃으로 끝났다).
+ * 소리를 못 낸 조각(클라우드 불가 + 기기 음성 미지원·오류)은 세지 않는다. 멈춤·밀려남으로 도중에 끊긴 조각도 세지 않는다.
+ * "stopped" 판정(무음 조각 **연속 QUEUE_SILENT_STOP개**)은 바뀌지 않는다 — 그보다 짧은 큐가 전부 무음이면 "done"이면서
+ * `sounded === 0`이다. 소리를 꼭 들려야 하는 화면(토익 응시 질문 음성)은 이 값으로 "done"을 다시 판정한다.
+ * 빈 items(모두 공백)·브라우저 밖은 0.
+ */
+export interface SpeakQueueEndInfo {
+  sounded: number;
+}
+
+/**
  * 큐 핸들러. `onItem(i)`는 조각 i를 읽기 시작할 때, `onEnd`는 **정확히 한 번**(끝까지 = "done", 그 밖 = "stopped").
  * ⚠️ 핸들러 안에서 speak()/speakQueue()를 부르지 않는다(재진입 금지 — 계약). 핸들러 예외는 큐를 깨지 않는다.
  */
 export interface SpeakQueueHandlers {
   onItem?: (index: number) => void;
-  onEnd?: (reason: "done" | "stopped") => void;
+  onEnd?: (reason: "done" | "stopped", info: SpeakQueueEndInfo) => void;
 }
 
 /**
@@ -1135,7 +1147,10 @@ function estimateSpeechMs(text: string, rate: number): number {
   return Math.max(queueTiming.minMs, (text.length * queueTiming.perCharMs) / r + queueTiming.slackMs);
 }
 
-/** 소리를 낼 수 없는 조각이 연속 이만큼이면 큐를 "stopped"로 끝낸다(하이라이트만 번쩍이며 "done"이 되지 않게). */
+/**
+ * 소리를 낼 수 없는 조각이 연속 이만큼이면 큐를 "stopped"로 끝낸다(하이라이트만 번쩍이며 "done"이 되지 않게).
+ * 이보다 짧은 큐는 전부 무음이어도 "done"이다 — 그 경우는 onEnd 둘째 인자 `sounded === 0`으로 알린다(SpeakQueueEndInfo).
+ */
 const QUEUE_SILENT_STOP = 3;
 /** 큐 look-ahead로 미리 받을 다음 클라우드 조각 수(device 조각은 세지 않는다). 해설 전체를 미리 합성하지 않는다(비용 가드). */
 const QUEUE_LOOKAHEAD = 2;
@@ -1341,8 +1356,10 @@ function waitWithTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
  * - 시작 시 이전 재생(단발·큐)을 끊는다. 옛 큐의 onEnd("stopped")는 이 호출 안에서, 새 onItem(0)보다 먼저 온다.
  * - 멈추기 함수: 이미 끝났으면 no-op, 아직 이 큐의 세대면 재생 취소, 다른 재생에 밀려났으면 자기만 정리
  *   (끝났거나 밀려난 큐의 stop이 그 뒤 시작된 다른 재생을 죽이지 않는다).
- * - 빈 items(모두 공백): 취소 없이 onEnd("done")를 microtask로 한 번.
+ * - 빈 items(모두 공백): 취소 없이 onEnd("done", { sounded: 0 })를 microtask로 한 번.
  * - 조각마다 그 시점의 엔진·속도. cloud 실패(합성·재생·타임아웃)면 그 조각만 기기 음성. 501(키 없음)이면 이후 기기 직행.
+ * - onEnd 둘째 인자 `{ sounded }`(SpeakQueueEndInfo) — 소리를 낸 조각 수. 짧은 큐가 전부 무음이어도 "done"이므로
+ *   소리가 꼭 나야 하는 호출부는 `sounded`로 다시 판정한다.
  */
 export function speakQueue(items: SpeakQueueItem[], handlers: SpeakQueueHandlers = {}): () => void {
   const list = (items ?? []).map((it) => ({ text: (it?.text ?? "").trim(), lang: it?.lang || TTS_LANG }));
@@ -1356,7 +1373,7 @@ export function speakQueue(items: SpeakQueueItem[], handlers: SpeakQueueHandlers
   const noop = () => {};
   if (list.every((it) => !it.text) || typeof window === "undefined") {
     const reason = list.every((it) => !it.text) ? "done" : "stopped";
-    void Promise.resolve().then(() => call(() => handlers.onEnd?.(reason)));
+    void Promise.resolve().then(() => call(() => handlers.onEnd?.(reason, { sounded: 0 })));
     return noop;
   }
 
@@ -1370,6 +1387,8 @@ export function speakQueue(items: SpeakQueueItem[], handlers: SpeakQueueHandlers
   let ended = false;
   let cloudOff = false;
   let silentRun = 0;
+  /** 끝까지 소리를 냈다고 본 조각 수 — onEnd 둘째 인자(SpeakQueueEndInfo) */
+  let soundedCount = 0;
 
   const end = (reason: "done" | "stopped") => {
     if (ended) return;
@@ -1377,7 +1396,8 @@ export function speakQueue(items: SpeakQueueItem[], handlers: SpeakQueueHandlers
     if (activeQueueEnd === endStopped) activeQueueEnd = null;
     ac.abort();
     pending.clear();
-    call(() => handlers.onEnd?.(reason));
+    const info: SpeakQueueEndInfo = { sounded: soundedCount };
+    call(() => handlers.onEnd?.(reason, info));
   };
   const endStopped = () => end("stopped");
   activeQueueEnd = endStopped;
@@ -1476,6 +1496,7 @@ export function speakQueue(items: SpeakQueueItem[], handlers: SpeakQueueHandlers
           sounded = await speakDeviceAwait(it.text, it.lang, token);
           if (!alive()) return;
         }
+        if (sounded) soundedCount += 1;
         silentRun = sounded ? 0 : silentRun + 1;
         if (silentRun >= QUEUE_SILENT_STOP) return; // 소리를 낼 수 없다 → stopped
       }

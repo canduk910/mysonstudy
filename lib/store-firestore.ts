@@ -80,7 +80,44 @@ import {
   type StartWorkoutResult,
   type UndoWorkoutInput,
   type WorkoutMutationResult,
+  applyAttemptAnswer,
+  applyAttemptFinish,
+  type DeleteToeicResult,
+  type FinishToeicAttemptInput,
+  type FinishToeicAttemptResult,
+  type ImportToeicSetsResult,
+  type MergeToeicSetPointsResult,
+  type FillToeicMockPartResult,
+  type MarkToeicPictureImageFailedResult,
+  type SaveToeicPictureImageInput,
+  type SaveToeicPictureImageResult,
+  type NewToeicAttempt,
+  type NewToeicMock,
+  type NewToeicQuiz,
+  type NewToeicSet,
+  type ToeicAnswerScorePatch,
+  type ToeicAttemptRecord,
+  type ToeicImageRecord,
+  type ToeicMockRecord,
+  type ToeicQuizRecord,
+  type ToeicSetRecord,
 } from "./store";
+// 아빠의 영어(toeic.md §7) — 정규화·포인트 병합은 파일 백엔드와 **같은 함수**(두 백엔드가 안 갈린다). openai 없음(zod만).
+import {
+  normalizeToeicAttemptRecord,
+  normalizeToeicImageRecord,
+  normalizeToeicMockRecord,
+  normalizeToeicQuizItem,
+  normalizeToeicQuizRecord,
+  normalizeToeicSetRecord,
+} from "./toeic-normalize";
+import { applyPointsResults } from "./ai/toeic/points";
+import type { ToeicMockPartRecordMap, ToeicPointsItem } from "./ai/toeic/schemas";
+import type { ToeicMockPart } from "./toeic-mock";
+// 모의고사 파트 채우기·사진 저장 판정 — 파일 백엔드와 같은 순수 함수(lib/toeic-mock-apply.ts)
+import { applyFillPart, applyPictureImage, decideFillPart, decidePictureImage } from "./toeic-mock-apply";
+// 응시 끝/그만두기는 한 번만 — 파일 백엔드와 같은 판정(lib/toeic-attempt-rules.ts)
+import { decideAttemptFinish } from "./toeic-attempt-rules";
 // 아빠의 운동(§19-4) — 판정·정규화는 파일 백엔드(store.ts)와 **같은 순수 함수**라 두 백엔드가 안 갈린다(런타임 의존성 ./kst뿐).
 import { decideLog, decideStart, decideUndo, normalizeWorkoutCycle, type WorkoutCycleRecord } from "./workout";
 // 단어장 보강(V3) 저장이 받는 완성형 entry 타입 — store는 VocabEntry를 재수출하지 않는다.
@@ -319,6 +356,39 @@ function workoutCycleData(record: WorkoutCycleRecord): Omit<WorkoutCycleRecord, 
   return data;
 }
 
+// ---- 아빠의 영어(toeic.md §7) 읽기 변환·쓰기 본문 — 파일 백엔드와 같은 정규화(lib/toeic-normalize.ts). ----
+// 읽기: 손으로 넣은 Timestamp 문서도 읽히게 시각을 toIso로 먼저 바꾼다. 쓰기: normalize를 한 번 더 태워 undefined를 없애고
+// (Firestore 거부), 문서 ID가 곧 id라 본문에서 뺀다(workoutCycleData 관용구).
+
+function toToeicSet(id: string, d: DocumentData): ToeicSetRecord {
+  return normalizeToeicSetRecord({ ...d, id, createdAt: toIso(d.createdAt) });
+}
+function toeicSetData(r: ToeicSetRecord): Omit<ToeicSetRecord, "id"> {
+  const { id: _id, ...data } = normalizeToeicSetRecord(r);
+  return data;
+}
+/** 모르는 mode면 null — 호출측이 버린다(모드별 숙련도 무오염, §6-2). */
+function toToeicQuiz(id: string, d: DocumentData): ToeicQuizRecord | null {
+  return normalizeToeicQuizRecord({ ...d, id, startedAt: toIso(d.startedAt) });
+}
+function toToeicMock(id: string, d: DocumentData): ToeicMockRecord {
+  return normalizeToeicMockRecord({ ...d, id, createdAt: toIso(d.createdAt) });
+}
+function toeicMockData(r: ToeicMockRecord): Omit<ToeicMockRecord, "id"> {
+  const { id: _id, ...data } = normalizeToeicMockRecord(r);
+  return data;
+}
+function toToeicImage(id: string, d: DocumentData): ToeicImageRecord {
+  return normalizeToeicImageRecord({ ...d, id, createdAt: toIso(d.createdAt) });
+}
+function toToeicAttempt(id: string, d: DocumentData): ToeicAttemptRecord {
+  return normalizeToeicAttemptRecord({ ...d, id, startedAt: toIso(d.startedAt) });
+}
+function toeicAttemptData(r: ToeicAttemptRecord): Omit<ToeicAttemptRecord, "id"> {
+  const { id: _id, ...data } = normalizeToeicAttemptRecord(r);
+  return data;
+}
+
 /** 한자 정보 읽기 방어 변환(JK) — normalizeJaKanji로 조인다(파일 백엔드와 같은 규약). */
 function toJaKanji(id: string, d: DocumentData): JaKanjiRecord {
   return normalizeJaKanji({ ...(d as JaKanjiRecord), id, createdAt: toIso(d.createdAt) });
@@ -501,6 +571,22 @@ export class FirestoreStore implements StudyStore {
   }
   private workoutCycles(): CollectionReference {
     return getDb().collection("workoutCycles");
+  }
+  // 아빠의 영어(toeic.md §7) — 컬렉션 5개. 은우·일본어 컬렉션과 섞지 않는다.
+  private toeicSets(): CollectionReference {
+    return getDb().collection("toeicSets");
+  }
+  private toeicQuizzes(): CollectionReference {
+    return getDb().collection("toeicQuizzes");
+  }
+  private toeicMocks(): CollectionReference {
+    return getDb().collection("toeicMocks");
+  }
+  private toeicImages(): CollectionReference {
+    return getDb().collection("toeicImages");
+  }
+  private toeicAttempts(): CollectionReference {
+    return getDb().collection("toeicAttempts");
   }
 
   async createBook(input: NewBook): Promise<BookRecord> {
@@ -1181,6 +1267,318 @@ export class FirestoreStore implements StudyStore {
       const next = normalizeWorkoutCycle(r.next);
       tx.update(ref, { rev: next.rev, events: next.events });
       return { status: "ok", record: next };
+    });
+  }
+
+  // ---- 아빠의 영어(토익스피킹) — toeic.md §7 ----
+  //
+  // 트랜잭션(runTransaction)을 쓰는 곳 — 모두 "지금 문서를 읽고 그 위에 합친다"라서, 두 요청이 같은 문서를
+  // 읽고 둘 다 쓰면 뒤 쓰기가 앞 쓰기를 덮는다(운동 절 주석과 같은 이유):
+  //   - importToeicSets: presetKey 확인 + 생성(두 번 눌러도 한 번만 — 멱등, §7-6)
+  //   - mergeToeicSetPoints: 최신 entries 위에 "빈 자리만" 병합(자동 호출과 버튼이 겹쳐도 먼저 채운 포인트 보존, §3-4)
+  //   - fillToeicMockPart: 빈 파트만 채운다(두 요청이 겹쳐도 먼저 커밋한 파트가 남는다, §4-0)
+  //   - saveToeicPictureImage·markToeicPictureImageFailed: picture.items[slot]만 — 사진 문서 생성과 칸 갱신을 한 커밋으로,
+  //     먼저 ready가 된 사진은 다른 ready·failed로 덮지 않는다(두 장을 동시에 만들어도·늦은 실패가 와도, §4-10)
+  //   - finishToeicAttempt: 끝/그만두기는 한 번만(이미 닫힌 응시는 쓰지 않는다 — decideAttemptFinish, 재시도·다른 탭 방어)
+  //   - updateToeicAttemptAnswer: 그 문항만(동시 채점 2개가 서로 덮지 않게, §7-5)
+  // 콜백 안에서 읽기를 모두 끝낸 뒤 쓴다(Firestore 트랜잭션 제약). 새 문서 id·시각은 트랜잭션 밖에서 한 번만 정한다.
+  // 삭제(세트·모의고사)는 prod-guard를 첫 줄에 — 딸린 문서를 먼저 지우고 본 문서를 마지막에(중간 실패 시 유령 문서 방지).
+
+  async createToeicSet(input: NewToeicSet): Promise<ToeicSetRecord> {
+    const ref = this.toeicSets().doc();
+    const record = normalizeToeicSetRecord({ ...input, id: ref.id, createdAt: new Date().toISOString(), sortIndex: null });
+    await ref.set(toeicSetData(record));
+    return record;
+  }
+
+  async getToeicSet(id: string): Promise<ToeicSetRecord | null> {
+    const snap = await this.toeicSets().doc(id).get();
+    return snap.exists ? toToeicSet(snap.id, snap.data()!) : null;
+  }
+
+  async listToeicSets(limit?: number): Promise<ToeicSetRecord[]> {
+    // 단일 필드 orderBy — createdAt은 모든 문서에 쓴다(생성·가져오기 둘 다). 복합 인덱스 없음.
+    const base = this.toeicSets().orderBy("createdAt", "desc");
+    const snap = await (limit == null ? base : base.limit(limit)).get();
+    return snap.docs.map((d) => toToeicSet(d.id, d.data()));
+  }
+
+  async findToeicSetByPresetKey(presetKey: string): Promise<ToeicSetRecord | null> {
+    const snap = await this.toeicSets().where("presetKey", "==", presetKey).limit(1).get();
+    return snap.empty ? null : toToeicSet(snap.docs[0].id, snap.docs[0].data());
+  }
+
+  async importToeicSets(inputs: NewToeicSet[]): Promise<ImportToeicSetsResult> {
+    const col = this.toeicSets();
+    const base = Date.now();
+    // 새 문서 id는 트랜잭션 밖에서 한 번 — 경합으로 콜백이 다시 돌아도 같은 id로 쓴다(결정성).
+    const prepared = inputs.map((input, i) =>
+      normalizeToeicSetRecord({ ...input, id: col.doc().id, createdAt: new Date(base - i).toISOString(), sortIndex: null }),
+    );
+    const keys = [...new Set(prepared.map((r) => r.presetKey).filter((k): k is string => k !== null))];
+    return getDb().runTransaction(async (tx): Promise<ImportToeicSetsResult> => {
+      // `in`은 한 번에 30개까지 — 나눠 읽는다. 읽기를 모두 끝낸 뒤 쓴다.
+      const have = new Set<string>();
+      for (let i = 0; i < keys.length; i += 30) {
+        const snap = await tx.get(col.where("presetKey", "in", keys.slice(i, i + 30)));
+        for (const d of snap.docs) {
+          const k = d.data().presetKey;
+          if (typeof k === "string") have.add(k);
+        }
+      }
+      const created: ToeicSetRecord[] = [];
+      const skippedKeys: string[] = [];
+      for (const record of prepared) {
+        const key = record.presetKey;
+        if (key !== null && have.has(key)) {
+          skippedKeys.push(key);
+          continue;
+        }
+        if (key !== null) have.add(key);
+        tx.set(col.doc(record.id), toeicSetData(record));
+        created.push(record);
+      }
+      return { created, skippedKeys };
+    });
+  }
+
+  async deleteToeicSet(id: string): Promise<DeleteToeicResult> {
+    assertDestructiveAllowed("deleteToeicSet");
+    const ref = this.toeicSets().doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return { ok: false };
+    const quizSnap = await this.toeicQuizzes().where("setId", "==", id).get();
+    const refs = [...quizSnap.docs.map((d) => d.ref), ref]; // 세트 문서를 **마지막에**
+    const db = getDb();
+    for (let i = 0; i < refs.length; i += BATCH_LIMIT) {
+      const batch = db.batch();
+      for (const r of refs.slice(i, i + BATCH_LIMIT)) batch.delete(r);
+      await batch.commit();
+    }
+    return { ok: true };
+  }
+
+  async updateToeicSetTitle(id: string, titleKo: string): Promise<ToeicSetRecord | null> {
+    const ref = this.toeicSets().doc(id);
+    if (!(await ref.get()).exists) return null;
+    await ref.update({ titleKo });
+    const updated = await ref.get();
+    return toToeicSet(updated.id, updated.data()!);
+  }
+
+  async reorderToeicSets(orderedIds: string[]): Promise<void> {
+    await reorderBySortIndex(getDb(), this.toeicSets(), orderedIds);
+  }
+
+  async mergeToeicSetPoints(
+    id: string,
+    items: ToeicPointsItem[],
+    opts: { force: boolean },
+  ): Promise<MergeToeicSetPointsResult | null> {
+    const ref = this.toeicSets().doc(id);
+    return getDb().runTransaction(async (tx): Promise<MergeToeicSetPointsResult | null> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      const current = toToeicSet(snap.id, snap.data()!);
+      const merged = applyPointsResults(current.entries, items, opts);
+      const record = normalizeToeicSetRecord({ ...current, entries: merged.entries });
+      // 바뀌는 두 필드만 쓴다 — entries는 normalize를 통과한 값(undefined 없음)
+      tx.update(ref, { entries: record.entries, enriched: record.enriched });
+      return { record, filled: merged.filled, remaining: merged.remaining };
+    });
+  }
+
+  async addToeicQuiz(input: NewToeicQuiz): Promise<ToeicQuizRecord> {
+    const ref = this.toeicQuizzes().doc();
+    const record: ToeicQuizRecord = { ...input, items: input.items.map(normalizeToeicQuizItem), id: ref.id };
+    const { id: _id, ...data } = record;
+    await ref.set(data);
+    return record;
+  }
+
+  /** 모르는 mode 문서는 버리고 경고한다(파일 백엔드 normalizeToeicQuizList와 같은 규약). */
+  private toToeicQuizList(docs: { id: string; data(): DocumentData }[]): ToeicQuizRecord[] {
+    const out: ToeicQuizRecord[] = [];
+    let dropped = 0;
+    for (const d of docs) {
+      const q = toToeicQuiz(d.id, d.data());
+      if (q) out.push(q);
+      else dropped += 1;
+    }
+    if (dropped > 0) console.warn(`[store] 모르는 mode의 토익 시험 세션 ${dropped}건을 건너뛰었어요.`);
+    return out.sort(byStartedAtAsc);
+  }
+
+  async listToeicQuizzes(setId: string): Promise<ToeicQuizRecord[]> {
+    // where + 다른 필드 orderBy는 복합 인덱스가 필요 — 필터만 쿼리, 정렬은 메모리(listJaQuizzes 규약)
+    const snap = await this.toeicQuizzes().where("setId", "==", setId).get();
+    return this.toToeicQuizList(snap.docs);
+  }
+
+  async listAllToeicQuizzes(): Promise<ToeicQuizRecord[]> {
+    const snap = await this.toeicQuizzes().get();
+    return this.toToeicQuizList(snap.docs);
+  }
+
+  async createToeicMock(input: NewToeicMock): Promise<ToeicMockRecord> {
+    const ref = this.toeicMocks().doc();
+    const record = normalizeToeicMockRecord({ ...input, id: ref.id, createdAt: new Date().toISOString(), sortIndex: null });
+    await ref.set(toeicMockData(record));
+    return record;
+  }
+
+  async getToeicMock(id: string): Promise<ToeicMockRecord | null> {
+    const snap = await this.toeicMocks().doc(id).get();
+    return snap.exists ? toToeicMock(snap.id, snap.data()!) : null;
+  }
+
+  async listToeicMocks(limit?: number): Promise<ToeicMockRecord[]> {
+    const base = this.toeicMocks().orderBy("createdAt", "desc");
+    const snap = await (limit == null ? base : base.limit(limit)).get();
+    return snap.docs.map((d) => toToeicMock(d.id, d.data()));
+  }
+
+  async deleteToeicMock(id: string): Promise<DeleteToeicResult> {
+    assertDestructiveAllowed("deleteToeicMock");
+    const ref = this.toeicMocks().doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return { ok: false };
+    const [imageSnap, attemptSnap] = await Promise.all([
+      this.toeicImages().where("mockId", "==", id).get(),
+      this.toeicAttempts().where("mockId", "==", id).get(),
+    ]);
+    const refs = [...imageSnap.docs.map((d) => d.ref), ...attemptSnap.docs.map((d) => d.ref), ref]; // 모의고사를 **마지막에**
+    const db = getDb();
+    for (let i = 0; i < refs.length; i += BATCH_LIMIT) {
+      const batch = db.batch();
+      for (const r of refs.slice(i, i + BATCH_LIMIT)) batch.delete(r);
+      await batch.commit();
+    }
+    return { ok: true };
+  }
+
+  async updateToeicMockTitle(id: string, titleKo: string): Promise<ToeicMockRecord | null> {
+    const ref = this.toeicMocks().doc(id);
+    if (!(await ref.get()).exists) return null;
+    await ref.update({ titleKo });
+    const updated = await ref.get();
+    return toToeicMock(updated.id, updated.data()!);
+  }
+
+  async reorderToeicMocks(orderedIds: string[]): Promise<void> {
+    await reorderBySortIndex(getDb(), this.toeicMocks(), orderedIds);
+  }
+
+  async fillToeicMockPart<P extends ToeicMockPart>(
+    id: string,
+    part: P,
+    value: ToeicMockPartRecordMap[P],
+  ): Promise<FillToeicMockPartResult | null> {
+    const ref = this.toeicMocks().doc(id);
+    // 판정(빈 자리인가)과 쓰기를 한 트랜잭션에 — 두 요청이 같은 빈 파트를 채우려 해도 먼저 커밋한 쪽만 남는다.
+    return getDb().runTransaction(async (tx): Promise<FillToeicMockPartResult | null> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      const current = toToeicMock(snap.id, snap.data()!);
+      if (decideFillPart(current, part) === "exists") return { outcome: "exists", record: current };
+      const record = normalizeToeicMockRecord(applyFillPart(current, part, value));
+      tx.update(ref, { parts: record.parts });
+      return { outcome: "filled", record };
+    });
+  }
+
+  async saveToeicPictureImage(input: SaveToeicPictureImageInput): Promise<SaveToeicPictureImageResult> {
+    const mockRef = this.toeicMocks().doc(input.mockId);
+    // 새 사진 문서 id·시각은 트랜잭션 밖에서 한 번만 — 재시도돼도 같은 문서에 같은 값을 쓴다(멱등).
+    const imageRef = this.toeicImages().doc();
+    const image = normalizeToeicImageRecord({
+      id: imageRef.id,
+      mockId: input.mockId,
+      slot: input.slot,
+      dataUrl: input.dataUrl,
+      model: input.model,
+      createdAt: new Date().toISOString(),
+    });
+    return getDb().runTransaction(async (tx): Promise<SaveToeicPictureImageResult> => {
+      const snap = await tx.get(mockRef);
+      if (!snap.exists) return { outcome: "missing", record: null };
+      const current = toToeicMock(snap.id, snap.data()!);
+      const decision = decidePictureImage(current, input.slot, input.imagePrompt);
+      if (decision === "missing") return { outcome: "missing", record: current };
+      if (decision !== "apply") return { outcome: decision, record: current };
+      const record = normalizeToeicMockRecord(applyPictureImage(current, input.slot, { status: "ready", imageId: image.id }));
+      const { id: _id, ...data } = image;
+      // 읽기를 모두 끝낸 뒤 쓴다: 사진 문서 생성 + 모의고사 칸 갱신이 함께 커밋된다(한쪽만 남는 고아 0)
+      tx.set(imageRef, data);
+      tx.update(mockRef, { parts: record.parts });
+      return { outcome: "saved", record, image };
+    });
+  }
+
+  async markToeicPictureImageFailed(mockId: string, slot: 0 | 1, imagePrompt: string): Promise<MarkToeicPictureImageFailedResult> {
+    const ref = this.toeicMocks().doc(mockId);
+    return getDb().runTransaction(async (tx): Promise<MarkToeicPictureImageFailedResult> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return { outcome: "missing", record: null };
+      const current = toToeicMock(snap.id, snap.data()!);
+      const decision = decidePictureImage(current, slot, imagePrompt);
+      if (decision === "missing") return { outcome: "missing", record: current };
+      if (decision !== "apply") return { outcome: decision, record: current };
+      const record = normalizeToeicMockRecord(applyPictureImage(current, slot, { status: "failed", imageId: null }));
+      tx.update(ref, { parts: record.parts });
+      return { outcome: "marked", record };
+    });
+  }
+
+  async getToeicImage(id: string): Promise<ToeicImageRecord | null> {
+    const snap = await this.toeicImages().doc(id).get();
+    return snap.exists ? toToeicImage(snap.id, snap.data()!) : null;
+  }
+
+  async createToeicAttempt(input: NewToeicAttempt): Promise<ToeicAttemptRecord> {
+    const ref = this.toeicAttempts().doc();
+    const record = normalizeToeicAttemptRecord({ ...input, id: ref.id });
+    await ref.set(toeicAttemptData(record));
+    return record;
+  }
+
+  async getToeicAttempt(id: string): Promise<ToeicAttemptRecord | null> {
+    const snap = await this.toeicAttempts().doc(id).get();
+    return snap.exists ? toToeicAttempt(snap.id, snap.data()!) : null;
+  }
+
+  async listToeicAttemptsByMock(mockId: string): Promise<ToeicAttemptRecord[]> {
+    const snap = await this.toeicAttempts().where("mockId", "==", mockId).get();
+    return snap.docs.map((d) => toToeicAttempt(d.id, d.data())).sort(byStartedAtAsc);
+  }
+
+  async listAllToeicAttempts(): Promise<ToeicAttemptRecord[]> {
+    const snap = await this.toeicAttempts().get();
+    return snap.docs.map((d) => toToeicAttempt(d.id, d.data())).sort(byStartedAtAsc);
+  }
+
+  async finishToeicAttempt(id: string, input: FinishToeicAttemptInput): Promise<FinishToeicAttemptResult | null> {
+    const ref = this.toeicAttempts().doc(id);
+    // 판정(한 번만 — decideAttemptFinish)과 쓰기를 한 트랜잭션으로: 두 요청이 겹쳐도 먼저 커밋한 끝/그만두기만 남는다.
+    return getDb().runTransaction(async (tx): Promise<FinishToeicAttemptResult | null> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      const current = toToeicAttempt(snap.id, snap.data()!);
+      if (decideAttemptFinish(current) === "already_closed") return { outcome: "already_closed", record: current };
+      const next = applyAttemptFinish(current, input);
+      tx.update(ref, { finishedAt: next.finishedAt, answers: next.answers });
+      return { outcome: "finished", record: next };
+    });
+  }
+
+  async updateToeicAttemptAnswer(id: string, q: number, patch: ToeicAnswerScorePatch): Promise<ToeicAttemptRecord | null> {
+    const ref = this.toeicAttempts().doc(id);
+    return getDb().runTransaction(async (tx): Promise<ToeicAttemptRecord | null> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      const next = applyAttemptAnswer(toToeicAttempt(snap.id, snap.data()!), q, patch);
+      tx.update(ref, { answers: next.answers });
+      return next;
     });
   }
 }

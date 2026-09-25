@@ -34,7 +34,10 @@ export type DestructiveOp =
   | "deleteVocabBook"
   | "deleteJaVocabBook"
   | "undoWorkoutEvent"
-  | "closeWorkoutCycle";
+  | "closeWorkoutCycle"
+  // 아빠의 영어(docs/harness/toeic.md §7) — 표현집 세트(+그 시험 세션), 모의고사(+생성 사진·응시 기록) 연쇄 삭제
+  | "deleteToeicSet"
+  | "deleteToeicMock";
 
 export class ProdGuardError extends Error {
   readonly code = "prod_guard";

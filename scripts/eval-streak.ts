@@ -9,10 +9,14 @@
  * formatKstDate 경계는 실행 기기 TZ에 기대지 않는다 — 판정을 값으로 단언하고, 같은 표를 TZ 3곳으로 바꿔 다시 돌린다(아래 "KST 환산").
  * computeStreak은 "오늘(todayKst)"을 인자로 받는 순수 함수라 현재 시각에 의존하지 않는다(테스트 안정, §17-2·17-6).
  * 운동 트랙의 "지킨 날" 계산(workoutKeptDays)은 운동 엔진 소관이라 eval-workout.ts가 잠근다(§17-7).
+ * 아빠 · 🎙️ 영어 트랙(토익스피킹, docs/harness/toeic.md §0-2)은 toeicStreakSessions(lib/toeic-streak.ts)가 표현 시험(답한 문항≥1)과
+ * 모의고사 응시(녹음된 문항≥1)를 세션 모양으로 옮긴다 — 아래 6)이 세는 규칙과 **트랙 분리**(은우·일본어·운동과 무혼합)를 반례로 잠근다.
  */
 
+import { readFileSync } from "node:fs";
 import { computeStreak, computeStreakFromDays, type StreakSession } from "../lib/streak";
 import { formatKst, formatKstDate, isZonedIsoTimestamp, kstDateString, shiftDateString } from "../lib/kst";
+import { isCountedToeicAttempt, toeicStreakSessions } from "../lib/toeic-streak";
 
 interface CheckResult {
   book: string;
@@ -304,6 +308,71 @@ const TODAY = "2026-09-21";
     "일본어(그제만)는 0 — 운동 날짜를 섞으면 3연속으로 이어져 보인다(오염 반례)",
     rJa.current === 0 && rMerged.current === 3 && rMerged.doneToday,
     `일본어=${JSON.stringify(rJa)} 섞음=${JSON.stringify(rMerged)}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 6) 아빠 · 🎙️ 영어 트랙(토익스피킹, toeic.md §0-2) — 세는 규칙 + 트랙 분리(은우·일본어·운동·영어 무혼합)
+// ---------------------------------------------------------------------------
+{
+  /** 토익 표현 시험 세션(ToeicQuizRecord 최소 모양) */
+  const tq = (kstDate: string, answered: boolean | null = true) => ({ startedAt: `${kstDate}T03:00:00.000Z`, items: [{ answered }] });
+  /** 토익 모의고사 응시(ToeicAttemptRecord 최소 모양) — recorded 배열 */
+  const ta = (kstDate: string, recorded: boolean[]) => ({ startedAt: `${kstDate}T03:00:00.000Z`, answers: recorded.map((r) => ({ recorded: r })) });
+
+  // ① 표현 시험(답함) + 응시(녹음 1개 이상)가 각각 하루를 센다 — 어제 응시 + 오늘 시험 → 2연속
+  const both = computeStreak(toeicStreakSessions([tq("2026-09-21")], [ta("2026-09-20", [true, false])]), TODAY);
+  add("영어 트랙", "① 오늘 표현 시험 + 어제 응시(녹음 1개) → current 2·doneToday", both.current === 2 && both.doneToday, JSON.stringify(both));
+
+  // ② 녹음이 하나도 끝나지 않은 응시(전부 recorded:false)는 세지 않는다 — "녹음 0 응시 제외"
+  const noRec = computeStreak(toeicStreakSessions([], [ta("2026-09-21", [false, false, false])]), TODAY);
+  add(
+    "영어 트랙",
+    "② 녹음 0 응시는 제외(current 0·lastDate null) + isCountedToeicAttempt 판정 일치",
+    noRec.current === 0 && noRec.lastDate === null && !isCountedToeicAttempt(ta("x", [false])) && isCountedToeicAttempt(ta("x", [false, true])),
+    JSON.stringify(noRec),
+  );
+
+  // ③ 답한 문항 0(그만하기만)인 표현 시험은 세지 않는다(§17-1 규칙이 영어 트랙에도)
+  const noAns = computeStreak(toeicStreakSessions([tq("2026-09-21", null), tq("2026-09-21", false)], []), TODAY);
+  add("영어 트랙", "③ answered:null·false뿐인 표현 시험은 제외(current 0)", noAns.current === 0 && noAns.lastDate === null, JSON.stringify(noAns));
+
+  // ④ 트랙 분리 반례 — 은우(오늘)·일본어(어제)·운동(그제)·영어(나흘 전만). 분리하면 영어는 0(끊김),
+  //    섞으면 오늘까지 3연속으로 이어져 보인다(영어만 안 한 날이 "했다"로 오염).
+  const eunwooDays = ["2026-09-21"];
+  const jaDays = ["2026-09-20"];
+  const workoutDays = ["2026-09-19"];
+  const english = computeStreak(toeicStreakSessions([tq("2026-09-17")], []), TODAY);
+  const merged = computeStreakFromDays([...eunwooDays, ...jaDays, ...workoutDays, "2026-09-17"], TODAY);
+  add(
+    "영어 트랙",
+    "④ 트랙 분리: 영어(나흘 전만)는 0 — 은우·일본어·운동 날짜를 섞으면 3연속으로 이어져 보인다(오염 반례)",
+    english.current === 0 && !english.doneToday && merged.current === 3 && merged.doneToday,
+    `영어=${JSON.stringify(english)} 섞음=${JSON.stringify(merged)}`,
+  );
+
+  // ⑤ 역방향 — 영어만 오늘 한 날에 일본어 트랙(어제까지)이 "오늘 함"으로 바뀌지 않는다(각자 계산)
+  const jaOnly = computeStreakFromDays(jaDays, TODAY);
+  const enToday = computeStreak(toeicStreakSessions([tq("2026-09-21")], []), TODAY);
+  add(
+    "영어 트랙",
+    "⑤ 영어만 오늘 함 → 영어 doneToday, 일본어는 여전히 오늘 아직(각자 계산)",
+    enToday.doneToday && !jaOnly.doneToday && jaOnly.current === 1,
+    `영어=${JSON.stringify(enToday)} 일본어=${JSON.stringify(jaOnly)}`,
+  );
+
+  // ⑥ 라우트 배선(정적) — /api/streak가 영어 트랙을 **토익 두 컬렉션만으로** 계산하고, 은우·일본어 계산식은 그대로인가.
+  //    누가 영어 날짜를 일본어·은우 계산에 섞거나(한 집합), 영어 트랙에 은우 vocabQuizzes를 넣으면 여기서 걸린다.
+  const route = readFileSync(new URL("../app/api/streak/route.ts", import.meta.url), "utf-8");
+  const wiredEnglish = /computeStreak\(toeicStreakSessions\(toeicQuizzes, toeicAttempts\), today\)/.test(route);
+  const eunwooUntouched = /computeStreak\(vocab, today\)/.test(route);
+  const jaUntouched = /computeStreak\(\[\.\.\.jaVocab, \.\.\.jaKanji\], today\)/.test(route);
+  const noLeak = !/toeicStreakSessions\([^)]*\b(vocab|jaVocab|jaKanji)\b/.test(route) && !/computeStreak\(\[[^\]]*toeic/i.test(route);
+  add(
+    "영어 트랙",
+    "⑥ /api/streak 배선: 영어=toeicStreakSessions(토익 2컬렉션)만, 은우·일본어 계산식 불변",
+    wiredEnglish && eunwooUntouched && jaUntouched && noLeak,
+    `영어배선=${wiredEnglish} 은우=${eunwooUntouched} 일본어=${jaUntouched} 무혼합=${noLeak}`,
   );
 }
 

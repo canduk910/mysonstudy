@@ -1,0 +1,398 @@
+/* 모의고사 응시 화면 (아빠의 영어 T4) — 전면 오버레이. 성인 학습자용, 새 색조 없음(토큰만).
+ * 녹음 중은 accent 테두리 + ● 글리프로 알린다(빨강 금지 — 파랑 체계, danger는 경고 문구에만). */
+
+.overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100dvh; /* 모바일 주소창 접힘에도 프레임이 안 튄다 */
+  z-index: 20; /* 스트릭 헤드라인(z:15)을 덮는 게 의도 */
+  background: var(--bg);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.inner {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 42rem;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 16px calc(28px + env(safe-area-inset-bottom, 0px));
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: var(--tap-min);
+}
+.headInfo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.qBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--radius-chip);
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
+}
+.partName {
+  color: var(--ink);
+  font-size: var(--fs-vocab-meaning);
+  font-weight: var(--fw-bold);
+}
+.progress {
+  color: var(--ink-3);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.devBadge {
+  padding: 2px 8px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-chip);
+  color: var(--ink-2);
+  font-size: 12px;
+}
+.quitBtn {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  color: var(--ink-2);
+  font-size: 14px;
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+.kicker {
+  margin: 0;
+  color: var(--accent-ink);
+  font-size: 13px;
+  font-weight: var(--fw-bold);
+}
+.title {
+  margin: 2px 0 0;
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+.lead {
+  margin: 6px 0 0;
+  color: var(--ink-2);
+  font-size: var(--fs-lead);
+  line-height: 1.6;
+  word-break: keep-all;
+}
+.caption {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.diag {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+.cardTitle {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--fs-vocab-meaning);
+  font-weight: var(--fw-bold);
+}
+.ok {
+  margin: 0;
+  color: var(--accent-ink);
+  font-size: 15px;
+  font-weight: var(--fw-medium);
+}
+.warn {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.checkResult {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.audio {
+  width: 100%;
+  max-width: 360px;
+  height: 40px;
+}
+.nomic {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.nomic input {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  accent-color: var(--accent);
+}
+
+.settings {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+}
+.settingsSummary {
+  min-height: 32px;
+  color: var(--ink-2);
+  font-size: 14px;
+  cursor: pointer;
+}
+.settingsBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+.startBtn {
+  width: 100%;
+  min-height: 56px;
+  font-size: 18px;
+}
+
+/* 무대 — 단계 이름과 남은 시간(이 화면의 주인공) */
+.stageCard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 16px;
+  border: 2px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+  text-align: center;
+}
+.stageRec {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.phaseLabel {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-meaning);
+  font-weight: var(--fw-bold);
+}
+.stageRec .phaseLabel {
+  color: var(--accent-ink);
+}
+.timer {
+  margin: 0;
+  color: var(--ink);
+  font-size: calc(var(--fs-stat-number) * 2);
+  font-weight: var(--fw-bold);
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+
+.meter {
+  position: relative;
+  width: 100%;
+  max-width: 320px;
+  height: 10px;
+  overflow: hidden;
+  border-radius: var(--radius-chip);
+  background: var(--surface-2);
+}
+.meterFill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  border-radius: var(--radius-chip);
+  background: var(--accent);
+  transition: width 80ms linear;
+}
+
+.alert {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.alert p {
+  margin: 0;
+}
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-box);
+  background: var(--danger-soft);
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.confirm p {
+  margin: 0;
+}
+
+/* 문항 자료 */
+.en {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.passage {
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 18px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+.intro {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 16px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.question {
+  margin: 0;
+  padding: 12px 14px;
+  border-left: 4px solid var(--accent);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--fs-question-en);
+  font-weight: var(--fw-medium);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.photo {
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+.photoImg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.sceneBox {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+.scene {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.6;
+  word-break: keep-all;
+}
+
+.memo {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.memoInput {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px; /* iOS 확대 방지 */
+  line-height: 1.5;
+  resize: vertical;
+}
+
+/* 끝 화면 */
+.answerList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.answerRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+}
+.answerPart {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ink-2);
+  font-size: 14px;
+}
