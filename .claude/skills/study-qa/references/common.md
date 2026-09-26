@@ -15,6 +15,8 @@
 
 셋 다 실호출 0회다. `CheckResult`·`add`·`printTable` 관용구를 쓰고, 실패하면 exit 1로 끝난다. `.env`를 읽지 않는다(`loadEnvFile` 호출 없음). 그래도 접두어는 붙인다.
 
+`eval-speech`는 가짜 타이머와 약속을 기다리며 도는 비동기 eval이라 한 가지를 더 본다. **끝까지 가지 못한 실행도 FAIL(exit 1)이다.** 풀리지 않는 대기에 걸려 이벤트 루프가 비면 `beforeExit`가 끝낸다. 핸들이 루프를 붙잡고 있으면 워치독(기본 120초, env `EVAL_SPEECH_WATCHDOG_MS`)이 끝낸다. 둘 다 지금까지의 표와 마지막으로 기록된 항목을 찍고 끝난다. 이 가드가 없을 때는 옛 Blob 읽기 상한을 지운 변이가 표도 PASS 줄도 없이 **exit 0**으로 끝나, 통과로 세어졌다(`_workspace/qa_report_common_tts-notsupported_2.md` E1). 그래서 판정은 exit code 하나로 하지 않는다. 마지막 줄 `PASS — … N개 항목`까지 확인하고, N이 아래 표보다 적으면 회귀로 본다. `eval-streak`·`eval-workout`은 최상위가 동기 코드라 이런 식으로 매달릴 자리가 없다.
+
 ```bash
 OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run eval:speech
 OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run eval:streak
@@ -23,7 +25,7 @@ OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_
 
 | 스크립트 | 대상 | import 경계 | 출력 영역 (항목 수는 2026-09-26 실측) |
 |---|---|---|---|
-| `scripts/eval-speech.ts` | `lib/ja-coaching-script.ts` 대본·쪼개기, `lib/speech.ts` 큐, `lib/tts-shared.ts`·`lib/tts.ts` 상수, `lib/tts-cache.ts` 지문 | store 금지. `lib/speech`·`lib/tts`·`lib/tts-cache`는 fetch 스텁을 깔고 키를 비운 **뒤에** dynamic import한다 | 대본(12)·쪼개기(12)·상수·엔진(5)·큐(46 — 2026-09-26 `onEnd` 둘째 인자 S1~S5 12개 추가)·단발(30)·지문(7)·안전(1) — 합계 (113) |
+| `scripts/eval-speech.ts` | `lib/ja-coaching-script.ts` 대본·쪼개기, `lib/speech.ts` 큐·단발·자가 치유, `lib/tts-shared.ts`·`lib/tts.ts` 상수, `lib/tts-cache.ts` 지문·영속 캐시 v2(가짜 KV 주입) | store 금지. `lib/speech`·`lib/tts`·`lib/tts-cache`는 fetch 스텁을 깔고 키를 비운 **뒤에** dynamic import한다 | 대본(12)·쪼개기(12)·상수·엔진(5)·큐(46 — 2026-09-26 `onEnd` 둘째 인자 S1~S5 12개 추가)·단발(30)·지문(7)·안전(1)·**영속캐시(20)**(2026-09-27 — v2 바이트 저장·옛 Blob 이전·자가 치유·content-type G1~G17, QA 2회차 eval 공백 보강 G18~G20과 G5 확장. §1-1) — 합계 (133) |
 | `scripts/eval-streak.ts` | `lib/streak.ts`의 `computeStreak`·`computeStreakFromDays`, `lib/kst.ts`(`formatKstDate`·`isZonedIsoTimestamp` 포함), `lib/toeic-streak.ts`(아빠 🎙️ 영어 트랙 입력), `lib/talk-streak.ts`(은우 자유대화 입력) | `../lib/streak`·`../lib/kst`·`../lib/toeic-streak`·`../lib/talk-streak`만(뒤의 둘은 런타임 import 0 — 타입만) | KST 환산 26(formatKstDate 경계표를 TZ Asia/Seoul·UTC·America/Los_Angeles로 다시 돌림 — 실행 기기 TZ 무관)·연속 판정 5·0문항 제외 3·사람 분리 2·날짜 코어 5·영어 트랙 6(표현 시험 답한 문항≥1·응시 녹음된 문항≥1, 다른 트랙과 섞지 않음)·**자유대화 6**(2026-09-26 — 발화 0 제외·대화만 한 날·startedAt KST·아빠 트랙 무오염·라벨·라우트 배선) (53) |
 | `scripts/eval-workout.ts` | `lib/workout.ts` 전체, `diffDateStrings`, `components/workout-shared.tsx`의 순수 포맷 함수(소요시간 문자열) | `../lib/workout`·`../lib/kst`·`../lib/streak` + **예외 하나** `../components/workout-shared`(2026-09-26 — 문자열의 정의처가 이 화면 파일이라서다. 이 파일의 import는 `@/lib/kst`·`@/lib/workout`뿐이라 store 전이가 없다. 이 파일에 import를 더하면 이 판정을 다시 한다) | 베이스·계획·스텝·휴식(세트 사이 [1,3,5,7]·휴식 뒤 [2,4,6,8]·음성 안내 대상 4개)·세트 목록 순서(`roundDisplayOrder` — 스텝 0~9 × 축하 유무의 순서·완료 구역 시작 위치, 푸시업 ✓ 탭 순간·풀업 ✓ 무재배치, 무효 held 무시)·횟수·상태·판정(`decideLog`·`decideUndo`·`decideStart`·`closingStatus`)·활성 선택·격리·정규화(createdAt ISO 경계 = `isZonedIsoTimestamp`)·날짜 방어·진행·볼륨·일정·스냅샷·지난 사이클·운동 스트릭(endedAt ISO 경계 포함)·**소요시간 24**(2026-09-26 §19-8 — 상수·`isValidDurationSec` 경계·옛 사건 정규화·decideLog 싣기와 쓰기 경계 보존·범위 밖 null·근사식 오라클·eventDuration·스냅샷 합계·undo·workoutLog 정렬·문자열 17건) (158) |
 
@@ -51,6 +53,47 @@ OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_
 | 번들 경계 | `lib/speech.ts`의 값 import가 `./tts-shared`·`./tts-cache`뿐인지, `lib/ja-coaching-script.ts`는 `./tts-shared`와 `import type`뿐인지 본다. build 뒤 `.next/static`을 `grep -rla`해 openai SDK의 흔적(기본 주소 `api.openai.com`)과 키가 0건인지 확인한다 | openai가 폰 번들로 내려간다 |
 | 캐시 지문 | eval에서 `TTS_INSTRUCTIONS_VERSION === 2`를 확인한다. 값이 올라갔으면 이유를 묻는다. 올리면 전 언어의 영속 캐시가 비워지는 비용이 난다(§18-3) | 재합성 요금 |
 | 기본 엔진 | `DEFAULT_ENGINE`은 ko=cloud·ja=device·en=cloud여야 한다(eval "상수·엔진") | 해설의 일본어 인용을 한국어식으로 읽는다 |
+
+### 1-1. 영속 캐시 v2와 자가 치유 (§16-5, 2026-09-27) — WebKit에서만 드러난다
+
+2026-09-27 iPhone 신고는 "마지막 재생: 클라우드 실패(재생 NotSupportedError) → 기기 음성"이었다. 원인은 WebKit에만 있는 결함이다. **이전 프로세스(앱 재실행 전)가 쓴 IDB Blob 레코드**를 같은 키에 다시 쓰면, 꺼내 둔 Blob과 그 레코드가 그 프로세스 동안 죽는다. 옛 `ttsCacheGet`은 LRU 시각을 고치려고 바로 이 쓰기를 했다. Chromium에서는 같은 절차가 정상이어서 Chromium eval·e2e는 전부 통과했다. 그래서 이 절의 규약은 두 겹으로 확인한다. **오프라인 eval로 계약을, WebKit 실엔진 e2e로 IDB 어댑터를 본다.** 한쪽만 보고 판정하지 않는다. 규약의 이유는 `ai-harness-impl/references/app-patterns.md` §8에 있다.
+
+| 규약 | 잠그는 점검(`eval:speech` "영속캐시") | 실패의 의미 |
+|---|---|---|
+| IDB에는 Blob이 아니라 바이트(ArrayBuffer)와 형식을 저장한다. 꺼낼 때마다 새 메모리 Blob을 만든다 | G1(레코드에 Blob 0·형식 없는 Blob은 audio/mpeg·비오디오는 저장 안 함), G2(조회마다 새 Blob) | IDB Blob이 WebKit 결함에 다시 노출된다 |
+| **조회 때 오디오가 든 레코드를 다시 쓰지 않는다.** LRU 시각은 목록 store만 고친다(`touch`) | G2·G3·G6·G7·G8(조회 경로 put 0). G4는 모사의 유효성을 본다 — 옛 알고리즘이 가짜 KV의 WebKit 모드에서 실제로 꺼낸 Blob과 레코드를 죽이는지 | 신고 결함이 재발한다. 재실행 뒤 캐시된 모든 음성이 기기 음성으로 난다 |
+| 옛 v1 Blob 레코드는 바이트를 먼저 읽고(상한 3초) 새 형식으로 옮긴다. 죽음·매달림·**0바이트**·비오디오면 미스로 보고 지운 뒤 그 건만 다시 합성한다 | G3·G5(빈 0B는 형식 있음·없음 둘 다)·G8·G9·G17(프리페치)·G20(빈 옛 레코드의 앱 경로 — POST 1·치유 아님) | 배포 직후 재합성 요금이 난다. 또는 죽은·빈 오디오가 적중으로 나가 재생이 한 번 실패한 뒤 치유 경로로 돈다(POST 수는 같은 1회 — 실패한 재생과 지연이 생긴다) |
+| 바이트 레코드 손상(바이트 없음·0B·비오디오 형식)은 미스로 보고 지운다. 형식이 빈 칸이면 audio/mpeg로 본다 | G6 | 못 트는 오디오를 계속 내준다 |
+| 합성 응답이 `audio/*`가 아니면 합성 단계 `tts type`으로 실패한다. 재생도 캐시 저장도 하지 않는다 | G14 | 캡티브 포털 HTML이 캐시에 굳어 재생 실패가 되풀이된다 |
+| 자가 치유 — 캐시에서 온 오디오가 미디어 소스 오류(NotSupportedError, 또는 code≠1인 `error` 이벤트)면 두 캐시에서 빼고 `fresh`로 한 번 새로 받는다 | G10(단발), G11(error 이벤트 code 4는 치유, code 1은 안 함), G15(큐) | 손상된 캐시 오디오가 영영 기기 음성으로 난다 |
+| **치유는 한 번뿐이다.** 방금 네트워크로 받은 오디오가 못 틀면 치유하지 않고 곧바로 기기 음성으로 가며, 캐시에 남기지 않는다(`fromCache` 가드 — 단발·큐에 따로 있다) | G12(단발 — 재시도 실패·다음 🔊도 치유 없이), G16(큐 재시도 실패), **G18(큐의 `fromCache` 가드 — 네트워크 조각 POST 정확히 1·healed 아님)** | 누를 때마다 POST 2가 나거나 치유를 반복한다 |
+| NotAllowedError·AbortError·대기 상한은 치유 대상이 아니다 | G13 | 요금만 나고 iOS 잠금 문제를 가린다 |
+| **쓰기 줄** — 저장·삭제·LRU·이전은 한 줄로 서고, 자리는 부른 순간에 잡는다. 그래서 치유 삭제는 먼저 시작된 저장 뒤에 끝난다 | **G19**(① 바이트 읽기가 늦은 저장 직후 삭제 → 순서 put→delete·키 없음 ② 앱 경로 — 새 합성 → 느린 put 중 재생 실패 → 삭제 → 못 트는 오디오가 되살아나지 않음) | 방금 지운 못 트는 오디오를 늦게 끝난 저장이 되살린다. 다음 실행에서 치유 POST가 또 난다 |
+| 진단 `healed`와 캡션 | G10~G16·G18의 진단 단언. 캡션 문구는 `components/tts-engine-control.tsx`(`HEALED_LABEL`)가 만든다 | 폰 신고를 캡션만으로 가를 수 없다 |
+
+- **변이 기록.** 2회차 QA에서 변이 11종 가운데 7종만 잡혔다(`_workspace/qa_report_common_tts-notsupported_2.md`). 보강한 뒤에는 E1~E4 변이 6종(매달림 2종 — 루프가 비는 것·핸들이 붙잡는 것, 큐 `fromCache` 가드 제거, 삭제를 줄 밖에서 실행, 저장이 바이트를 읽은 뒤에 줄에 섬, 빈 옛 바이트 허용)과 기존 잠금 회귀 3종이 전부 잡힌다(`_workspace/build_app-builder_common-tts-evallocks_report.md`). 빌드 리포트가 "G○가 잠근다"고 적으면, 그 변이를 직접 넣어 확인한다. G12가 쓰기 순서를 잠근다는 서술이 사실이 아니었던 전례가 있다.
+- **eval 밖인 것 — IDB 어댑터.** eval은 가짜 KV로 계약만 본다. 실제 `createIdbBackend`의 동작은 실엔진 e2e로만 확인된다. 여기에는 v1→v2 `onupgradeneeded`, `touch`가 옛 Blob 레코드를 건드리지 않는 것, 이전 put이 목록 레코드를 필드만 골라 새로 쓰는 것이 든다. `lib/tts-cache.ts`를 고친 변경은 아래 절차를 다시 돈다.
+
+**WebKit 재현 절차** (1·2회차 QA와 빌드 e2e가 쓴 방법)
+
+1. **환경**: Playwright WebKit을 쓴다. 저장소 `package.json`은 건드리지 않고 scratchpad에 설치한다. `launchPersistentContext(userDataDir)`로 **디스크 IDB**를 쓰고, 컨텍스트를 닫았다가 같은 디렉터리로 다시 여는 것을 **앱 재실행**으로 본다. 새로고침은 같은 프로세스라 결함 조건이 아니다 — 새로고침만으로 "재실행 뒤 ✓"를 판정하지 않는다.
+2. **서버**: dev는 `OPENAI_API_KEY=sk-stub OPENAI_BASE_URL=http://127.0.0.1:<스텁 포트>/v1 STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= K_SERVICE= APP_PIN=`으로 띄운다. 스텁의 `/v1/audio/speech`는 **실제 mp3**를 `audio/mpeg`로 준다. 가짜 바이트를 주면 WebKit은 정상 경로의 오디오도 못 튼다. mp3는 `say` → `afconvert`(WAV) → lamejs로 만든다. afconvert는 mp3를 인코딩하지 못한다. 스텁에 손상 모드(예: `/__mode?m=corrupt` → 비오디오 바이트)를 두면 치유 경로를 탈 수 있다. OpenAI 실호출은 0이어야 하고, 스텁 요청이 전부 `/v1/audio/speech`인지 센다.
+3. **시나리오**:
+   - ① 첫 방문 → 재시작 → 🔊·같은 단어 연타·다른 단어·예문·새로고침 뒤 🔊: 재시작 뒤 POST 0, 캡션 `클라우드 ✓`여야 한다.
+   - ② 옛 v1 Blob 레코드를 심고 재시작: 이전이 POST 0으로 끝나야 한다.
+   - ③ 옛 코드식 touch(get → 같은 레코드 put)로 레코드를 죽인 뒤 앱을 연다. 앱 페이지 안에서 죽이면 읽기 실패 경로를 탄다(POST +1).
+   - ④ v2 바이트 레코드에 비오디오 바이트를 심는다: 치유 POST +1 → 다음 🔊는 POST 0이어야 한다.
+   - ⑤ 캐시 손상 + 스텁도 손상: POST 정확히 +1에 기기 음성이어야 한다. 다시 누른 🔊는 치유 없이 POST +1이어야 한다.
+   - ⑥ 401 JSON / 200 JSON / 200 HTML: 각각 `tts 401`·`tts type`·`tts type`이고 IDB는 0건이어야 한다.
+   - ⑦ 큐(일본어 해설 전체 듣기·토익 전체 듣기·운동 휴식 안내) × 재시작: 재시작 뒤 POST 0이어야 한다. 큐 치유는 조각당 POST 1이다.
+4. **판정**:
+   - 캡션 `[data-tts-diag]`와 `eunwoo:tts-diag` 이벤트를 본다. 영어 단어장 카드 모드처럼 캡션이 없는 화면은 이벤트로 판정한다.
+   - POST는 스텁 로그 줄 수로 센다.
+   - IDB를 덤프해 목록 store의 Blob이 0개인지, 바이트 레코드 수가 목록 수와 같은지 본다.
+   - 콘솔에 `WebKitBlobResource`·NotSupported가 0건이어야 한다.
+5. **양성 대조**: 같은 WebKit에서 옛 알고리즘(get → 같은 레코드 put)이 **지금도** 꺼낸 Blob과 새 조회를 NotFoundError로 죽이는지 먼저 확인한다. 결함 조건이 그 환경에 살아 있어야 "새 코드 통과"가 의미를 가진다.
+6. **Chromium도 같이 돌린다.** Chromium은 미디어 실패를 `error` 이벤트(mediaCode)로 알리고, WebKit은 `play()` NotSupportedError로 알린다. 두 엔진이 `isMediaSourceFailure`의 두 분기를 각각 탄다.
+7. **함정**: 버전 핸들러 없이 `indexedDB.open("eunwoo-tts", 2)`를 부르면 `bytes` store가 없는 v2 DB가 생긴다. 그 뒤로는 모든 IDB 연산이 실패해 메모리만 쓰게 되고, 소리는 나지만 실행마다 재합성한다. 테스트가 DB를 심을 때는 `onupgradeneeded`에서 `audio`·`bytes`·`meta` 세 store를 모두 만든다. 앱 코드에는 이 상태로 가는 경로가 없다.
 
 ## 2. 해설 낭독 (§18) — `speakQueue` 계약
 
@@ -188,7 +231,8 @@ eval을 통과한 엔진에서 규칙 위반을 더 찾거나, eval이 무엇을
 2. **무작위 사용자 시뮬레이션.** 시드를 고정하고 사이클 하나를 60~90일 굴린다. 매일 무작위로 행동한다. 아무것도 안 함, complete, fail(횟수 음수·목표 초과·null), undo 연속, 같은 날 두 번째 기록, 틀린 rev, 낡은 day·targetDay, 비운동일 기록, 닫힌 사이클에 기록·취소, 도중 재시작과 틀린 expected를 섞는다.
 3. **매일 대조한다.** `todayStatus`(깊은 동등, `next`·`tomorrow` 포함), `replay` 전 필드, `snapshot`, `upcoming`, `closingStatus`, 그리고 `decideLog`가 만든 사건(date·at·day·targetDay·클램프된 failed·reps)을 본다.
 4. **불변식을 검사한다.** 하루 사건 ≤ 1, 사건 날짜 엄격 증가, rev 단조 증가, 결과 직렬화 가능(undefined·NaN·Date 없음, JSON 왕복 동일), `decide*` 결정성, 입력 불변(tsx가 non-strict로 도므로 동결이 아니라 호출 전후 JSON 비교로 판정), 활성 사이클 ≤ 1.
-5. **변이 테스트.** scratchpad의 복사본 lib에 변이를 하나씩 넣고 eval과 시뮬레이션을 둘 다 돌린다. eval에서 살아남은 변이는 "eval 공백"(P2, 담당 app-builder)으로 보고한다. 같은 방법을 speech 큐에도 썼다(`_workspace/qa_report_ja-coaching-tts_1.md`, 변이 20종).
+5. **변이 테스트.** scratchpad의 복사본 lib에 변이를 하나씩 넣고 eval과 시뮬레이션을 둘 다 돌린다. eval에서 살아남은 변이는 "eval 공백"(P2, 담당 app-builder)으로 보고한다. 같은 방법을 speech 큐(`_workspace/qa_report_ja-coaching-tts_1.md`, 변이 20종)와 영속 캐시(`_workspace/qa_report_common_tts-notsupported_2.md`, 변이 11종 → §1-1)에도 썼다.
+   - 변이 판정은 exit code만 보지 않는다. **매달리게 만드는 변이**(대기 상한 제거 등)는 eval을 끝까지 못 가게 만든다. 가드가 없는 eval이면 이런 변이가 출력 없이 exit 0으로 끝나 "생존"도 "검출"도 아닌 거짓 통과가 된다. 복사본을 돌릴 때는 PASS/FAIL 줄과 항목 수를 함께 확인한다.
 
 모든 스크래치 파일은 scratchpad에 둔다. 끝나면 `git diff --stat`으로 저장소 원본이 그대로인지 확인한다.
 
@@ -215,6 +259,12 @@ eval을 통과한 엔진에서 규칙 위반을 더 찾거나, eval이 무엇을
 - **iOS 탭 밖 재생 잠금**: `🎧 해설 전체 듣기`의 첫 조각이 합성 대기(~1초) 뒤 정상으로 나는지, 한국어(클라우드)와 일본어(기기 Kyoko) 조각이 끊김 없이 이어지는지 본다. 무음 WAV와 볼륨 0 빈 발화로 잠금이 실제로 풀리는지가 핵심이다.
 - **단발 🔊(클라우드) — 2026-09-25 무음 신고의 재확인**: 일본어 단어장에서 엔진을 "클라우드"로 바꾸고 속도를 "빠르게"로 바꾼 **직후** 🔊를 눌러 소리가 나는지, 소리 설정 옆 캡션이 `마지막 재생: 클라우드 ✓`인지 본다. 실패 캡션이면 문구(단계·이유)를 그대로 받아 적는다 — `재생 NotAllowedError`면 잠금 해제가, `합성 tts 5xx`·`timeout`이면 서버·망이 원인이다. 스텁과 Chromium의 sticky activation으로는 iOS의 요소별 잠금을 재현할 수 없어 흉내(init script)까지만 한다.
 - **기기 음성 멈춤(iOS paused) 복구**: 일본어 엔진 "기기"에서 🔊를 빠르게 여러 번, 이어서 다른 단어 🔊 → 매번 Kyoko가 나는지, "클라우드"로 두고 비행기 모드에서 ▶ 미리듣기(대체 기기 음성)가 나는지 본다. 예전에는 한동안 무음이다가 속도를 만지면 다시 났다(2026-09-25 관찰). 스텁은 버그를 흉내만 낸다.
+- **앱 재실행 뒤 클라우드 🔊 — 2026-09-27 NotSupportedError 신고의 재확인**(§1-1):
+  - 캐시된 단어를 🔊로 한 번 듣는다. Safari 또는 홈 화면 앱을 **완전히 종료했다가 다시 열고** 🔊를 누른다. 캡션이 여전히 `마지막 재생: 클라우드 ✓`여야 한다. 이것을 2회 반복한다.
+  - 배포 직후 첫 실행에서 단어마다 `클라우드 ✓(캐시 오디오 손상 → 새로 받음)`이 한 번씩 보일 수 있다. 1회 재합성이니 정상이다.
+  - 재실행 뒤 `🎧 해설 전체 듣기`·토익 `전체 듣기`·운동 휴식 안내도 클라우드 목소리로 나는지 본다.
+  - 치유 재생은 재합성(~1초) 뒤 탭 밖에서 `play()`를 다시 부른다. 그래서 치유 캡션이 뜬 뒤 소리가 실제로 나는지 본다. `NotAllowedError`가 나면 잠금 해제 문제다. 데스크톱 WebKit은 iOS 제스처 정책을 강제하지 않아 이 부분을 재현할 수 없다.
+  - Playwright WebKit(mac)과 iOS WebKit은 IDB 코드가 같지만, 프로세스 수명과 제스처 정책이 다르다.
 - **자연 종료 판정**: 조각을 끝까지 재생했을 때 `pause`가 오는 시점에 `audio.ended === true`인지 본다. 아니면 조각마다 큐가 멈춘다.
 - **잠금 화면 ⏸·전화 수신**: 큐가 `"stopped"`로 끝나고 저절로 다시 재생되지 않는지 본다. 화면을 끈 채 이어 듣기는 보장하지 않는다(§18-0). "일본어도 클라우드" 설정에서 이어지는지는 관찰만 한다.
 - **실제 합성 품질**: 한국어 해설 속 「は」「が」를 일본어로 읽는지(소리 설정의 ▶ 미리듣기) 확인한다. 한자만 있는 일본어를 중국어로 읽은 전례가 있어서 **사람이 들어야** 한다. 이건 실호출이라 QA가 하지 않는다.

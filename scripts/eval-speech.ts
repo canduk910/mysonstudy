@@ -17,6 +17,11 @@
  *      그리고 후속(같은 날 QA·사용자 관찰 "기기랑 클라우드가 꼬인 것 같다"): 늦게 온 옛 합성 토큰 가드(F7)·300자 사전 판정(F8)·
  *      프리페치 상한·배치 교체·stop abort(F9~F11)·밀려난 speak 진단(F12)·iOS paused 복구(F13)·속도 디바운스(F14)·
  *      진행 중 합성 공유와 abort 의미(F15)·매달린 요청에 새로 붙지 않음(F16)
+ * - G. 영속 캐시 v2 형식·자가 치유 (§16-5, 2026-09-27 iPhone "재생 NotSupportedError") — 바이트 저장·조회 때 오디오 레코드 재기록 0·
+ *      옛 Blob 이전(G1~G9, G17)·자가 치유 1회와 대상(G10~G13, G15·G16)·content-type(G14), 그리고 QA 2회차 eval 공백 보강:
+ *      큐 치유의 fromCache 가드(G18)·치유 삭제는 먼저 시작된 저장 뒤(G19)·빈 옛 레코드(G5 확장·G20)
+ *
+ * 끝까지 못 간 실행은 FAIL(exit 1)이다 — 비동기 대기가 풀리지 않아 이벤트 루프가 비면 beforeExit, 루프가 붙잡혀 있으면 워치독(파일 끝).
  *
  * ⚠️ 네트워크 0: fetch를 **맨 먼저** 스텁으로 갈아 끼운다. lib/tts.ts(C의 지시문 확인)는 openai 패키지를 로드하지만
  * 클라이언트는 지연 생성이라 만들지 않고, 합성 함수도 부르지 않는다. 혹시 몰라 OPENAI_API_KEY도 비운다.
@@ -527,7 +532,23 @@ class DeadableBlob extends SniffBlob {
     return super.text();
   }
 }
-const isUnplayable = (b: Blob | undefined): boolean => !!b && ((b as DeadableBlob).dead === true || (b as SniffBlob).__corrupt === true);
+/**
+ * 바이트 읽기가 늦게 끝나는 Blob — 저장(`ttsCachePut`)이 바이트를 읽는 동안 자가 치유의 삭제가 끼어드는 경합을 만든다(G19).
+ * 실기기에선 큰 오디오·바쁜 메인 스레드에서 `arrayBuffer()`가 한참 걸릴 수 있다.
+ */
+class SlowReadBlob extends SniffBlob {
+  delayMs = 0;
+  override arrayBuffer(): Promise<ArrayBuffer> {
+    const read = () => super.arrayBuffer();
+    return sleep(this.delayMs).then(read);
+  }
+}
+/**
+ * 재생할 수 없는 소스 — 손상 표식·죽은 옛 Blob·**0바이트**(실브라우저에서 빈 오디오는 MEDIA_ERR_SRC_NOT_SUPPORTED다.
+ * 빈 옛 레코드가 미스 판정을 빠져나오면 재생 실패 → 치유 1회로 드러나게 — G20).
+ */
+const isUnplayable = (b: Blob | undefined): boolean =>
+  !!b && ((b as DeadableBlob).dead === true || (b as SniffBlob).__corrupt === true || b.size === 0);
 /** createObjectURL이 만든 tts URL → 그 Blob(재생 판정·형식 확인용) */
 const urlBlob = new Map<string, Blob>();
 let lastTtsUrl = "";
@@ -2172,7 +2193,8 @@ async function main(): Promise<void> {
   const fakeKv = (
     fp: string | null,
     entries: Record<string, string> = {},
-    opts: { legacy?: Record<string, Blob>; webkit?: boolean } = {},
+    /** `putDelayMs`: 백엔드 put이 그만큼 늦게 끝난다(IDB 트랜잭션이 느린 기기 — 저장 도중 치유 삭제가 끼어드는 경합, G19) */
+    opts: { legacy?: Record<string, Blob>; webkit?: boolean; putDelayMs?: number } = {},
   ) => {
     const m = new Map<string, FakeRec>();
     for (const [k, v] of Object.entries(entries)) {
@@ -2180,7 +2202,8 @@ async function main(): Promise<void> {
       m.set(k, { kind: "bytes", bytes: b, type: "audio/mpeg", size: b.byteLength, atime: 0 });
     }
     for (const [k, b] of Object.entries(opts.legacy ?? {})) m.set(k, { kind: "legacy", blob: b, size: b.size, atime: 0 });
-    const st = { fp, gets: 0, clears: 0, puts: [] as string[], touches: [] as string[], deletes: [] as string[], blobPuts: 0 };
+    /** `ops`: 백엔드에 실제로 닿은 쓰기의 순서(`put:키`·`touch:키`·`delete:키`, 끝난 순서) — 쓰기 줄 순서 검증용(G19) */
+    const st = { fp, gets: 0, clears: 0, puts: [] as string[], touches: [] as string[], deletes: [] as string[], blobPuts: 0, ops: [] as string[] };
     /** 이번 "프로세스"에서 get이 내준 옛 Blob(키별) */
     const handedOut = new Map<string, Blob[]>();
     const kv: TtsKvBackend = {
@@ -2196,6 +2219,8 @@ async function main(): Promise<void> {
       },
       put: async (k, e) => {
         st.puts.push(k);
+        if (opts.putDelayMs) await sleep(opts.putDelayMs);
+        st.ops.push(`put:${k}`);
         const raw = e as unknown as Record<string, unknown>;
         const blobField = Object.values(raw).find((v) => v instanceof NodeBlob) as Blob | undefined;
         if (blobField) st.blobPuts++;
@@ -2212,11 +2237,13 @@ async function main(): Promise<void> {
       },
       touch: async (k, at) => {
         st.touches.push(k);
+        st.ops.push(`touch:${k}`);
         const r = m.get(k);
         if (r && r.kind === "bytes") m.set(k, { ...r, atime: at }); // 목록 시각만 — 바이트는 그대로
       },
       delete: async (k) => {
         st.deletes.push(k);
+        st.ops.push(`delete:${k}`);
         m.delete(k);
       },
       list: async () => [...m].map(([key, e]) => ({ key, size: e.size, atime: e.atime })),
@@ -2474,20 +2501,25 @@ async function main(): Promise<void> {
     const untyped = new DeadableBlob(["mp3:untyped"], { type: "" });
     const hang = new DeadableBlob(["mp3:hang"], { type: "audio/mpeg" });
     hang.hang = true;
-    const { kv, m } = fakeKv(FP, {}, { legacy: { kd: dead, kh: html, ku: untyped, kg: hang } });
+    // 빈 옛 Blob(0바이트) — 형식이 audio/mpeg여도·빈 칸이어도 읽은 바이트가 0이면 쓸 수 없다(QA common_tts-notsupported_2 E4)
+    const empty = new DeadableBlob([], { type: "audio/mpeg" });
+    const emptyUntyped = new DeadableBlob([], { type: "" });
+    const { kv, st, m } = fakeKv(FP, {}, { legacy: { kd: dead, kh: html, ku: untyped, kg: hang, ke: empty, kz: emptyUntyped } });
     useKv(kv);
     cache.__setLegacyReadTimeout(30);
     const t0 = Date.now();
-    const [gd, gh, gu, gg] = await Promise.all(["kd", "kh", "ku", "kg"].map((k) => cache.ttsCacheGet(k)));
+    const [gd, gh, gu, gg, ge, gz] = await Promise.all(["kd", "kh", "ku", "kg", "ke", "kz"].map((k) => cache.ttsCacheGet(k)));
     const el = Date.now() - t0;
     await flush();
     cache.__setLegacyReadTimeout(null);
     const ut = await readText(gu);
     add(
       "영속캐시",
-      "G5 쓸 수 없는 옛 레코드는 미스(null)+지움: 이미 죽음·오디오 아닌 형식(text/html)·읽기 매달림(상한 뒤) / 형식 없는 옛 Blob은 audio/mpeg로 살림",
-      gd === null && gh === null && gg === null && !m.has("kd") && !m.has("kh") && !m.has("kg") && gu?.type === "audio/mpeg" && ut === "mp3:untyped" && el < 1000,
-      `죽음=${gd} html=${gh} 매달림=${gg}(${el}ms) 무형식=${gu?.type}/${ut} 남은키=${[...m.keys()].join(",")}`,
+      "G5 쓸 수 없는 옛 레코드는 미스(null)+지움: 이미 죽음·오디오 아닌 형식(text/html)·읽기 매달림(상한 뒤)·빈 바이트(0B, 형식 있음·없음 — 빈 오디오를 새 형식으로 옮기지 않음) / 형식 없는 옛 Blob은 audio/mpeg로 살림",
+      gd === null && gh === null && gg === null && ge === null && gz === null &&
+        !m.has("kd") && !m.has("kh") && !m.has("kg") && !m.has("ke") && !m.has("kz") && !st.puts.includes("ke") && !st.puts.includes("kz") &&
+        gu?.type === "audio/mpeg" && ut === "mp3:untyped" && el < 1000,
+      `죽음=${gd} html=${gh} 매달림=${gg}(${el}ms) 빈=${ge ? `${ge.size}B` : "null"} 빈무형식=${gz ? `${gz.size}B` : "null"} 무형식=${gu?.type}/${ut} 남은키=${[...m.keys()].join(",")} put=${st.puts.join(",") || "0"}`,
     );
   }
 
@@ -2781,15 +2813,131 @@ async function main(): Promise<void> {
     );
     await settle(sp);
   }
+
+  // ---- eval 공백 보강(QA common_tts-notsupported_2 E2~E4) — 변이가 살아남던 규칙을 하나씩 잠근다 ----
+
+  // G18 큐 치유의 fromCache 가드(E2) — **방금 네트워크로 받은** 조각이 못 틀면 치유(재합성) 없이 그 조각만 기기 음성.
+  //     단발은 G12 둘째 🔊가 잠근다. 큐 쪽 `if (!fromCache) throw e`를 지우면 조각당 POST 2·진단 healed가 된다(§16-5 "방금 받은 것은 곧바로 기기").
+  {
+    const bad = "새로 받은 손상.";
+    const next = "다음 새 조각.";
+    const { kv, m } = fakeKv(FP); // 캐시 비어 있음 — 두 조각 다 네트워크에서 온다
+    useKv(kv);
+    env.postBodyFor = (t) => (t === bad ? "CORRUPT:new" : `mp3:${t}`);
+    const ev0 = diagEvents.length;
+    const r = startQueue(sp, [ko(bad), ko(next)], "H3");
+    await waitFor(() => r.ends.length > 0, 2000);
+    await sleep(10);
+    await flush();
+    const ds = newDiags(ev0, "ko-KR");
+    const postsBad = env.posts.filter((t) => t === bad).length;
+    const postsNext = env.posts.filter((t) => t === next).length;
+    add(
+      "영속캐시",
+      "G18 큐 치유의 fromCache 가드: 방금 네트워크로 받은 조각이 재생 실패 → 치유 없이(그 조각 POST 정확히 1·진단 healed 아님) 그 조각만 기기 음성·못 트는 오디오는 IDB에 안 남음·다음 조각 클라우드·done·sounded 2",
+      JSON.stringify(r.ends) === '["done"]' && JSON.stringify(r.sounded) === "[2]" && postsBad === 1 && postsNext === 1 && deviceTexts().join("|") === bad &&
+        ds.length === 2 && !ds[0].ok && !ds[0].healed && ds[0].stage === "play" && ds[0].reason === "NotSupportedError" && ds[0].fallback === "device" &&
+        ds[1].ok && !ds[1].healed && !m.has(`ko-KR:1:${bad}`) && m.has(`ko-KR:1:${next}`),
+      `ends=${r.ends.join(",")} sounded=${r.sounded.join(",")} POST 손상=${postsBad} 다음=${postsNext} device=${deviceTexts().join("|") || "0"} diag=${ds.map((x) => dshort(x)).join(" · ")} IDB 손상=${m.has(`ko-KR:1:${bad}`)}`,
+    );
+    await settle(sp);
+  }
+
+  // G19 쓰기 줄 순서(E3) — 치유 삭제는 **먼저 시작된 저장 뒤에** 끝난다. 삭제가 줄 밖에서 먼저 끝나면 늦게 끝난 저장이 방금 지운
+  //     못 트는 오디오를 IDB에 되살리고, 다음 실행의 🔊가 그걸 캐시로 받아 치유 1회(POST)를 또 낸다.
+  //     ① 모듈 단위: 저장의 바이트 읽기가 늦다(SlowReadBlob) — 삭제를 줄 밖에서 돌리는 변이·저장이 바이트를 읽은 **뒤에** 줄 자리를 잡는 변이를 모두 잡는다.
+  //     ② 앱 경로: 새 합성 → 저장(백엔드 put이 느림) → 재생 실패 → 치유 삭제 — QA가 적은 실제 경합 그대로.
+  {
+    const { kv, st, m } = fakeKv(FP);
+    useKv(kv);
+    await cache.ttsCacheGet("warm"); // 지문 확인(저장·삭제는 지문 조회를 새로 일으키지 않는다)
+    const slow = new SlowReadBlob(["CORRUPT:late"], { type: "audio/mpeg" });
+    slow.delayMs = 30;
+    const pPut = cache.ttsCachePut("k-late", slow); // 저장 시작 — 바이트를 읽는 중
+    const pDel = cache.ttsCacheDelete("k-late"); // 그 사이 재생 실패 → 치유 삭제
+    await Promise.all([pPut, pDel]);
+    await flush();
+    const opsUnit = st.ops.filter((o) => o.endsWith(":k-late"));
+    const unitOk = !m.has("k-late") && JSON.stringify(opsUnit) === '["put:k-late","delete:k-late"]';
+    await settle(sp);
+
+    const key = "ja-JP:1:なみ";
+    const app = fakeKv(FP, {}, { putDelayMs: 40 });
+    useKv(app.kv);
+    env.postBodyFor = () => "CORRUPT:new";
+    const ev0 = diagEvents.length;
+    sp.speak("なみ", "ja-JP");
+    await waitFor(() => newDiag(ev0, "ja-JP") !== undefined && deviceTexts().includes("なみ"), 1500);
+    await sleep(60); // 느린 put(40ms)이 끝날 시간
+    await flush();
+    const d = newDiag(ev0, "ja-JP");
+    const opsApp = app.st.ops.filter((o) => o.endsWith(`:${key}`));
+    add(
+      "영속캐시",
+      "G19 쓰기 줄 순서: 치유 삭제는 먼저 시작된 저장 뒤에 끝남 — ① 바이트 읽기가 늦은 저장 + 곧바로 삭제 → 순서 put→delete·키 없음 ② 앱 경로(새 합성 → 느린 저장 중 재생 실패 → 삭제) → 못 트는 오디오가 IDB에 되살아나지 않음",
+      unitOk && !app.m.has(key) && JSON.stringify(opsApp) === JSON.stringify([`put:${key}`, `delete:${key}`]) &&
+        env.posts.join("|") === "なみ" && d?.ok === false && d.stage === "play" && !d.healed && d.fallback === "device",
+      `① ops=${opsUnit.join(">") || "0"} 남음=${m.has("k-late")} ② ops=${opsApp.join(">") || "0"} 남음=${app.m.has(key)} POST=${env.posts.join("|") || "0"} diag=${dshort(d)}`,
+    );
+    await settle(sp);
+  }
+
+  // G20 빈 옛 레코드의 앱 경로(E4) — 0바이트 v1 Blob은 미스 → 지움 → 재합성(POST 1) → 클라우드 ✓(치유 아님)·새 형식 저장.
+  //     빈 바이트 검사가 빠지면 빈 오디오가 캐시 적중으로 나가 재생이 한 번 실패한 뒤 치유 경로로 돈다(진단 healed) —
+//     POST 수는 같은 1회지만 실패한 재생과 지연이 생긴다. 이 잠금은 POST 수가 아니라 healed·put 횟수로 잡는다(QA F1).
+  {
+    const key = "ja-JP:1:つき";
+    const empty = new DeadableBlob([], { type: "audio/mpeg" });
+    const { kv, st, m } = fakeKv(FP, {}, { legacy: { [key]: empty }, webkit: true });
+    useKv(kv);
+    const ev0 = diagEvents.length;
+    sp.speak("つき", "ja-JP");
+    await waitFor(() => newDiag(ev0, "ja-JP") !== undefined && env.liveUrls.size === 0, 1500);
+    await flush();
+    const d = newDiag(ev0, "ja-JP");
+    const rec = m.get(key);
+    add(
+      "영속캐시",
+      "G20 앱 경로(단발): 빈 옛 레코드(0B) → 미스·지움 → 재합성(POST 1) → 클라우드 ✓(치유 아님)·새 형식 저장(내용 있음)·빈 오디오 이전 0·기기 0",
+      env.posts.join("|") === "つき" && d?.ok === true && !d.healed && st.deletes.includes(key) && rec?.kind === "bytes" && textOf(rec.bytes) === "mp3:つき" &&
+        st.puts.length === 1 && deviceTexts().length === 0,
+      `POST=${env.posts.join("|") || "0"} diag=${dshort(d)} 지움=${st.deletes.join(",") || "0"} put ${st.puts.length} 저장=${rec?.kind}/${rec?.kind === "bytes" ? textOf(rec.bytes) : "-"} device=${deviceTexts().join("|") || "0"}`,
+    );
+    await settle(sp);
+  }
   cache.setTtsFingerprintProvider(null);
   cache.setTtsKvBackend(null);
 }
+
+// ---------------------------------------------------------------------------
+// 끝까지 가지 못한 실행을 통과로 세지 않는다(QA common_tts-notsupported_2 E1).
+// main()이 풀리지 않는 약속을 기다리면(예: 옛 Blob 읽기 상한이 빠진 회귀 — G5의 매달림 케이스) 이벤트 루프가 비는 순간
+// Node는 **exit 0**으로 조용히 끝난다 — 표도 PASS/FAIL 줄도 없이. exit code만 보는 게이트는 그걸 통과로 센다. 두 겹으로 막는다:
+// ① beforeExit — 루프가 비었는데 finally에 닿지 못했다 → 지금까지의 표 + FAIL + exit 1(대부분의 매달림은 이쪽)
+// ② 워치독 — 타이머·핸들이 루프를 붙잡아 영영 안 끝나는 경우 → 상한 뒤 같은 처리. unref라 정상 종료를 늦추지 않는다.
+//    평소 실행은 ~8초다. 상한은 env `EVAL_SPEECH_WATCHDOG_MS`(기본 120초)로 바꿀 수 있다(변이 확인용).
+// ---------------------------------------------------------------------------
+let finished = false;
+function failUnfinished(why: string): void {
+  if (finished) return;
+  finished = true;
+  printTable(results);
+  const last = results[results.length - 1];
+  console.error(
+    `FAIL — eval이 끝까지 가지 못했다(${why}). 기록된 항목 ${results.length}개 — 마지막 기록 ${last ? `[${last.book}] ${last.check.slice(0, 80)}` : "(없음)"} 다음 점검에서 멈췄다.`,
+  );
+  process.exit(1);
+}
+process.on("beforeExit", () => failUnfinished("풀리지 않는 비동기 대기 — 이벤트 루프가 빈 채로 멈춤"));
+const WATCHDOG_MS = Number(process.env.EVAL_SPEECH_WATCHDOG_MS) > 0 ? Number(process.env.EVAL_SPEECH_WATCHDOG_MS) : 120_000;
+setTimeout(() => failUnfinished(`워치독 ${WATCHDOG_MS}ms 초과`), WATCHDOG_MS).unref();
 
 main()
   .catch((e) => {
     add("실행", "eval 실행 중 예외", false, String((e as Error)?.stack ?? e).slice(0, 300));
   })
   .finally(() => {
+    finished = true;
     printTable(results);
     const failed = results.filter((r) => !r.pass);
     if (failed.length > 0) {
