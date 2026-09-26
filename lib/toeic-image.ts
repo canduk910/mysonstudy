@@ -15,15 +15,28 @@
  *   하므로(§4-10) 서버 쪽 시간 상한 신호만 넘긴다.
  *
  * 프롬프트·사진 바이트는 로그에 남기지 않는다(모델·압축·크기·ms만).
+ *
+ * 2026-09-26: 모델 env 해석·키 규약·JPEG 조립·크기 초과 재생성 루프는 **공용 코어 lib/image-gen.ts**로 옮겼다 — 은우 자유대화
+ * 주제 일러스트(lib/talk-image.ts, english.md §12-6)가 같은 코어를 쓴다. 이 파일은 토익 설정(품질 env·1536×1024·압축 70→50·
+ * 프롬프트 접미사)만 넘긴다. **동작 불변**(같은 모델·품질·크기·압축·상한·결과 모양·로그 태그 `toeic_scene`, eval:toeic).
  */
 
-import OpenAI from "openai";
 import { buildSceneImagePrompt } from "./ai/toeic/prompts";
+import {
+  DEFAULT_IMAGE_MODEL,
+  IMAGE_MIME,
+  generateJpegImage,
+  hasImageApiKey,
+  normalizeImageQuality,
+  resolveImageModel,
+  type ImageQuality,
+  type JpegImageResult,
+} from "./image-gen";
 
-/** 기본 사진 모델(§1-1 관문 표). env `OPENAI_IMAGE_MODEL`로 바꾼다. */
-export const DEFAULT_TOEIC_IMAGE_MODEL = "gpt-image-2";
+/** 기본 사진 모델(§1-1 관문 표). env `OPENAI_IMAGE_MODEL`로 바꾼다(공용 코어와 같은 값). */
+export const DEFAULT_TOEIC_IMAGE_MODEL = DEFAULT_IMAGE_MODEL;
 /** 기본 품질(§1-1). env `OPENAI_IMAGE_QUALITY`로 바꾼다(low·medium·high·auto). */
-export const DEFAULT_TOEIC_IMAGE_QUALITY = "medium";
+export const DEFAULT_TOEIC_IMAGE_QUALITY: ImageQuality = "medium";
 /** 가로 사진(§4-10) — 시험 화면의 사진 비율 */
 export const TOEIC_IMAGE_SIZE = "1536x1024";
 /** 첫 시도 JPEG 압축(§4-10) */
@@ -33,52 +46,25 @@ export const TOEIC_IMAGE_COMPRESSION_RETRY = 50;
 /** 저장 가능한 data URL 길이 상한(§4-10·§7-4 — Firestore 문서 1MB) */
 export const TOEIC_IMAGE_DATA_URL_MAX = 900_000;
 /** 저장·전달 형식 — JPEG만 만든다 */
-export const TOEIC_IMAGE_MIME = "image/jpeg";
-
-type ImageQuality = "low" | "medium" | "high" | "auto";
-const QUALITIES: readonly ImageQuality[] = ["low", "medium", "high", "auto"];
+export const TOEIC_IMAGE_MIME = IMAGE_MIME;
 
 /** 실제 쓸 모델 — 비었거나 공백뿐이면 기본값(빈 값이 `""`로 새면 호출이 400으로 실패한다, SPEC §11 빈 값 폴백). */
 export function resolveToeicImageModel(): string {
-  return process.env.OPENAI_IMAGE_MODEL?.trim() || DEFAULT_TOEIC_IMAGE_MODEL;
+  return resolveImageModel();
 }
 
 /** 실제 쓸 품질 — 비었거나 모르는 값이면 기본값(모르는 값을 그대로 보내면 400이라 조용히 사진이 사라진다). */
 export function resolveToeicImageQuality(): ImageQuality {
-  const v = process.env.OPENAI_IMAGE_QUALITY?.trim().toLowerCase() || DEFAULT_TOEIC_IMAGE_QUALITY;
-  return (QUALITIES as readonly string[]).includes(v) ? (v as ImageQuality) : (DEFAULT_TOEIC_IMAGE_QUALITY as ImageQuality);
+  return normalizeImageQuality(process.env.OPENAI_IMAGE_QUALITY, DEFAULT_TOEIC_IMAGE_QUALITY);
 }
 
 /** 키가 있는가 — 라우트가 501을 낼지 판정한다(lib/ai/client.ts·lib/tts.ts와 같은 규약). */
 export function hasToeicImageApiKey(): boolean {
-  return Boolean(process.env.OPENAI_API_KEY);
+  return hasImageApiKey();
 }
 
-let cachedClient: OpenAI | null = null;
-
-/** 사진 전용 OpenAI 클라이언트(캐시). 키 확인은 호출부가 먼저 한다. 재시도는 1회(한 장이 오래 걸려 3회면 너무 길다). */
-function getImageClient(apiKey: string): OpenAI {
-  if (!cachedClient) cachedClient = new OpenAI({ apiKey, maxRetries: 1 });
-  return cachedClient;
-}
-
-export type SceneImageResult =
-  | {
-      ok: true;
-      /** `data:image/jpeg;base64,…` — 길이 ≤ TOEIC_IMAGE_DATA_URL_MAX */
-      dataUrl: string;
-      model: string;
-      /** 실제로 통과한 압축값(70 또는 50) */
-      compression: number;
-    }
-  | {
-      ok: false;
-      /** no_api_key: 키 없음(호출 안 함) · too_large: 압축 50으로도 상한 초과 · failed: API 오류·빈 응답·시간 초과 */
-      error: "no_api_key" | "too_large" | "failed";
-      model: string;
-      /** 서버 로그용 짧은 원인(화면에 그대로 보이지 않는다) */
-      detail: string;
-    };
+/** 결과 모양(공용 코어와 같다) — ok면 dataUrl·model·compression(70 또는 50), 아니면 no_api_key·too_large·failed + detail */
+export type SceneImageResult = JpegImageResult;
 
 /**
  * C2 장면의 사진 한 장을 만든다(사진 한 장 = 요청 하나, §4-10). 실패는 throw하지 않고 결과 값으로 돌려준다.
@@ -86,47 +72,14 @@ export type SceneImageResult =
  * @param signal 서버 쪽 시간 상한(요청 신호가 아니다 — 파일 머리말)
  */
 export async function generateSceneImage(imagePrompt: string, signal?: AbortSignal): Promise<SceneImageResult> {
-  const model = resolveToeicImageModel();
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return { ok: false, error: "no_api_key", model, detail: "OPENAI_API_KEY 없음 — 호출하지 않음" };
-
-  const prompt = buildSceneImagePrompt(imagePrompt);
-  const quality = resolveToeicImageQuality();
-  const client = getImageClient(apiKey);
-  let lastLength = 0;
-
-  for (const compression of [TOEIC_IMAGE_COMPRESSION, TOEIC_IMAGE_COMPRESSION_RETRY]) {
-    const started = Date.now();
-    try {
-      const res = await client.images.generate(
-        {
-          model,
-          prompt,
-          n: 1,
-          size: TOEIC_IMAGE_SIZE,
-          quality,
-          output_format: "jpeg",
-          output_compression: compression,
-        },
-        { signal },
-      );
-      const b64 = res.data?.[0]?.b64_json;
-      if (!b64) {
-        console.warn(`[image] toeic_scene model=${model} compression=${compression} ms=${Date.now() - started} 빈 응답`);
-        return { ok: false, error: "failed", model, detail: "응답에 사진이 없음" };
-      }
-      const dataUrl = `data:${TOEIC_IMAGE_MIME};base64,${b64}`;
-      lastLength = dataUrl.length;
-      console.log(
-        `[image] toeic_scene model=${model} quality=${quality} compression=${compression} chars=${dataUrl.length} ms=${Date.now() - started}`,
-      );
-      if (dataUrl.length <= TOEIC_IMAGE_DATA_URL_MAX) return { ok: true, dataUrl, model, compression };
-      // 상한 초과 — 압축 50으로 한 번만 다시(루프 두 번째), 그래도 넘으면 아래 too_large
-    } catch (err) {
-      const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-      console.error(`[image] toeic_scene model=${model} compression=${compression} ms=${Date.now() - started} 실패:`, message.slice(0, 300));
-      return { ok: false, error: "failed", model, detail: message.slice(0, 300) };
-    }
-  }
-  return { ok: false, error: "too_large", model, detail: `압축 ${TOEIC_IMAGE_COMPRESSION_RETRY}에서도 ${lastLength}자 > ${TOEIC_IMAGE_DATA_URL_MAX}` };
+  return generateJpegImage({
+    tag: "toeic_scene",
+    prompt: buildSceneImagePrompt(imagePrompt),
+    model: resolveToeicImageModel(),
+    quality: resolveToeicImageQuality(),
+    size: TOEIC_IMAGE_SIZE,
+    compressions: [TOEIC_IMAGE_COMPRESSION, TOEIC_IMAGE_COMPRESSION_RETRY],
+    maxDataUrlChars: TOEIC_IMAGE_DATA_URL_MAX,
+    signal,
+  });
 }

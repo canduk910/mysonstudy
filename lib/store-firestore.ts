@@ -101,7 +101,17 @@ import {
   type ToeicMockRecord,
   type ToeicQuizRecord,
   type ToeicSetRecord,
+  type AddTalkExplanationResult,
+  type CreateTalkSessionResult,
+  type DeleteTalkSessionResult,
+  type NewTalkSceneImage,
+  type NewTalkSession,
+  type TalkImageRecord,
+  type TalkSessionRecord,
 } from "./store";
+// 은우 자유대화(english.md §12-4·§12-6) — 정규화·설명 추가 판정은 파일 백엔드와 **같은 함수**(두 백엔드가 안 갈린다).
+import { decideTalkExplanation, normalizeTalkImageRecord, normalizeTalkSessionRecord } from "./talk-normalize";
+import type { TalkExplanation } from "./ai/english/talk-schemas";
 // 아빠의 영어(toeic.md §7) — 정규화·포인트 병합은 파일 백엔드와 **같은 함수**(두 백엔드가 안 갈린다). openai 없음(zod만).
 import {
   normalizeToeicAttemptRecord,
@@ -389,6 +399,29 @@ function toeicAttemptData(r: ToeicAttemptRecord): Omit<ToeicAttemptRecord, "id">
   return data;
 }
 
+// ---- 은우 자유대화(english.md §12-4·§12-6) 읽기 변환·쓰기 본문 — 파일 백엔드와 같은 정규화(lib/talk-normalize.ts). ----
+// 시각 필드는 손으로 넣은 Timestamp 문서도 읽히게 있을 때만 toIso로 바꾼다(없으면 정규화가 createdAt으로 채운다).
+
+function isoIfPresent(v: unknown): string | undefined {
+  return v === undefined || v === null ? undefined : toIso(v);
+}
+function toTalkSession(id: string, d: DocumentData): TalkSessionRecord {
+  return normalizeTalkSessionRecord({
+    ...d,
+    id,
+    createdAt: toIso(d.createdAt),
+    startedAt: isoIfPresent(d.startedAt),
+    endedAt: isoIfPresent(d.endedAt),
+  });
+}
+function talkSessionData(r: TalkSessionRecord): Omit<TalkSessionRecord, "id"> {
+  const { id: _id, ...data } = normalizeTalkSessionRecord(r);
+  return data;
+}
+function toTalkImage(id: string, d: DocumentData): TalkImageRecord {
+  return normalizeTalkImageRecord({ ...d, id, createdAt: toIso(d.createdAt) });
+}
+
 /** 한자 정보 읽기 방어 변환(JK) — normalizeJaKanji로 조인다(파일 백엔드와 같은 규약). */
 function toJaKanji(id: string, d: DocumentData): JaKanjiRecord {
   return normalizeJaKanji({ ...(d as JaKanjiRecord), id, createdAt: toIso(d.createdAt) });
@@ -460,6 +493,8 @@ const BATCH_LIMIT = 450;
 
 /** gRPC NOT_FOUND — `update` 대상 문서가 없으면 commit이 이 코드로 **배치 전체를** 거부한다. */
 const GRPC_NOT_FOUND = 5;
+/** gRPC ALREADY_EXISTS — `create` 대상 문서가 이미 있으면 commit이 이 코드로 **배치 전체를** 거부한다(자유대화 저장 멱등). */
+const GRPC_ALREADY_EXISTS = 6;
 
 /**
  * reorderBySortIndex가 쓰는 Firestore의 최소 면. 실제 `Firestore`·`WriteBatch`·`CollectionReference`가 구조적으로
@@ -587,6 +622,13 @@ export class FirestoreStore implements StudyStore {
   }
   private toeicAttempts(): CollectionReference {
     return getDb().collection("toeicAttempts");
+  }
+  // 은우 자유대화(english.md §12-4·§12-6) — 은우 단어장 컬렉션과 섞지 않는다
+  private talkSessions(): CollectionReference {
+    return getDb().collection("talkSessions");
+  }
+  private talkImages(): CollectionReference {
+    return getDb().collection("talkImages");
   }
 
   async createBook(input: NewBook): Promise<BookRecord> {
@@ -1579,6 +1621,114 @@ export class FirestoreStore implements StudyStore {
       const next = applyAttemptAnswer(toToeicAttempt(snap.id, snap.data()!), q, patch);
       tx.update(ref, { answers: next.answers });
       return next;
+    });
+  }
+
+  // ---- talkSessions·talkImages — 은우 자유대화 (english.md §12-4·§12-6) ----
+
+  async createTalkSession(input: NewTalkSession, scene: NewTalkSceneImage | null, saveId: string): Promise<CreateTalkSessionResult> {
+    // 시각은 한 번만 정한다. 대화 + 주제 일러스트를 **한 배치**로 커밋 — 한쪽만 남는 고아가 없다(생성이라 prod-guard 무관).
+    // 멱등(QA english_talk_1 P2-1): 문서 id = 저장 키(그림 문서 id도 같은 값), 쓰기는 `create` — 이미 있으면 ALREADY_EXISTS로
+    // 배치 전체가 거부되어(원자적) 아무것도 써지지 않는다. 그때 그 대화를 읽어 돌려준다(같은 대화 = 같은 시작 시각).
+    const createdAt = new Date().toISOString();
+    const write = async (id: string): Promise<TalkSessionRecord> => {
+      const image = scene
+        ? normalizeTalkImageRecord({ id, dataUrl: scene.dataUrl, sceneEn: scene.sceneEn, model: scene.model, createdAt })
+        : null;
+      const record = normalizeTalkSessionRecord({
+        ...input,
+        explanations: [],
+        sceneImageId: image ? image.id : null,
+        sceneEn: image ? image.sceneEn : null,
+        id,
+        createdAt,
+        sortIndex: null,
+      });
+      const batch = getDb().batch();
+      if (image) {
+        const { id: _imageId, ...imageData } = image;
+        batch.create(this.talkImages().doc(id), imageData);
+      }
+      batch.create(this.talkSessions().doc(id), talkSessionData(record));
+      await batch.commit();
+      return record;
+    };
+    try {
+      return { record: await write(saveId), created: true };
+    } catch (err) {
+      if ((err as { code?: unknown } | null)?.code !== GRPC_ALREADY_EXISTS) throw err;
+      const snap = await this.talkSessions().doc(saveId).get();
+      if (snap.exists) {
+        const current = toTalkSession(snap.id, snap.data()!);
+        if (current.startedAt === input.startedAt) return { record: current, created: false };
+      }
+      // 키 충돌(같은 키에 다른 대화)이나 같은 id의 그림만 남은 경우 — 남의 문서를 덮지 않고 자동 id로 새로 만든다
+      return { record: await write(this.talkSessions().doc().id), created: true };
+    }
+  }
+
+  async getTalkSession(id: string): Promise<TalkSessionRecord | null> {
+    const snap = await this.talkSessions().doc(id).get();
+    return snap.exists ? toTalkSession(snap.id, snap.data()!) : null;
+  }
+
+  async getTalkImage(id: string): Promise<TalkImageRecord | null> {
+    const snap = await this.talkImages().doc(id).get();
+    return snap.exists ? toTalkImage(snap.id, snap.data()!) : null;
+  }
+
+  async listTalkSessions(limit?: number): Promise<TalkSessionRecord[]> {
+    // 필터 없는 단일 필드 orderBy — 모든 대화 문서는 생성 때 createdAt을 갖는다(복합 인덱스 불필요)
+    const base = this.talkSessions().orderBy("createdAt", "desc");
+    const snap = await (limit == null ? base : base.limit(limit)).get();
+    return snap.docs.map((d) => toTalkSession(d.id, d.data()));
+  }
+
+  async listAllTalkSessions(): Promise<TalkSessionRecord[]> {
+    // 스트릭(§17-9) — 전체를 읽어 메모리에서 startedAt 오름차순(날짜 필터 쿼리 없음)
+    const snap = await this.talkSessions().get();
+    return snap.docs
+      .map((d) => toTalkSession(d.id, d.data()))
+      .sort((a, b) => (a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : 0));
+  }
+
+  async deleteTalkSession(id: string): Promise<DeleteTalkSessionResult> {
+    assertDestructiveAllowed("deleteTalkSession"); // 대화 + 주제 일러스트 연쇄를 이 op 하나로 막는다
+    const ref = this.talkSessions().doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return { ok: false };
+    const record = toTalkSession(snap.id, snap.data()!);
+    const batch = getDb().batch();
+    if (record.sceneImageId) batch.delete(this.talkImages().doc(record.sceneImageId)); // 딸린 그림을 **먼저**
+    batch.delete(ref); // 대화를 마지막에
+    await batch.commit();
+    return { ok: true };
+  }
+
+  async updateTalkSessionTitle(id: string, titleKo: string): Promise<TalkSessionRecord | null> {
+    // 수정이라 prod-guard 무관 — 제목만 바꾼다(스크립트·설명·그림 불변)
+    const ref = this.talkSessions().doc(id);
+    if (!(await ref.get()).exists) return null;
+    await ref.update({ titleKo });
+    const updated = await ref.get();
+    return toTalkSession(updated.id, updated.data()!);
+  }
+
+  async reorderTalkSessions(orderedIds: string[]): Promise<void> {
+    // 공유 본체 reorderBySortIndex(없는 id 건너뜀). 수정이라 prod-guard 무관.
+    await reorderBySortIndex(getDb(), this.talkSessions(), orderedIds);
+  }
+
+  async addTalkExplanation(id: string, explanation: TalkExplanation): Promise<AddTalkExplanationResult | null> {
+    const ref = this.talkSessions().doc(id);
+    // 트랜잭션 — "같은 키가 없을 때만 append"는 지금 문서를 읽고 판정해야 한다. 두 탭·연타가 같은 문장을 동시에 저장하려 해도
+    // 먼저 커밋한 설명만 남고 뒤 요청은 exists로 그 설명을 받는다(설명 한 번 = 과금 한 번의 기록). append라 prod-guard 무관.
+    return getDb().runTransaction(async (tx): Promise<AddTalkExplanationResult | null> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      const decision = decideTalkExplanation(toTalkSession(snap.id, snap.data()!), explanation);
+      if (decision.outcome === "added") tx.update(ref, { explanations: decision.record.explanations });
+      return decision;
     });
   }
 }

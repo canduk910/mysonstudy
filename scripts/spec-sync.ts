@@ -131,8 +131,13 @@ function blockLabel(block: SpecBlock): string {
 // ---------------------------------------------------------------------------
 
 export type SpecSyncMode =
-  /** 스펙의 ``` 코드블록과 원문이 같아야 한다 (시스템 프롬프트) */
+  /** 스펙의 ``` 코드블록과 원문이 같아야 한다 (시스템 프롬프트). 다른 블록이 통째로 박혀 있으면 떼어 낸 뒤 본다(조립) */
   | "block"
+  /**
+   * 스펙의 ``` 코드블록 **하나와** 원문이 같아야 한다 — 조립(다른 블록 떼어 내기)을 하지 않는다. 스펙이 한 블록에 통째로 적은
+   * 상수(조립이 필요 없는 것)에 쓴다: 조립 규칙이 켜져 있으면 두 블록을 이어 붙인 상수도 통과해 버린다(QA english talk-ai P2-4).
+   */
+  | "block-exact"
   /** 스펙 본문 어딘가에 원문이 그대로 들어 있어야 한다 (인라인 코드로만 적힌 한 줄짜리) */
   | "inline";
 
@@ -410,6 +415,20 @@ export function checkSpecSync(
               `  [FAIL] ${target.constName} (${target.source}) ↔ ${target.specLabel}`,
               `    이 문자열이 ${blocks[0].file} 어디에도 없다: ${JSON.stringify(text)}`,
             ].join("\n"),
+      };
+    }
+
+    if (target.mode === "block-exact") {
+      const exact = blocks.find((b) => b.text === text);
+      if (exact) return { constName: target.constName, ok: true, summary: `원문 일치 · ${blockLabel(exact)}`, detail: "" };
+      // 진단은 조립 없이(떼어 낸 조각 없음) 가장 비슷한 블록을 찾는다
+      const lines = text.split("\n");
+      const residue: Residue = { lines, origin: lines.map((_, i) => i + 1) };
+      return {
+        constName: target.constName,
+        ok: false,
+        summary: `불일치 — 같은 블록이 스펙에 없음(조립 없이 대조) · 기대 위치 ${target.specLabel}`,
+        detail: diagnose(target, { residue, addenda: [], base: null }, blocks),
       };
     }
 

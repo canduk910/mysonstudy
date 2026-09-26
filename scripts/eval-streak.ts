@@ -11,12 +11,15 @@
  * 운동 트랙의 "지킨 날" 계산(workoutKeptDays)은 운동 엔진 소관이라 eval-workout.ts가 잠근다(§17-7).
  * 아빠 · 🎙️ 영어 트랙(토익스피킹, docs/harness/toeic.md §0-2)은 toeicStreakSessions(lib/toeic-streak.ts)가 표현 시험(답한 문항≥1)과
  * 모의고사 응시(녹음된 문항≥1)를 세션 모양으로 옮긴다 — 아래 6)이 세는 규칙과 **트랙 분리**(은우·일본어·운동과 무혼합)를 반례로 잠근다.
+ * 은우 트랙의 **자유대화**(SPEC §17-9 — 은우 트랙 한정 예외)는 talkStreakSessions(lib/talk-streak.ts)가 "은우 발화 ≥ 1 = 답한 문항"으로
+ * 옮긴다 — 아래 7)이 발화 0 대화 제외·대화만 한 날·아빠 트랙 무오염·/api/streak 배선을 잠근다.
  */
 
 import { readFileSync } from "node:fs";
 import { computeStreak, computeStreakFromDays, type StreakSession } from "../lib/streak";
 import { formatKst, formatKstDate, isZonedIsoTimestamp, kstDateString, shiftDateString } from "../lib/kst";
 import { isCountedToeicAttempt, toeicStreakSessions } from "../lib/toeic-streak";
+import { isCountedTalkSession, talkStreakLabel, talkStreakSessions } from "../lib/talk-streak";
 
 interface CheckResult {
   book: string;
@@ -365,14 +368,86 @@ const TODAY = "2026-09-21";
   //    누가 영어 날짜를 일본어·은우 계산에 섞거나(한 집합), 영어 트랙에 은우 vocabQuizzes를 넣으면 여기서 걸린다.
   const route = readFileSync(new URL("../app/api/streak/route.ts", import.meta.url), "utf-8");
   const wiredEnglish = /computeStreak\(toeicStreakSessions\(toeicQuizzes, toeicAttempts\), today\)/.test(route);
-  const eunwooUntouched = /computeStreak\(vocab, today\)/.test(route);
+  // 은우 계산식 — §17-9부터 단어장 시험 + 자유대화(talkStreakSessions)다. 그 밖의 것(토익·일본어)은 여기 섞이지 않는다(noLeak).
+  const eunwooUntouched = /computeStreak\(\[\.\.\.vocab, \.\.\.talkStreakSessions\(talks\)\], today\)/.test(route);
   const jaUntouched = /computeStreak\(\[\.\.\.jaVocab, \.\.\.jaKanji\], today\)/.test(route);
   const noLeak = !/toeicStreakSessions\([^)]*\b(vocab|jaVocab|jaKanji)\b/.test(route) && !/computeStreak\(\[[^\]]*toeic/i.test(route);
   add(
     "영어 트랙",
-    "⑥ /api/streak 배선: 영어=toeicStreakSessions(토익 2컬렉션)만, 은우·일본어 계산식 불변",
+    "⑥ /api/streak 배선: 영어=toeicStreakSessions(토익 2컬렉션)만, 은우(단어장+자유대화 §17-9)·일본어 계산식 그대로",
     wiredEnglish && eunwooUntouched && jaUntouched && noLeak,
     `영어배선=${wiredEnglish} 은우=${eunwooUntouched} 일본어=${jaUntouched} 무혼합=${noLeak}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 7) 은우 트랙의 자유대화(SPEC §17-9) — 은우 발화 ≥ 1 대화만 세고, 아빠 트랙에는 한 날도 섞이지 않는다
+// ---------------------------------------------------------------------------
+{
+  /** 대화 기록(TalkSessionRecord 최소 모양) — 12:00 KST(=03:00Z) */
+  const talk = (kstDate: string, childTurnCount: number) => ({ startedAt: `${kstDate}T03:00:00.000Z`, childTurnCount });
+
+  // ① 발화 0 대화(연결만 하고 한마디도 안 함)는 세지 않는다 + 판정 함수 일치
+  const silent = computeStreak(talkStreakSessions([talk("2026-09-21", 0)]), TODAY);
+  add(
+    "자유대화",
+    "① 은우 발화 0 대화는 제외(current 0·lastDate null) + isCountedTalkSession 판정 일치(0·NaN·음수 → 안 셈)",
+    silent.current === 0 &&
+      silent.lastDate === null &&
+      !isCountedTalkSession(talk("x", 0)) &&
+      !isCountedTalkSession(talk("x", Number.NaN)) &&
+      !isCountedTalkSession(talk("x", -1)) &&
+      isCountedTalkSession(talk("x", 1)),
+    JSON.stringify(silent),
+  );
+
+  // ② 대화만 한 날도 은우 스트릭이 는다 — 어제 단어장 시험 + 오늘 대화(발화 2) → 2연속·오늘 함
+  const vocabYesterday = [at("2026-09-20")];
+  const onlyVocab = computeStreak(vocabYesterday, TODAY);
+  const withTalk = computeStreak([...vocabYesterday, ...talkStreakSessions([talk("2026-09-21", 2)])], TODAY);
+  add(
+    "자유대화",
+    "② 대화만 한 날(오늘) → 은우 current 1→2·doneToday(단어장 시험만이면 어제까지 1·오늘 아직)",
+    onlyVocab.current === 1 && !onlyVocab.doneToday && withTalk.current === 2 && withTalk.doneToday,
+    `시험만=${JSON.stringify(onlyVocab)} 대화포함=${JSON.stringify(withTalk)}`,
+  );
+
+  // ③ KST 날짜 — 대화 startedAt 15:30Z(= 다음날 00:30 KST)는 다음날로 센다
+  const lateNight = computeStreak(talkStreakSessions([{ startedAt: "2026-09-20T15:30:00.000Z", childTurnCount: 1 }]), TODAY);
+  add("자유대화", "③ startedAt KST 일자로 센다(15:30Z → 다음날 = 오늘)", lateNight.doneToday && lateNight.current === 1, JSON.stringify(lateNight));
+
+  // ④ 아빠 트랙 무오염 — 대화 날짜가 일본어·영어·운동 계산에 들어가면 이어져 보인다(오염 반례). 각자 계산은 그대로.
+  const jaDays = ["2026-09-19"]; // 일본어: 그제만 → 끊김
+  const talkDays = talkStreakSessions([talk("2026-09-20", 1), talk("2026-09-21", 3)]);
+  const ja = computeStreakFromDays(jaDays, TODAY);
+  const jaPolluted = computeStreak([...jaDays.map((d) => at(d)), ...talkDays], TODAY);
+  const enAppa = computeStreak(toeicStreakSessions([], []), TODAY);
+  add(
+    "자유대화",
+    "④ 아빠 트랙 무오염: 일본어(그제만)=0, 대화 날짜를 섞으면 3연속으로 오염돼 보인다 · 영어 트랙은 대화가 있어도 0",
+    ja.current === 0 && jaPolluted.current === 3 && enAppa.current === 0 && !enAppa.doneToday,
+    `일본어=${JSON.stringify(ja)} 섞음=${JSON.stringify(jaPolluted)} 영어=${JSON.stringify(enAppa)}`,
+  );
+
+  // ⑤ 헤드라인 라벨 모양
+  add("자유대화", "⑤ todayLabel = \"자유대화 · {주제}\"", talkStreakLabel({ topic: { labelKo: "공룡" } }) === "자유대화 · 공룡", talkStreakLabel({ topic: { labelKo: "공룡" } }));
+
+  // ⑥ 라우트 배선(정적) — 은우 = 단어장 시험 + 대화, 대화 읽기 실패는 null → [](단어장만), 대화가 아빠 계산식에 들어가지 않는다,
+  //    라벨은 가장 늦게 시작한 것(isCountedTalkSession 거른 오늘 대화 vs 오늘 시험)
+  const route = readFileSync(new URL("../app/api/streak/route.ts", import.meta.url), "utf-8");
+  const wired = /computeStreak\(\[\.\.\.vocab, \.\.\.talkStreakSessions\(talks\)\], today\)/.test(route);
+  const fallback = /listAllTalkSessions\(\)\.catch\(/.test(route) && /const talks = talkSessions \?\? \[\];/.test(route);
+  const noLeakToAppa =
+    !/computeStreak\(\[\.\.\.jaVocab[^\]]*talk/i.test(route) &&
+    !/toeicStreakSessions\([^)]*talk/i.test(route) &&
+    !/workoutKeptDays\([^)]*talk/i.test(route) &&
+    (route.match(/talkStreakSessions\(/g) ?? []).length === 1;
+  const label = /isCountedTalkSession\(t\)/.test(route) && /talkStreakLabel\(tToday\)/.test(route);
+  add(
+    "자유대화",
+    "⑥ /api/streak 배선: 은우 = 단어장 시험 + talkStreakSessions(talks), 대화 읽기 실패 → 단어장만, 아빠 트랙 무혼합, 라벨 = 가장 늦은 것",
+    wired && fallback && noLeakToAppa && label,
+    `배선=${wired} 폴백=${fallback} 무혼합=${noLeakToAppa} 라벨=${label}`,
   );
 }
 

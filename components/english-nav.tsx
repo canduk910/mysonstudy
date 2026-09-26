@@ -34,11 +34,13 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { href: "/english/books", icon: "🏠", label: "북카드", match: "/english/books" },
   { href: "/english/vocab", icon: "📓", label: "단어장", match: "/english/vocab" },
+  // 은우 자유대화(SPEC §21) — Sunny 선생님과 전화영어. 경로 접두사가 북카드·단어장과 겹치지 않는다
+  { href: "/english/talk", icon: "💬", label: "자유대화", match: "/english/talk" },
   { href: "/library", icon: "📚", label: "서재", match: null },
 ];
 
 /**
- * 활성 항목 = 현재 경로가 그 항목 match로 시작하는 첫 항목. 셸 메뉴(북카드·단어장)는 서로 접두사가
+ * 활성 항목 = 현재 경로가 그 항목 match로 시작하는 첫 항목. 셸 메뉴(북카드·단어장·자유대화)는 서로 접두사가
  * 아니라 한 경로가 둘을 켜는 일이 없다(오답노트를 단어장 정복 랜딩으로 내리며 접두사 충돌도 사라졌다 —
  * `/english/vocab/wrong`도 이제 "단어장"으로 켜진다). pathname의 순수 함수라 SSR/CSR이 같은 값을 줘
  * hydration mismatch가 없다.

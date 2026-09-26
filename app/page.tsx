@@ -7,8 +7,8 @@
  * (sm:col-span-2)** 로 나눴다. 폰(<640px)은 1열 그대로 위에서부터 이 순서.
  * 은우의 "영어"(북카드·단어장, `/english`)와 아빠의 영어(토익스피킹, `/toeic`)는 **다른 과목**이다 — 경로·컬렉션·스트릭이
  * 전부 갈린다(toeic.md §0-1). 그래서 아빠 쪽은 "아빠의 영어"로 부르고 부제 "토익스피킹"을 단다.
- * 영어는 그 아래 다시 북카드·단어장 두 학습 메뉴로 갈리므로, `/english`는 기능 없이
- * 그 둘을 고르는 **허브**다(북카드 홈은 `/english/books`, 단어장은 `/english/vocab`).
+ * 영어는 그 아래 다시 북카드·단어장·자유대화 세 학습 메뉴로 갈리므로, `/english`는 기능 없이
+ * 그 셋을 고르는 **허브**다(북카드 홈은 `/english/books`, 단어장은 `/english/vocab`, 자유대화는 `/english/talk` — SPEC §21).
  * 이 화면(`/`)은 과목 갈림길만 담당하고 기능은 하나도 갖지 않는다.
  *
  * **탭 수**: 영어 사용자는 여기서 한 번 더 누르게 된다. 대신
@@ -26,7 +26,7 @@ import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "은우학습",
-  description: "영어책 학습 카드, 수학 문제 풀이 설명, 그리고 아빠의 일본어·영어(토익스피킹)·운동을 한곳에서.",
+  description: "영어책 학습 카드·단어장·자유대화, 수학 문제 풀이 설명, 그리고 아빠의 일본어·영어(토익스피킹)·운동을 한곳에서.",
 };
 
 export default function SubjectPickerPage() {
@@ -47,8 +47,8 @@ export default function SubjectPickerPage() {
           </span>
           <span className="u-entry-title">영어</span>
           <span className="u-entry-desc">
-            영어책 표지를 찍어 학습 카드를 만드는 북카드와, 단어장을 찍어 표·카드로 모으는 단어장
-            정복. 서재에 읽은 책이 쌓여요.
+            영어책 표지를 찍어 학습 카드를 만드는 북카드, 단어장을 찍어 표·카드로 모으는 단어장
+            정복, 그리고 Sunny 선생님과 영어로 이야기하는 자유대화.
           </span>
         </Link>
 

@@ -684,6 +684,10 @@ async function main() {
     toeicMocks: [],
     toeicImages: [],
     toeicAttempts: [],
+    // 은우 자유대화(english.md §12-4)도 같은 이유로 빈 배열 — mergeDbForSeed가 mergeById라 기존 대화 기록은 그대로 남는다.
+    talkSessions: [],
+    // 자유대화 주제 일러스트(english.md §12-6)도 같은 이유로 빈 배열.
+    talkImages: [],
   };
 
   await mergeDbForSeed(db);

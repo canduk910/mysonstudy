@@ -28,6 +28,11 @@
  *   iOS mp4가 전사 API에서 형식 오류·잘림을 내는 보고가 반복되고, 서버(buildpacks)에 ffmpeg가 없어서다(§5-0 1).
  *   리샘플은 OfflineAudioContext의 저샘플레이트 지원에 기대지 않고 JS로 한다. 60초 ≈ 1.92MB.
  *
+ * ── 스트림만 잡기(`acquireMicStream`) — 은우 자유대화(2026-09-26) ───────────────────────────
+ *   WebRTC 대화는 녹음기 없이 마이크 트랙을 **대화 내내** 보낸다(재생과 캡처가 겹친다 — 전략 A의 예외, SPEC §21-5 1).
+ *   세션 전환·대기 상한·놓는 순서는 위 규약 그대로다: play-and-record → getUserMediaWithin → … → release(트랙 stop →
+ *   activeCaptures-- → playback). 토익 녹음(startRecording)은 이 함수와 무관하게 그대로다.
+ *
  * 순수 함수(mixToMono·resampleLinear·encodeWavPcm16·pickMimeTypeFrom)는 브라우저 전역 없이 돌아 eval이 잠근다.
  * ⚠️ 모듈 최상위에서 window·navigator를 읽지 않는다(SSR·eval import 안전). 런타임 import 0.
  */
@@ -506,6 +511,72 @@ export async function startRecording(opts: StartRecordingOptions = {}): Promise<
     },
     abort() {
       abandon();
+    },
+  };
+}
+
+// ===========================================================================
+// 스트림만 잡기 — 은우 자유대화(관문 R, WebRTC)의 **대화 내내 열린 마이크** (docs/harness/english.md §12, SPEC §21-5)
+// ===========================================================================
+
+/**
+ * `acquireMicStream`의 결과 — 스트림과 놓기 함수. `release()`는 멱등이다(여러 번 불러도 한 번만 정리).
+ * 순서(이 모듈 머리의 규약 그대로): 트랙 stop → activeCaptures-- → **그다음에** playback.
+ */
+export interface MicStreamHandle {
+  readonly stream: MediaStream;
+  release(): void;
+}
+
+export interface AcquireMicStreamOptions {
+  /**
+   * getUserMedia 응답 대기 상한(ms). 기본 MIC_CHECK_GUM_TIMEOUT_MS(15초) — 대화 시작 탭이 **처음 권한 창**을 띄울 수 있어서
+   * 사람이 답할 시간을 준다(토익 마이크 점검과 같은 값).
+   */
+  gumTimeoutMs?: number;
+}
+
+/**
+ * 마이크 스트림만 잡는다(녹음기 없이) — 자유대화의 WebRTC 연결이 이 트랙을 그대로 보낸다. **재생과 캡처가 대화 내내 겹친다** —
+ * 토익의 전략 A(겹치지 않음)를 쓸 수 없는 경로라 iOS 수화기·저음량 위험을 실기기로 확인한다(SPEC §21-5 1).
+ *
+ * - 세션 play-and-record → getUserMediaWithin(대기 상한·늦은 스트림 정리) → 핸들. 실패하면 activeCaptures를 되돌리고 playback으로
+ *   복귀한 뒤 MicError로 throw(startRecording과 같은 정리 순서).
+ * - **탭 핸들러 안에서 동기로** 부른다 — getUserMedia 요청이 첫 await 전에 나간다(async 함수 본문은 첫 await까지 동기로 돈다).
+ * - `navigator.audioSession.type`은 여기서만 바꾼다(단일 관문). WebRTC 쪽은 getUserMedia·audioSession을 직접 부르지 않는다.
+ * - 대화 중 다른 화면 코드가 setAudioSessionPlayback()을 불러도 activeCaptures > 0이라 무시된다(트랙이 끊기지 않는다).
+ */
+export async function acquireMicStream(opts: AcquireMicStreamOptions = {}): Promise<MicStreamHandle> {
+  const sup = detectMicSupport();
+  if (!sup.getUserMedia || !sup.secureContext) {
+    const err = new MicError("unsupported", sup.reasonKo ?? undefined);
+    noteDiag({ error: err.message });
+    throw err;
+  }
+
+  activeCaptures += 1; // getUserMedia 대기 중에도 다른 곳이 playback으로 되돌리지 못하게
+  setSessionType("play-and-record"); // 캡처 **전에**
+  let stream: MediaStream;
+  try {
+    stream = await getUserMediaWithin(opts.gumTimeoutMs ?? MIC_CHECK_GUM_TIMEOUT_MS);
+  } catch (e) {
+    activeCaptures = Math.max(0, activeCaptures - 1);
+    setAudioSessionPlayback();
+    const err = toMicError(e);
+    noteDiag({ error: err.message });
+    throw err;
+  }
+  noteDiag({ error: null });
+
+  let released = false;
+  return {
+    stream,
+    release() {
+      if (released) return;
+      released = true;
+      stopTracks(stream);
+      activeCaptures = Math.max(0, activeCaptures - 1);
+      setAudioSessionPlayback(); // 트랙 stop **뒤에**
     },
   };
 }

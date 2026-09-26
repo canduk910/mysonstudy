@@ -70,6 +70,18 @@ import {
 } from "./english/vocabbook-schemas";
 import { buildEnrichRequestItems } from "./english/vocabbook-enrich";
 import {
+  TALK_EXPLAIN_CALL_OPTIONS,
+  TALK_EXPLAIN_SYSTEM_PROMPT,
+  buildTalkExplainUserMessage,
+} from "./english/talk-prompts";
+import {
+  TALK_SENTENCE_EXPLANATION_JSON_SCHEMA,
+  buildTalkExplainZod,
+  type TalkExplainInput,
+  type TalkExplainResult,
+} from "./english/talk-schemas";
+import { pickTalkSentence } from "../talk-transcript";
+import {
   JA_DIALOG_COACH_CALL_OPTIONS,
   JA_DIALOG_COACH_SYSTEM_PROMPT,
   JA_DIALOG_EXTRACT_CALL_OPTIONS,
@@ -826,4 +838,53 @@ export async function lookupWordMeaning(
     temperature: WORD_MEANING_CALL_OPTIONS.temperature,
     maxOutputTokens: WORD_MEANING_CALL_OPTIONS.maxOutputTokens,
   });
+}
+
+/**
+ * 호출 I — 자유대화 문장 설명(english.md §12-3). 저장된 대화의 (turnIndex, sentenceIndex) 문장을 앞뒤 대화와 함께 보내
+ * 선생님 말투의 설명 대본(ko/en 조각)·더 멋진 문장·짚은 단어를 받는다. 과목 분기 없이 callWithSchema만 부른다.
+ *
+ * - 문장은 `pickTalkSentence`(lib/talk-transcript.ts)로 **서버에서** 꺼낸다(클라이언트는 번호만 보낸다). 범위 밖이면 호출 없이 throw —
+ *   라우트가 먼저 같은 함수로 400을 가려야 한다(과금 전에).
+ * - zod는 입력(화자·문장)을 알고 만든다(buildTalkExplainZod — 선생님 문장의 betterEn 금지, keyWords ⊂ 문장).
+ * - 모델은 resolveModel()로 고르고, 쓴 모델을 결과 `model`에 싣는다(저장 레코드 TalkExplanation.model). createdAt은 라우트가 붙인다.
+ *
+ * 실패는 전부 throw다(라우트가 상태코드를 고른다): 범위 밖 → (라우트가 미리 400), 키 없음 → getOpenAIClient throw(라우트는 호출 전 501),
+ * 재요청까지 실패 → 500.
+ */
+export async function explainTalkSentence(input: TalkExplainInput): Promise<TalkExplainResult> {
+  const picked = pickTalkSentence(input.turns, input.turnIndex, input.sentenceIndex);
+  if (!picked) {
+    throw new Error(`[ai:${TALK_EXPLAIN_CALL_OPTIONS.call}] 범위 밖 문장입니다 (turn ${input.turnIndex}, sentence ${input.sentenceIndex}).`);
+  }
+  const model = resolveModel();
+  const out = await callWithSchema({
+    call: TALK_EXPLAIN_CALL_OPTIONS.call,
+    system: TALK_EXPLAIN_SYSTEM_PROMPT,
+    user: [
+      textPart(
+        buildTalkExplainUserMessage({
+          topicLabel: input.topicLabel,
+          turns: input.turns,
+          turnIndex: input.turnIndex,
+          sentence: picked.sentence,
+        }),
+      ),
+    ],
+    jsonSchema: TALK_SENTENCE_EXPLANATION_JSON_SCHEMA,
+    zodSchema: buildTalkExplainZod({ speaker: picked.speaker, sentence: picked.sentence }),
+    temperature: TALK_EXPLAIN_CALL_OPTIONS.temperature,
+    maxOutputTokens: TALK_EXPLAIN_CALL_OPTIONS.maxOutputTokens,
+    model,
+  });
+  return {
+    turnIndex: input.turnIndex,
+    sentenceIndex: input.sentenceIndex,
+    speaker: picked.speaker,
+    sentence: picked.sentence,
+    script: out.script,
+    betterEn: out.betterEn,
+    keyWords: out.keyWords,
+    model,
+  };
 }

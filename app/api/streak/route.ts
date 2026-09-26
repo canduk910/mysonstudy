@@ -1,7 +1,8 @@
 /**
  * GET /api/streak — 학습 스트릭 (SPEC §17). 읽기 전용·AI 없음. 서버가 KST "오늘"을 계산해 사람별 StreakInfo를 낸다.
  *
- * 세는 것(§17-1): 은우=영어 단어 시험(VocabQuizRecord) / 아빠·일본어=일본어 단어 시험(JaQuizRecord)+한자 시험(JaKanjiQuizRecord) /
+ * 세는 것(§17-1): 은우=영어 단어 시험(VocabQuizRecord) + 자유대화(TalkSessionRecord, 은우 발화≥1 — §17-9 은우 트랙 한정 예외) /
+ * 아빠·일본어=일본어 단어 시험(JaQuizRecord)+한자 시험(JaKanjiQuizRecord) /
  * 아빠·운동=러시안 파이터 루틴을 지킨 날(WorkoutCycleRecord — 운동·실패 기록일 + 계획된 휴식일 + 재측정 끝낸 날, §17-7) /
  * 아빠·영어=토익스피킹 표현 시험(ToeicQuizRecord, 답한 문항≥1) + 모의고사 응시(ToeicAttemptRecord, 녹음된 문항≥1) — toeic.md §0-2.
  * 일본어·운동·영어는 **각자의 트랙**이다(합치지 않는다). 수학·읽음·대화·생성·발화 포인트는 제외.
@@ -13,7 +14,8 @@ import { NextResponse } from "next/server";
 import { kstDateString, kstTodayString } from "@/lib/kst";
 import { computeStreak, computeStreakFromDays, type StreakSession } from "@/lib/streak";
 import type { PersonStreak, StreakResponse } from "@/lib/streak-contract";
-import { getStore, type ToeicAttemptRecord, type ToeicQuizRecord, type WorkoutCycleRecord } from "@/lib/store";
+import { getStore, type TalkSessionRecord, type ToeicAttemptRecord, type ToeicQuizRecord, type WorkoutCycleRecord } from "@/lib/store";
+import { isCountedTalkSession, talkStreakLabel, talkStreakSessions } from "@/lib/talk-streak";
 import { isCountedToeicAttempt, toeicStreakSessions } from "@/lib/toeic-streak";
 import { workoutKeptDays, workoutStreakTodayLabel } from "@/lib/workout";
 
@@ -34,7 +36,7 @@ export async function GET() {
   const store = getStore();
   const today = kstTodayString();
 
-  const [vocab, jaVocab, jaKanji, workoutCycles, toeicQuizzes, toeicAttempts] = await Promise.all([
+  const [vocab, jaVocab, jaKanji, workoutCycles, toeicQuizzes, toeicAttempts, talkSessions] = await Promise.all([
     store.listAllVocabQuizzes(),
     store.listAllJaQuizzes(),
     store.listJaKanjiQuizzes(),
@@ -52,12 +54,25 @@ export async function GET() {
       console.error("[streak] 토익 모의고사 응시를 읽지 못했다 — 영어 트랙만 중립값으로 보낸다", err);
       return null;
     }),
+    // 은우 자유대화(§17-9) — 못 읽으면 은우 트랙은 **단어장 시험만으로** 계산한다(새 컬렉션의 읽기 실패가 은우 트랙 전체를 죽이지 않게)
+    store.listAllTalkSessions().catch((err: unknown): TalkSessionRecord[] | null => {
+      console.error("[streak] 자유대화 기록을 읽지 못했다 — 은우 트랙은 단어장 시험만으로 계산한다", err);
+      return null;
+    }),
   ]);
 
-  // ── 은우: 영어 단어 시험 ──
-  const eunwoo: PersonStreak = { info: computeStreak(vocab, today), todayLabel: null };
+  // ── 은우: 영어 단어 시험 + 자유대화(은우 발화 ≥ 1 = 답한 문항, 같은 연속 판정 코어 — §17-9) ──
+  // 아빠 트랙(일본어·영어·운동) 기록은 여기 섞지 않는다. 대화를 못 읽었으면 talks = [](단어장 시험만).
+  const talks = talkSessions ?? [];
+  const eunwoo: PersonStreak = { info: computeStreak([...vocab, ...talkStreakSessions(talks)], today), todayLabel: null };
+  // todayLabel = 오늘 한 것 중 **가장 늦게 시작한 것**(같은 시각이면 단어장 시험)
   const eToday = todaysAnswered(vocab, today)[0];
-  if (eToday) {
+  const tToday = talks
+    .filter((t) => kstDateString(t.startedAt) === today && isCountedTalkSession(t))
+    .sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0))[0];
+  if (tToday && (!eToday || tToday.startedAt > eToday.startedAt)) {
+    eunwoo.todayLabel = talkStreakLabel(tToday);
+  } else if (eToday) {
     const book = await store.getVocabBook(eToday.bookId);
     const label = book?.dayLabel ?? book?.titleKo ?? null;
     eunwoo.todayLabel = label ? `영어 단어장 · ${label}` : "영어 단어장";

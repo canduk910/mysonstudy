@@ -103,6 +103,10 @@ import {
   normalizeToeicQuizRecord,
   normalizeToeicSetRecord,
 } from "./toeic-normalize";
+// 은우 자유대화(docs/harness/english.md §12-4·§12-6) — 하위 타입의 단일 정의처는 lib/ai/english/talk-schemas(**타입만** import).
+// 정규화·설명 추가 판정은 두 백엔드 공유 단일 정의처(lib/talk-normalize.ts — openai 없음).
+import type { TalkCard, TalkExplanation, TalkTopic, TalkTurn } from "./ai/english/talk-schemas";
+import { decideTalkExplanation, normalizeTalkImageRecord, normalizeTalkSessionRecord } from "./talk-normalize";
 import { FirestoreStore } from "./store-firestore";
 
 export type { ClosedCycleStatus, FailedAt, WorkoutCycleRecord, WorkoutEvent, WorkoutRm };
@@ -691,6 +695,83 @@ export type MarkToeicPictureImageFailedResult =
   | { outcome: "missing"; record: ToeicMockRecord | null };
 
 // ---------------------------------------------------------------------------
+// 은우 자유대화 — 컬렉션 `talkSessions` (docs/harness/english.md §12-4, SPEC §21-3)
+// 은우 단어장 컬렉션(vocabBooks·vocabQuizzes)과 **섞지 않는다**(숙련도·오답노트 오염 방지). 음성·녹음은 저장하지 않는다 —
+// 글자 스크립트·주제 스냅샷·설명만. 전부 필수 nullable(선택 키 금지 — Firestore undefined 거부). 정규화는 lib/talk-normalize.ts 한 곳.
+// ---------------------------------------------------------------------------
+
+/**
+ * 자유대화 한 번 = 문서 1개(§12-4). 저장 조건은 은우 발화 ≥ 1(childTurnCount — 저장 계층이 turns에서 다시 센다).
+ * 설명은 문장 탭마다 처음 한 번만 붙는다(같은 키가 없을 때만 append — 원자 단위 안에서 판정).
+ */
+export interface TalkSessionRecord {
+  id: string;
+  /** 화면 이름 — 기본 "{주제 라벨} 대화", 사용자가 고칠 수 있다 */
+  titleKo: string;
+  /** 서버가 해석해 선생님 지시문에 넣은 주제 스냅샷(나중에 단어장이 바뀌어도 기록은 그대로) */
+  topic: TalkTopic;
+  turns: TalkTurn[];
+  explanations: TalkExplanation[];
+  /** 연결이 열린 시각 ISO — 스트릭(§17-9)의 날짜 축 */
+  startedAt: string;
+  endedAt: string;
+  durationSec: number;
+  /** 은우 턴 수(파생 — normalize가 turns에서 다시 센다) */
+  childTurnCount: number;
+  /** 실제로 쓴 Realtime 모델·선생님 음성(연결 라우트가 돌려준 값) */
+  model: string;
+  voice: string;
+  /**
+   * 대화 중 화면에 보인 그림 카드(§12-6 — 선생님의 show_picture). 보인 순서, 같은 영어는 처음 1장, 최대 TALK_LIMITS.cards(30).
+   * 저장 라우트가 sanitizeTalkCards(lib/talk-cards.ts)로 다시 검사한 값만 들어온다.
+   */
+  cards: TalkCard[];
+  /** 주제 일러스트(§12-6) — `talkImages` 문서 id. 그림이 없었거나(실패·키 없음·늦음) 저장하지 않았으면 null */
+  sceneImageId: string | null;
+  /** 주제 일러스트의 장면 문장(영어, buildTalkSceneEn) — 그림이 없으면 null */
+  sceneEn: string | null;
+  createdAt: string;
+  /** 목록 수동 정렬 — 미정렬 null(맨 위), 생성부는 null로 시작 */
+  sortIndex: number | null;
+}
+
+/**
+ * 주제 일러스트 한 장(§12-6) — 컬렉션 `talkImages`, 한 장 = 문서 하나(Firestore 문서 1MB라 대화 문서와 나눈다).
+ * 대화 저장 때 함께 생성되고, 대화를 지우면 함께 지워진다(연쇄 — prod-guard는 `deleteTalkSession` 하나로).
+ * 저장하지 않는 대화(은우 발화 0)의 그림은 서버에 남지 않는다(생성 라우트는 저장하지 않고 돌려주기만 한다).
+ */
+export interface TalkImageRecord {
+  id: string;
+  /** image/jpeg base64 data URL, ≤ TALK_SCENE_DATA_URL_MAX(900,000자 — 저장 라우트가 검사) */
+  dataUrl: string;
+  sceneEn: string;
+  model: string;
+  createdAt: string;
+}
+
+/**
+ * 대화 저장 결과 — `created`면 이번에 만들었다, 아니면 같은 저장 키(clientSessionId)로 **이미 저장된** 대화를 돌려준 것이다
+ * (응답 유실 뒤 다시 저장 — QA english_talk_1 P2-1). 어느 쪽이든 `record`는 저장소에 있는 그 대화다.
+ */
+export interface CreateTalkSessionResult {
+  record: TalkSessionRecord;
+  created: boolean;
+}
+
+/** 대화 삭제 결과 — deleteVocabBook과 같은 규약 */
+export interface DeleteTalkSessionResult {
+  ok: boolean;
+}
+
+/**
+ * 설명 추가 결과(§12-4) — `added`만 썼다. `exists`는 같은 키가 이미 있어(다른 탭·연타가 먼저 저장) 그 설명을 돌려준다,
+ * `full`은 설명 상한(TALK_LIMITS.explanations)이라 쓰지 않았다. 없는 id면 스토어가 null.
+ */
+export type AddTalkExplanationResult =
+  | { outcome: "added" | "exists"; record: TalkSessionRecord; explanation: TalkExplanation }
+  | { outcome: "full"; record: TalkSessionRecord };
+
+// ---------------------------------------------------------------------------
 // 아빠의 운동 — 스토어 계약의 입력·결과 (SPEC §19-4 "스토어 계약")
 // 레코드 타입(WorkoutCycleRecord·WorkoutEvent)은 lib/workout.ts에 있고 위에서 재수출한다.
 // ---------------------------------------------------------------------------
@@ -752,6 +833,23 @@ export type NewToeicQuiz = Omit<ToeicQuizRecord, "id">;
 export type NewToeicMock = Omit<ToeicMockRecord, "id" | "createdAt" | "sortIndex">;
 /** 토익 응시 시작 입력(녹음 IndexedDB 키로 id가 필요해 시작에 만든다, §7-5) */
 export type NewToeicAttempt = Omit<ToeicAttemptRecord, "id">;
+/**
+ * 자유대화 저장 입력 — id·createdAt·sortIndex는 스토어가 매긴다. childTurnCount도 저장 계층이 turns에서 다시 센다(파생),
+ * 설명은 저장 뒤 문장 탭으로만 붙으므로 생성 입력에 두지 않는다(빈 배열로 태어난다).
+ */
+export type NewTalkSession = Omit<
+  TalkSessionRecord,
+  "id" | "createdAt" | "sortIndex" | "childTurnCount" | "explanations" | "sceneImageId" | "sceneEn"
+>;
+/**
+ * 대화와 함께 저장할 주제 일러스트(§12-6). 스토어가 `talkImages` 문서를 만들고 대화의 sceneImageId·sceneEn을 단다 —
+ * 두 문서가 **한 원자 단위**(파일: mutate, Firestore: batch)로 생겨 한쪽만 남는 고아가 없다.
+ */
+export interface NewTalkSceneImage {
+  dataUrl: string;
+  sceneEn: string;
+  model: string;
+}
 
 /** 책 삭제로 함께 지워진 개수 — 삭제 완료 안내에 그대로 쓴다 */
 export interface DeleteBookResult {
@@ -1084,6 +1182,42 @@ export interface StudyStore {
    * 동시에 채점돼도(동시 2개, §5-0) 서로 덮지 않는다. 그 q가 answers에 없으면 덧붙인다. 없는 id면 null.
    */
   updateToeicAttemptAnswer(id: string, q: number, patch: ToeicAnswerScorePatch): Promise<ToeicAttemptRecord | null>;
+
+  // ---- talkSessions — 은우 자유대화 (docs/harness/english.md §12-4, SPEC §21) ----
+  // 은우 단어장 컬렉션과 섞지 않는다. 삭제는 Firestore에서 prod-guard(`deleteTalkSession`).
+
+  /**
+   * 대화 저장(끝난 뒤 1회). sortIndex null·explanations []로 시작, childTurnCount는 turns에서 센다. 생성이라 prod-guard 무관.
+   * `scene`이 있으면 주제 일러스트(`talkImages`)를 같은 원자 단위로 만들고 sceneImageId·sceneEn을 단다(§12-6).
+   *
+   * **멱등(QA english_talk_1 P2-1)**: `saveId`(화면이 만든 저장 키, TALK_SAVE_ID_RE)를 대화 문서 id로, 주제 일러스트 문서 id도
+   * 같은 값으로 쓴다. 확인과 생성이 한 원자 단위(파일: mutate, Firestore: batch `create` — 이미 있으면 배치 전체가 거부된다)라
+   * 응답이 유실돼 다시 저장해도 두 번 생기지 않고, 이미 있으면 `{created:false}`로 그 대화를 돌려준다. 같은 키에 **시작 시각이
+   * 다른** 대화가 있으면(키 충돌 — 다른 대화) 덮어쓰지 않고 스토어가 새 id로 만든다.
+   */
+  createTalkSession(input: NewTalkSession, scene: NewTalkSceneImage | null, saveId: string): Promise<CreateTalkSessionResult>;
+  getTalkSession(id: string): Promise<TalkSessionRecord | null>;
+  /** 주제 일러스트 한 장(§12-6 — GET /api/english/talk/images/[id]). 없으면 null */
+  getTalkImage(id: string): Promise<TalkImageRecord | null>;
+  /** 최신순(createdAt 내림차순). limit 생략이면 전체(가족용 규모) */
+  listTalkSessions(limit?: number): Promise<TalkSessionRecord[]>;
+  /** 전 대화 — startedAt 오름차순(스트릭 §17-9가 읽는다). 날짜 필터 쿼리 없음(복합 인덱스 회피). */
+  listAllTalkSessions(): Promise<TalkSessionRecord[]>;
+  /**
+   * 삭제 — 딸린 주제 일러스트(`talkImages`, sceneImageId)를 **먼저**, 대화를 마지막에 지운다(연쇄, §12-6).
+   * **prod-guard**(`deleteTalkSession`, Firestore만 — 그림 연쇄도 이 op 하나로). 지웠으면 {ok:true}, 없으면 {ok:false}.
+   */
+  deleteTalkSession(id: string): Promise<DeleteTalkSessionResult>;
+  /** 화면 이름(titleKo)만 바꾼다. 스크립트·설명 불변. 수정이라 prod-guard 무관. 없는 id면 null. */
+  updateTalkSessionTitle(id: string, titleKo: string): Promise<TalkSessionRecord | null>;
+  /** 목록 수동 정렬(reorderBooks 규약 — 없는 id는 건너뛴다). 수정이라 prod-guard 무관. */
+  reorderTalkSessions(orderedIds: string[]): Promise<void>;
+  /**
+   * 문장 설명 한 건 추가(§12-4) — **같은 키(turnIndex, sentenceIndex)가 없을 때만 append**. 판정(decideTalkExplanation)과 쓰기를
+   * 한 원자 단위로(파일: mutate, Firestore: runTransaction) — 두 탭·연타가 겹쳐도 한 번만 저장되고 먼저 저장된 설명이 이긴다.
+   * append라 prod-guard 무관. 없는 id면 null.
+   */
+  addTalkExplanation(id: string, explanation: TalkExplanation): Promise<AddTalkExplanationResult | null>;
 }
 
 /**
@@ -1117,6 +1251,10 @@ export interface DbShape {
   toeicMocks: ToeicMockRecord[];
   toeicImages: ToeicImageRecord[];
   toeicAttempts: ToeicAttemptRecord[];
+  /** 은우 자유대화(english.md §12-4) — **필수 필드**(빠뜨리면 emptyDb·readDb·mergeDbForSeed·seed.ts가 tsc에 걸린다) */
+  talkSessions: TalkSessionRecord[];
+  /** 자유대화 주제 일러스트(english.md §12-6) — 같은 이유로 필수 필드 */
+  talkImages: TalkImageRecord[];
 }
 
 const DB_DIR = path.join(process.cwd(), "data");
@@ -1126,6 +1264,7 @@ function emptyDb(): DbShape {
   return {
     books: [], cards: [], readings: [], explanations: [], vocabBooks: [], vocabQuizzes: [], jaVocabBooks: [], jaQuizzes: [], jaKanji: [], jaKanjiQuizzes: [], jaDialogs: [], workoutCycles: [],
     toeicSets: [], toeicQuizzes: [], toeicMocks: [], toeicImages: [], toeicAttempts: [],
+    talkSessions: [], talkImages: [],
   };
 }
 
@@ -1204,6 +1343,11 @@ async function readDb(): Promise<DbShape> {
       toeicMocks: (parsed.toeicMocks ?? []).map(normalizeToeicMockRecord),
       toeicImages: (parsed.toeicImages ?? []).map(normalizeToeicImageRecord),
       toeicAttempts: (parsed.toeicAttempts ?? []).map(normalizeToeicAttemptRecord),
+      // 자유대화 이전 db.json엔 이 키가 없다 — 같은 하위호환(없으면 빈 배열). 각 레코드는 두 백엔드 공유 정규화
+      // (lib/talk-normalize.ts)로 방어한다 — 이후 get/list/addTalkExplanation은 이 정규화된 값만 본다.
+      talkSessions: (parsed.talkSessions ?? []).map(normalizeTalkSessionRecord),
+      // 주제 일러스트(§12-6)도 같은 하위호환 — 이 키가 없던 db.json이면 빈 배열
+      talkImages: (parsed.talkImages ?? []).map(normalizeTalkImageRecord),
     };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyDb();
@@ -2490,6 +2634,104 @@ class JsonFileStore implements BookCardStore {
       return next;
     });
   }
+
+  // ---- talkSessions — 은우 자유대화 (english.md §12-4) ----
+
+  async createTalkSession(input: NewTalkSession, scene: NewTalkSceneImage | null, saveId: string): Promise<CreateTalkSessionResult> {
+    const createdAt = new Date().toISOString();
+    // 확인과 생성을 한 mutate 안에서(큐 직렬화) — 같은 저장 키로 두 번 와도(응답 유실 뒤 다시 저장·동시 두 요청) 한 번만 생긴다.
+    // 주제 일러스트(§12-6)는 대화와 같은 mutate에서 함께 생긴다 — 한쪽만 남는 고아가 없다. 그림 문서 id = 대화 id.
+    return this.mutate((db): CreateTalkSessionResult => {
+      const existing = db.talkSessions.find((t) => t.id === saveId);
+      if (existing) {
+        const current = normalizeTalkSessionRecord(existing);
+        if (current.startedAt === input.startedAt) return { record: current, created: false };
+      }
+      // 키 충돌(같은 키에 다른 대화)이나 같은 id의 그림이 남아 있으면 새 id — 남의 문서를 덮지 않는다
+      const id = existing || db.talkImages.some((img) => img.id === saveId) ? randomUUID() : saveId;
+      const image = scene
+        ? normalizeTalkImageRecord({ id, dataUrl: scene.dataUrl, sceneEn: scene.sceneEn, model: scene.model, createdAt })
+        : null;
+      const record = normalizeTalkSessionRecord({
+        ...input,
+        explanations: [],
+        sceneImageId: image ? image.id : null,
+        sceneEn: image ? image.sceneEn : null,
+        id,
+        createdAt,
+        sortIndex: null,
+      });
+      if (image) db.talkImages.push(image);
+      db.talkSessions.push(record);
+      return { record, created: true };
+    });
+  }
+
+  async getTalkSession(id: string): Promise<TalkSessionRecord | null> {
+    const db = await readDb();
+    const found = db.talkSessions.find((t) => t.id === id);
+    return found ? normalizeTalkSessionRecord(found) : null;
+  }
+
+  async getTalkImage(id: string): Promise<TalkImageRecord | null> {
+    const db = await readDb();
+    const found = db.talkImages.find((t) => t.id === id);
+    return found ? normalizeTalkImageRecord(found) : null;
+  }
+
+  async listTalkSessions(limit?: number): Promise<TalkSessionRecord[]> {
+    const db = await readDb();
+    const sorted = [...db.talkSessions].sort(byCreatedAtDesc);
+    return (limit == null ? sorted : sorted.slice(0, limit)).map(normalizeTalkSessionRecord);
+  }
+
+  async listAllTalkSessions(): Promise<TalkSessionRecord[]> {
+    const db = await readDb();
+    return db.talkSessions.map(normalizeTalkSessionRecord).sort(byStartedAtAsc);
+  }
+
+  async deleteTalkSession(id: string): Promise<DeleteTalkSessionResult> {
+    // prod-guard는 firestore(실데이터)에만 건다 — 파일 백엔드는 로컬이라 안전(deleteJaDialog 선례).
+    // 딸린 주제 일러스트(sceneImageId)를 먼저, 대화를 마지막에(§12-6 연쇄) — 한 mutate라 원자적이다.
+    return this.mutate((db) => {
+      const target = db.talkSessions.find((t) => t.id === id);
+      if (!target) return { ok: false };
+      const imageId = target.sceneImageId;
+      if (imageId) db.talkImages = db.talkImages.filter((img) => img.id !== imageId);
+      db.talkSessions = db.talkSessions.filter((t) => t.id !== id);
+      return { ok: true };
+    });
+  }
+
+  async updateTalkSessionTitle(id: string, titleKo: string): Promise<TalkSessionRecord | null> {
+    return this.mutate((db) => {
+      const t = db.talkSessions.find((x) => x.id === id);
+      if (!t) return null;
+      t.titleKo = titleKo;
+      return normalizeTalkSessionRecord(t);
+    });
+  }
+
+  async reorderTalkSessions(orderedIds: string[]): Promise<void> {
+    const rank = new Map(orderedIds.map((id, i) => [id, i]));
+    await this.mutate((db) => {
+      for (const t of db.talkSessions) {
+        const idx = rank.get(t.id);
+        if (idx !== undefined) t.sortIndex = idx;
+      }
+    });
+  }
+
+  async addTalkExplanation(id: string, explanation: TalkExplanation): Promise<AddTalkExplanationResult | null> {
+    // 판정과 쓰기가 한 mutate — 같은 문장을 두 번 탭해도(연타·두 탭) 큐 직렬화로 먼저 저장된 설명이 이긴다.
+    return this.mutate((db) => {
+      const i = db.talkSessions.findIndex((x) => x.id === id);
+      if (i < 0) return null;
+      const decision = decideTalkExplanation(normalizeTalkSessionRecord(db.talkSessions[i]), explanation);
+      if (decision.outcome === "added") db.talkSessions[i] = decision.record;
+      return decision;
+    });
+  }
 }
 
 /**
@@ -2600,5 +2842,8 @@ export async function mergeDbForSeed(seed: DbShape): Promise<void> {
     toeicMocks: mergeById(cur.toeicMocks, seed.toeicMocks),
     toeicImages: mergeById(cur.toeicImages, seed.toeicImages),
     toeicAttempts: mergeById(cur.toeicAttempts, seed.toeicAttempts),
+    // 은우 자유대화 — 같은 이유로 반드시 mergeById(시드가 아이의 대화 기록을 지우지 않게).
+    talkSessions: mergeById(cur.talkSessions, seed.talkSessions),
+    talkImages: mergeById(cur.talkImages, seed.talkImages),
   });
 }
