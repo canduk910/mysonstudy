@@ -31,6 +31,13 @@
   gap: 12px;
 }
 
+/* 머리 경과 시계(§19-8) — 숫자 폭 고정(1초마다 글자가 흔들리지 않게), 한 덩어리로 줄바꿈 */
+.elapsed {
+  display: inline-block;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .cautions {
   display: flex;
   flex-direction: column;

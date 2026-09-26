@@ -7,6 +7,7 @@
  * 화면 데이터는 여기서 직접 읽는다: KST 오늘 → 전체 사이클 → 활성 하나(pickActiveWorkoutCycle — 페이지·스토어가 같은 정의)
  * → 엔진 snapshot(active, today) → 클라이언트 뷰에 **직렬화 가능한** props(문자열·숫자·배열만, Date 없음).
  * 지난 사이클은 workoutHistory가 닫힌 것만 cycleNo 내림차순으로 — RM 변화는 연속 사이클의 rm에서 파생(별도 필드 없음, §19-3).
+ * 📒 운동 기록은 workoutLog가 모든 사이클의 사건을 최신 먼저로 — 소요시간(실측/근사)은 엔진이 읽을 때 계산한다(저장 없음, §19-8).
  *
  * ⚠️ `dynamic = "force-dynamic"`은 **필수**다 — 빠지면 빌드 때 빈 DB로 정적 고정돼 "처음 시작" 화면이 영구히 박힌다
  *    (store를 읽는 모든 페이지의 관용구). "오늘"은 서버(Cloud Run UTC)에서 lib/kst로만 계산한다 — 렌더 중 클라이언트 시계 금지.
@@ -19,7 +20,7 @@ import Link from "next/link";
 import WorkoutView from "@/components/workout-view";
 import { kstTodayString, shiftDateString } from "@/lib/kst";
 import { getStore } from "@/lib/store";
-import { pickActiveWorkoutCycle, snapshot, workoutHistory } from "@/lib/workout";
+import { pickActiveWorkoutCycle, snapshot, workoutHistory, workoutLog } from "@/lib/workout";
 
 export const dynamic = "force-dynamic";
 
@@ -52,6 +53,7 @@ export default async function WorkoutPage() {
         tomorrow={shiftDateString(today, 1)}
         snapshot={active ? snapshot(active, today) : null}
         history={workoutHistory(cycles)}
+        log={workoutLog(cycles)}
       />
     </main>
   );

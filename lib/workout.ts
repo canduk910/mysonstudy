@@ -1,5 +1,5 @@
 /**
- * lib/workout.ts — 아빠의 운동(러시안 파이터 풀업·푸시업 사다리) **순수 엔진** (SPEC §19-1~§19-4). AI·저장 없음.
+ * lib/workout.ts — 아빠의 운동(러시안 파이터 풀업·푸시업 사다리) **순수 엔진** (SPEC §19-1~§19-4, 총 운동 소요시간 §19-8). AI·저장 없음.
  *
  * - 운동 타입의 **단일 정의처**다. lib/store.ts는 `import type`으로 가져와 재수출하고,
  *   lib/workout-contract.ts는 `export type` 재수출 + 요청·응답 shape만 둔다(§19-4).
@@ -35,6 +35,22 @@ export const RM_MAX = 150;
 export const DEFAULT_RM: Readonly<WorkoutRm> = { pullup: 10, pushup: 18 };
 /** snapshot이 싣는 앞으로의 일정 일수 */
 export const SNAPSHOT_UPCOMING_DAYS = 3;
+
+/**
+ * 실측 소요시간 상한(초) — 3시간 (§19-8). 기록 요청의 `durationSec`이 이 범위(정수 0..상한) 밖이면 **기록은 받되 소요시간만 null**
+ * (닫아 둔 채 몇 시간 뒤 끝낸 벽시계 값이 총합을 망치지 않게). 판정(decideLog)과 정규화(normalizeWorkoutEvent)가 같은 검사를 쓴다.
+ */
+export const WORKOUT_DURATION_MAX_SEC = 3 * 60 * 60;
+/**
+ * 세트 사이 기본 휴식(초) — 세션 타이머의 기본값(2분)과 근사식의 "쉰 휴식 한 번"이 **같은 상수**를 본다(§19-8, 정의처 하나).
+ * 세션(components/workout-session.tsx)은 이 값으로 DEFAULT_REST_MS를 만든다. 실제로 고른 3분·+30초·건너뛰기는 저장되지 않는다.
+ */
+export const DEFAULT_REST_SEC = 120;
+/**
+ * 근사 소요시간 계수(초, §19-8) — **추정값**이다(코드·스펙 밖 근거 없음). 실측이 쌓이면 중앙값으로 보정할 수 있다.
+ * `추정초 = Σ풀업 reps × pullupRep + Σ푸시업 reps × pushupRep + 수행 스텝 수 × step + 쉰 휴식 수 × DEFAULT_REST_SEC`
+ */
+export const DURATION_ESTIMATE_SEC = { pullupRep: 3, pushupRep: 2, step: 10 } as const;
 
 // ===========================================================================
 // 타입 — 단일 정의처 (§19-2·§19-4)
@@ -82,6 +98,28 @@ export interface WorkoutEvent {
   failed: FailedAt | null;
   /** 실제 수행 횟수 — 서버가 계산해 넣는다 */
   reps: SetPair;
+  /**
+   * 실측 소요시간(초, §19-8) — 세션을 처음 연 순간부터 기록 요청을 처음 보낸 순간까지의 벽시계 시간(휴식 포함).
+   * **클라이언트 보고값**이라 서버는 형식·범위(정수 0..WORKOUT_DURATION_MAX_SEC)만 검증한다(§19-2 "서버 계산값" 원칙의 예외).
+   * 세션 없이 한 기록·옛 사건·범위 밖은 null → 읽을 때 근사치(estimateEventSec)로 보인다.
+   */
+  durationSec: number | null;
+}
+
+/** 소요시간의 출처 — 실측(세션이 잰 값) / 근사(사건의 reps·휴식 규칙으로 계산) */
+export type DurationSource = "measured" | "estimated";
+
+/** 사건 하나의 소요시간 — 저장하지 않고 읽을 때 엔진이 만든다(§19-8) */
+export interface EventDuration {
+  sec: number;
+  source: DurationSource;
+}
+
+/** 사건 여러 개의 소요시간 합계 — 근사가 하나라도 섞이면(estimatedCount > 0) 화면은 "약"을 붙인다 */
+export interface DurationTotal {
+  totalSec: number;
+  measuredCount: number;
+  estimatedCount: number;
 }
 
 export type WorkoutCycleStatus = "active" | "completed" | "abandoned";
@@ -203,6 +241,10 @@ export interface CycleSnapshot {
   eventCount: number;
   /** 마지막 기록(취소 확인 패널용), 없으면 null */
   lastEvent: WorkoutEvent | null;
+  /** 마지막 기록의 소요시간(실측 또는 근사, §19-8) — 오늘 기록 카드 */
+  lastEventDuration: EventDuration | null;
+  /** 이번 사이클 총 운동 시간(§19-8) */
+  duration: DurationTotal;
   today: TodayStatus;
   plan: CyclePlanRow[];
   progress: { done: number; total: typeof TOTAL_WORKOUT_DAYS; pct: number };
@@ -226,6 +268,18 @@ export interface WorkoutHistoryRow {
   done: number;
   failCount: number;
   volume: RepTotals;
+  /** 그 사이클의 총 운동 시간(§19-8) */
+  duration: DurationTotal;
+}
+
+/** 📒 운동 기록 한 줄(§19-8) — 모든 사이클의 사건을 최신 먼저. 화면은 사건 값과 소요시간을 글자로 옮기기만 한다 */
+export interface WorkoutLogRow {
+  /** 목록 key — `{cycleId}#{사건 배열 위치}` */
+  key: string;
+  cycleId: string;
+  cycleNo: number;
+  event: WorkoutEvent;
+  duration: EventDuration;
 }
 
 export interface DecideLogInput {
@@ -234,6 +288,8 @@ export interface DecideLogInput {
   day: number;
   targetDay: number;
   failed: FailedAt | null;
+  /** 실측 소요시간(초) — 클라이언트 보고값. 정수 0..WORKOUT_DURATION_MAX_SEC가 아니면 사건엔 null로 싣는다(기록은 받는다) */
+  durationSec: number | null;
   todayKst: string;
   nowIso: string;
 }
@@ -591,6 +647,107 @@ export function replay(events: readonly WorkoutEvent[]): ReplayState {
 }
 
 // ===========================================================================
+// 총 운동 소요시간 (§19-8) — 실측(세션이 잰 durationSec)과 근사(reps·휴식 규칙). **저장하지 않고 읽을 때 계산한다**
+// (§19-2 "저장은 사건뿐, 파생값은 재생" — 근사치를 백필하려고 프로덕션 DB를 고치지 않는다).
+// ===========================================================================
+
+/** 실측 소요시간으로 쓸 수 있는 값인가 — 정수 0..WORKOUT_DURATION_MAX_SEC. 판정(decideLog)·정규화·표시가 같은 검사를 쓴다 */
+export function isValidDurationSec(v: unknown): v is number {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= WORKOUT_DURATION_MAX_SEC;
+}
+
+/** 스텝 0..n−1 가운데 뒤에 휴식이 오는 스텝 수 — 휴식 규칙은 restFollowsStep 하나(완주 = 4) */
+function restsBefore(n: number): number {
+  let count = 0;
+  for (let k = 0; k < n; k++) if (restFollowsStep(k)) count += 1;
+  return count;
+}
+
+/**
+ * 사건이 멈춘 스텝(0..9) — fail이면 실패 지점의 스텝. 실패 지점이 없는 fail(손상 — 정규화가 exercise를 못 읽은 경우)은
+ * reps가 있는 앞쪽 스텝 수로 본다(결정적 대체값 — 엔진이 쓴 사건에선 생기지 않는다). complete는 null(멈추지 않았다).
+ */
+function failStepOf(e: Pick<WorkoutEvent, "kind" | "failed" | "reps">): number | null {
+  if (e.kind !== "fail") return null;
+  if (e.failed) return stepIndexOf(e.failed.exercise, e.failed.setIndex);
+  let k = 0;
+  const total = SETS_PER_EXERCISE * 2;
+  while (k < total - 1) {
+    const exercise: WorkoutExercise = k % 2 === 0 ? "pullup" : "pushup";
+    if (!((e.reps[exercise]?.[Math.floor(k / 2)] ?? 0) > 0)) break;
+    k += 1;
+  }
+  return k;
+}
+
+/**
+ * 근사 소요시간(초, §19-8) — 실측이 없는 사건(지난 기록·세션 없이 한 기록·상한 초과)용. 순수·결정적(at·durationSec을 보지 않는다).
+ * `Σ풀업 reps × 3 + Σ푸시업 reps × 2 + 수행 스텝 수 × 10 + 쉰 휴식 수 × 120`
+ * - 수행 스텝 수: 완료 10, 실패는 실패 스텝 번호 + 1(멈춘 세트도 시도했다).
+ * - 쉰 휴식 수: 완료 4, 실패는 실패 스텝 **앞**에서 restFollowsStep인 스텝 수(멈춘 세트 뒤엔 쉬지 않았다).
+ * 예(10/18RM): Day 1 완주 710초(≈12분), Day 23 완주 805초(≈13분). 2026-09-25 이전(스텝마다 쉬던 시기) 사건도 같은 식이다
+ * — 해당 사건이 1건 이하라 규칙을 나누지 않았다.
+ */
+export function estimateEventSec(e: Pick<WorkoutEvent, "kind" | "failed" | "reps">): number {
+  const totalSteps = SETS_PER_EXERCISE * 2;
+  const failStep = failStepOf(e);
+  const stepsDone = failStep === null ? totalSteps : Math.min(totalSteps, failStep + 1);
+  const rests = restsBefore(failStep === null ? totalSteps : failStep);
+  const repSum = (arr: readonly number[] | undefined) =>
+    (arr ?? []).reduce((a, x) => a + (typeof x === "number" && Number.isFinite(x) && x > 0 ? x : 0), 0);
+  return (
+    repSum(e.reps.pullup) * DURATION_ESTIMATE_SEC.pullupRep +
+    repSum(e.reps.pushup) * DURATION_ESTIMATE_SEC.pushupRep +
+    stepsDone * DURATION_ESTIMATE_SEC.step +
+    rests * DEFAULT_REST_SEC
+  );
+}
+
+/** 사건 하나의 소요시간 — 실측(durationSec이 유효)이면 그 값, 아니면 근사 */
+export function eventDuration(e: WorkoutEvent): EventDuration {
+  return isValidDurationSec(e.durationSec) ? { sec: e.durationSec, source: "measured" } : { sec: estimateEventSec(e), source: "estimated" };
+}
+
+/** 소요시간 합계 — 개수별로 센다(근사가 하나라도 있으면 화면이 "약"을 붙인다) */
+export function sumDurations(ds: readonly EventDuration[]): DurationTotal {
+  const out: DurationTotal = { totalSec: 0, measuredCount: 0, estimatedCount: 0 };
+  for (const d of ds) {
+    out.totalSec += d.sec;
+    if (d.source === "measured") out.measuredCount += 1;
+    else out.estimatedCount += 1;
+  }
+  return out;
+}
+
+/** 한 사이클의 총 운동 시간 — 쓸 수 있는 사건만(깨진 사건은 replay와 같은 기준으로 없는 것으로 본다) */
+export function cycleDuration(cycle: Pick<WorkoutCycleRecord, "events">): DurationTotal {
+  return sumDurations(cycle.events.filter(isUsableEvent).map(eventDuration));
+}
+
+/**
+ * 📒 운동 기록(§19-8) — 모든 사이클(닫힌 것 포함)의 쓸 수 있는 사건을 **최신 먼저**. 날짜 → 기록 시각(at) → cycleNo → 배열 위치 내림차순
+ * (도중 재측정한 날은 닫힌 사이클과 새 사이클에 같은 날 사건이 있을 수 있다). 입력 순서와 무관하게 결정적, 직렬화 가능.
+ */
+export function workoutLog(cycles: readonly WorkoutCycleRecord[]): WorkoutLogRow[] {
+  const rows: (WorkoutLogRow & { index: number })[] = [];
+  for (const c of cycles) {
+    c.events.forEach((event, index) => {
+      if (!isUsableEvent(event)) return;
+      rows.push({ key: `${c.id}#${index}`, cycleId: c.id, cycleNo: c.cycleNo, event, duration: eventDuration(event), index });
+    });
+  }
+  rows.sort(
+    (a, b) =>
+      desc(a.event.date, b.event.date) ||
+      desc(a.event.at, b.event.at) ||
+      desc(a.cycleNo, b.cycleNo) ||
+      desc(a.cycleId, b.cycleId) ||
+      desc(a.index, b.index),
+  );
+  return rows.map(({ index: _index, ...row }) => row);
+}
+
+// ===========================================================================
 // 오늘 상태 (§19-2) — "휴식은 달력이 채우고, 운동은 기록이 채운다"
 // ===========================================================================
 
@@ -662,7 +819,7 @@ function readToday(cycle: WorkoutCycleLike, todayKst: string): string {
 /** 가상의 성공 사건 — upcoming 시뮬레이션 전용(볼륨은 쓰지 않는다) */
 function virtualSuccess(date: string, day: number, targetDay: number): WorkoutEvent {
   const zeros = () => Array.from({ length: SETS_PER_EXERCISE }, () => 0);
-  return { date, at: "", kind: "complete", day, targetDay, failed: null, reps: { pullup: zeros(), pushup: zeros() } };
+  return { date, at: "", kind: "complete", day, targetDay, failed: null, reps: { pullup: zeros(), pushup: zeros() }, durationSec: null };
 }
 
 /**
@@ -791,6 +948,8 @@ export function snapshot(cycle: WorkoutCycleRecord, todayKst: string): CycleSnap
     rev: cycle.rev,
     eventCount: cycle.events.length,
     lastEvent: cycle.events.length > 0 ? cycle.events[cycle.events.length - 1] : null,
+    lastEventDuration: cycle.events.length > 0 ? eventDuration(cycle.events[cycle.events.length - 1]) : null,
+    duration: cycleDuration(cycle),
     today,
     plan,
     progress: { done: doneCount, total: TOTAL_WORKOUT_DAYS, pct: Math.round((doneCount / TOTAL_WORKOUT_DAYS) * 100) },
@@ -849,6 +1008,7 @@ export function workoutHistory(cycles: readonly WorkoutCycleRecord[]): WorkoutHi
       done: s.completedDays.length,
       failCount: s.failCount,
       volume: s.volume,
+      duration: cycleDuration(c),
     });
   });
   return rows.reverse();
@@ -959,6 +1119,8 @@ export function workoutStreakTodayLabel(cycles: readonly WorkoutCycleRecord[], t
  * 기록 판정 — 서버는 **자기가 계산한 값으로** 사건을 만든다. 요청의 day·targetDay는 "화면이 낡지 않았다"를 확인하는 데만 쓴다.
  * 순서: 닫힌 사이클 → not_active, rev 불일치 → conflict, 오늘 상태가 workout이 아니거나 day·targetDay가 다르면 → stale_state.
  * 입력 형태(kind·failed·날짜)가 어긋나면 RangeError(라우트 zod가 보장하므로 프로그래밍 오류). complete의 failed는 무시하고 null로 쓴다.
+ * 예외 하나 — `durationSec`(§19-8)는 서버가 알 수 없는 클라이언트 보고값이라 그대로 싣되, 정수 0..WORKOUT_DURATION_MAX_SEC가 아니면
+ * **던지지도 거절하지도 않고** null로 싣는다(기록은 받는다). 원자 단위 밖에서 정해진 입력이라 트랜잭션 재시도에도 결정적이다.
  */
 export function decideLog(cycle: WorkoutCycleRecord, input: DecideLogInput): DecideLogResult {
   assertDateString(input.todayKst, "todayKst");
@@ -987,6 +1149,8 @@ export function decideLog(cycle: WorkoutCycleRecord, input: DecideLogInput): Dec
             reps: typeof failed.reps === "number" && Number.isFinite(failed.reps) ? clampReps(failed.reps, target[failed.exercise][failed.setIndex]) : null,
           },
     reps: repsForEvent(target, input.kind, failed),
+    // 클라이언트 보고값 — 형식·범위(정수 0..WORKOUT_DURATION_MAX_SEC)만 본다. 밖이면 기록은 받고 소요시간만 null(§19-8)
+    durationSec: isValidDurationSec(input.durationSec) ? input.durationSec : null,
   };
   const next = recordOf(cycle, { rev: cycle.rev + 1, events: [...cycle.events, event] });
   return { status: "ok", next, event };
@@ -1128,6 +1292,9 @@ export function normalizeWorkoutEvent(raw: unknown): WorkoutEvent {
     targetDay: dayOrUnknown(e.targetDay),
     failed: kind === "fail" ? normalizeFailedAt(e.failed) : null,
     reps: normalizeSetPair(e.reps),
+    // ⚠️ 새 필드는 여기에도 넣어야 한다 — 두 스토어가 쓰기 직전에 이 함수를 태우므로 빠뜨리면 값이 조용히 지워진다(§19-8).
+    // 옛 사건(필드 없음)·범위 밖은 null(Firestore는 undefined를 거부한다). 소수는 추측하지 않고 null — 판정과 같은 검사.
+    durationSec: isValidDurationSec(e.durationSec) ? e.durationSec : null,
   };
 }
 

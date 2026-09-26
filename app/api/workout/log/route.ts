@@ -3,9 +3,11 @@
  *
  * 서버가 오늘 상태를 **다시 계산해 대조한 뒤** 사건을 append한다. 요청의 `day`·`targetDay`는 "화면이 낡지 않았다"를
  * 확인하는 데만 쓰고, 사건의 day·targetDay·date·at·reps는 서버 계산값이다(클라이언트 숫자를 믿지 않는다).
+ * 예외는 `durationSec`(§19-8 실측 소요시간) — 서버가 알 수 없는 클라이언트 보고값이라 형식(정수·0 이상)만 zod가 보고,
+ * 상한(WORKOUT_DURATION_MAX_SEC) 초과는 엔진 decideLog가 기록은 받되 소요시간만 null로 싣는다(400으로 기록을 잃지 않게).
  * `expectedRev`로 다른 탭·연타를 가른다. 판정·쓰기는 스토어가 한 원자 단위로 한다. 기록(append)은 prod-guard 대상이 아니다.
  *
- * - 200 { ok:true, cycleId, rev, event }
+ * - 200 { ok:true, cycleId, rev, event } — event.durationSec = 보낸 값(범위 밖이면 null)
  * - 400 invalid_input / 404 not_found / 409 conflict·stale_state·not_active / 500 save_failed
  */
 
@@ -31,6 +33,12 @@ const common = {
   expectedRev: z.number().int().min(0).max(1_000_000),
   day: workoutDay,
   targetDay: workoutDay,
+  // 실측 소요시간(초) — 세션 없이 기록하면 null. 상한은 여기서 막지 않는다(초과 → 엔진이 null로, 기록은 받는다 — §19-8).
+  // `.nullish()` 금지 — undefined가 Firestore로 샌다(§19-5). 대신 **필드가 빠진 요청은 null로 채운다**(`.default(null)` —
+  // 결과 타입은 여전히 `number | null`이라 아래 양방향 검사가 계약의 필수 nullable과 그대로 묶인다). 이유: 배포 전 번들을 든 채
+  // 며칠째 열려 있는 폰 화면(version-watch는 자동 새로고침을 하지 않는다)이 세션 끝에 보낸 기록이 400으로 날아가면 안 된다 —
+  // 그 화면은 어차피 잴 수 없었으니 null(근사)이 맞는 값이다. 새 화면은 계약 타입으로 항상 싣는다.
+  durationSec: z.number().int().min(0).nullable().default(null),
 };
 
 const bodySchema = z.discriminatedUnion("kind", [
@@ -79,7 +87,7 @@ export async function POST(req: Request) {
       400,
     );
   }
-  const { cycleId: id, expectedRev, kind, day, targetDay, failed } = parsed.data;
+  const { cycleId: id, expectedRev, kind, day, targetDay, failed, durationSec } = parsed.data;
 
   // "오늘"은 서버에서 한 번만 계산해 스토어에 넘긴다(§19-4 — 트랜잭션이 재시도돼도 같은 날짜·시각으로 판정).
   const now = new Date();
@@ -87,7 +95,7 @@ export async function POST(req: Request) {
   const todayKst = kstTodayString(now);
 
   try {
-    const result = await store.logWorkoutEvent(id, { expectedRev, kind, day, targetDay, failed, todayKst, nowIso });
+    const result = await store.logWorkoutEvent(id, { expectedRev, kind, day, targetDay, failed, durationSec, todayKst, nowIso });
     switch (result.status) {
       case "ok": {
         const { record } = result;

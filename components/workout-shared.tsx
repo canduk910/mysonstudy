@@ -7,7 +7,8 @@
  * 날짜는 KST 문자열(`YYYY-MM-DD`)만 받는다 — 표시용 요일도 그 문자열에서 결정적으로 뽑는다(렌더 중 "지금"을 읽지 않는다).
  */
 
-import type { SetPair, Upcoming, WorkoutEvent, WorkoutExercise, WorkoutStep } from "@/lib/workout";
+import { formatKst, isZonedIsoTimestamp } from "@/lib/kst";
+import type { DurationTotal, EventDuration, SetPair, Upcoming, WorkoutEvent, WorkoutExercise, WorkoutStep } from "@/lib/workout";
 import { RETEST_DAY, setTotals, SETS_PER_EXERCISE } from "@/lib/workout";
 
 /** 세션 상단·브리핑에 늘 보이는 주의사항(원안 3항, §19-6) */
@@ -103,6 +104,63 @@ export function eventText(e: WorkoutEvent): string {
     return `Day ${e.day} 실패${where}`;
   }
   return e.targetDay !== e.day ? `Day ${e.targetDay} 목표 완료(Day ${e.day} 재도전 전 복귀)` : `Day ${e.day} 완료`;
+}
+
+// ---------------------------------------------------------------------------
+// 총 운동 소요시간(§19-8) — 엔진이 준 초·출처(`EventDuration`·`DurationTotal`)를 글자로 옮기기만 한다.
+// 실측은 초까지(`14분 12초`), 근사는 분 단위 반올림에 "약"(`약 13분`), 합계는 근사가 하나라도 섞이면 "약"(`약 1시간 5분`).
+// 순수 함수라 eval:workout이 이 파일에서 import해 문자열 규칙을 잠근다.
+// ---------------------------------------------------------------------------
+
+/** 초 → `1시간 2분 3초` / `14분 12초` / `45초` / `0초` — 0인 칸은 뺀다(실측 표시) */
+export function formatDurationExact(sec: number): string {
+  const total = Math.max(0, Math.round(Number.isFinite(sec) ? sec : 0));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const parts = [h > 0 ? `${h}시간` : "", m > 0 ? `${m}분` : "", s > 0 ? `${s}초` : ""].filter(Boolean);
+  return parts.length > 0 ? parts.join(" ") : "0초";
+}
+
+/** 초 → `약 13분` / `약 1시간 5분` / `약 1시간` — 분 단위 반올림, 최소 1분(근사 표시) */
+export function formatDurationApprox(sec: number): string {
+  const minutes = Math.max(1, Math.round((Number.isFinite(sec) ? Math.max(0, sec) : 0) / 60));
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h === 0) return `약 ${m}분`;
+  return m === 0 ? `약 ${h}시간` : `약 ${h}시간 ${m}분`;
+}
+
+/** 사건 하나 — 실측 `14분 12초` / 근사 `약 13분` */
+export function durationText(d: EventDuration): string {
+  return d.source === "measured" ? formatDurationExact(d.sec) : formatDurationApprox(d.sec);
+}
+
+/** 합계 — 근사가 하나라도 섞이면 `약 1시간 5분`, 전부 실측이면 초까지. 사건이 없으면 null(표시하지 않는다) */
+export function durationTotalText(t: DurationTotal): string | null {
+  if (t.measuredCount + t.estimatedCount === 0) return null;
+  return t.estimatedCount > 0 ? formatDurationApprox(t.totalSec) : formatDurationExact(t.totalSec);
+}
+
+/** 합계의 출처 한 줄 — `실측 3회 · 근사 2회`(한쪽이 0이면 그쪽은 뺀다). 사건이 없으면 "" */
+export function durationBreakdownText(t: DurationTotal): string {
+  return [t.measuredCount > 0 ? `실측 ${t.measuredCount}회` : "", t.estimatedCount > 0 ? `근사 ${t.estimatedCount}회` : ""]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** 세션 머리의 경과 시계 — `0:00` / `12:34` / `1:02:03`(ms, 음수는 0) */
+export function formatElapsedClock(ms: number): string {
+  const total = Math.max(0, Math.floor((Number.isFinite(ms) ? ms : 0) / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = String(total % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
+}
+
+/** 기록한 시각(ISO) → KST `HH:MM` — 📒 운동 기록의 "끝낸 시각". 시각을 모르면 null(날짜 표시는 사건의 KST date가 한다) */
+export function formatKstTime(iso: string): string | null {
+  return isZonedIsoTimestamp(iso) && iso.length > 10 ? formatKst(iso).slice(11) : null;
 }
 
 /**

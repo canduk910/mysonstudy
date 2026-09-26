@@ -10,6 +10,9 @@ import type {
   CyclePlanRow,
   CycleSnapshot,
   DayKind,
+  DurationSource,
+  DurationTotal,
+  EventDuration,
   FailedAt,
   PlanRow,
   RecordedOutcome,
@@ -24,6 +27,7 @@ import type {
   WorkoutEventKind,
   WorkoutExercise,
   WorkoutHistoryRow,
+  WorkoutLogRow,
   WorkoutRm,
   WorkoutStep,
 } from "./workout";
@@ -33,6 +37,9 @@ export type {
   CyclePlanRow,
   CycleSnapshot,
   DayKind,
+  DurationSource,
+  DurationTotal,
+  EventDuration,
   FailedAt,
   PlanRow,
   RecordedOutcome,
@@ -47,6 +54,7 @@ export type {
   WorkoutEventKind,
   WorkoutExercise,
   WorkoutHistoryRow,
+  WorkoutLogRow,
   WorkoutRm,
   WorkoutStep,
 };
@@ -115,10 +123,12 @@ export type WorkoutCycleResponse =
 /**
  * `kind`로 판별 — complete는 `failed: null`, fail은 실패 지점 필수(reps는 선택: 정수 0..500 | null).
  * day·targetDay는 화면이 본 오늘 상태 값(1~23 운동일) — 서버는 "화면이 낡지 않았다" 확인에만 쓰고 사건은 자기 계산값으로 만든다.
+ * `durationSec`(§19-8, 두 갈래 모두 필수 nullable) — 세션이 잰 실측 소요시간(초, 정수 0 이상). 세션 없이 기록하면 null.
+ * 형식(정수·0 이상) 밖은 400, 상한(WORKOUT_DURATION_MAX_SEC = 3시간) 초과는 **기록은 받고 소요시간만 null**로 저장한다.
  */
 export type WorkoutLogRequest =
-  | { cycleId: string; expectedRev: number; kind: "complete"; day: number; targetDay: number; failed: null }
-  | { cycleId: string; expectedRev: number; kind: "fail"; day: number; targetDay: number; failed: FailedAt };
+  | { cycleId: string; expectedRev: number; kind: "complete"; day: number; targetDay: number; failed: null; durationSec: number | null }
+  | { cycleId: string; expectedRev: number; kind: "fail"; day: number; targetDay: number; failed: FailedAt; durationSec: number | null };
 
 export type WorkoutLogResponse =
   | {

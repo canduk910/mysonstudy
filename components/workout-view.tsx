@@ -13,6 +13,9 @@
  * - 단일 비행: 요청 중이거나 새로고침(transition)이 도는 동안 변경 버튼은 전부 disabled — 낡은 rev로 두 번 보내지 않게.
  * - 화면이 다시 보이면(`visibilitychange`) `router.refresh()` — 자정을 넘겨 켜 둔 화면이 어제 상태를 보이지 않게
  *   (version-watch 관용구). **세션 중에는 건너뛴다**(세션이 든 목표·rev가 바뀌면 안 된다).
+ * - 총 운동 소요시간(§19-8): 오늘 기록 카드·이번 사이클 누적·지난 사이클·📒 운동 기록에 엔진이 실어 준 값(`EventDuration`·
+ *   `DurationTotal`·`WorkoutLogRow`)을 workout-shared의 포맷 함수로 옮기기만 한다(실측 `14분 12초` / 근사 `약 13분` / 섞인 합계 `약 …`).
+ *   세션 없이 하는 기록(✓ 전부 해냈어요·✗ 실패 기록)은 잴 수 없어 `durationSec: null`로 보낸다 → 근사치로 보인다.
  * - 마지막 기록 취소·RM 다시 재기는 화면 하단에 작게, **화면 안 두 단계 확인 패널**(ja-dialog-library-view 관용구).
  *   `danger`는 이 확인 패널에만 쓴다(DESIGN §2). 완료/실패 표시는 accent·ink-3 명도 차 + 글리프(초록·빨강 금지).
  */
@@ -38,6 +41,7 @@ import type {
   WorkoutHistoryRow,
   WorkoutLogRequest,
   WorkoutLogResponse,
+  WorkoutLogRow,
   WorkoutUndoRequest,
   WorkoutUndoResponse,
 } from "@/lib/workout-contract";
@@ -52,9 +56,13 @@ import WorkoutSession, {
   type SessionResult,
 } from "./workout-session";
 import {
+  durationBreakdownText,
+  durationText,
+  durationTotalText,
   eventText,
   exerciseKo,
   formatDotDate,
+  formatKstTime,
   formatShortDate,
   isStaleStatus,
   ladderText,
@@ -80,6 +88,8 @@ export interface WorkoutViewProps {
   snapshot: CycleSnapshot | null;
   /** 닫힌 사이클 — cycleNo 내림차순, RM 변화는 다음 사이클 rm에서 파생(nextRm) */
   history: WorkoutHistoryRow[];
+  /** 📒 운동 기록 — 모든 사이클의 사건, 최신 먼저(엔진 workoutLog, §19-8) */
+  log: WorkoutLogRow[];
 }
 
 type Busy = "complete" | "fail" | "undo" | "cycle";
@@ -114,7 +124,7 @@ function todayGoalText(t: TodayStatus): string {
   }
 }
 
-export default function WorkoutView({ today, tomorrow, snapshot: snap, history }: WorkoutViewProps) {
+export default function WorkoutView({ today, tomorrow, snapshot: snap, history, log }: WorkoutViewProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [busy, setBusy] = useState<Busy | null>(null);
@@ -228,6 +238,7 @@ export default function WorkoutView({ today, tomorrow, snapshot: snap, history }
       day: t.day,
       targetDay: t.targetDay,
       failed: null,
+      durationSec: null, // 세션 없이 한 기록 — 잴 수 없다(근사치로 보인다, §19-8)
     };
     void mutate<WorkoutLogResponse>("complete", "/api/workout/log", body, () => clearSavedSession());
   }
@@ -241,6 +252,7 @@ export default function WorkoutView({ today, tomorrow, snapshot: snap, history }
       day: t.day,
       targetDay: t.targetDay,
       failed: { exercise: failEx, setIndex: failSet, reps: failReps },
+      durationSec: null, // 세션 없이 한 기록 — 잴 수 없다(근사치로 보인다, §19-8)
     };
     void mutate<WorkoutLogResponse>("fail", "/api/workout/log", body, () => {
       clearSavedSession();
@@ -365,6 +377,7 @@ export default function WorkoutView({ today, tomorrow, snapshot: snap, history }
             />
           </div>
         </section>
+        <WorkoutLogSection log={log} />
         <HistorySection history={history} />
       </div>
     );
@@ -512,7 +525,20 @@ export default function WorkoutView({ today, tomorrow, snapshot: snap, history }
                   <p className="t-question-ko">잘 멈췄어요. 한두 개 남기고 멈추는 게 이 루틴의 규칙이에요.</p>
                 </>
               )}
-              {snap.lastEvent && <p className="t-caption">오늘 기록 · {eventText(snap.lastEvent)}</p>}
+              {snap.lastEvent && (
+                <p className="t-caption">
+                  오늘 기록 · {eventText(snap.lastEvent)}
+                  {snap.lastEventDuration && (
+                    <>
+                      {" · "}
+                      <span className="t-meta-chip whitespace-nowrap tabular-nums">{durationText(snap.lastEventDuration)}</span>
+                    </>
+                  )}
+                </p>
+              )}
+              {snap.lastEventDuration?.source === "estimated" && (
+                <p className="t-caption">소요시간은 기록한 횟수로 어림한 값이에요. ▶ 운동 시작으로 하면 실제 시간을 재요.</p>
+              )}
               <p className="t-caption">오늘은 더 할 게 없어요. 잘못 눌렀다면 맨 아래 &lsquo;마지막 기록 취소&rsquo;로 되돌릴 수 있어요.</p>
             </>
           )}
@@ -631,10 +657,18 @@ export default function WorkoutView({ today, tomorrow, snapshot: snap, history }
         <p className="t-question-ko mt-1 text-ink">
           풀업 {snap.volume.pullup}회 · 푸시업 {snap.volume.pushup}회 · 실패 {snap.failCount}회
         </p>
+        {durationTotalText(snap.duration) && (
+          <p className="t-question-ko mt-1 text-ink">
+            총 운동 시간 <b className="font-medium tabular-nums">{durationTotalText(snap.duration)}</b>
+            <span className="t-caption ml-2">{durationBreakdownText(snap.duration)}</span>
+          </p>
+        )}
         <p className="t-caption mt-1">
           사이클 {snap.cycleNo} · {formatDotDate(snap.startDate)} 시작 · RM 풀업 {snap.rm.pullup} · 푸시업 {snap.rm.pushup}
         </p>
       </section>
+
+      <WorkoutLogSection log={log} />
 
       <HistorySection history={history} />
 
@@ -755,6 +789,7 @@ function HistorySection({ history }: { history: WorkoutHistoryRow[] }) {
               </span>
               <span className="t-caption mt-0.5 block">
                 {formatDotDate(h.startDate)} 시작 · {h.done}/{TOTAL_WORKOUT_DAYS}일 · 실패 {h.failCount}회
+                {durationTotalText(h.duration) && ` · 총 ${durationTotalText(h.duration)}`}
               </span>
               <span className="t-caption block">
                 RM 풀업 {rmChange(h.rm.pullup, h.nextRm?.pullup)} · 푸시업 {rmChange(h.rm.pushup, h.nextRm?.pushup)}
@@ -764,5 +799,54 @@ function HistorySection({ history }: { history: WorkoutHistoryRow[] }) {
         ))}
       </ul>
     </section>
+  );
+}
+
+/**
+ * 📒 운동 기록(§19-8, 접이식) — 모든 사이클의 기록을 최신 먼저. 한 줄 = 날짜 · 결과 · 소요시간(실측 / 약) · 끝낸 시각(KST).
+ * 줄 순서·소요시간은 엔진 workoutLog가 정한다(화면은 옮기기만). 사이클이 바뀌는 자리에 작은 머리글("사이클 n")을 끼운다.
+ * "끝낸 시각"은 기록 요청을 서버가 받은 순간(`at`) — 세션이면 마지막 ✓, 세션 없이 기록했으면 그 버튼을 누른 때다.
+ */
+function WorkoutLogSection({ log }: { log: WorkoutLogRow[] }) {
+  if (log.length === 0) return null;
+  return (
+    <details className="u-card">
+      <summary className={`t-section-title ${s.planSummary}`}>
+        📒 운동 기록 <span className="t-caption">({log.length}건)</span>
+      </summary>
+      <ul className={s.logList}>
+        {log.flatMap((row, i) => {
+          const time = formatKstTime(row.event.at);
+          const measured = row.duration.source === "measured";
+          const head =
+            i === 0 || log[i - 1].cycleId !== row.cycleId ? (
+              <li key={`h-${row.cycleId}`} className={`t-meta-chip ${s.logCycle}`}>
+                사이클 {row.cycleNo}
+              </li>
+            ) : null;
+          // 두 줄 — ① 날짜·끝낸 시각 | 소요시간·출처 ② 결과. 360px에서도 결과 글자가 폭 전체를 쓰게(세 칸 가로 배치는 결과가 세 줄로 접혔다)
+          const item = (
+            <li key={row.key} className={s.logRow}>
+              <span className={s.logHead}>
+                <span className="t-meta-chip tabular-nums">
+                  {formatShortDate(row.event.date)}
+                  {time ? ` · ${time} 끝냄` : ""}
+                </span>
+                <span className="whitespace-nowrap">
+                  <span className={`t-list-title tabular-nums ${measured ? "" : "text-ink-2"}`}>{durationText(row.duration)}</span>
+                  <span className="t-caption ml-1.5">{measured ? "실측" : "근사"}</span>
+                </span>
+              </span>
+              <span className="t-question-ko text-ink">{eventText(row.event)}</span>
+            </li>
+          );
+          return head ? [head, item] : [item];
+        })}
+      </ul>
+      <p className="t-caption px-4 pb-4">
+        실측은 ▶ 운동 시작부터 마지막 기록까지(휴식 포함). 근사(&lsquo;약&rsquo;)는 세션 없이 기록한 날을 횟수·세트·기본 휴식 2분으로 어림한
+        값이에요.
+      </p>
+    </details>
   );
 }

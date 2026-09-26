@@ -7,6 +7,8 @@
  * ⚠️ `lib/workout.ts`·`lib/kst.ts`만 import한다 — store 금지(어떤 DB도 만지지 않는다, §19-7).
  *   예외: 상단 스트릭 운동 트랙(§17-7)의 doneToday·연속 판정은 같은 순수 코어 `lib/streak.ts`의 computeStreakFromDays로 확인한다
  *   (store·AI 의존 없음 — "지킨 날" 집합이 스트릭 규칙을 거쳐 어떤 값이 되는지까지 잠근다).
+ *   예외 둘: 총 운동 소요시간(§19-8)의 표시 문자열("14분 12초"·"약 13분"·섞인 합계의 "약")은 화면 보조 components/workout-shared.tsx의
+ *   **순수 포맷 함수**로 확인한다(스펙이 문자열 정의처를 그 파일로 정했다 — store·AI·브라우저 의존 없음, React는 import만 된다).
  * 날짜는 전부 인자로 넘긴다("오늘"은 픽스처 상수) — 현재 시각에 의존하지 않는다.
  */
 
@@ -41,6 +43,15 @@ import {
   normalizeWorkoutEvent,
   workoutKeptDays,
   workoutStreakTodayLabel,
+  cycleDuration,
+  estimateEventSec,
+  eventDuration,
+  isValidDurationSec,
+  sumDurations,
+  workoutLog,
+  DEFAULT_REST_SEC,
+  DURATION_ESTIMATE_SEC,
+  WORKOUT_DURATION_MAX_SEC,
   type FailedAt,
   type SetPair,
   type TodayStatus,
@@ -50,6 +61,15 @@ import {
 } from "../lib/workout";
 import { diffDateStrings, isZonedIsoTimestamp, shiftDateString } from "../lib/kst";
 import { computeStreakFromDays } from "../lib/streak";
+import {
+  durationBreakdownText,
+  durationText,
+  durationTotalText,
+  formatDurationApprox,
+  formatDurationExact,
+  formatElapsedClock,
+  formatKstTime,
+} from "../components/workout-shared";
 
 interface CheckResult {
   book: string;
@@ -171,8 +191,17 @@ function desc(s: TodayStatus | Upcoming): string {
 
 const FAIL_PU0: FailedAt = { exercise: "pullup", setIndex: 0, reps: null };
 
-/** 서버 흐름 그대로 기록 — 그날 오늘 상태의 day·targetDay로 decideLog. 운동일이 아니거나 거절되면 던진다(시나리오 구성용). */
-function log(c: WorkoutCycleRecord, date: string, kind: "complete" | "fail", failed: FailedAt = FAIL_PU0): WorkoutCycleRecord {
+/**
+ * 서버 흐름 그대로 기록 — 그날 오늘 상태의 day·targetDay로 decideLog. 운동일이 아니거나 거절되면 던진다(시나리오 구성용).
+ * durationSec(§19-8)은 기본 null(세션 없이 한 기록) — 소요시간 시나리오만 값을 넘긴다.
+ */
+function log(
+  c: WorkoutCycleRecord,
+  date: string,
+  kind: "complete" | "fail",
+  failed: FailedAt = FAIL_PU0,
+  durationSec: number | null = null,
+): WorkoutCycleRecord {
   const st = todayStatus(c, date);
   if (st.kind !== "workout") throw new Error(`시나리오 오류: ${date} 상태가 ${desc(st)}`);
   const r = decideLog(c, {
@@ -181,6 +210,7 @@ function log(c: WorkoutCycleRecord, date: string, kind: "complete" | "fail", fai
     day: st.day,
     targetDay: st.targetDay,
     failed: kind === "fail" ? failed : null,
+    durationSec,
     todayKst: date,
     nowIso: nowIsoFor(date),
   });
@@ -864,7 +894,7 @@ scenario("상태", "월 경계 gap(09-30 → 10-01 = 1)", () => {
 // ===========================================================================
 scenario("판정 decideLog", "거절 분기", () => {
   const c1 = log(newCycle(), D0, "complete"); // Day 1 완료(rev 1)
-  const base = { expectedRev: c1.rev, kind: "complete" as const, failed: null, todayKst: D0, nowIso: nowIsoFor(D0) };
+  const base = { expectedRev: c1.rev, kind: "complete" as const, failed: null, durationSec: null, todayKst: D0, nowIso: nowIsoFor(D0) };
   const twice = decideLog(c1, { ...base, day: 2, targetDay: 2 });
   add("판정 decideLog", "같은 날 두 번째 기록 → stale_state", twice.status === "stale_state", twice.status);
 
@@ -908,7 +938,7 @@ scenario("판정 decideLog", "day만 다른 요청(targetDay 일치) → stale_s
   c = log(c, D, "fail");
   const T = shiftDateString(D, 2);
   const st = desc(todayStatus(c, T));
-  const req = { expectedRev: c.rev, kind: "complete" as const, failed: null, todayKst: T, nowIso: nowIsoFor(T) };
+  const req = { expectedRev: c.rev, kind: "complete" as const, failed: null, durationSec: null, todayKst: T, nowIso: nowIsoFor(T) };
   const staleTab = decideLog(c, { ...req, day: 5, targetDay: 5 });
   const fresh = decideLog(c, { ...req, day: 7, targetDay: 5 }); // 대조군 — 같은 입력에서 올바른 쌍은 받는다
   add(
@@ -926,6 +956,7 @@ scenario("판정 decideLog", "사건은 서버 계산값", () => {
     day: 1,
     targetDay: 1,
     failed: { exercise: "pushup" as const, setIndex: 2, reps: 4 },
+    durationSec: null,
     todayKst: dt(3),
     nowIso: "2026-09-04T11:22:33.000Z",
   };
@@ -1606,13 +1637,13 @@ scenario("날짜 방어", "정규화 안 된 사건열", () => {
   const brokenLast = { ...targetFor(BASE, 2) };
   const raw: WorkoutCycleRecord = {
     ...c1,
-    events: [...c1.events, { date: "", at: "", kind: "complete", day: 2, targetDay: 2, failed: null, reps: brokenLast }],
+    events: [...c1.events, { date: "", at: "", kind: "complete", day: 2, targetDay: 2, failed: null, reps: brokenLast, durationSec: null }],
   };
   const norm = captureWarn(() => normalizeWorkoutCycle(raw)).value;
   const st = todayStatus(raw, D0);
-  const second = decideLog(raw, { expectedRev: raw.rev, kind: "complete", day: 3, targetDay: 3, failed: null, todayKst: D0, nowIso: nowIsoFor(D0) });
-  const second2 = decideLog(raw, { expectedRev: raw.rev, kind: "complete", day: 2, targetDay: 2, failed: null, todayKst: D0, nowIso: nowIsoFor(D0) });
-  const next = decideLog(raw, { expectedRev: raw.rev, kind: "complete", day: 2, targetDay: 2, failed: null, todayKst: dt(1), nowIso: nowIsoFor(dt(1)) });
+  const second = decideLog(raw, { expectedRev: raw.rev, kind: "complete", day: 3, targetDay: 3, failed: null, durationSec: null, todayKst: D0, nowIso: nowIsoFor(D0) });
+  const second2 = decideLog(raw, { expectedRev: raw.rev, kind: "complete", day: 2, targetDay: 2, failed: null, durationSec: null, todayKst: D0, nowIso: nowIsoFor(D0) });
+  const next = decideLog(raw, { expectedRev: raw.rev, kind: "complete", day: 2, targetDay: 2, failed: null, durationSec: null, todayKst: dt(1), nowIso: nowIsoFor(dt(1)) });
   add(
     "날짜 방어",
     "날짜가 깨진 마지막 사건은 '오늘 기록'도 '아주 오래전'도 아니다 — 없는 것으로(정규화와 같은 답)·같은 날 두 번째 기록 거절",
@@ -1631,8 +1662,8 @@ scenario("날짜 방어", "정규화 안 된 사건열", () => {
   const qa: WorkoutCycleRecord = {
     ...newCycle(),
     events: [
-      { date: dt(0), at: "", kind: "complete", day: 6, targetDay: 6, failed: null, reps: brokenLast },
-      { date: dt(1), at: "", kind: "fail", day: 7, targetDay: 7, failed: FAIL_PU0, reps: brokenLast },
+      { date: dt(0), at: "", kind: "complete", day: 6, targetDay: 6, failed: null, reps: brokenLast, durationSec: null },
+      { date: dt(1), at: "", kind: "fail", day: 7, targetDay: 7, failed: FAIL_PU0, reps: brokenLast, durationSec: null },
     ],
   };
   let threw = "";
@@ -1674,7 +1705,7 @@ scenario("날짜 방어", "오늘이 형식 밖", () => {
     desc(pre) === "workout(1,1)" && upBad.length === 0 && isPlainData(snapshot(newCycle({ startDate: "garbage" }), "garbage")),
     `${desc(pre)} · up=${upBad.length}`,
   );
-  const req = { expectedRev: c.rev, kind: "complete" as const, day: 7, targetDay: 7, failed: null, nowIso: nowIsoFor(D0) };
+  const req = { expectedRev: c.rev, kind: "complete" as const, day: 7, targetDay: 7, failed: null, durationSec: null, nowIso: nowIsoFor(D0) };
   add(
     "날짜 방어",
     "판정 함수는 달력 밖 날짜(2026-02-30·평년 2월 29)를 RangeError로 거절",
@@ -1699,7 +1730,7 @@ const ZERO_REPS = (): SetPair => ({ pullup: [0, 0, 0, 0, 0], pushup: [0, 0, 0, 0
 
 /** 손으로 만든 사건 — 엔진 판정을 거치지 않는다(불변식 밖 사건열·깨진 사건 시나리오 전용) */
 function rawEvent(date: string, kind: "complete" | "fail", day: number, targetDay = day): WorkoutEvent {
-  return { date, at: nowIsoFor(date), kind, day, targetDay, failed: kind === "fail" ? FAIL_PU0 : null, reps: ZERO_REPS() };
+  return { date, at: nowIsoFor(date), kind, day, targetDay, failed: kind === "fail" ? FAIL_PU0 : null, reps: ZERO_REPS(), durationSec: null };
 }
 
 /** 사이클 새로 시작 — 서버 흐름 그대로(decideStart → writes를 id로 upsert). 거절되면 던진다(시나리오 구성용) */
@@ -1992,6 +2023,270 @@ scenario("운동 스트릭", "상태 기계와 일치", () => {
     "70일 시뮬레이션 — 그날그날 지킨 날·라벨 = 상태 기계, 나중에 다시 접어도 같은 집합(정렬·중복 없음·직렬화 가능)",
     bad.length === 0 && eq(final, daily) && eq(final, [...new Set(final)].sort()) && isPlainData(final) && kinds.has("cycle_rest") && kinds.has("retest") && kinds.has("recovery"),
     bad.length === 0 ? `${daily.length}일 지킴 · 상태 ${[...kinds].join(",")}` : `불일치 ${bad.slice(0, 4).join(" ")}`,
+  );
+});
+
+// ===========================================================================
+// 10) 총 운동 소요시간 (§19-8) — 실측(세션이 잰 durationSec, 클라이언트 보고값) + 근사(reps·휴식 규칙, 읽을 때 계산)
+// ===========================================================================
+scenario("소요시간", "상수", () => {
+  add(
+    "소요시간",
+    "상한 3시간 = 10800초 · 기본 휴식 120초 · 계수 풀업 3·푸시업 2·스텝 10초",
+    WORKOUT_DURATION_MAX_SEC === 10800 &&
+      DEFAULT_REST_SEC === 120 &&
+      DURATION_ESTIMATE_SEC.pullupRep === 3 &&
+      DURATION_ESTIMATE_SEC.pushupRep === 2 &&
+      DURATION_ESTIMATE_SEC.step === 10,
+    S({ WORKOUT_DURATION_MAX_SEC, DEFAULT_REST_SEC, DURATION_ESTIMATE_SEC }),
+  );
+  const valid = [0, 1, 852, 10800].every(isValidDurationSec);
+  const invalid = [-1, 10801, 12.5, Number.NaN, Number.POSITIVE_INFINITY, "852", null, undefined].every((v) => !isValidDurationSec(v));
+  add("소요시간", "isValidDurationSec — 정수 0..10800만(음수·초과·소수·NaN·문자열·null·undefined 거부)", valid && invalid, `${valid}/${invalid}`);
+});
+scenario("소요시간", "옛 사건 정규화", () => {
+  // 이 기능 전에 저장된 사건엔 필드가 없다 — 정규화가 null로 채워야 Firestore(undefined 거부)·snapshot이 안전하다.
+  const old = normalizeWorkoutEvent({ date: D0, at: nowIsoFor(D0), kind: "complete", day: 1, targetDay: 1, failed: null, reps: targetFor(BASE, 1) });
+  const vals = [852, 0, 10800, 10801, -3, 12.9, "852", null].map(
+    (v) => normalizeWorkoutEvent({ date: D0, at: nowIsoFor(D0), kind: "complete", day: 1, targetDay: 1, failed: null, reps: targetFor(BASE, 1), durationSec: v }).durationSec,
+  );
+  const cyc = normalizeWorkoutCycle({
+    ...newCycle(),
+    events: [
+      { date: D0, at: nowIsoFor(D0), kind: "complete", day: 1, targetDay: 1, failed: null, reps: targetFor(BASE, 1) },
+      { date: dt(1), at: nowIsoFor(dt(1)), kind: "complete", day: 2, targetDay: 2, failed: null, reps: targetFor(BASE, 2), durationSec: 700 },
+    ],
+  });
+  add(
+    "소요시간",
+    "옛 사건(필드 없음) → durationSec null·직렬화 가능 / 유효값은 보존 / 범위 밖·소수·문자열 → null",
+    old.durationSec === null &&
+      isPlainData(old) &&
+      eq(vals, [852, 0, 10800, null, null, null, null, null]) &&
+      cyc.events[0].durationSec === null &&
+      cyc.events[1].durationSec === 700 &&
+      isPlainData(cyc),
+    `old=${S(old.durationSec)} vals=${S(vals)} cyc=${S(cyc.events.map((e) => e.durationSec))}`,
+  );
+});
+scenario("소요시간", "decideLog가 싣는다", () => {
+  const c = newCycle({ rev: 2 });
+  const req = { expectedRev: 2, kind: "complete" as const, day: 1, targetDay: 1, failed: null, todayKst: D0, nowIso: nowIsoFor(D0) };
+  const at = (durationSec: number | null) => {
+    const r = decideLog(c, { ...req, durationSec });
+    return r.status === "ok" ? r.event.durationSec : `거절:${r.status}`;
+  };
+  const r852 = decideLog(c, { ...req, durationSec: 852 });
+  const r852b = decideLog(c, { ...req, durationSec: 852 });
+  // ⚠️ 두 스토어는 쓰기 직전에 normalizeWorkoutCycle을 태운다 — 정규화가 새 필드를 모르면 여기서 값이 지워진다(§19-8 함정)
+  const written = r852.status === "ok" ? normalizeWorkoutCycle(r852.next) : null;
+  add(
+    "소요시간",
+    "decideLog — 사건에 durationSec 그대로(852)·결정적·쓰기 경계 정규화 뒤에도 보존",
+    r852.status === "ok" &&
+      r852.event.durationSec === 852 &&
+      r852.next.events[r852.next.events.length - 1].durationSec === 852 &&
+      S(r852) === S(r852b) &&
+      written !== null &&
+      written.events[written.events.length - 1].durationSec === 852 &&
+      isPlainData(written),
+    r852.status === "ok" ? S({ event: r852.event.durationSec, written: written?.events.at(-1)?.durationSec }) : r852.status,
+  );
+  const edge = [0, 10800, 10801, -1, 12.5, Number.NaN, null].map(at);
+  add(
+    "소요시간",
+    "범위 밖(10801·음수·소수·NaN)은 기록은 받고(ok) 소요시간만 null · 0·10800은 그대로",
+    eq(edge, [0, 10800, null, null, null, null, null]),
+    S(edge),
+  );
+  const failR = decideLog(c, { ...req, kind: "fail", failed: { exercise: "pushup", setIndex: 2, reps: 4 }, durationSec: 431 });
+  add(
+    "소요시간",
+    "실패 기록도 durationSec을 싣는다(세션의 실패 기록 경로)",
+    failR.status === "ok" && failR.event.durationSec === 431 && failR.event.kind === "fail",
+    failR.status === "ok" ? S(failR.event.durationSec) : failR.status,
+  );
+  // 거절 분기(stale·conflict)는 소요시간과 무관하게 그대로 — 값이 있어도 같은 날 두 번째 기록은 거절
+  const c1 = log(newCycle(), D0, "complete", FAIL_PU0, 600);
+  const twice = decideLog(c1, { ...req, expectedRev: c1.rev, day: 2, targetDay: 2, durationSec: 600 });
+  add("소요시간", "소요시간이 있어도 거절 규칙 불변(같은 날 두 번째 → stale_state)", twice.status === "stale_state", twice.status);
+});
+scenario("소요시간", "근사식 결정성", () => {
+  const ev = (day: number, kind: "complete" | "fail", failed: FailedAt | null): WorkoutEvent => ({
+    date: D0,
+    at: nowIsoFor(D0),
+    kind,
+    day,
+    targetDay: day,
+    failed,
+    reps: repsForEvent(targetFor(BASE, day), kind, failed),
+    durationSec: null,
+  });
+  // 스펙 예(10/18RM): Day 1 완주 = 20×3 + 35×2 + 10×10 + 4×120 = 710초, Day 23 = 39×3 + 54×2 + 100 + 480 = 805초
+  const d1 = estimateEventSec(ev(1, "complete", null));
+  const d23 = estimateEventSec(ev(23, "complete", null));
+  add("소요시간", "완주 근사 — Day 1 710초(≈12분)·Day 23 805초(≈13분)", d1 === 710 && d23 === 805, `${d1}, ${d23}`);
+
+  // 스텝 k(0..9)에서 실패(그 세트 0회): 수행 스텝 k+1, 쉰 휴식 = k 앞의 restFollowsStep 수 → [0,0,1,1,2,2,3,3,4,4]
+  const RESTS = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4];
+  const bad: string[] = [];
+  for (let k = 0; k < 10; k++) {
+    const failed: FailedAt = { exercise: k % 2 === 0 ? "pullup" : "pushup", setIndex: Math.floor(k / 2), reps: null };
+    const e = ev(1, "fail", failed);
+    const oracle = sum(e.reps.pullup) * 3 + sum(e.reps.pushup) * 2 + (k + 1) * 10 + RESTS[k] * 120;
+    const got = estimateEventSec(e);
+    if (got !== oracle) bad.push(`k${k}:${got}≠${oracle}`);
+  }
+  add("소요시간", "스텝별 실패 근사 — 수행 스텝 k+1·쉰 휴식 [0,0,1,1,2,2,3,3,4,4](실패 스텝 앞의 휴식만)", bad.length === 0, bad.join(" ") || "10스텝 일치");
+
+  const p5 = estimateEventSec(ev(1, "fail", { exercise: "pushup", setIndex: 2, reps: 4 }));
+  add("소요시간", "푸시업 3세트(스텝 5)에서 4회 실패 = 15×3 + 21×2 + 6×10 + 2×120 = 387초", p5 === 387, String(p5));
+
+  const base = ev(5, "complete", null);
+  const same = [
+    estimateEventSec(base),
+    estimateEventSec({ ...base }),
+    estimateEventSec({ ...base, durationSec: 999 } as WorkoutEvent),
+    estimateEventSec({ ...base, at: "2030-01-01T00:00:00.000Z" } as WorkoutEvent),
+  ];
+  add("소요시간", "근사는 결정적 — at·durationSec을 보지 않는다(같은 reps·실패 지점 → 같은 값)", same.every((x) => x === same[0]), S(same));
+
+  // 실패 지점이 없는 fail(손상 — 정규화가 exercise를 못 읽은 경우)도 던지지 않고 결정적인 값(읽기 함수는 던지지 않는다)
+  const damaged = normalizeWorkoutEvent({ date: D0, at: "", kind: "fail", day: 1, targetDay: 1, failed: { exercise: "?" }, reps: { pullup: [6, 5, 0, 0, 0], pushup: [9, 0, 0, 0, 0] } });
+  const dm = [estimateEventSec(damaged), estimateEventSec(damaged)];
+  add(
+    "소요시간",
+    "실패 지점 없는 fail(손상) — 던지지 않고 결정적(reps 있는 앞 스텝 수로 대체: 스텝 3에서 멈춤)",
+    damaged.failed === null && dm[0] === dm[1] && dm[0] === 11 * 3 + 9 * 2 + 4 * 10 + 1 * 120,
+    S(dm),
+  );
+
+  const m = eventDuration({ ...base, durationSec: 852 });
+  const n = eventDuration(base);
+  const over = eventDuration({ ...base, durationSec: 20000 });
+  add(
+    "소요시간",
+    "eventDuration — 유효한 durationSec이면 실측, null·범위 밖이면 근사",
+    eq(m, { sec: 852, source: "measured" }) && eq(n, { sec: estimateEventSec(base), source: "estimated" }) && over.source === "estimated",
+    S([m, n, over]),
+  );
+});
+scenario("소요시간", "스냅샷·지난 사이클·합계", () => {
+  // Day 1(실측 600) → Day 2(실측 900) → Day 3(세션 없이 — 근사 720 = 22×3 + 37×2 + 100 + 480)
+  let c = log(newCycle(), D0, "complete", FAIL_PU0, 600);
+  c = log(c, dt(1), "complete", FAIL_PU0, 900);
+  c = log(c, dt(2), "complete");
+  const snap = snapshot(c, dt(2));
+  const est3 = estimateEventSec(c.events[2]);
+  add(
+    "소요시간",
+    "snapshot.duration = 실측 2 + 근사 1(합 2220)·lastEventDuration = 오늘 기록(근사 720)·직렬화 가능",
+    est3 === 720 &&
+      eq(snap.duration, { totalSec: 2220, measuredCount: 2, estimatedCount: 1 }) &&
+      eq(snap.lastEventDuration, { sec: 720, source: "estimated" }) &&
+      isPlainData(snap),
+    S({ duration: snap.duration, last: snap.lastEventDuration }),
+  );
+  const undone = decideUndo(c, { expectedRev: c.rev });
+  const snapU = undone.status === "ok" ? snapshot(undone.next, dt(2)) : null;
+  add(
+    "소요시간",
+    "취소(undo)하면 소요시간도 사건과 함께 사라진다(합 1500·실측만·last = Day 2 실측 900)",
+    snapU !== null &&
+      eq(snapU.duration, { totalSec: 1500, measuredCount: 2, estimatedCount: 0 }) &&
+      eq(snapU.lastEventDuration, { sec: 900, source: "measured" }),
+    snapU ? S({ duration: snapU.duration, last: snapU.lastEventDuration }) : undone.status,
+  );
+  const empty = snapshot(newCycle(), D0);
+  add(
+    "소요시간",
+    "사건 없음 → 합계 0/0/0·lastEventDuration null",
+    eq(empty.duration, { totalSec: 0, measuredCount: 0, estimatedCount: 0 }) && empty.lastEventDuration === null,
+    S(empty.duration),
+  );
+  // 깨진 사건은 replay와 같은 기준으로 없는 것으로 본다(합계에 넣지 않는다)
+  const withBroken: WorkoutCycleRecord = { ...c, events: [...c.events, rawEvent("2026-02-30", "complete", 4)] };
+  add(
+    "소요시간",
+    "깨진 사건은 합계에서 빠진다(replay와 같은 기준)",
+    eq(cycleDuration(withBroken), cycleDuration(c)),
+    S(cycleDuration(withBroken)),
+  );
+  const closed: WorkoutCycleRecord = { ...c, status: "completed", endedAt: nowIsoFor(dt(20)) };
+  const h = workoutHistory([closed]);
+  add(
+    "소요시간",
+    "workoutHistory 행에 사이클 총 시간(duration)",
+    h.length === 1 && eq(h[0].duration, { totalSec: 2220, measuredCount: 2, estimatedCount: 1 }) && isPlainData(h),
+    S(h[0]?.duration),
+  );
+  const tot = sumDurations([
+    { sec: 10, source: "measured" },
+    { sec: 20, source: "estimated" },
+    { sec: 30, source: "measured" },
+  ]);
+  add("소요시간", "sumDurations — 합과 출처별 개수", eq(tot, { totalSec: 60, measuredCount: 2, estimatedCount: 1 }), S(tot));
+});
+scenario("소요시간", "운동 기록 목록", () => {
+  // 사이클 1: D0 Day 1(근사), dt1 Day 2(실측 800) → dt1에 도중 재측정(오늘 시작) → 사이클 2: dt1 Day 1(실측 650) — 같은 날 두 사이클
+  let all: WorkoutCycleRecord[] = [newCycle({ id: "c1" })];
+  all = logActive(all, D0, "complete");
+  const a1 = pickActiveWorkoutCycle(all)!;
+  all = all.map((c) => (c.id === a1.id ? log(a1, dt(1), "complete", FAIL_PU0, 800) : c));
+  all = restart(all, dt(1), "today", "c2");
+  const a2 = pickActiveWorkoutCycle(all)!;
+  all = all.map((c) => (c.id === a2.id ? log(a2, dt(1), "complete", FAIL_PU0, 650) : c));
+  const rows = workoutLog(all);
+  const rowsRev = workoutLog([...all].reverse());
+  const keys = rows.map((r) => r.key);
+  add(
+    "소요시간",
+    "workoutLog — 모든 사이클·최신 먼저(같은 날·같은 시각이면 cycleNo 큰 쪽 먼저)·입력 순서 무관·key 유일·직렬화 가능",
+    eq(keys, ["c2#0", "c1#1", "c1#0"]) &&
+      eq(rows, rowsRev) &&
+      new Set(keys).size === keys.length &&
+      eq(rows.map((r) => r.cycleNo), [2, 1, 1]) &&
+      eq(rows.map((r) => r.duration.source), ["measured", "measured", "estimated"]) &&
+      eq(rows.map((r) => r.duration.sec), [650, 800, 710]) &&
+      isPlainData(rows),
+    S(rows.map((r) => `${r.key}:${r.event.date}:${r.duration.sec}${r.duration.source === "measured" ? "" : "~"}`)),
+  );
+  const broken = workoutLog([{ ...all[0], events: [...all[0].events, rawEvent("", "complete", 3)] }]);
+  add("소요시간", "workoutLog — 깨진 사건은 목록에서 빠진다", broken.length === all[0].events.length, String(broken.length));
+  add("소요시간", "workoutLog — 사이클이 없으면 []", workoutLog([]).length === 0, "0");
+});
+scenario("소요시간", "표시 문자열·'약' 규칙", () => {
+  const cases: [string, string | null, string | null][] = [
+    ["실측 852초", durationText({ sec: 852, source: "measured" }), "14분 12초"],
+    ["근사 805초", durationText({ sec: 805, source: "estimated" }), "약 13분"],
+    ["근사 710초", durationText({ sec: 710, source: "estimated" }), "약 12분"],
+    ["섞인 합계 3900초", durationTotalText({ totalSec: 3900, measuredCount: 3, estimatedCount: 1 }), "약 1시간 5분"],
+    ["전부 실측 합계", durationTotalText({ totalSec: 3912, measuredCount: 4, estimatedCount: 0 }), "1시간 5분 12초"],
+    ["전부 근사 합계", durationTotalText({ totalSec: 3600, measuredCount: 0, estimatedCount: 5 }), "약 1시간"],
+    ["사건 없음", durationTotalText({ totalSec: 0, measuredCount: 0, estimatedCount: 0 }), null],
+    ["실측 45초", formatDurationExact(45), "45초"],
+    ["실측 900초", formatDurationExact(900), "15분"],
+    ["실측 0초", formatDurationExact(0), "0초"],
+    ["근사 10초(최소 1분)", formatDurationApprox(10), "약 1분"],
+    ["출처 한 줄", durationBreakdownText({ totalSec: 1, measuredCount: 3, estimatedCount: 2 }), "실측 3회 · 근사 2회"],
+    ["경과 754초", formatElapsedClock(754_000), "12:34"],
+    ["경과 1시간 2분 3초", formatElapsedClock(3_723_000), "1:02:03"],
+    ["경과 음수", formatElapsedClock(-5), "0:00"],
+    ["끝낸 시각 KST", formatKstTime("2026-09-25T11:41:00.000Z"), "20:41"],
+    ["끝낸 시각 모름", formatKstTime(""), null],
+  ];
+  const bad = cases.filter(([, got, want]) => got !== want).map(([name, got, want]) => `${name}: ${S(got)}≠${S(want)}`);
+  add("소요시간", "실측 '14분 12초' · 근사 '약 13분' · 근사 섞인 합계 '약 1시간 5분' · 전부 실측이면 '약' 없음", bad.length === 0, bad.join(" / ") || `${cases.length}건 일치`);
+  // 스냅샷 합계와 "약" — 근사가 하나라도 섞이면 "약", 전부 실측이면 없다(엔진 값 → 화면 문자열)
+  let c = log(newCycle(), D0, "complete", FAIL_PU0, 600);
+  const allMeasured = durationTotalText(snapshot(c, D0).duration);
+  c = log(c, dt(1), "complete");
+  const mixed = durationTotalText(snapshot(c, dt(1)).duration);
+  add(
+    "소요시간",
+    "스냅샷 합계 — 실측만 '10분' → 근사 섞이면 '약 …'",
+    allMeasured === "10분" && typeof mixed === "string" && mixed.startsWith("약 "),
+    `${allMeasured} → ${mixed}`,
   );
 });
 

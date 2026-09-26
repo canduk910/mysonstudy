@@ -33,7 +33,13 @@
  * - **진행 보존**: localStorage `workout-session:v1` 하나. **마운트 후 effect에서만** 읽고(hydration),
  *   cycleId·rev·day·targetDay·dateKst가 전부 props와 같을 때만 복원 — 다르면 조용히 버린다(undo·다른 기기 기록·어제 세션이
  *   새 목표에 이어 붙지 않게). 기록 성공·409·실패 기록 시 삭제. 모든 접근은 try/catch(프라이빗 모드 등).
- *   값 모양은 그대로다(키 v1 유지). 스텝마다 쉬던 옛 버전이 남긴 "푸시업 앞 휴식"(홀수 스텝 + restEndsAt)은 복원할 때 휴식만 버린다.
+ *   키 v1 유지 — `startedAt`(§19-8)만 더했다(없거나 잘못된 옛 값은 null). 스텝마다 쉬던 옛 버전이 남긴 "푸시업 앞 휴식"(홀수 스텝 +
+ *   restEndsAt)은 복원할 때 휴식만 버린다.
+ * - **총 운동 소요시간(§19-8)**: 세션을 처음 연 순간(`startedAt`, epoch ms)을 진행 보존값에 함께 두고 — 첫 ✓ 전 새로고침·닫았다가
+ *   "이어서 하기"에도 첫 시작이 유지된다(그래서 0스텝·휴식 없음이어도 저장한다) — 기록 요청을 **처음 보낸 순간**을 ref에 고정해
+ *   `durationSec = round((끝 − 시작)/1000)`을 기록 요청(완료·실패 모두)에 싣는다. 네트워크 오류 뒤 다시 눌러도 값이 늘지 않는다.
+ *   실패 입력에서 "돌아가기"로 운동을 이어 가면 그 끝 시각은 버린다(아직 끝나지 않았다). 시작 시각이 없는 옛 저장값(이 기능 전
+ *   진행)은 null로 보낸다 — 서버가 근사치로 보인다. 머리에 1초 틱 경과 시계("⏱ 경과 12:34")를 보인다. 3시간 상한은 서버(엔진)가 본다.
  * - 기록 요청의 결과는 부모가 처리한다(onResult) — ok면 새로고침, 409·404면 메시지 + 새로고침(자동 완료 409는 부모가
  *   새로고침 뒤 같은 Day의 recorded_today인지 보고 성공으로 보여 준다). 그 밖 오류는 세션 안에 남아 다시 누를 수 있다.
  */
@@ -42,6 +48,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { lockBodyScroll } from "@/lib/scroll-lock";
 import { speakQueue, unlockSpeechPlayback } from "@/lib/speech";
 import {
+  DEFAULT_REST_SEC,
   restFollowsStep,
   roundDisplayOrder,
   SETS_PER_EXERCISE,
@@ -57,6 +64,7 @@ import type { WorkoutLogRequest, WorkoutLogResponse } from "@/lib/workout-contra
 import s from "./workout-session.module.css";
 import {
   exerciseKo,
+  formatElapsedClock,
   isStaleStatus,
   NETWORK_ERROR_KO,
   postWorkout,
@@ -79,13 +87,16 @@ const VOICE_KEY = "workout-voice:v1";
 
 const TOTAL_STEPS = SETS_PER_EXERCISE * 2; // 풀업·푸시업 교차 슈퍼세트(§19-1)
 const LAST_STEP = TOTAL_STEPS - 1;
+/** 기본 휴식(2분)은 엔진 상수 DEFAULT_REST_SEC — 근사 소요시간(§19-8)의 "쉰 휴식 한 번"과 같은 정의처다 */
+const DEFAULT_REST_MS = DEFAULT_REST_SEC * 1000;
 const REST_PRESETS: { ms: number; label: string }[] = [
-  { ms: 120_000, label: "2분" },
+  { ms: DEFAULT_REST_MS, label: `${DEFAULT_REST_SEC / 60}분` },
   { ms: 180_000, label: "3분" },
 ];
-const DEFAULT_REST_MS = REST_PRESETS[0].ms;
 const REST_BUMP_MS = 30_000;
 const TICK_MS = 250;
+/** 머리 경과 시계 틱(§19-8 "1초 틱") */
+const CLOCK_TICK_MS = 1_000;
 /**
  * 연타 가드 — 탭 한 번에 무대가 바뀌어 **같은 자리에 다른 버튼이 뜨는** 두 경우에, 이 시간 안의 두 번째 탭을 무시한다.
  * ① 풀업 ✓ → 곧바로 같은 자리에 푸시업 ✓: 연타가 푸시업 세트(마지막 세트면 하루 완료 기록)까지 넘기지 않게(onDone).
@@ -126,6 +137,11 @@ export interface SavedSession extends SessionMatch {
   step: number;
   /** 휴식 종료 시각(epoch ms) — 쉬는 중이 아니면 null */
   restEndsAt: number | null;
+  /**
+   * 그날 세션을 처음 연 시각(epoch ms, §19-8) — 소요시간의 시작점. 이 기능 전에 저장된 옛 값(필드 없음)·잘못된 값은 null
+   * (그 세션은 잴 수 없다 → durationSec null → 서버가 근사치로 보인다).
+   */
+  startedAt: number | null;
 }
 
 /**
@@ -153,7 +169,8 @@ export function readSavedSession(m: SessionMatch): SavedSession | null {
     // 휴식만 버리고 그 스텝부터 잇는다. 쉬는 중이면 다음 스텝은 언제나 세트의 풀업이라는 불변식을 지킨다(미리보기·음성 안내).
     const restEndsAt =
       typeof v.restEndsAt === "number" && Number.isFinite(v.restEndsAt) && stepFollowsRest(step) ? v.restEndsAt : null;
-    return { ...m, step, restEndsAt };
+    const startedAt = typeof v.startedAt === "number" && Number.isFinite(v.startedAt) && v.startedAt > 0 ? v.startedAt : null;
+    return { ...m, step, restEndsAt, startedAt };
   } catch {
     return null;
   }
@@ -380,6 +397,12 @@ export default function WorkoutSession({
   const [failReps, setFailReps] = useState<number | null>(null);
   const [sending, setSending] = useState<WorkoutEventKind | null>(null);
   const [errorKo, setErrorKo] = useState<string | null>(null);
+  /** 세션을 처음 연 시각(§19-8) — 마운트 effect가 정한다(렌더 중 Date.now() 금지). null = 모름(옛 저장값) → 경과 시계를 숨긴다 */
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  /** 경과 시계의 "지금" — 1초 틱. 기록 요청을 보낸 뒤엔 endAt에서 멈춘다 */
+  const [clockNow, setClockNow] = useState(0);
+  /** 기록 요청을 처음 보낸 시각(표시용 — 값의 진실은 endAtRef) */
+  const [endAt, setEndAt] = useState<number | null>(null);
   /**
    * 세트 완료 축하(표시 전용 — 저장·진행과 무관, 복원 시 늘 null). round = 끝낸 세트(0..4) — 휴식 무대에 "🎉 n세트 완료!"를 보인다.
    * hold = 목록에서 그 세트를 축하가 끝날 때까지 맨 위에 붙잡는가(움직임 줄이기면 false — 즉시 재배치, 무대 문구만 움직임 없이).
@@ -397,6 +420,10 @@ export default function WorkoutSession({
   const endedForRef = useRef<number | null>(null);
   /** 기록이 끝났다(ok·409) — 이후 진행을 다시 저장하지 않는다 */
   const finishedRef = useRef(false);
+  /** 소요시간 시작점(§19-8) — sendLog가 읽는다(state와 같은 값, 핸들러에서 낡지 않게 ref) */
+  const startedAtRef = useRef<number | null>(null);
+  /** 기록 요청을 **처음** 보낸 시각 — 고정해서 네트워크 오류 뒤 다시 눌러도 소요시간이 늘지 않는다(§19-8) */
+  const endAtRef = useRef<number | null>(null);
   /** 마지막 풀업 ✓ 시각 — 곧바로 뜬 푸시업 ✓의 연타를 막는다(CHAIN_TAP_GUARD_MS) */
   const chainedAtRef = useRef(0);
   /** 휴식을 시작한 푸시업 ✓ 시각 — 같은 자리에 뜬 2분/3분 줄의 연타를 막는다(CHAIN_TAP_GUARD_MS, QA D1). 복원한 휴식은 0(가드 없음) */
@@ -423,6 +450,12 @@ export default function WorkoutSession({
     voiceOnRef.current = on;
     setVoiceOn(on);
     const saved = readSavedSession({ cycleId, rev, day, targetDay, dateKst });
+    // 소요시간 시작점(§19-8): 이어서 하기면 처음 연 시각을 그대로(옛 저장값이라 없으면 null — 잴 수 없다), 새 세션이면 지금.
+    const opened = Date.now();
+    const start = saved ? saved.startedAt : opened;
+    startedAtRef.current = start;
+    setStartedAt(start);
+    setClockNow(opened);
     if (saved) {
       const t = Date.now();
       setStep(saved.step);
@@ -439,12 +472,20 @@ export default function WorkoutSession({
     setHydrated(true);
   }, [cycleId, rev, day, targetDay, dateKst]);
 
-  // 진행 저장 — 복원을 마친 뒤부터. 시작 전(0스텝·휴식 없음)이면 남기지 않는다.
+  // 진행 저장 — 복원을 마친 뒤부터. **0스텝·휴식 없음이어도 저장한다**(§19-8): 첫 ✓ 전에 새로고침하거나 닫았다가 다시 열어도
+  // 처음 연 시각(startedAt)이 유지돼야 소요시간이 첫 시작부터 잰 값이 된다. 그래서 세션을 한 번 열면 오늘 카드 버튼이
+  // "이어서 하기 · 풀업 1세트부터"가 된다(시계가 이미 돌고 있다는 뜻과 같다). 기록 성공·409·오늘이 운동일이 아니면 지운다.
   useEffect(() => {
     if (!hydrated || finishedRef.current) return;
-    if (step === 0 && restEndsAt === null) clearSavedSession();
-    else writeSavedSession({ cycleId, rev, day, targetDay, dateKst, step, restEndsAt });
-  }, [hydrated, step, restEndsAt, cycleId, rev, day, targetDay, dateKst]);
+    writeSavedSession({ cycleId, rev, day, targetDay, dateKst, step, restEndsAt, startedAt });
+  }, [hydrated, step, restEndsAt, startedAt, cycleId, rev, day, targetDay, dateKst]);
+
+  // 머리 경과 시계 — 1초 틱(§19-8). 시작 시각을 모르면(옛 저장값) 돌리지 않는다. 기록 요청을 보낸 뒤엔 endAt에서 멈춰 보인다.
+  useEffect(() => {
+    if (startedAt === null || endAt !== null) return;
+    const id = window.setInterval(() => setClockNow(Date.now()), CLOCK_TICK_MS);
+    return () => window.clearInterval(id);
+  }, [startedAt, endAt]);
 
   // 언마운트: 예약 비프 취소, 음성 멈춤(이 세션이 시작한 재생만 — speakQueue 멈추기 함수 규약), 축하 타이머 정리
   useEffect(
@@ -541,6 +582,7 @@ export default function WorkoutSession({
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
       setNow(Date.now());
+      setClockNow(Date.now());
       // 백그라운드에서 멈춘 컨텍스트를 깨워 둔다(이미 탭으로 풀린 컨텍스트라 대개 허용된다 — 안 되면 다음 ✓ 탭이 푼다)
       if (audioCtx && audioCtx.state !== "running") void audioCtx.resume().catch(() => {});
       void request();
@@ -558,14 +600,31 @@ export default function WorkoutSession({
   // 기록 요청
   // ---------------------------------------------------------------------------
 
+  /**
+   * 소요시간(초, §19-8) — 처음 연 순간부터 기록 요청을 **처음** 보낸 순간까지. 끝 시각은 처음 부를 때 ref에 고정한다
+   * (네트워크 오류 뒤 다시 눌러도 늘지 않는다). 시작을 모르거나(옛 저장값) 기기 시계가 거꾸로 가 음수면 null. 3시간 상한은 서버가 본다.
+   */
+  function measuredDurationSec(): number | null {
+    if (endAtRef.current === null) {
+      endAtRef.current = Date.now();
+      setEndAt(endAtRef.current);
+      setClockNow(endAtRef.current);
+    }
+    const start = startedAtRef.current;
+    if (start === null) return null;
+    const ms = endAtRef.current - start;
+    return ms >= 0 ? Math.round(ms / 1000) : null;
+  }
+
   async function sendLog(kind: WorkoutEventKind, failed: FailedAt | null) {
     if (sending) return;
     setSending(kind);
     setErrorKo(null);
+    const durationSec = measuredDurationSec();
     const body: WorkoutLogRequest =
       kind === "fail" && failed
-        ? { cycleId, expectedRev: rev, kind: "fail", day, targetDay, failed }
-        : { cycleId, expectedRev: rev, kind: "complete", day, targetDay, failed: null };
+        ? { cycleId, expectedRev: rev, kind: "fail", day, targetDay, failed, durationSec }
+        : { cycleId, expectedRev: rev, kind: "complete", day, targetDay, failed: null, durationSec };
     try {
       const { status, data } = await postWorkout<WorkoutLogResponse>("/api/workout/log", body);
       if (data?.ok) {
@@ -699,6 +758,14 @@ export default function WorkoutSession({
     setFailOpen(true);
   }
 
+  /** 실패 입력에서 돌아가 운동을 이어 간다 — 앞서 실패 기록을 보내다 실패했다면 그 끝 시각은 버린다(아직 끝나지 않았다, §19-8) */
+  function backFromFail() {
+    setFailOpen(false);
+    endAtRef.current = null;
+    setEndAt(null);
+    setClockNow(Date.now());
+  }
+
   function submitFail() {
     const cur = steps[step];
     if (!cur) return;
@@ -733,7 +800,15 @@ export default function WorkoutSession({
       <div className={s.inner}>
         <header className={s.head}>
           <div className="min-w-0">
-            <p className="t-caption">💪 아빠의 운동 · 세션</p>
+            <p className="t-caption">
+              💪 아빠의 운동 · 세션
+              {/* 경과 시계(§19-8) — 1초 틱이라 낭독하지 않는다(aria-live off). 시작을 모르면(옛 저장값) 숨긴다 */}
+              {startedAt !== null && (
+                <span className={`t-meta-chip ml-2 ${s.elapsed}`} role="timer" aria-live="off" aria-label="처음 시작부터 지난 시간">
+                  ⏱ 경과 {formatElapsedClock((endAt ?? clockNow) - startedAt)}
+                </span>
+              )}
+            </p>
             <h2 className="t-section-title mt-0.5">
               Day {day} 운동{isRepeat && <span className="t-meta-chip ml-2 align-middle">Day {targetDay} 목표로 복귀</span>}
             </h2>
@@ -774,7 +849,7 @@ export default function WorkoutSession({
               <button type="button" className="u-btn u-btn-primary" onClick={submitFail} disabled={busy}>
                 {sending === "fail" ? "기록하는 중…" : "실패로 기록하고 끝내기"}
               </button>
-              <button type="button" className="u-btn u-btn-secondary" onClick={() => setFailOpen(false)} disabled={busy}>
+              <button type="button" className="u-btn u-btn-secondary" onClick={backFromFail} disabled={busy}>
                 돌아가기
               </button>
             </div>

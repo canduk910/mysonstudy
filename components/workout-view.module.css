@@ -86,3 +86,31 @@
   border-radius: var(--radius-box);
   background: var(--danger-soft);
 }
+
+/* 📒 운동 기록(§19-8) — 한 항목 두 줄: ① 날짜·끝낸 시각 | 소요시간·출처 ② 결과. 360px에서도 가로 스크롤 없이 */
+.logList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0 12px 12px;
+  list-style: none;
+}
+.logCycle {
+  padding: 8px 4px 0;
+}
+.logRow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+}
+.logHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  column-gap: 12px;
+}
