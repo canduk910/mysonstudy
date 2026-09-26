@@ -37,3 +37,19 @@ export function clampTtsSpeed(speed: number): number {
   if (!Number.isFinite(speed)) return 1;
   return Math.min(TTS_SPEED_MAX, Math.max(TTS_SPEED_MIN, speed));
 }
+
+/**
+ * 클라우드 TTS 오디오 형식 — 합성은 mp3(`response_format: "mp3"`)다. 서버 응답 헤더(lib/tts.ts)와, 형식을 잃은
+ * 오디오에 붙일 기본값(lib/tts-cache.ts가 IndexedDB 바이트로 Blob을 새로 만들 때)이 같은 값을 쓴다.
+ */
+export const TTS_AUDIO_MIME = "audio/mpeg";
+
+/**
+ * content-type(또는 Blob type)이 오디오면 그 미디어 타입(소문자, `;` 뒤 매개변수 제외)을, 아니면 null(§16-5, 2026-09-27).
+ * `res.ok`만 보면 200으로 온 오디오 아닌 응답(호스팅 폴백 HTML·캡티브 포털)을 오디오로 재생하고 영속 캐시에 굳힌다 —
+ * 그러면 재생 단계 NotSupportedError가 매 실행 되풀이된다. 합성 응답(lib/speech.ts)과 캐시 판정(lib/tts-cache.ts)이 함께 쓴다.
+ */
+export function audioMediaType(value: string | null | undefined): string | null {
+  const t = (value ?? "").split(";")[0].trim().toLowerCase();
+  return t.startsWith("audio/") && t.length > "audio/".length ? t : null;
+}

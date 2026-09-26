@@ -15,8 +15,8 @@
  * import하지 않는다 — 공유 상수는 런타임 의존성 0인 `lib/tts-shared.ts`에서만 가져온다(번들 유입 방지).
  */
 
-import { isTtsLang, TTS_TEXT_MAX_CHARS } from "./tts-shared";
-import { setTtsFingerprintProvider, ttsCacheGet, ttsCachePut } from "./tts-cache";
+import { audioMediaType, isTtsLang, TTS_TEXT_MAX_CHARS } from "./tts-shared";
+import { setTtsFingerprintProvider, ttsCacheDelete, ttsCacheGet, ttsCachePut } from "./tts-cache";
 
 /**
  * 지문 공급자(GET /api/tts) 대기 상한. 망이 매달리면 initPromise를 함께 쓰는 **모든** 캐시 조회가 같이 매달려
@@ -393,10 +393,31 @@ export function isSpeechSupported(): boolean {
 
 // ───────────────────────── 클라우드 TTS 재생 (내부) ─────────────────────────
 
-/** 합성 오디오 캐시 — `${lang}:${speed}:${text}` → Blob(세션 내). 연타·재청취에 재합성하지 않는다(§16-1). */
+/**
+ * 합성 오디오 캐시 — `${lang}:${speed}:${text}` → Blob(세션 내). 연타·재청취에 재합성하지 않는다(§16-1).
+ * 여기 드는 것은 **메모리 Blob뿐**이다(네트워크 바이트나 IndexedDB 바이트로 새로 만든 것 — IDB 레코드를 가리키는 Blob 금지,
+ * lib/tts-cache.ts 헤더의 2026-09-27 규칙). 그래도 재생이 미디어 소스 오류로 실패하면 그 키를 빼고 한 번 새로 받는다(자가 치유).
+ */
 const cloudCache = new Map<string, Blob>();
 /** 캐시 상한(항목 수). 넘으면 가장 오래된 것부터 버린다 — Blob은 GC 대상(objectURL을 담지 않으므로 revoke 불필요). */
 const CLOUD_CACHE_MAX = 200;
+
+/** 1차 캐시에 넣는다(상한 초과분은 가장 오래된 것부터 버린다). 네트워크·IndexedDB 적중이 같이 쓴다. */
+function rememberInMemory(key: string, blob: Blob): void {
+  cloudCache.delete(key); // 다시 넣으면 가장 최근으로
+  cloudCache.set(key, blob);
+  while (cloudCache.size > CLOUD_CACHE_MAX) {
+    const oldest = cloudCache.keys().next().value;
+    if (oldest === undefined) break;
+    cloudCache.delete(oldest);
+  }
+}
+
+/** 이 키의 오디오를 두 캐시(메모리·IndexedDB)에서 뺀다 — 재생할 수 없는 오디오를 다시 내주지 않게(자가 치유). */
+function forgetCachedAudio(key: string): void {
+  cloudCache.delete(key);
+  void ttsCacheDelete(key);
+}
 
 /** 현재 재생 중인 오디오와 그 objectURL(취소·정지·수명관리용). */
 let currentAudio: HTMLAudioElement | null = null;
@@ -474,6 +495,11 @@ export interface TtsPlaybackDiag {
   reason: string | null;
   /** 실패 뒤 기기 음성으로 대체했는가("none" = 기기 음성도 못 냄) */
   fallback: "device" | "none" | null;
+  /**
+   * 캐시(메모리·IndexedDB)에서 온 오디오가 재생 단계에서 미디어 소스 오류로 실패해 **그 키를 캐시에서 빼고 한 번 새로 받았는가**
+   * (§16-5 자가 치유, 2026-09-27). 성공이면 새로 받은 오디오로 났다는 뜻, 실패면 새로 받은 뒤에도 실패했다는 뜻이다(stage·reason은 그 재시도의 것).
+   */
+  healed: boolean;
 }
 
 /** 진단이 바뀌면 쏘는 이벤트. detail: TtsPlaybackDiag */
@@ -486,7 +512,9 @@ export function getTtsPlaybackDiag(lang: string): TtsPlaybackDiag | null {
   return playbackDiag.get(langBase(lang)) ?? null;
 }
 
-const DIAG_OK = { ok: true, stage: null, reason: null, fallback: null } as const;
+const DIAG_OK = { ok: true, stage: null, reason: null, fallback: null, healed: false } as const;
+/** 자가 치유(캐시 오디오 손상 → 새로 받음) 뒤 클라우드로 났다. */
+const DIAG_HEALED = { ...DIAG_OK, healed: true } as const;
 
 function noteCloudResult(lang: string, r: Omit<TtsPlaybackDiag, "at" | "lang">): void {
   const d: TtsPlaybackDiag = { at: new Date().toISOString(), lang, ...r };
@@ -499,11 +527,14 @@ function noteCloudResult(lang: string, r: Omit<TtsPlaybackDiag, "at" | "lang">):
   }
 }
 
-/** 실패 이유를 캡션용 짧은 문자열로. 합성 HTTP 실패는 `tts {status}`, 대기 상한은 `timeout`, 재생 거부는 DOMException 이름. */
+/**
+ * 실패 이유를 캡션용 짧은 문자열로. 합성 HTTP 실패는 `tts {status}`, 200인데 오디오가 아니면 `tts type`, 빈 본문은 `tts empty`,
+ * 대기 상한은 `timeout`, 재생 거부는 DOMException 이름.
+ */
 function failureReason(e: unknown): string {
   if (e === WAIT_TIMEOUT) return "timeout";
   const msg = e instanceof Error ? e.message : "";
-  if (/^tts (\d{3}|empty)$/.test(msg)) return msg;
+  if (/^tts (\d{3}|empty|type)$/.test(msg)) return msg;
   const name = (e as { name?: unknown } | null)?.name;
   if (name === "TypeError") return "network"; // fetch 네트워크 실패(Safari "Load failed"·Chrome "Failed to fetch")
   if (typeof name === "string" && name && name !== "Error") return name.slice(0, 40); // NotAllowedError·NotSupportedError…
@@ -554,15 +585,18 @@ interface InflightSynth {
 }
 const inflightSynth = new Map<string, InflightSynth>();
 
-/** 공유 요청 하나를 시작한다: 2차(IndexedDB) 조회 → 없으면 `/api/tts` 합성 → 두 겹 캐시에 넣는다. */
-function startSynthesis(key: string, text: string, lang: string, speed: number): InflightSynth {
+/**
+ * 공유 요청 하나를 시작한다: 2차(IndexedDB) 조회 → 없으면 `/api/tts` 합성 → 두 겹 캐시에 넣는다.
+ * `skipPersisted`(자가 치유 전용): 2차 조회를 건너뛰고 곧장 합성한다 — 방금 캐시 오디오가 재생에 실패했다.
+ */
+function startSynthesis(key: string, text: string, lang: string, speed: number, skipPersisted = false): InflightSynth {
   const controller = new AbortController();
   const entry = {
     key,
     controller,
     consumers: 0,
     settled: false,
-    stage: "cache",
+    stage: skipPersisted ? "synth" : "cache",
     traces: new Set(),
     startedAt: Date.now(),
   } as InflightSynth; // promise는 바로 아래에서 채운다(setStage가 entry를 참조하므로 먼저 만든다)
@@ -571,13 +605,16 @@ function startSynthesis(key: string, text: string, lang: string, speed: number):
     for (const t of entry.traces) t.stage = s;
   };
   entry.promise = (async () => {
-    // 2차(IndexedDB) 히트: 앱을 닫았다 열어도 산다 → 재합성·재요금 없음. IDB 불가면 null(조용히 통과).
-    const persisted = await ttsCacheGet(key);
-    if (persisted) {
-      cloudCache.set(key, persisted); // 1차로 승격
-      return persisted;
+    if (!skipPersisted) {
+      // 2차(IndexedDB) 히트: 앱을 닫았다 열어도 산다 → 재합성·재요금 없음. IDB 불가면 null(조용히 통과).
+      // 받는 것은 IDB 바이트로 새로 만든 메모리 Blob이다(lib/tts-cache.ts — 죽은 옛 Blob은 여기까지 오지 않고 미스가 된다).
+      const persisted = await ttsCacheGet(key);
+      if (persisted) {
+        rememberInMemory(key, persisted); // 1차로 승격
+        return persisted;
+      }
+      if (controller.signal.aborted) throw abortError(); // 조회 도중 모두 떠났다 — 보내지 않는다
     }
-    if (controller.signal.aborted) throw abortError(); // 조회 도중 모두 떠났다 — 보내지 않는다
 
     setStage("synth");
     const res = await fetch("/api/tts", {
@@ -587,14 +624,15 @@ function startSynthesis(key: string, text: string, lang: string, speed: number):
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(`tts ${res.status}`); // 키 없음(501)·검증 실패(400)·합성 실패(500)
-    const blob = await res.blob();
-    if (blob.size === 0) throw new Error("tts empty");
+    // 200인데 오디오가 아니다(호스팅 폴백 HTML·캡티브 포털) — 재생도 캐시도 하지 않는다(재생 NotSupportedError가 캐시에 굳지 않게).
+    const type = audioMediaType(res.headers.get("content-type"));
+    if (!type) throw new Error("tts type");
+    // 바이트로 받아 메모리 Blob을 직접 만든다 — 형식(audio/*)을 보장하고, 2차 캐시에는 이 바이트가 들어간다.
+    const bytes = await res.arrayBuffer();
+    if (bytes.byteLength === 0) throw new Error("tts empty");
+    const blob = new Blob([bytes], { type });
 
-    cloudCache.set(key, blob); // 1차
-    if (cloudCache.size > CLOUD_CACHE_MAX) {
-      const oldest = cloudCache.keys().next().value;
-      if (oldest !== undefined) cloudCache.delete(oldest);
-    }
+    rememberInMemory(key, blob); // 1차
     void ttsCachePut(key, blob); // 2차(best-effort, 비동기) — 실패해도 재생엔 지장 없음
     return blob;
   })();
@@ -649,6 +687,8 @@ function joinSynthesis(entry: InflightSynth, signal?: AbortSignal, trace?: { sta
  * 기기 음성으로 폴백(재생)하거나 조용히 무시(프리페치). `signal`은 프리페치·큐가 중단하는 용도 — 같은 키를 다른 소비자가
  * 기다리고 있으면 요청은 계속되고 이 호출만 AbortError로 물러난다(진행 중 합성 공유, 위 InflightSynth).
  * `trace`(선택, 진단용): 지금 어느 단계인지(cache → synth)를 적어 둔다 — 실패·타임아웃이 난 단계를 캡션에 보이려고.
+ * 끝났을 때 `trace.stage`가 여전히 "cache"면 이 오디오는 **캐시(메모리·IndexedDB)에서 왔다**(자가 치유 판정이 쓴다).
+ * `fresh`(자가 치유 전용): 두 캐시와 진행 중 요청을 건너뛰고 네트워크로 새로 받는다(새 요청이 표의 자리를 잇는다).
  */
 function getAudioBlob(
   text: string,
@@ -656,22 +696,69 @@ function getAudioBlob(
   speed: number,
   signal?: AbortSignal,
   trace?: { stage: TtsPlaybackStage },
+  fresh = false,
 ): Promise<Blob> {
   const key = `${lang}:${speed}:${text}`;
-  if (trace) trace.stage = "cache";
-  const cached = cloudCache.get(key);
-  if (cached) return Promise.resolve(cached); // 1차(메모리) 히트: 네트워크 0
+  if (trace) trace.stage = fresh ? "synth" : "cache";
+  if (!fresh) {
+    const cached = cloudCache.get(key);
+    if (cached) return Promise.resolve(cached); // 1차(메모리) 히트: 네트워크 0
+  }
   if (signal?.aborted) return Promise.reject(abortError());
 
-  let entry = inflightSynth.get(key);
+  let entry = fresh ? undefined : inflightSynth.get(key);
   // 합성 대기 상한(fetchMs)을 넘긴 요청에는 새로 붙지 않는다 — 매달린 요청에 묶여 다시 눌러도 영영 클라우드를 못 쓰는 일이
   // 없게(그 요청은 기존 소비자를 위해 살려 둔다). 끊긴 요청은 이미 표에서 빠져 있지만 한 번 더 거른다.
   if (entry && (entry.controller.signal.aborted || Date.now() - entry.startedAt > queueTiming.fetchMs)) entry = undefined;
   if (!entry) {
-    entry = startSynthesis(key, text, lang, speed);
+    entry = startSynthesis(key, text, lang, speed, fresh);
     inflightSynth.set(key, entry);
   }
   return joinSynthesis(entry, signal, trace);
+}
+
+/** playBlob이 `error` 이벤트로 끝날 때의 오류 — 캡션 문구("audio play error")는 예전 그대로, 미디어 오류 코드를 싣는다. */
+const AUDIO_ERROR_MESSAGE = "audio play error";
+type MediaPlayError = Error & { mediaCode: number | null };
+
+/**
+ * 재생 실패가 **오디오 자체**(미디어 소스) 문제인가 — 자가 치유 대상. WebKit은 읽을 수 없는 Blob을 `<audio>` error 4 +
+ * `play()` NotSupportedError로 알린다(2026-09-27 신고). `error` 이벤트로 먼저 끝나면 playBlob이 mediaCode를 실어 준다 —
+ * 사용자 중단(1, MEDIA_ERR_ABORTED)만 빼고 네트워크(2)·해독(3)·소스(4)·모름은 오디오 문제로 본다.
+ * iOS 재생 차단(NotAllowedError)·AbortError·대기 상한은 오디오 문제가 아니다(새로 받아도 같다 — 요금만 난다).
+ */
+function isMediaSourceFailure(e: unknown): boolean {
+  const name = (e as { name?: unknown } | null)?.name;
+  if (name === "NotSupportedError") return true;
+  if (e instanceof Error && e.message === AUDIO_ERROR_MESSAGE) return (e as MediaPlayError).mediaCode !== 1;
+  return false;
+}
+
+/**
+ * 자가 치유(§16-5, 2026-09-27)의 재시도 한 번: 네트워크로 새로 받아(`fresh`) 같은 재사용 요소로 재생한다.
+ * `trace.stage`는 합성 → 재생을 따라간다(실패하면 호출부가 그 단계로 진단을 남긴다). 새로 받은 오디오도 미디어 소스 오류면
+ * 그 키를 캐시에 남기지 않고 throw — 호출부가 기기 음성으로 간다. **다시 치유하지 않는다**(1회 — 무한 반복 금지).
+ * 취소(토큰이 바뀜)면 조용히 돌아온다.
+ */
+async function replayFresh(
+  text: string,
+  lang: string,
+  speed: number,
+  token: number,
+  trace: { stage: TtsPlaybackStage },
+  signal: AbortSignal | undefined,
+  cap: { fallbackMs: number; slackMs: number } | undefined,
+  onStart: () => void,
+): Promise<void> {
+  const blob = await waitWithTimeout(getAudioBlob(text, lang, speed, signal, trace, true), queueTiming.fetchMs);
+  if (token !== playToken) return;
+  trace.stage = "play";
+  try {
+    await playBlob(blob, token, queueAudio ?? undefined, cap, onStart);
+  } catch (e) {
+    if (token === playToken && isMediaSourceFailure(e)) forgetCachedAudio(`${lang}:${speed}:${text}`);
+    throw e;
+  }
 }
 
 /**
@@ -760,7 +847,13 @@ function playBlob(
     };
 
     audio.onended = () => finish(() => resolve());
-    audio.onerror = () => finish(() => reject(new Error("audio play error")));
+    audio.onerror = () =>
+      finish(() => {
+        const err = new Error(AUDIO_ERROR_MESSAGE) as MediaPlayError;
+        const code = audio.error?.code;
+        err.mediaCode = typeof code === "number" ? code : null; // 자가 치유 판정(isMediaSourceFailure)
+        reject(err);
+      });
     if (el) {
       // 우리가 일으키지 않은 pause(잠금 화면 ⏸·전화) = 정지로 본다 — ended가 안 와 큐가 막히지 않게(§18-2).
       // 끝까지 재생될 때도 pause가 ended 직전에 오므로 audio.ended로 거른다. 우리 pause()는 finish가 먼저 핸들러를 뗀다.
@@ -860,19 +953,34 @@ function fallbackDevice(text: string, lang: string, token: number): boolean {
  * 재생 잠금을 풀어 두고(unlockPlayback), 여기선 그 재사용 요소(`queueAudio`)로 재생한다 — iOS는 합성 대기(비동기) 뒤
  * `new Audio().play()`를 막는다(NotAllowedError). 합성 대기에는 큐와 같은 상한(`fetchMs`)을 둬, 망이 매달려도 무음으로
  * 멈추지 않고 기기 음성으로 간다(요청은 끊지 않는다 — 늦게 와도 캐시에 남는다). 결과는 폰 진단에 남긴다.
+ *
+ * 자가 치유(2026-09-27): 재생이 미디어 소스 오류(NotSupportedError 등)로 실패하면 그 키를 두 캐시에서 뺀다. 그 오디오가
+ * **캐시에서 왔으면** 네트워크로 한 번만 새로 받아 다시 재생하고(`replayFresh`), 방금 네트워크로 받은 것이었으면 곧바로 기기 음성
+ * (다시 받아도 같다). 재시도도 실패하면 기기 음성 — 두 번 치유하지 않는다.
  */
 async function playViaCloud(text: string, lang: string, speed: number, token: number): Promise<void> {
   const trace: { stage: TtsPlaybackStage } = { stage: "cache" };
+  let healed = false;
+  const onStart = () => noteCloudResult(lang, healed ? DIAG_HEALED : DIAG_OK);
   try {
     const blob = await waitWithTimeout(getAudioBlob(text, lang, speed, undefined, trace), queueTiming.fetchMs);
     if (token !== playToken) return; // 합성 도중 새 재생이 왔다 → 버린다(폴백 안 함)
+    const fromCache = trace.stage === "cache";
     trace.stage = "play";
-    await playBlob(blob, token, queueAudio ?? undefined, undefined, () => noteCloudResult(lang, DIAG_OK));
-    // 정상 종료·취소 모두 여기로 온다. 취소면 token이 이미 달라 아무 일도 안 한다.
+    try {
+      await playBlob(blob, token, queueAudio ?? undefined, undefined, onStart);
+      // 정상 종료·취소 모두 여기로 온다. 취소면 token이 이미 달라 아무 일도 안 한다.
+    } catch (e) {
+      if (token !== playToken || !isMediaSourceFailure(e)) throw e;
+      forgetCachedAudio(`${lang}:${speed}:${text}`); // 못 트는 오디오를 다시 내주지 않는다
+      if (!fromCache) throw e;
+      healed = true; // 캐시 오디오 손상 → 새로 받음(1회)
+      await replayFresh(text, lang, speed, token, trace, undefined, undefined, onStart);
+    }
   } catch (e) {
     if (token !== playToken) return; // 취소로 인한 실패는 폴백·기록하지 않는다
     const fell = fallbackDevice(text, lang, token); // 진짜 실패(캐시·합성·재생·대기 상한) → 기기 음성
-    noteCloudResult(lang, { ok: false, stage: trace.stage, reason: failureReason(e), fallback: fell ? "device" : "none" });
+    noteCloudResult(lang, { ok: false, stage: trace.stage, reason: failureReason(e), fallback: fell ? "device" : "none", healed });
   }
 }
 
@@ -1456,19 +1564,28 @@ export function speakQueue(items: SpeakQueueItem[], handlers: SpeakQueueHandlers
           const req = blobFor(it.text, it.lang, speed);
           let timedOut = false;
           let playing = false;
+          /** 자가 치유(캐시 오디오 손상 → 새로 받음, 1회)를 했으면 그 재시도의 단계 — 진단이 이 단계를 적는다. */
+          let healTrace: { stage: TtsPlaybackStage } | null = null;
+          const cap = { fallbackMs: estimateSpeechMs(it.text, getTtsRate()), slackMs: queueTiming.playSlackMs };
+          const onStart = () => noteCloudResult(it.lang, healTrace ? DIAG_HEALED : DIAG_OK);
           try {
             // 대기 타임아웃은 **지금**(이 조각을 기다리기 시작한 때)부터 잰다(§18-2).
             const blob = await waitWithTimeout(req, queueTiming.fetchMs);
             if (!alive()) return;
+            const fromCache = blobStage.get(req)?.stage === "cache";
             void lookAhead(i + 1);
             playing = true;
-            await playBlob(
-              blob,
-              token,
-              queueAudio ?? undefined,
-              { fallbackMs: estimateSpeechMs(it.text, getTtsRate()), slackMs: queueTiming.playSlackMs },
-              () => noteCloudResult(it.lang, DIAG_OK),
-            );
+            try {
+              await playBlob(blob, token, queueAudio ?? undefined, cap, onStart);
+            } catch (e) {
+              if (!alive() || !isMediaSourceFailure(e)) throw e;
+              // 단발(playViaCloud)과 같은 자가 치유 — 못 트는 오디오는 두 캐시와 큐 로컬 표에서 빼고, 캐시에서 왔으면 한 번 새로 받는다.
+              forgetCachedAudio(key);
+              if (pending.get(key) === req) pending.delete(key);
+              if (!fromCache) throw e;
+              healTrace = { stage: "synth" };
+              await replayFresh(it.text, it.lang, speed, token, healTrace, ac.signal, cap, onStart);
+            }
             sounded = true;
           } catch (e) {
             timedOut = e === WAIT_TIMEOUT;
@@ -1476,9 +1593,10 @@ export function speakQueue(items: SpeakQueueItem[], handlers: SpeakQueueHandlers
             if (alive()) {
               noteCloudResult(it.lang, {
                 ok: false,
-                stage: playing ? "play" : (blobStage.get(req)?.stage ?? "synth"),
+                stage: healTrace ? healTrace.stage : playing ? "play" : (blobStage.get(req)?.stage ?? "synth"),
                 reason: failureReason(e),
                 fallback: isSpeechSupported() ? "device" : "none",
+                healed: healTrace !== null,
               });
             }
           } finally {

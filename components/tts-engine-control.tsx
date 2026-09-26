@@ -49,13 +49,19 @@ const LANG_LABEL: Record<string, string> = { "en-US": "영어", "ja-JP": "일본
 const ENGINE_LABEL: Record<TtsEngine, string> = { cloud: "클라우드", device: "기기" };
 const STAGE_LABEL: Record<TtsPlaybackStage, string> = { cache: "캐시", synth: "합성", play: "재생" };
 
-/** 진단 캡션 한 줄. 예: "마지막 재생: 클라우드 ✓ · 14:40" / "마지막 재생: 클라우드 실패(재생 NotAllowedError) → 기기 음성 · 14:40" */
+/** 자가 치유 단계 문구(§16-5, 2026-09-27) — 캐시에서 온 오디오가 재생에 실패해 그 키를 빼고 한 번 새로 받았다. */
+const HEALED_LABEL = "캐시 오디오 손상 → 새로 받음";
+
+/**
+ * 진단 캡션 한 줄. 예: "마지막 재생: 클라우드 ✓ · 14:40" / "마지막 재생: 클라우드 실패(재생 NotAllowedError) → 기기 음성 · 14:40" /
+ * "마지막 재생: 클라우드 ✓(캐시 오디오 손상 → 새로 받음) · 14:40" / "마지막 재생: 클라우드 실패(캐시 오디오 손상 → 새로 받음 → 재생 NotSupportedError) → 기기 음성 · 14:40"
+ */
 function diagCaption(d: TtsPlaybackDiag): string {
   const hhmm = formatKst(d.at).slice(-5); // KST HH:MM(lib/kst 단일 정의)
-  if (d.ok) return `마지막 재생: 클라우드 ✓ · ${hhmm}`;
-  const why = [d.stage ? STAGE_LABEL[d.stage] : null, d.reason].filter(Boolean).join(" ");
+  if (d.ok) return `마지막 재생: 클라우드 ✓${d.healed ? `(${HEALED_LABEL})` : ""} · ${hhmm}`;
+  const why = [d.stage ? STAGE_LABEL[d.stage] : null, d.reason].filter(Boolean).join(" ") || "알 수 없음";
   const then = d.fallback === "device" ? " → 기기 음성" : d.fallback === "none" ? " → 소리 없음" : "";
-  return `마지막 재생: 클라우드 실패(${why || "알 수 없음"})${then} · ${hhmm}`;
+  return `마지막 재생: 클라우드 실패(${d.healed ? `${HEALED_LABEL} → ` : ""}${why})${then} · ${hhmm}`;
 }
 
 const btn = (active: boolean) =>

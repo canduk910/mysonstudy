@@ -366,6 +366,16 @@ interface Env {
   audioNeverEnds: boolean;
   /** 이름이 있으면 클라우드 오디오의 play()가 그 이름의 DOMException으로 거부된다(iOS 'NotAllowedError' 모사). 무음 WAV는 영향 없음. */
   playRejectName: string | null;
+  /**
+   * 못 트는 오디오(손상 표식 CORRUPT·죽은 옛 Blob)를 재생하면 WebKit처럼 실패한다 — "play": play()가 NotSupportedError로 거부,
+   * "event": error 이벤트(error.code = mediaErrorCode)가 먼저 온 뒤 play()도 거부(Chrome·WebKit 모두 가능한 순서).
+   */
+  mediaErrorVia: "play" | "event";
+  mediaErrorCode: number;
+  /** 합성 응답 본문(기본 `mp3:{text}`) — "CORRUPT…"면 재생할 수 없는 오디오 */
+  postBodyFor: ((text: string) => string) | null;
+  /** 합성 응답 content-type(기본 audio/mpeg) — 200인데 오디오가 아닌 응답 모사 */
+  postContentTypeFor: ((text: string) => string) | null;
   deviceMs: number;
   /** 잠금 해제용 빈 발화(" ")가 말하는 시간(ms). 기본 0(다음 틱). 길게 두면 "빈 발화가 아직 말하는 중"에 폴백이 오는 경우를 만든다. */
   blankMs: number;
@@ -409,6 +419,10 @@ const env: Env = {
   audioDuration: NaN,
   audioNeverEnds: false,
   playRejectName: null,
+  mediaErrorVia: "play",
+  mediaErrorCode: 4,
+  postBodyFor: null,
+  postContentTypeFor: null,
   deviceMs: 5,
   blankMs: 0,
   postStatus: () => 200,
@@ -439,6 +453,10 @@ function resetEnv(): void {
   env.audioDuration = NaN;
   env.audioNeverEnds = false;
   env.playRejectName = null;
+  env.mediaErrorVia = "play";
+  env.mediaErrorCode = 4;
+  env.postBodyFor = null;
+  env.postContentTypeFor = null;
   env.deviceMs = 5;
   env.blankMs = 0;
   env.postStatus = () => 200;
@@ -473,6 +491,47 @@ async function waitFor(cond: () => boolean, ms = 3000): Promise<boolean> {
 }
 const abortError = () => new DOMException("The operation was aborted.", "AbortError");
 
+// ---- Blob 모사(2026-09-27 NotSupportedError) --------------------------------------------------------------
+// 재생할 수 없는 오디오를 두 갈래로 만든다: ① 손상 표식 — 첫 바이트가 "CORRUPT"인 내용(Blob 생성 시 동기로 판별),
+// ② 죽은 옛 Blob — WebKit이 이전 프로세스의 IDB Blob 레코드를 다시 쓰면 꺼낸 Blob이 읽히지 않는 결함(QA F1)의 모사.
+// 재생은 createObjectURL이 기억한 Blob으로 판정한다(FakeAudio).
+const NodeBlob = globalThis.Blob;
+const CORRUPT = "CORRUPT";
+function partIsCorrupt(p: unknown): boolean {
+  if (typeof p === "string") return p.startsWith(CORRUPT);
+  if (p instanceof ArrayBuffer || ArrayBuffer.isView(p)) {
+    const u8 = p instanceof ArrayBuffer ? new Uint8Array(p) : new Uint8Array(p.buffer, p.byteOffset, p.byteLength);
+    return new TextDecoder().decode(u8.subarray(0, CORRUPT.length)) === CORRUPT;
+  }
+  return !!(p as { __corrupt?: boolean } | null)?.__corrupt;
+}
+class SniffBlob extends NodeBlob {
+  __corrupt: boolean;
+  constructor(parts?: BlobPart[], opts?: BlobPropertyBag) {
+    super(parts, opts);
+    this.__corrupt = (parts ?? []).some((p) => partIsCorrupt(p));
+  }
+}
+/** 옛 형식(v1) IDB Blob — dead가 되면 읽기(arrayBuffer·text)가 NotFoundError, 재생은 NotSupportedError. */
+class DeadableBlob extends SniffBlob {
+  dead = false;
+  /** 매달림 모사 — 읽기가 끝나지 않는다 */
+  hang = false;
+  override arrayBuffer(): Promise<ArrayBuffer> {
+    if (this.hang) return new Promise<ArrayBuffer>(() => {});
+    if (this.dead) return Promise.reject(new DOMException("The object can not be found here.", "NotFoundError"));
+    return super.arrayBuffer();
+  }
+  override text(): Promise<string> {
+    if (this.dead) return Promise.reject(new DOMException("The object can not be found here.", "NotFoundError"));
+    return super.text();
+  }
+}
+const isUnplayable = (b: Blob | undefined): boolean => !!b && ((b as DeadableBlob).dead === true || (b as SniffBlob).__corrupt === true);
+/** createObjectURL이 만든 tts URL → 그 Blob(재생 판정·형식 확인용) */
+const urlBlob = new Map<string, Blob>();
+let lastTtsUrl = "";
+
 /** 가짜 <audio>. play()는 다음 틱에 시작해 audioMs 뒤 끝난다(끝날 때 실브라우저처럼 pause → ended). */
 class FakeAudio {
   _src = "";
@@ -488,6 +547,8 @@ class FakeAudio {
   onended: ((e?: unknown) => void) | null = null;
   onerror: ((e?: unknown) => void) | null = null;
   onpause: ((e?: unknown) => void) | null = null;
+  /** HTMLMediaElement.error 모사 — 못 트는 소스면 { code } */
+  error: { code: number } | null = null;
   private gen = 0;
   private endTimer: ReturnType<typeof setTimeout> | undefined;
   constructor(src?: string) {
@@ -506,6 +567,7 @@ class FakeAudio {
     this.ended = false;
     this.paused = true;
     this.duration = NaN;
+    this.error = null;
     // 실브라우저보다 보수적으로: 소스 교체가 pause 이벤트를 쏴도 큐가 "외부 일시정지"로 오판하면 안 된다.
     if (wasPlaying) setTimeout(() => this.onpause?.(), 0);
   }
@@ -524,6 +586,14 @@ class FakeAudio {
           return;
         }
         const silent = this._src.startsWith("blob:silent/");
+        if (!silent && isUnplayable(urlBlob.get(this._src))) {
+          // WebKit: 읽을 수 없는 Blob → error.code 4 + play() NotSupportedError(QA 1절 d·p·q)
+          this.paused = true;
+          this.error = { code: env.mediaErrorCode };
+          if (env.mediaErrorVia === "event") this.onerror?.();
+          reject(new DOMException("The operation is not supported.", "NotSupportedError"));
+          return;
+        }
         if (!silent && env.playRejectName) {
           this.paused = true;
           reject(new DOMException("play() not allowed", env.playRejectName)); // iOS 탭 밖 재생 차단 모사
@@ -669,6 +739,7 @@ function installStubs(): void {
   g.Audio = FakeAudio;
   g.SpeechSynthesisUtterance = FakeUtterance;
   g.speechSynthesis = synth;
+  g.Blob = SniffBlob; // speech.ts·tts-cache.ts가 만드는 Blob도 손상 표식을 판별한다(호출 시점에 전역을 읽는다)
   let seq = 0;
   URL.createObjectURL = ((b: Blob) => {
     seq++;
@@ -680,6 +751,8 @@ function installStubs(): void {
     env.urlCreated++;
     const u = `blob:tts/${seq}`;
     env.liveUrls.add(u);
+    urlBlob.set(u, b);
+    lastTtsUrl = u;
     return u;
   }) as typeof URL.createObjectURL;
   URL.revokeObjectURL = ((u: string) => {
@@ -729,7 +802,9 @@ function installFetchStub(): void {
       throw abortError();
     }
     if (status !== 200) return new Response("x", { status });
-    return new Response(new Blob([`mp3:${body.text}`], { type: "audio/mpeg" }), { status: 200 });
+    const payload = env.postBodyFor ? env.postBodyFor(body.text) : `mp3:${body.text}`;
+    const ct = env.postContentTypeFor ? env.postContentTypeFor(body.text) : "audio/mpeg";
+    return new Response(payload, { status: 200, headers: { "content-type": ct } });
   };
 }
 
@@ -1378,6 +1453,8 @@ async function main(): Promise<void> {
     stage: string | null;
     reason: string | null;
     fallback: string | null;
+    /** 자가 치유(캐시 오디오 손상 → 새로 받음) 여부 — 2026-09-27 추가 */
+    healed?: boolean;
   }
   const spx = sp as unknown as { getTtsPlaybackDiag?: (lang: string) => DiagLike | null; TTS_DIAG_EVENT?: string };
   const diagOf = (lang: string): DiagLike | null => (typeof spx.getTtsPlaybackDiag === "function" ? spx.getTtsPlaybackDiag(lang) : null);
@@ -1387,7 +1464,7 @@ async function main(): Promise<void> {
       diagEvents.push(((e as CustomEvent).detail ?? {}) as { lang?: string });
     });
   }
-  const dshort = (d: DiagLike | null) => (d ? `${d.ok ? "ok" : "fail"}/${d.stage}/${d.reason}/${d.fallback}` : "(없음)");
+  const dshort = (d: DiagLike | null | undefined) => (d ? `${d.ok ? "ok" : "fail"}/${d.stage}/${d.reason}/${d.fallback}${d.healed ? "/healed" : ""}` : "(없음)");
 
   // F1 — speak()(cloud)이 반환되는 그 순간(동기)에 잠금 해제가 끝나 있어야 한다(⑭의 speak 판).
   {
@@ -2081,16 +2158,67 @@ async function main(): Promise<void> {
   // -------------------------------------------------------------------------
   const cache = await import("../lib/tts-cache");
   const blobOf = (s: string) => new Blob([s], { type: "audio/mpeg" });
-  const fakeKv = (fp: string | null, entries: Record<string, Blob> = {}) => {
-    const m = new Map<string, { blob: Blob; size: number; atime: number }>(Object.entries(entries).map(([k, b]) => [k, { blob: b, size: b.size, atime: 0 }]));
-    const st = { fp, gets: 0, clears: 0 };
+  const bytesOf = (s: string) => new TextEncoder().encode(s).buffer as ArrayBuffer;
+  const textOf = (b: ArrayBuffer | null | undefined) => (b ? new TextDecoder().decode(new Uint8Array(b)) : "(없음)");
+  /**
+   * 가짜 KV — IndexedDB v2와 같은 계약(목록+바이트, 옛 형식 v1 Blob 레코드). `entries`는 새 형식(바이트, audio/mpeg),
+   * `legacy`는 옛 형식 Blob 레코드(= 이전 프로세스가 쓴 것). `webkit`: WebKit 결함 모사(QA F1) — get이 내준 옛 Blob이 있는
+   * 키를 put으로 다시 쓰면 그 Blob이 죽고, 넣은 값이 그 Blob이면 새 레코드도 죽는다(구 코드의 touch).
+   * 조회 경로가 오디오 레코드를 다시 쓰는지 보려고 put·touch·delete를 전부 센다. put에 Blob이 섞여 들어오면 `blobPuts`.
+   */
+  type FakeRec =
+    | { kind: "bytes"; bytes: ArrayBuffer | null; type: string; size: number; atime: number }
+    | { kind: "legacy"; blob: Blob; size: number; atime: number };
+  const fakeKv = (
+    fp: string | null,
+    entries: Record<string, string> = {},
+    opts: { legacy?: Record<string, Blob>; webkit?: boolean } = {},
+  ) => {
+    const m = new Map<string, FakeRec>();
+    for (const [k, v] of Object.entries(entries)) {
+      const b = bytesOf(v);
+      m.set(k, { kind: "bytes", bytes: b, type: "audio/mpeg", size: b.byteLength, atime: 0 });
+    }
+    for (const [k, b] of Object.entries(opts.legacy ?? {})) m.set(k, { kind: "legacy", blob: b, size: b.size, atime: 0 });
+    const st = { fp, gets: 0, clears: 0, puts: [] as string[], touches: [] as string[], deletes: [] as string[], blobPuts: 0 };
+    /** 이번 "프로세스"에서 get이 내준 옛 Blob(키별) */
+    const handedOut = new Map<string, Blob[]>();
     const kv: TtsKvBackend = {
       get: async (k) => {
         st.gets++;
-        return m.get(k) ?? null;
+        const r = m.get(k);
+        if (!r) return null;
+        if (r.kind === "legacy") {
+          handedOut.set(k, [...(handedOut.get(k) ?? []), r.blob]);
+          return { ...r };
+        }
+        return { ...r, bytes: r.bytes ? r.bytes.slice(0) : null }; // IDB처럼 구조화 복제
       },
-      put: async (k, e) => void m.set(k, e),
-      delete: async (k) => void m.delete(k),
+      put: async (k, e) => {
+        st.puts.push(k);
+        const raw = e as unknown as Record<string, unknown>;
+        const blobField = Object.values(raw).find((v) => v instanceof NodeBlob) as Blob | undefined;
+        if (blobField) st.blobPuts++;
+        if (opts.webkit) {
+          for (const hb of handedOut.get(k) ?? []) (hb as DeadableBlob).dead = true; // 옛 Blob 파일이 지워진다
+          handedOut.delete(k);
+        }
+        if (blobField) {
+          // 구 코드 모양(레코드에 Blob) — 그 Blob이 방금 죽었으면 새 레코드도 죽은 Blob을 가리킨다
+          m.set(k, { kind: "legacy", blob: blobField, size: Number(raw.size) || 0, atime: Number(raw.atime) || 0 });
+          return;
+        }
+        m.set(k, { kind: "bytes", bytes: e.bytes ? e.bytes.slice(0) : null, type: e.type, size: e.size, atime: e.atime });
+      },
+      touch: async (k, at) => {
+        st.touches.push(k);
+        const r = m.get(k);
+        if (r && r.kind === "bytes") m.set(k, { ...r, atime: at }); // 목록 시각만 — 바이트는 그대로
+      },
+      delete: async (k) => {
+        st.deletes.push(k);
+        m.delete(k);
+      },
       list: async () => [...m].map(([key, e]) => ({ key, size: e.size, atime: e.atime })),
       clear: async () => {
         st.clears++;
@@ -2139,7 +2267,7 @@ async function main(): Promise<void> {
       if (n === 1) throw new Error("network");
       return "fp1";
     });
-    const { kv, st } = fakeKv("fp1", { k1: blobOf("저장된 오디오") });
+    const { kv, st } = fakeKv("fp1", { k1: "저장된 오디오" });
     cache.setTtsKvBackend(kv);
     const first = await cache.ttsCacheGet("k1");
     const second = await cache.ttsCacheGet("k1");
@@ -2158,7 +2286,7 @@ async function main(): Promise<void> {
       n++;
       throw new Error("timeout");
     });
-    const { kv, st } = fakeKv("fp1", { k1: blobOf("x") });
+    const { kv, st } = fakeKv("fp1", { k1: "x" });
     cache.setTtsKvBackend(kv);
     const got: (Blob | null)[] = [];
     for (let i = 0; i < 6; i++) got.push(await cache.ttsCacheGet("k1"));
@@ -2172,7 +2300,7 @@ async function main(): Promise<void> {
       n++;
       return null;
     });
-    const { kv, st, m } = fakeKv("fp1", { k1: blobOf("x") });
+    const { kv, st, m } = fakeKv("fp1", { k1: "x" });
     cache.setTtsKvBackend(kv);
     for (let i = 0; i < 4; i++) await cache.ttsCacheGet("k1");
     await cache.ttsCachePut("k2", blobOf("y"));
@@ -2188,7 +2316,7 @@ async function main(): Promise<void> {
       if (n === 1) throw new Error("slow");
       return "fp1";
     });
-    const { kv } = fakeKv("fp1", { k1: blobOf("x") });
+    const { kv } = fakeKv("fp1", { k1: "x" });
     cache.setTtsKvBackend(kv);
     const wave = await Promise.all([cache.ttsCacheGet("k1"), cache.ttsCacheGet("k1"), cache.ttsCacheGet("k1")]);
     const nWave = n;
@@ -2204,7 +2332,7 @@ async function main(): Promise<void> {
   // E6 회귀: 지문이 바뀌면 store를 통째로 비우고 새 지문을 기록(옛 목소리 0)
   {
     cache.setTtsFingerprintProvider(async () => "fp-new");
-    const { kv, st, m } = fakeKv("fp-old", { k1: blobOf("옛 목소리") });
+    const { kv, st, m } = fakeKv("fp-old", { k1: "옛 목소리" });
     cache.setTtsKvBackend(kv);
     const got = await cache.ttsCacheGet("k1");
     await cache.ttsCachePut("k2", blobOf("새 목소리"));
@@ -2221,7 +2349,7 @@ async function main(): Promise<void> {
   {
     const f = (sp as { __fetchTtsFingerprint?: () => Promise<string | null> }).__fetchTtsFingerprint;
     const text = "IDB에 있는 해설.";
-    const { kv } = fakeKv("alloy|stub|i2", { [`ko-KR:1:${text}`]: blobOf(`mp3:${text}`) });
+    const { kv } = fakeKv("alloy|stub|i2", { [`ko-KR:1:${text}`]: `mp3:${text}` });
     cache.setTtsFingerprintProvider(f ?? null);
     cache.setTtsKvBackend(kv);
     env.getStatus = "neterr";
@@ -2238,6 +2366,418 @@ async function main(): Promise<void> {
       "통합: 지문 GET 네트워크 실패 뒤 다음 재생에서 지문을 다시 받아 IDB 적중(재합성 0) — 저장은 재조회를 일으키지 않음",
       typeof f === "function" && posts1 === 1 && posts2 === 0 && env.gets === 2 && JSON.stringify(r2.ends) === JSON.stringify(["done"]),
       `1차 POST ${posts1} 2차 POST ${posts2} GET ${env.gets} ends=${r1.ends.join(",")}/${r2.ends.join(",")}`,
+    );
+    await settle(sp);
+  }
+
+  // -------------------------------------------------------------------------
+  // G. 영속 캐시 형식·자가 치유 (§16-5, 2026-09-27 iPhone 신고 "클라우드 실패(재생 NotSupportedError) → 기기 음성")
+  //    원인(QA common_tts-notsupported_1 F1): ttsCacheGet이 IDB에서 꺼낸 Blob을 atime용으로 같은 키에 다시 put → WebKit에서
+  //    이전 프로세스가 쓴 Blob 레코드를 다시 쓰면 꺼낸 Blob·레코드가 죽는다 → <audio> error 4 → play() NotSupportedError.
+  //    가짜 KV의 webkit 모드가 그 결함을 모사한다 — G4가 구 알고리즘으로 모사가 실제로 죽이는지 먼저 잠근다(변이 잠금).
+  //    수정: 바이트(ArrayBuffer)+형식 저장·꺼낼 때마다 새 메모리 Blob·조회 때 오디오 레코드 재기록 0(LRU는 목록만)·옛 Blob은 읽어서
+  //    이전(실패면 미스+지움)·합성 응답 content-type 검사·재생 단계 미디어 소스 오류면 두 캐시에서 빼고 한 번 새로 받기(자가 치유).
+  // -------------------------------------------------------------------------
+  const FP = "alloy|stub|i2";
+  const useKv = (b: TtsKvBackend) => {
+    cache.setTtsFingerprintProvider(async () => FP);
+    cache.setTtsKvBackend(b);
+  };
+  const flush = () => cache.__flushTtsCacheWrites();
+  const isAB = (v: unknown): v is ArrayBuffer => v instanceof ArrayBuffer;
+  /** ev0 이후 그 언어로 새로 기록된 진단(마지막 것) */
+  const newDiag = (ev0: number, lang: string) => (diagEvents.slice(ev0).filter((e) => e.lang === lang) as DiagLike[]).pop();
+  const newDiags = (ev0: number, lang: string) => diagEvents.slice(ev0).filter((e) => e.lang === lang) as DiagLike[];
+  const readText = (b: Blob | null | undefined) => (b ? b.text().catch((e: Error) => `읽기 실패 ${e.name}`) : Promise.resolve("(null)"));
+
+  // G1 저장 형식
+  {
+    const { kv, st, m } = fakeKv(FP);
+    useKv(kv);
+    await cache.ttsCacheGet("warm"); // 지문 확인(저장은 지문 조회를 새로 일으키지 않는다)
+    await cache.ttsCachePut("k1", new Blob(["mp3:abc"], { type: "audio/mpeg" }));
+    await cache.ttsCachePut("k2", new Blob(["mp3:def"], { type: "" }));
+    await cache.ttsCachePut("k3", new Blob(["<html>portal</html>"], { type: "text/html" }));
+    const r1 = m.get("k1");
+    const r2 = m.get("k2");
+    add(
+      "영속캐시",
+      "G1 저장은 바이트(ArrayBuffer)+형식 — 레코드에 Blob 없음(blobPuts 0)·형식 없는 Blob은 audio/mpeg·오디오 아닌 Blob(text/html)은 저장 안 함",
+      r1?.kind === "bytes" && isAB(r1.bytes) && textOf(r1.bytes) === "mp3:abc" && r1.type === "audio/mpeg" && r1.size === 7 &&
+        r2?.kind === "bytes" && r2.type === "audio/mpeg" && !m.has("k3") && st.blobPuts === 0,
+      `k1=${r1?.kind}/${r1?.kind === "bytes" ? `${textOf(r1.bytes)}/${r1.type}/${r1.size}` : "-"} k2=${r2?.kind === "bytes" ? r2.type : "-"} k3=${m.has("k3")} blobPuts=${st.blobPuts}`,
+    );
+  }
+
+  // G2 바이트 적중 — 새 메모리 Blob, 재기록 0, LRU는 목록 시각만
+  {
+    const { kv, st, m } = fakeKv(FP, { k1: "mp3:hello" });
+    useKv(kv);
+    const a = await cache.ttsCacheGet("k1");
+    const b = await cache.ttsCacheGet("k1");
+    await flush();
+    const rec = m.get("k1");
+    const at = await readText(a);
+    add(
+      "영속캐시",
+      "G2 조회는 매번 새 메모리 Blob(audio/mpeg·같은 내용) — 조회 때 오디오 레코드 재기록 0(put 0), LRU는 목록 시각만(touch 2)",
+      !!a && !!b && a !== b && a.type === "audio/mpeg" && at === "mp3:hello" && st.puts.length === 0 && st.touches.length === 2 &&
+        rec?.kind === "bytes" && rec.atime > 0 && textOf(rec.bytes) === "mp3:hello",
+      `같은객체=${a === b} type=${a?.type} 내용=${at} put ${st.puts.length} touch ${st.touches.length} atime=${rec?.atime ?? "-"}`,
+    );
+  }
+
+  // G3 옛 형식(v1 Blob) — 읽어서 이전, WebKit 모사에서도 내준 Blob은 산다
+  {
+    const old = new DeadableBlob(["mp3:old"], { type: "audio/mpeg" });
+    const { kv, st, m } = fakeKv(FP, {}, { legacy: { k1: old }, webkit: true });
+    useKv(kv);
+    const got = await cache.ttsCacheGet("k1");
+    await flush();
+    const gotText = await readText(got);
+    const rec = m.get("k1");
+    const again = await cache.ttsCacheGet("k1");
+    await flush();
+    add(
+      "영속캐시",
+      "G3 옛 형식(v1 Blob) 레코드: 바이트를 먼저 읽어 새 메모리 Blob으로 내주고 새 형식으로 이전 — 이전 쓰기로 옛 Blob이 죽어도(WebKit 모사) 내준 Blob은 읽힘, 다음 조회는 바이트 적중·재기록 0",
+      gotText === "mp3:old" && got !== old && old.dead === true && rec?.kind === "bytes" && textOf(rec.bytes) === "mp3:old" &&
+        rec.type === "audio/mpeg" && st.blobPuts === 0 && !!again && st.puts.length === 1 && st.touches.length === 1,
+      `내준=${gotText} 옛Blob죽음=${old.dead} 이전=${rec?.kind} put ${st.puts.length} touch ${st.touches.length} 재조회=${again ? "적중" : "null"}`,
+    );
+  }
+
+  // G4 변이 잠금 — 구 알고리즘(꺼낸 Blob을 같은 키에 다시 put)은 이 모사에서 죽는다
+  {
+    const old = new DeadableBlob(["mp3:old"], { type: "audio/mpeg" });
+    const { kv, m } = fakeKv(FP, {}, { legacy: { k1: old }, webkit: true });
+    const rec = (await kv.get("k1")) as { kind: "legacy"; blob: Blob; size: number; atime: number };
+    // 2026-09-27 이전 ttsCacheGet 그대로: void b.put(key, { ...entry, atime: Date.now() }) → return entry.blob
+    void kv.put("k1", { blob: rec.blob, size: rec.size, atime: Date.now() } as unknown as Parameters<TtsKvBackend["put"]>[1]);
+    await sleep(1);
+    const read = await rec.blob.arrayBuffer().then(() => "ok", (e: Error) => e.name);
+    const again = m.get("k1");
+    const readAgain = again?.kind === "legacy" ? await again.blob.arrayBuffer().then(() => "ok", (e: Error) => e.name) : "(형식 바뀜)";
+    add(
+      "영속캐시",
+      "G4 변이 잠금 — 구 알고리즘(꺼낸 Blob을 같은 키에 다시 put)은 이 모사에서 꺼낸 Blob·레코드가 모두 죽음(NotFoundError) = G3·G8~G10이 잡는 결함이 실재",
+      read === "NotFoundError" && readAgain === "NotFoundError",
+      `꺼낸 Blob=${read} 레코드 재조회=${readAgain}`,
+    );
+  }
+
+  // G5 쓸 수 없는 옛 레코드 → 미스+지움
+  {
+    const dead = new DeadableBlob(["mp3:dead"], { type: "audio/mpeg" });
+    dead.dead = true;
+    const html = new DeadableBlob(["<html>"], { type: "text/html" });
+    const untyped = new DeadableBlob(["mp3:untyped"], { type: "" });
+    const hang = new DeadableBlob(["mp3:hang"], { type: "audio/mpeg" });
+    hang.hang = true;
+    const { kv, m } = fakeKv(FP, {}, { legacy: { kd: dead, kh: html, ku: untyped, kg: hang } });
+    useKv(kv);
+    cache.__setLegacyReadTimeout(30);
+    const t0 = Date.now();
+    const [gd, gh, gu, gg] = await Promise.all(["kd", "kh", "ku", "kg"].map((k) => cache.ttsCacheGet(k)));
+    const el = Date.now() - t0;
+    await flush();
+    cache.__setLegacyReadTimeout(null);
+    const ut = await readText(gu);
+    add(
+      "영속캐시",
+      "G5 쓸 수 없는 옛 레코드는 미스(null)+지움: 이미 죽음·오디오 아닌 형식(text/html)·읽기 매달림(상한 뒤) / 형식 없는 옛 Blob은 audio/mpeg로 살림",
+      gd === null && gh === null && gg === null && !m.has("kd") && !m.has("kh") && !m.has("kg") && gu?.type === "audio/mpeg" && ut === "mp3:untyped" && el < 1000,
+      `죽음=${gd} html=${gh} 매달림=${gg}(${el}ms) 무형식=${gu?.type}/${ut} 남은키=${[...m.keys()].join(",")}`,
+    );
+  }
+
+  // G6 바이트 레코드 손상 → 미스+지움
+  {
+    const { kv, st, m } = fakeKv(FP);
+    m.set("nobytes", { kind: "bytes", bytes: null, type: "audio/mpeg", size: 0, atime: 0 });
+    m.set("empty", { kind: "bytes", bytes: new ArrayBuffer(0), type: "audio/mpeg", size: 0, atime: 0 });
+    m.set("html", { kind: "bytes", bytes: bytesOf("<html>"), type: "text/html", size: 6, atime: 0 });
+    m.set("notype", { kind: "bytes", bytes: bytesOf("mp3:nt"), type: "", size: 6, atime: 0 });
+    useKv(kv);
+    const r = await Promise.all(["nobytes", "empty", "html", "notype"].map((k) => cache.ttsCacheGet(k)));
+    await flush();
+    add(
+      "영속캐시",
+      "G6 바이트 레코드 손상(바이트 없음·빈 바이트·오디오 아닌 형식)은 미스+지움 / 형식 빈 칸은 audio/mpeg로 복원 — 재기록 0",
+      r[0] === null && r[1] === null && r[2] === null && r[3]?.type === "audio/mpeg" && !m.has("nobytes") && !m.has("empty") && !m.has("html") && m.has("notype") && st.puts.length === 0,
+      `결과=${r.map((x) => (x ? x.type || "(무형식)" : "null")).join(",")} 남은키=${[...m.keys()].join(",")} put ${st.puts.length}`,
+    );
+  }
+
+  // ---- 앱 경로(speech.ts → tts-cache) ----
+  sp.setTtsEngine("ja-JP", "cloud");
+  await settle(sp);
+
+  // G7 단발 — IDB 바이트 적중
+  {
+    const key = "ja-JP:1:みみ";
+    const { kv, st } = fakeKv(FP, { [key]: "mp3:みみ" });
+    useKv(kv);
+    const ev0 = diagEvents.length;
+    sp.speak("みみ", "ja-JP");
+    await waitFor(() => newDiag(ev0, "ja-JP") !== undefined && env.urlCreated >= 1 && env.liveUrls.size === 0, 1000);
+    await flush();
+    const d = newDiag(ev0, "ja-JP");
+    const played = urlBlob.get(lastTtsUrl);
+    add(
+      "영속캐시",
+      "G7 앱 경로(단발): IDB 바이트 적중 → POST 0·클라우드 ✓·재생한 것은 새 메모리 Blob(audio/mpeg)·조회 때 오디오 재기록 0·기기 0",
+      env.posts.length === 0 && d?.ok === true && !d.healed && played?.type === "audio/mpeg" && !(played instanceof DeadableBlob) && st.puts.length === 0 && deviceTexts().length === 0,
+      `POST ${env.posts.length} diag=${dshort(d)} 재생 type=${played?.type} put ${st.puts.length} device=${deviceTexts().join("|") || "0"}`,
+    );
+    await settle(sp);
+  }
+
+  // G8 단발 — 옛 형식(WebKit 모사): 재실행 뒤 🔊 → POST 0·✓·이전 → 새로고침 뒤 🔊도 POST 0·✓
+  {
+    const key = "ja-JP:1:あめ";
+    const old = new DeadableBlob(["mp3:あめ"], { type: "audio/mpeg" });
+    const { kv, st, m } = fakeKv(FP, {}, { legacy: { [key]: old }, webkit: true });
+    useKv(kv);
+    let ev0 = diagEvents.length;
+    sp.speak("あめ", "ja-JP");
+    await waitFor(() => newDiag(ev0, "ja-JP") !== undefined && env.liveUrls.size === 0, 1000);
+    const d1 = newDiag(ev0, "ja-JP");
+    await flush();
+    const migrated = m.get(key)?.kind;
+    sp.__clearTtsMemoryCache(); // 새로고침(메모리 비움) — 이번엔 바이트 레코드 적중
+    ev0 = diagEvents.length;
+    sp.speak("あめ", "ja-JP");
+    await waitFor(() => newDiag(ev0, "ja-JP") !== undefined && env.liveUrls.size === 0, 1000);
+    const d2 = newDiag(ev0, "ja-JP");
+    add(
+      "영속캐시",
+      "G8 앱 경로(단발): 옛 형식 레코드(WebKit 모사 — 이전 쓰기가 옛 Blob을 죽임) → POST 0·클라우드 ✓(치유 없이)·새 형식 이전 → 새로고침 뒤 🔊도 POST 0·✓",
+      env.posts.length === 0 && d1?.ok === true && !d1.healed && d2?.ok === true && !d2.healed && migrated === "bytes" && old.dead === true && deviceTexts().length === 0 && st.puts.length === 1,
+      `POST ${env.posts.length} 1차=${dshort(d1)} 2차=${dshort(d2)} 이전=${migrated} put ${st.puts.length} device=${deviceTexts().join("|") || "0"}`,
+    );
+    await settle(sp);
+  }
+
+  // G9 단발 — 이미 죽은 옛 레코드(배포 직후 같은 프로세스): 미스 → 지움 → 재합성 1 POST → ✓
+  {
+    const key = "ja-JP:1:かぜ";
+    const dead = new DeadableBlob(["mp3:かぜ"], { type: "audio/mpeg" });
+    dead.dead = true;
+    const { kv, m } = fakeKv(FP, {}, { legacy: { [key]: dead }, webkit: true });
+    useKv(kv);
+    const ev0 = diagEvents.length;
+    sp.speak("かぜ", "ja-JP");
+    await waitFor(() => newDiag(ev0, "ja-JP") !== undefined && env.liveUrls.size === 0, 1000);
+    await flush();
+    const d = newDiag(ev0, "ja-JP");
+    const rec = m.get(key);
+    add(
+      "영속캐시",
+      "G9 앱 경로(단발): 옛 코드가 이미 죽인 레코드 → 읽기 검증 실패 → 지우고 재합성(POST 1) → 클라우드 ✓·새 형식 저장·기기 0",
+      env.posts.join("|") === "かぜ" && d?.ok === true && !d.healed && rec?.kind === "bytes" && textOf(rec.bytes) === "mp3:かぜ" && deviceTexts().length === 0,
+      `POST=${env.posts.join("|")} diag=${dshort(d)} 저장=${rec?.kind}/${rec?.kind === "bytes" ? textOf(rec.bytes) : "-"} device=${deviceTexts().join("|") || "0"}`,
+    );
+    await settle(sp);
+  }
+
+  // G10 자가 치유 — 단발(play() NotSupportedError 경로)
+  {
+    const key = "ja-JP:1:くも";
+    const { kv, st, m } = fakeKv(FP, { [key]: "CORRUPT:くも" });
+    useKv(kv);
+    const ev0 = diagEvents.length;
+    sp.speak("くも", "ja-JP");
+    await waitFor(() => newDiag(ev0, "ja-JP") !== undefined && env.urlCreated >= 2 && env.liveUrls.size === 0, 1500);
+    await flush();
+    const d = newDiag(ev0, "ja-JP");
+    const rec = m.get(key);
+    add(
+      "영속캐시",
+      "G10 자가 치유(단발): 캐시 오디오가 재생 NotSupportedError → 두 캐시에서 빼고 새로 받아(POST 1) 같은 요소로 클라우드 ✓ — 진단 healed·IDB는 새 오디오·기기 0·URL 2/2",
+      env.posts.join("|") === "くも" && d?.ok === true && d.healed === true && st.deletes.includes(key) && rec?.kind === "bytes" && textOf(rec.bytes) === "mp3:くも" &&
+        deviceTexts().length === 0 && env.urlCreated === 2 && env.urlRevoked === 2 && queueEls().length === 1,
+      `POST=${env.posts.join("|") || "0"} diag=${dshort(d)} 지움=${st.deletes.join(",") || "0"} IDB=${rec?.kind === "bytes" ? textOf(rec.bytes) : rec?.kind ?? "없음"} device=${deviceTexts().join("|") || "0"} URL ${env.urlCreated}/${env.urlRevoked}`,
+    );
+    await settle(sp);
+  }
+
+  // G11 자가 치유 — error 이벤트(code 4)가 먼저 와도 같다 / MEDIA_ERR_ABORTED(1)는 오디오 문제가 아니다(치유 안 함)
+  {
+    const key = "ja-JP:1:そら";
+    const { kv } = fakeKv(FP, { [key]: "CORRUPT:そら" });
+    useKv(kv);
+    env.mediaErrorVia = "event";
+    let ev0 = diagEvents.length;
+    sp.speak("そら", "ja-JP");
+    await waitFor(() => newDiag(ev0, "ja-JP") !== undefined && env.urlCreated >= 2 && env.liveUrls.size === 0, 1500);
+    const d4 = newDiag(ev0, "ja-JP");
+    const posts4 = env.posts.length;
+    await settle(sp);
+
+    const key1 = "ja-JP:1:うみ";
+    const kv1 = fakeKv(FP, { [key1]: "CORRUPT:うみ" });
+    useKv(kv1.kv);
+    env.mediaErrorVia = "event";
+    env.mediaErrorCode = 1;
+    ev0 = diagEvents.length;
+    sp.speak("うみ", "ja-JP");
+    await waitFor(() => newDiag(ev0, "ja-JP") !== undefined && deviceTexts().includes("うみ"), 1500);
+    await flush();
+    const d1 = newDiag(ev0, "ja-JP");
+    add(
+      "영속캐시",
+      "G11 error 이벤트(code 4)가 먼저 와도 치유(POST 1·✓ healed) / code 1(MEDIA_ERR_ABORTED)은 치유 안 함(POST 0·기기 음성·캐시 유지)",
+      posts4 === 1 && d4?.ok === true && d4.healed === true &&
+        env.posts.length === 0 && d1?.ok === false && d1.stage === "play" && d1.reason === "audio play error" && !d1.healed && d1.fallback === "device" && kv1.st.deletes.length === 0,
+      `code4: POST ${posts4} ${dshort(d4)} / code1: POST ${env.posts.length} ${dshort(d1)} 지움 ${kv1.st.deletes.length}`,
+    );
+    await settle(sp);
+  }
+
+  // G12 자가 치유는 1회뿐 — 새로 받은 것도 못 틀면 기기 음성, 캐시에 남기지 않음, 다음 🔊도 1 POST(치유 없이)
+  {
+    const key = "ja-JP:1:ゆき";
+    const { kv, m } = fakeKv(FP, { [key]: "CORRUPT:old" });
+    useKv(kv);
+    env.postBodyFor = () => "CORRUPT:new";
+    let ev0 = diagEvents.length;
+    sp.speak("ゆき", "ja-JP");
+    await waitFor(() => newDiag(ev0, "ja-JP") !== undefined && deviceTexts().includes("ゆき"), 1500);
+    await sleep(20);
+    await flush();
+    const d1 = newDiag(ev0, "ja-JP");
+    const posts1 = env.posts.length;
+    const kept = m.has(key);
+    ev0 = diagEvents.length;
+    sp.speak("ゆき", "ja-JP");
+    await waitFor(() => newDiag(ev0, "ja-JP") !== undefined && deviceTexts().filter((t) => t === "ゆき").length >= 2, 1500);
+    await sleep(20);
+    await flush();
+    const d2 = newDiag(ev0, "ja-JP");
+    add(
+      "영속캐시",
+      "G12 자가 치유 1회뿐: 새로 받은 것도 재생 실패 → 기기 음성(POST 정확히 1·진단 play/NotSupportedError/device/healed)·못 트는 오디오는 두 캐시에 안 남김 → 다음 🔊도 POST 1(캐시 아님 → 치유 없이 기기)",
+      posts1 === 1 && d1?.ok === false && d1.stage === "play" && d1.reason === "NotSupportedError" && d1.fallback === "device" && d1.healed === true && !kept &&
+        env.posts.length === 2 && d2?.ok === false && d2.stage === "play" && !d2.healed && !m.has(key),
+      `1차 POST ${posts1} ${dshort(d1)} 캐시남음=${kept} / 2차 POST 누적 ${env.posts.length} ${dshort(d2)} 캐시남음=${m.has(key)}`,
+    );
+    await settle(sp);
+  }
+
+  // G13 오디오 문제가 아닌 재생 실패(iOS NotAllowedError)는 치유 대상이 아니다 — POST 0·캐시 유지
+  {
+    const key = "ja-JP:1:ほし";
+    const { kv, st } = fakeKv(FP, { [key]: "mp3:ほし" });
+    useKv(kv);
+    env.playRejectName = "NotAllowedError";
+    let ev0 = diagEvents.length;
+    sp.speak("ほし", "ja-JP");
+    await waitFor(() => newDiag(ev0, "ja-JP") !== undefined && deviceTexts().includes("ほし"), 1500);
+    const d1 = newDiag(ev0, "ja-JP");
+    env.playRejectName = null;
+    ev0 = diagEvents.length;
+    sp.speak("ほし", "ja-JP");
+    await waitFor(() => newDiag(ev0, "ja-JP") !== undefined && env.liveUrls.size === 0, 1500);
+    await flush();
+    const d2 = newDiag(ev0, "ja-JP");
+    add(
+      "영속캐시",
+      "G13 NotAllowedError(iOS 재생 차단)는 치유 대상 아님 — POST 0·캐시 지움 0·기기 음성, 풀리면 같은 캐시로 ✓",
+      env.posts.length === 0 && d1?.reason === "NotAllowedError" && !d1.healed && st.deletes.length === 0 && d2?.ok === true,
+      `POST ${env.posts.length} 1차=${dshort(d1)} 2차=${dshort(d2)} 지움 ${st.deletes.length}`,
+    );
+    await settle(sp);
+  }
+
+  // G14 합성 응답 content-type — 200인데 오디오가 아니면 합성 단계 'tts type' → 기기, 두 캐시에 안 남음 / 매개변수 붙은 audio/mpeg는 정상
+  {
+    const { kv, m } = fakeKv(FP);
+    useKv(kv);
+    env.postContentTypeFor = () => "text/html; charset=utf-8";
+    let ev0 = diagEvents.length;
+    sp.speak("はれ", "ja-JP");
+    await waitFor(() => newDiag(ev0, "ja-JP") !== undefined && deviceTexts().includes("はれ"), 1500);
+    const d1 = newDiag(ev0, "ja-JP");
+    ev0 = diagEvents.length;
+    sp.speak("はれ", "ja-JP");
+    await waitFor(() => newDiag(ev0, "ja-JP") !== undefined && deviceTexts().filter((t) => t === "はれ").length >= 2, 1500);
+    await flush();
+    const postsHtml = env.posts.filter((t) => t === "はれ").length;
+    const keptHtml = m.has("ja-JP:1:はれ");
+    env.postContentTypeFor = () => "audio/mpeg; charset=binary";
+    ev0 = diagEvents.length;
+    sp.speak("くもり", "ja-JP");
+    await waitFor(() => newDiag(ev0, "ja-JP") !== undefined && env.liveUrls.size === 0, 1500);
+    await flush();
+    const d3 = newDiag(ev0, "ja-JP");
+    const rec = m.get("ja-JP:1:くもり");
+    add(
+      "영속캐시",
+      "G14 합성 200 + text/html → 합성 단계 'tts type'·기기 음성·메모리·IDB에 안 남음(다시 누르면 다시 POST, 재생 URL 0) / 'audio/mpeg; charset=binary'는 정상 재생·저장 형식 audio/mpeg",
+      d1?.ok === false && d1.stage === "synth" && d1.reason === "tts type" && d1.fallback === "device" && postsHtml === 2 && !keptHtml &&
+        d3?.ok === true && rec?.kind === "bytes" && rec.type === "audio/mpeg" && env.urlCreated === 1,
+      `html=${dshort(d1)} POST ${postsHtml} 캐시=${keptHtml} / 매개변수=${dshort(d3)} 저장형식=${rec?.kind === "bytes" ? rec.type : "-"} URL ${env.urlCreated}`,
+    );
+    await settle(sp);
+  }
+
+  // G15 자가 치유 — 큐(speakQueue): 손상된 캐시 조각은 새로 받아 재생, 다음 조각은 캐시 그대로
+  {
+    const { kv } = fakeKv(FP, { "ko-KR:1:손상된 조각.": "CORRUPT", "ko-KR:1:정상 조각.": "mp3:정상 조각." });
+    useKv(kv);
+    const ev0 = diagEvents.length;
+    const r = startQueue(sp, [ko("손상된 조각."), ko("정상 조각.")], "H");
+    await waitFor(() => r.ends.length > 0, 2000);
+    const ds = newDiags(ev0, "ko-KR");
+    add(
+      "영속캐시",
+      "G15 자가 치유(큐): 손상된 캐시 조각 → 새로 받아(POST 1) 클라우드로 → 다음 조각은 캐시(POST 0) — done·sounded 2·기기 0·진단 [✓healed, ✓]",
+      JSON.stringify(r.ends) === '["done"]' && JSON.stringify(r.sounded) === "[2]" && env.posts.join("|") === "손상된 조각." && deviceTexts().length === 0 &&
+        ds.length === 2 && ds[0].ok && ds[0].healed === true && ds[1].ok && !ds[1].healed,
+      `ends=${r.ends.join(",")} sounded=${r.sounded.join(",")} POST=${env.posts.join("|") || "0"} device=${deviceTexts().join("|") || "0"} diag=${ds.map((x) => dshort(x)).join(" · ")}`,
+    );
+    await settle(sp);
+  }
+
+  // G16 자가 치유 1회(큐): 새로 받은 조각도 못 틀면 그 조각만 기기 음성 — POST 1, done, 진단 healed 실패
+  {
+    const { kv } = fakeKv(FP, { "ko-KR:1:또 손상.": "CORRUPT" });
+    useKv(kv);
+    env.postBodyFor = (t) => (t === "또 손상." ? "CORRUPT:new" : `mp3:${t}`);
+    const ev0 = diagEvents.length;
+    const r = startQueue(sp, [ko("또 손상."), ko("멀쩡한 새 조각.")], "H2");
+    await waitFor(() => r.ends.length > 0, 2000);
+    const ds = newDiags(ev0, "ko-KR");
+    add(
+      "영속캐시",
+      "G16 자가 치유 1회(큐): 새로 받은 것도 재생 실패 → 그 조각만 기기 음성(POST 그 조각 1)·다음 조각 클라우드·done·sounded 2·진단 [실패 healed, ✓]",
+      JSON.stringify(r.ends) === '["done"]' && JSON.stringify(r.sounded) === "[2]" && env.posts.filter((t) => t === "또 손상.").length === 1 &&
+        deviceTexts().join("|") === "또 손상." && ds.length === 2 && !ds[0].ok && ds[0].healed === true && ds[0].stage === "play" && ds[1].ok,
+      `ends=${r.ends.join(",")} POST=${env.posts.join("|")} device=${deviceTexts().join("|") || "0"} diag=${ds.map((x) => dshort(x)).join(" · ")}`,
+    );
+    await settle(sp);
+  }
+
+  // G17 프리페치도 같은 관문 — 죽은 옛 레코드는 지우고 재합성(POST 1), 멀쩡한 옛 레코드는 POST 0으로 이전
+  {
+    const dead = new DeadableBlob(["mp3:やま"], { type: "audio/mpeg" });
+    dead.dead = true;
+    const alive = new DeadableBlob(["mp3:かわ"], { type: "audio/mpeg" });
+    const { kv, m } = fakeKv(FP, {}, { legacy: { "ja-JP:1:やま": dead, "ja-JP:1:かわ": alive }, webkit: true });
+    useKv(kv);
+    const stop = sp.prefetchSpeech(["やま", "かわ"], "ja-JP");
+    await waitFor(() => m.get("ja-JP:1:やま")?.kind === "bytes" && m.get("ja-JP:1:かわ")?.kind === "bytes", 1500);
+    await sleep(10);
+    await flush();
+    stop();
+    const ry = m.get("ja-JP:1:やま");
+    const rk = m.get("ja-JP:1:かわ");
+    add(
+      "영속캐시",
+      "G17 프리페치도 같은 관문: 죽은 옛 레코드는 재합성(POST 1)·멀쩡한 옛 레코드는 POST 0으로 새 형식 이전",
+      env.posts.join("|") === "やま" && ry?.kind === "bytes" && textOf(ry.bytes) === "mp3:やま" && rk?.kind === "bytes" && textOf(rk.bytes) === "mp3:かわ",
+      `POST=${env.posts.join("|") || "0"} やま=${ry?.kind}/${ry?.kind === "bytes" ? textOf(ry.bytes) : "-"} かわ=${rk?.kind}/${rk?.kind === "bytes" ? textOf(rk.bytes) : "-"}`,
     );
     await settle(sp);
   }

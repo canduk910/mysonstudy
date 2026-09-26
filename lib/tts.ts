@@ -9,7 +9,7 @@
  */
 
 import OpenAI from "openai";
-import { clampTtsSpeed, type TtsLang } from "./tts-shared";
+import { clampTtsSpeed, TTS_AUDIO_MIME, type TtsLang } from "./tts-shared";
 
 /**
  * 기본 TTS 모델. **`gpt-4o-mini-tts`** — OpenAI의 최신·가장 자연스러운 TTS(steerable). tts-1/tts-1-hd의
@@ -142,5 +142,5 @@ export async function synthesizeSpeech(
     { signal },
   );
   const audio = Buffer.from(await res.arrayBuffer());
-  return { audio, contentType: "audio/mpeg", model, voice };
+  return { audio, contentType: TTS_AUDIO_MIME, model, voice };
 }
