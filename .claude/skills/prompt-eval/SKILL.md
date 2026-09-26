@@ -13,7 +13,7 @@ description: "prompt-tuner 에이전트가 프롬프트 품질을 튜닝할 때 
 
 | 과목 | references | 다이얼 예 |
 |---|---|---|
-| 영어 (북카드·단어장·챕터 리더) | `references/english-dials.md` | 단어 개수, challenge 비율, 질문 유형, hintKo 밀도, 줄거리 분량, 영영 정의, 단어 뜻 길이, 유의어 후보 |
+| 영어 (북카드·단어장·챕터 리더·자유대화) | `references/english-dials.md` | 단어 개수, challenge 비율, 질문 유형, hintKo 밀도, 줄거리 분량, 영영 정의, 단어 뜻 길이, 유의어 후보, 자유대화(선생님 차례 길이·질문 수·한국어 사용량·도움 카드 답 예시 수·설명 대본 조각 수 — 선생님 음성은 eval 밖, §10) |
 | 수학 (수학코치) | `references/math-dials.md` | 비유 종류, act2 단계 수, 규칙 카드 개수, 연습문제 숫자 범위 |
 | 일본어 (아빠의 일본어) | `references/japanese-dials.md` | 예문 길이, 대화 해설 항목 개수(goods·fixes·items·practice), 한자 읽기 개수. 레벨당 단어 개수(10)는 다이얼이 아니라 사용자 확정값이다(`japanese.md` §0-2) |
 | 토익 (아빠의 영어 · 토익스피킹) | `references/toeic-dials.md` | 발화 포인트 useIn 개수·문장 길이, 모의고사 지문 단어 수·파트별 모범답변 길이·목표 등급별 수준, 피드백 fixes 개수. 목표 등급(IM3·IH·AL)은 다이얼이 아니라 사용자가 모의고사를 만들 때 고르는 값이다 |
@@ -62,6 +62,7 @@ description: "prompt-tuner 에이전트가 프롬프트 품질을 튜닝할 때 
 |---|---|---|
 | 영어 | 판독 프롬프트 — 호출 A(표지)·A′(본문·목차)·C(단어장 원문 전사) | 보이는 것만 옮기는 호출이다. 표현을 다듬으면 창작이 새어 든다 |
 | 영어 | grounding 가드 — `groundChapters`·`isGroundedInTranscript`(자막에 없는 en 문장을 저장 전에 잘라낸다), `resolveAllowedStorySource`(넘긴 근거보다 높은 storySource를 zod가 거부) | 프롬프트 지시로 끝내지 않은 "자막 밖 창작 금지"의 최종 강제다. 느슨해지면 지어낸 문장이 원문처럼 저장된다 |
+| 영어 | 자유대화 — 선생님 지시문 `# Safety`(개인정보를 묻지 않고 되풀이하지 않음), 전사에 단어장 prompt·language 없음, 호출 I keyWords ⊂ 문장·ko/en 조각 분리·선생님 문장 betterEn null, 1학년 눈높이 | 아이 데이터·안전의 1차 장치이고, 하지 않은 말이 맞게 적히거나 문장에 없는 단어를 짚는 환각을 막는다(`english-dials.md` §10-4) |
 | 수학 | 호출 C(검산)·`verifyScene`·`held` 판정 | 보류가 줄어드는 대신 틀린 답이 아이에게 간다 |
 | 일본어 | 호출 B(대화 전사, temperature 0) 프롬프트 | 사진에 있는 것만 옮긴다. 해설은 호출 C가 따로 한다 |
 | 일본어 | 토큰 무결성 zod — `surface`를 이으면 원문(`word`·`example.ja`·`definitionJa`)과 정확히 같아야 한다 | 어긋나면 후리가나가 본문을 왜곡한 것이다 |
@@ -78,7 +79,7 @@ description: "prompt-tuner 에이전트가 프롬프트 품질을 튜닝할 때 
 
 | 과목 | 명령 | 실호출 |
 |---|---|---|
-| 영어 | `npm run eval:english` | 기본 카드 3회(Wolves·Pooh·Pooh+장면 메모), `EVAL_SKIP_PAGES=1`이면 2회. 게이트는 하나만 돌고 끝난다 — `EVAL_TRANSCRIPT=1`·`EVAL_CHAPTERS=1`·`EVAL_VOCAB=1`·`EVAL_WORDMEANING=1` 각 1회. 호출 H는 eval에 실호출 구간이 없다(오케스트레이터 별도 프로브) |
+| 영어 | `npm run eval:english` | 기본 카드 3회(Wolves·Pooh·Pooh+장면 메모), `EVAL_SKIP_PAGES=1`이면 2회. 게이트는 하나만 돌고 끝난다 — `EVAL_TRANSCRIPT=1`·`EVAL_CHAPTERS=1`·`EVAL_VOCAB=1`·`EVAL_WORDMEANING=1` 각 1회, `EVAL_TALK=1`(자유대화 호출 I) 2회. 호출 H와 자유대화 선생님(관문 R)은 eval에 실호출 구간이 없다(오케스트레이터 별도 프로브·동의 뒤 실연결) |
 | 수학 | `npm run eval:math` | 픽스처 4문제 × 2~4회 = 8~16회 + 2단 픽스처 호출 E 1~2회. `EVAL_ONLY=id`면 픽스처당 2~4회, `EVAL_SKIP_2DAN=1`이면 6~12회 |
 | 일본어 | `npm run eval:japanese` | **0회.** `EVAL_JAPANESE=1` 게이트는 자리만 있고 안내 문구만 찍는다(`scripts/eval-japanese.ts`의 `main`) |
 | 토익 | `npm run eval:toeic` | 기본 오프라인 0회. `EVAL_TOEIC=1`이면 B 1(지어낸 표현 7개) + C 1(`EVAL_TOEIC_PART`, 기본 `opinion`) + D 1(Q11 픽스처 전사문) = 3회, `EVAL_TOEIC_PHOTO=<사진 경로>`를 주면 A 1회 더. 관문 P(사진)·T(전사)는 게이트에 없다 |

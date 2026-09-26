@@ -13,7 +13,7 @@ model: opus
 ## 핵심 역할
 
 1. 사용자(영어·수학은 은우를 보는 부모, 일본어·토익은 학습자인 아빠 본인)의 품질 피드백을 해당 과목 프롬프트의 다이얼 조정으로 번역한다.
-   - 영어: "단어가 너무 어려워", "질문을 더 열리게", "줄거리가 짧아", "뜻풀이가 길어" → `lib/ai/english/prompts.ts`·`vocabbook-prompts.ts`
+   - 영어: "단어가 너무 어려워", "질문을 더 열리게", "줄거리가 짧아", "뜻풀이가 길어" → `lib/ai/english/prompts.ts`·`vocabbook-prompts.ts`. 자유대화: "선생님 말이 길어", "한국어를 너무 많이 써", "도움 카드 문장이 어려워", "설명이 길어" → `lib/ai/english/talk-prompts.ts`(+ 도구 정의 `talk-schemas.ts`) — 선생님(관문 R) 출력은 eval이 못 재므로 효과 확인은 사용자 동의 뒤 실연결이다(`english-dials.md` §10)
    - 수학: "설명이 길어", "비유가 매번 똑같아", "연습문제 숫자가 커" → `lib/ai/math/prompts.ts`
    - 일본어: "단어가 너무 쉬워", "해설이 얕아", "고칠 점을 더 짚어줘", "예문이 길어" → `lib/ai/japanese/prompts.ts`
    - 토익: "모범답변이 너무 길어", "활용 문장이 어색해", "피드백이 너무 짜", "고칠 점을 더 짚어줘" → `lib/ai/toeic/prompts.ts`(+ 폭 상수 `lib/ai/toeic/schemas.ts`)
@@ -53,7 +53,7 @@ model: opus
 
 아래는 품질 다이얼이 아니라 정확성 장치다. 건드리지 않는다.
 
-- **영어**: 판독 호출 A(표지)·A′(본문)·C(단어장 원문 전사) 프롬프트, grounding 가드(`groundChapters`·`isGroundedInTranscript` — 자막 밖 문장을 잘라낸다, `resolveAllowedStorySource` — 넘긴 근거보다 높은 storySource를 거부한다).
+- **영어**: 자유대화 선생님 지시문의 `# Safety` 블록·전사에 단어장 prompt 금지·호출 I keyWords ⊂ 문장·ko/en 조각 분리·1학년 눈높이(`english-dials.md` §10-4), 판독 호출 A(표지)·A′(본문)·C(단어장 원문 전사) 프롬프트, grounding 가드(`groundChapters`·`isGroundedInTranscript` — 자막 밖 문장을 잘라낸다, `resolveAllowedStorySource` — 넘긴 근거보다 높은 storySource를 거부한다).
 - **수학**: 호출 C(검산), `verifyScene`, `held` 판정. 다이얼을 풀어 `held`를 줄이려는 유혹을 특히 경계한다 — 보류가 줄어드는 대신 틀린 답이 통과한다.
 - **일본어**: 호출 B(대화 전사, temperature 0) 프롬프트, 토큰 무결성 zod(`surface`를 이으면 원문과 같아야 한다), `applyVocabPostprocess`(제외 재적용·포함 우선·kana 중복 접기·레벨 태깅은 모델이 아니라 코드가 한다), 대화 병합의 완전 일치 접기, 시험의 모드별 숙련도 분리.
 - **토익**: 호출 A(표현집 판독, temperature 0 — 원문 전사) 프롬프트, zod 가드(`exampleSpan` ⊂ 예문·index 집합·C1 `chunks` 조인·`said` ⊂ 전사문 단어열), 전사에 기대 문장을 넣지 않는 관문 T, Q1–2 비AI 채점(`alignReadAloud`·`readProxyScore`)과 추정 총점 환산, 기출·ETS 샘플 금지. **교재 원문을 튜닝 예시·픽스처·리포트에 넣지 마라** — 저장소가 PUBLIC이다. 예시는 지어낸 영어로 쓴다.
@@ -62,7 +62,7 @@ model: opus
 
 실호출 eval은 **오케스트레이터가 지시에 "사용자 동의를 받았다"고 명시했을 때만, 명시된 범위로 1회** 돌린다. 그 외에는 오프라인 구간까지만 돌리고, 실호출이 필요하면 무엇을 몇 회 돌려야 하는지를 리포트에 적어 넘긴다. 지시가 없으면 스스로 돌리지 않는다 — 이 저장소에서 비용 사고가 가장 자주 난 지점이다.
 
-- **영어** (`scripts/eval-english.ts`): 기본 실행이 카드 3회(Wolves·Pooh·Pooh+장면 메모), `EVAL_SKIP_PAGES=1`이면 2회. 나머지는 **게이트별 1회**이고 게이트 하나만 돌고 끝난다 — `EVAL_TRANSCRIPT=1`(자막 카드), `EVAL_CHAPTERS=1`(호출 F 챕터화), `EVAL_VOCAB=1`(호출 D 보강), `EVAL_WORDMEANING=1`(호출 G 단어 뜻). 호출 H(유의어 추천)는 eval에 실호출 구간이 없어 오케스트레이터가 별도 프로브로 본다. 호출마다 재요청이 나면 +1회.
+- **영어** (`scripts/eval-english.ts`): 기본 실행이 카드 3회(Wolves·Pooh·Pooh+장면 메모), `EVAL_SKIP_PAGES=1`이면 2회. 나머지는 **게이트별 1회**이고 게이트 하나만 돌고 끝난다 — `EVAL_TRANSCRIPT=1`(자막 카드), `EVAL_CHAPTERS=1`(호출 F 챕터화), `EVAL_VOCAB=1`(호출 D 보강), `EVAL_WORDMEANING=1`(호출 G 단어 뜻), `EVAL_TALK=1`(자유대화 호출 I **2회**). 호출 H(유의어 추천)와 자유대화 선생님(관문 R)은 eval에 실호출 구간이 없어 오케스트레이터가 별도 프로브·실연결로 본다. 호출마다 재요청이 나면 +1회.
 - **수학** (`scripts/eval-math.ts`): 픽스처 4문제 × 2~4회 = 8~16회, 2단 픽스처(`rect-count`)에 호출 E 1~2회가 더해진다. `EVAL_ONLY=id`면 픽스처당 2~4회, `EVAL_SKIP_2DAN=1`이면 6~12회.
 - **토익** (`scripts/eval-toeic.ts`): 기본 오프라인 0회(357항목). `EVAL_TOEIC=1`이면 B 1(지어낸 표현 7개) + C 1(`EVAL_TOEIC_PART`, 기본 `opinion`) + D 1(Q11 픽스처 전사문) = 3회, `EVAL_TOEIC_PHOTO=<사진 경로>`를 주면 A 1회 더. 관문 P·T는 게이트에 없다. 다이얼을 바꾼 파트를 보려면 `EVAL_TOEIC_PART`를 리포트에 적어 넘긴다.
 - **일본어** (`scripts/eval-japanese.ts`): 현재 **실호출 0회**다. `EVAL_JAPANESE=1` 게이트는 자리만 있고 안내 문구만 찍는다. 실호출 점검(레벨 준수·제외 위반·전사·해설 품질, §9)이 필요하면 구현부터 오케스트레이터에게 요청한다.

@@ -1,7 +1,7 @@
 # 과목 공통 기능 검증 — 순서변경·읽기 속도·발음·해설 낭독·스트릭·아빠의 운동 (subject = `common`)
 
 > `study-qa` 스킬에서 subject가 `common`일 때 읽는다. 과목별 검증은 `english.md`·`math.md`·`japanese.md`에 있다.
-> 원문 스펙: `docs/SPEC.md` §15-1(목록 순서변경), §15-2(읽기 속도), §16(클라우드 발음, §16-5 보강), §17(학습 스트릭, §17-7 운동 트랙), §18(해설 낭독), §19(아빠의 운동). §15-3(단어장 유의어·반의어 연결)은 영어 단어장 기능이라 `english.md`에서 검증한다. 구현 관용구는 `.claude/skills/ai-harness-impl/references/app-patterns.md`에 있다.
+> 원문 스펙: `docs/SPEC.md` §15-1(목록 순서변경), §15-2(읽기 속도), §16(클라우드 발음, §16-5 보강), §17(학습 스트릭, §17-7 운동 트랙, §17-8 아빠 영어 트랙, §17-9 은우 트랙의 자유대화), §18(해설 낭독), §19(아빠의 운동, §19-8 총 운동 소요시간). 자유대화 자체(관문 R·호출 I·화면)는 `english.md` §8에서 검증하고, 여기서는 그 기능이 공통 기능(스트릭·마이크 관문·사진 코어)에 닿는 자리만 본다. §15-3(단어장 유의어·반의어 연결)은 영어 단어장 기능이라 `english.md`에서 검증한다. 구현 관용구는 `.claude/skills/ai-harness-impl/references/app-patterns.md`에 있다.
 
 > **grep 주의** — 이 문서의 grep 명령에는 전부 `-a`가 붙어 있다. 빼지 마라. Claude Code 셸의 `grep`은 `-I`로 감싼 ugrep이라, NUL 문자가 든 파일을 바이너리로 판정하고 **조용히 건너뛴다.** 지금 그런 파일은 `components/use-reorder.ts`, `lib/vocab-quiz.ts`, `app/api/japanese/vocab/generate/route.ts` 셋이다. `-a` 없이 얻은 "0건"은 판정 근거가 되지 않는다. 이 세 파일에 위반이 생겨도 0건이 나오기 때문이다.
 
@@ -21,15 +21,15 @@ OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_
 OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run eval:workout
 ```
 
-| 스크립트 | 대상 | import 경계 | 출력 영역 (항목 수는 2026-09-25 실측) |
+| 스크립트 | 대상 | import 경계 | 출력 영역 (항목 수는 2026-09-26 실측) |
 |---|---|---|---|
 | `scripts/eval-speech.ts` | `lib/ja-coaching-script.ts` 대본·쪼개기, `lib/speech.ts` 큐, `lib/tts-shared.ts`·`lib/tts.ts` 상수, `lib/tts-cache.ts` 지문 | store 금지. `lib/speech`·`lib/tts`·`lib/tts-cache`는 fetch 스텁을 깔고 키를 비운 **뒤에** dynamic import한다 | 대본(12)·쪼개기(12)·상수·엔진(5)·큐(46 — 2026-09-26 `onEnd` 둘째 인자 S1~S5 12개 추가)·단발(30)·지문(7)·안전(1) — 합계 (113) |
-| `scripts/eval-streak.ts` | `lib/streak.ts`의 `computeStreak`·`computeStreakFromDays`, `lib/kst.ts`(`formatKstDate`·`isZonedIsoTimestamp` 포함), `lib/toeic-streak.ts`(아빠 🎙️ 영어 트랙 입력) | `../lib/streak`·`../lib/kst`·`../lib/toeic-streak`만(마지막 것은 런타임 import 0 — 타입만) | KST 환산(formatKstDate 경계표를 TZ Asia/Seoul·UTC·America/Los_Angeles로 다시 돌림 — 실행 기기 TZ 무관)·연속 판정·0문항 제외·사람 분리·날짜 코어·영어 트랙(6 — 2026-09-26: 표현 시험 답한 문항≥1·응시 녹음된 문항≥1, 다른 트랙과 섞지 않음) (47) |
-| `scripts/eval-workout.ts` | `lib/workout.ts` 전체, `diffDateStrings` | `../lib/workout`·`../lib/kst`·`../lib/streak`만 | 베이스·계획·스텝·휴식(세트 사이 [1,3,5,7]·휴식 뒤 [2,4,6,8]·음성 안내 대상 4개)·세트 목록 순서(`roundDisplayOrder` — 스텝 0~9 × 축하 유무의 순서·완료 구역 시작 위치, 푸시업 ✓ 탭 순간·풀업 ✓ 무재배치, 무효 held 무시)·횟수·상태·판정(`decideLog`·`decideUndo`·`decideStart`·`closingStatus`)·활성 선택·격리·정규화(createdAt ISO 경계 = `isZonedIsoTimestamp`)·날짜 방어·진행·볼륨·일정·스냅샷·지난 사이클·운동 스트릭(endedAt ISO 경계 포함) (134) |
+| `scripts/eval-streak.ts` | `lib/streak.ts`의 `computeStreak`·`computeStreakFromDays`, `lib/kst.ts`(`formatKstDate`·`isZonedIsoTimestamp` 포함), `lib/toeic-streak.ts`(아빠 🎙️ 영어 트랙 입력), `lib/talk-streak.ts`(은우 자유대화 입력) | `../lib/streak`·`../lib/kst`·`../lib/toeic-streak`·`../lib/talk-streak`만(뒤의 둘은 런타임 import 0 — 타입만) | KST 환산 26(formatKstDate 경계표를 TZ Asia/Seoul·UTC·America/Los_Angeles로 다시 돌림 — 실행 기기 TZ 무관)·연속 판정 5·0문항 제외 3·사람 분리 2·날짜 코어 5·영어 트랙 6(표현 시험 답한 문항≥1·응시 녹음된 문항≥1, 다른 트랙과 섞지 않음)·**자유대화 6**(2026-09-26 — 발화 0 제외·대화만 한 날·startedAt KST·아빠 트랙 무오염·라벨·라우트 배선) (53) |
+| `scripts/eval-workout.ts` | `lib/workout.ts` 전체, `diffDateStrings`, `components/workout-shared.tsx`의 순수 포맷 함수(소요시간 문자열) | `../lib/workout`·`../lib/kst`·`../lib/streak` + **예외 하나** `../components/workout-shared`(2026-09-26 — 문자열의 정의처가 이 화면 파일이라서다. 이 파일의 import는 `@/lib/kst`·`@/lib/workout`뿐이라 store 전이가 없다. 이 파일에 import를 더하면 이 판정을 다시 한다) | 베이스·계획·스텝·휴식(세트 사이 [1,3,5,7]·휴식 뒤 [2,4,6,8]·음성 안내 대상 4개)·세트 목록 순서(`roundDisplayOrder` — 스텝 0~9 × 축하 유무의 순서·완료 구역 시작 위치, 푸시업 ✓ 탭 순간·풀업 ✓ 무재배치, 무효 held 무시)·횟수·상태·판정(`decideLog`·`decideUndo`·`decideStart`·`closingStatus`)·활성 선택·격리·정규화(createdAt ISO 경계 = `isZonedIsoTimestamp`)·날짜 방어·진행·볼륨·일정·스냅샷·지난 사이클·운동 스트릭(endedAt ISO 경계 포함)·**소요시간 24**(2026-09-26 §19-8 — 상수·`isValidDurationSec` 경계·옛 사건 정규화·decideLog 싣기와 쓰기 경계 보존·범위 밖 null·근사식 오라클·eventDuration·스냅샷 합계·undo·workoutLog 정렬·문자열 17건) (158) |
 
 - **import 경계 자체가 검증 항목이다.** eval이 store를 import하면 어느 DB를 향할지 모르는 스크립트가 된다. 판정은 두 단계로 한다.
   - `grep -an 'lib/store' scripts/eval-speech.ts scripts/eval-streak.ts scripts/eval-workout.ts`가 **0줄**이어야 한다.
-  - `grep -anE 'from "\.\./lib/|import\("\.\./lib/' scripts/eval-speech.ts scripts/eval-streak.ts scripts/eval-workout.ts`로 eval이 닿는 lib 모듈을 전부 뽑는다. 그 모듈들의 import에도 같은 grep을 한 단계 더 돌려 store가 전이로 딸려 오지 않는지 본다.
+  - `grep -anE 'from "\.\./(lib|components)/|import\("\.\./lib/' scripts/eval-speech.ts scripts/eval-streak.ts scripts/eval-workout.ts`로 eval이 닿는 모듈을 전부 뽑는다(`components/`도 — eval-workout이 `workout-shared`를 연다). 그 모듈들의 import에도 같은 grep을 한 단계 더 돌려 store가 전이로 딸려 오지 않는지 본다.
   - `^import`로 줄 머리만 잡으면 안 된다. `eval-speech.ts`·`eval-workout.ts`는 `import {`로 시작해 몇 줄 아래에서 `} from "../lib/…"`로 끝나는 여러 줄 import를 쓴다. `^import` 방식은 모듈 경로가 적힌 줄을 놓치고, 그 자리에 store가 들어와도 보이지 않는다.
 - 항목 수가 줄었으면 그 자체가 회귀 신호다. 반대로 항목 수가 늘었다고 eval이 강해졌다는 뜻은 아니다. 해설 낭독 QA에서 eval이 53/53을 통과했는데, iOS의 핵심 가드(무음 WAV `play()`)를 지운 변이가 살아남은 전례가 있다(`_workspace/qa_report_ja-coaching-tts_1.md` F1, 그 뒤 ⑭로 보강).
 
@@ -37,7 +37,7 @@ OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_
 
 | 검증 | 방법 | 실패의 의미 |
 |---|---|---|
-| 화면이 관문을 우회하지 않는다 | `grep -rna "speechSynthesis\|SpeechSynthesisUtterance\|/api/tts\|new Audio" app components` 결과에서 `app/api/tts` 밖은 주석뿐이어야 한다. 효과음용 `AudioContext`(`components/workout-session.tsx`)는 발음이 아니라 대상 밖이다 | 속도·엔진·폴백·취소가 화면마다 갈린다 |
+| 화면이 관문을 우회하지 않는다 | `grep -rna "speechSynthesis\|SpeechSynthesisUtterance\|/api/tts\|new Audio" app components` 결과에서 `app/api/tts` 밖은 주석뿐이어야 한다. 효과음용 `AudioContext`(`components/workout-session.tsx`)는 발음이 아니라 대상 밖이다. 은우 자유대화의 선생님 목소리(WebRTC 원격 트랙을 받는 `<audio autoplay playsinline>` — `components/talk-start-view.tsx`가 두고 `lib/talk-realtime.ts`가 `srcObject`를 붙인다)도 합성 발음이 아니라 대상 밖이다 — 대화 뒤 설명 낭독만 `speakQueue`를 탄다(`english.md` §8) | 속도·엔진·폴백·취소가 화면마다 갈린다 |
 | `speak()` 회귀 | `speak(text, lang = TTS_LANG)` 시그니처가 그대로인지 본다. 2026-09-25부터 `speak()`도 큐 요소 하나를 재사용한다(§16-5) — eval ⑰은 재생마다 `new Audio`를 **만들지 않는지**, "단발" F1은 `speak()`가 반환되는 그 순간(동기) 큐 요소 src=무음 WAV + `play()` 1회·cancel 뒤 볼륨 0 빈 발화가 끝나 있는지, F2·F3은 연타와 `speak` ↔ `speakQueue` 상호 취소(동기 정지·onEnd 1회·URL 회수)를 본다. F7은 합성이 늦게 온 옛 speak가 공유 요소에서 재생 중인 새 speak를 뺏지 못하는지(`playViaCloud`의 합성 뒤 토큰 가드), F8은 300자 초과가 cloud 엔진이어도 POST 0·잠금 해제 0으로 기기 직행하는지(사전 판정), F12는 밀려난 speak의 대기 타임아웃이 진단 ✓를 덮지 않는지 본다 | 영어 6화면·일본어 화면 전부 회귀. 잠금 해제가 await 뒤로 밀리면 iOS에서 클라우드 🔊가 무음이 된다. 토큰 가드가 빠지면 새 🔊가 끝나지 않고 objectURL이 샌다 |
 | 기기 음성 폴백의 cancel | F4 — device 직행은 cancel 1회(`cancelPlayback` 것)뿐, 클라우드 실패 뒤엔 빈 발화(말하는 중이어도)를 끊지 않고 잇고, 남의 발화가 말하는 중일 때만 cancel | 대체 재생까지 씹혀 앱이 조용해진다 |
 | iOS paused 복구 | F13 — 스텁 `pauseOnCancel`(cancel() 뒤 paused로 굳고 이후 speak()는 이벤트 없이 무시)에서 `fallbackDevice`(device 단발 로그가 정확히 `cancel,resume,speak:…`·클라우드 실패 대체)·잠금 해제 빈 발화(`cancel → resume → 빈 발화`)·`speakDeviceAwait`(조각 사이에 굳어도) 세 곳 모두 실제로 발화되는지 본다. 세 곳의 `resumeIfPaused`를 하나씩 지우는 변이가 각각 잡혀야 한다 | 기기 음성이 한동안 무음이다가 설정을 만지면 다시 난다 — 2026-09-25 사용자 관찰("기기랑 클라우드가 꼬인 것 같다") |
@@ -82,12 +82,13 @@ OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_
 | KST 정의처가 하나인가 | `grep -rna -e "9 \* 60 \* 60" -e "Asia/Seoul" -e "toLocaleDateString" app components lib`의 결과가 `lib/kst.ts` 밖에서는 0건이어야 한다. `toLocaleString`은 숫자 서식에만 쓰였는지 확인한다. "시간대가 명시된 ISO 시각" 판정도 `lib/kst.ts`의 `isZonedIsoTimestamp` 하나다(`formatKstDate`와 `lib/workout.ts`의 createdAt·endedAt 판정이 같이 쓴다, 2026-09-25 단일화). `grep -rnaF -e '[+-]\d{2}:' -e '[+-](?:' lib app components`로 시간대 오프셋을 받는 정규식을 찾는다. `lib/kst.ts` 밖에서 나오면 두 번째 정의(결함)다(예전 `lib/workout.ts`의 `ISO_RE`가 이 grep에 걸렸다) |
 | UTC 날짜부 자르기 | 위 grep은 ISO 시각을 잘라 UTC 일자를 얻는 패턴을 잡지 못한다. `grep -rnaE '\.slice\(0, *10\)' app components lib`를 따로 돌려 결과를 셋으로 나눈다. ① 읽음 기록의 `readAt.slice(0, 10)`은 정상이다. `readAt`이 기기 날짜 문자열(`deviceDateString`)이기 때문이다. 날짜가 아닌 배열 자르기도 정상이다. `lib/kst.ts` 안의 `raw.slice(0, 10)`(`formatKstDate`가 환산할 수 없는 값을 예전처럼 보이는 폴백)도 정상이다. ② "만든 날짜" 표시(상세 페이지 4곳, 목록 뷰 5곳, `card-view.tsx` 카드 이력)의 UTC 날짜부 자르기는 **2026-09-25에 해소됐다** — 전부 `formatKstDate(iso)`를 쓴다(app-patterns §9). 그래서 `createdAt.slice(0, 10)`이나 표시용 `iso.slice(0, 10)`이 다시 나오면 위치와 무관하게 **회귀(결함)** 다. `grep -rna "formatKstDate" app components`가 10곳(상세 4·목록 5·카드 이력 1)인지도 본다. 경계값은 `eval:streak`의 "KST 환산" formatKstDate 줄(15:00Z→다음날, 14:59:59Z→같은날, 깨진 입력·시간대 없는 시각·달력에 없는 날·24:00·소수 4자리+는 환산 안 함)이 잠근다. 이 표는 KST 기기에서만 돌리면 "시간대 없는 시각" 가드가 잠기지 않는다(로컬 KST로 읽고 +9h를 해도 같은 날). 그래서 eval이 판정(`isZonedIsoTimestamp`)을 값으로 단언하고 표를 TZ 3곳으로 바꿔 다시 돌린다. TZ 전환이 먹었는지(로컬 생성자 → UTC)도 같은 줄이 확인한다 |
 | 자정 경계 | eval "KST 환산": 15:00Z는 다음 날, 14:59Z는 같은 날 |
-| 시험만 세고, 답한 문항이 1개 이상이어야 한다 | eval "0문항 제외"(answered null·false). `app/api/streak/route.ts`가 스트릭을 **세는 데** 쓰는 컬렉션이 `listAllVocabQuizzes`·`listAllJaQuizzes`·`listJaKanjiQuizzes`·`listWorkoutCycles` 넷뿐인지 본다. 오늘 라벨(`todayLabel`)을 만들려고 `getVocabBook`·`getJaVocabBook`으로 단어장 이름을 읽는 것은 허용한다. 수학·읽음·대화 컬렉션이 끼면 실패다 |
-| 사람·트랙 분리 | eval "사람 분리"와 "날짜 코어"에는 섞으면 값이 달라지는 반례가 있다. 라우트에서 eunwoo=vocab, appa=jaVocab+jaKanji, appaWorkout=`workoutKeptDays`가 한 집합에 섞이지 않는지 코드로 확인한다 |
+| 시험만 세고, 답한 문항이 1개 이상이어야 한다 | eval "0문항 제외"(answered null·false). `app/api/streak/route.ts`가 스트릭을 **세는 데** 쓰는 컬렉션이 `listAllVocabQuizzes`·`listAllJaQuizzes`·`listJaKanjiQuizzes`·`listWorkoutCycles`·`listAllToeicQuizzes`·`listAllToeicAttempts`·`listAllTalkSessions` 일곱뿐인지 본다(뒤의 셋은 §17-8·§17-9가 더했다). 오늘 라벨(`todayLabel`)을 만들려고 단어장·세트·모의고사 이름을 읽는 것은 허용한다. 수학·읽음·**일본어 대화 복습** 컬렉션이 끼면 실패다(은우 **자유대화**는 §17-9 예외라 센다 — 아래 행) |
+| 사람·트랙 분리 | eval "사람 분리"와 "날짜 코어"에는 섞으면 값이 달라지는 반례가 있다. 라우트에서 eunwoo=vocab + `talkStreakSessions(talks)`, appa=jaVocab+jaKanji, appaWorkout=`workoutKeptDays`, appaEnglish=`toeicStreakSessions`(토익 2컬렉션)가 한 집합에 섞이지 않는지 코드로 확인한다 |
+| **은우 트랙 — 자유대화(§17-9)** | §17-1 "시험만 센다"의 **은우 트랙 한정 예외**다(아이가 직접 말한 날). 확인: ① `lib/talk-streak.ts`가 `childTurnCount ≥ 1`인 대화만 "답한 문항 1개"로 옮긴다(발화 수만큼 복제하지 않는다 — 코어는 "답한 문항 ≥ 1"만 본다, 0·NaN·음수·문자열은 세지 않는다) ② 날짜는 대화 `startedAt`의 KST 일자(15:30Z → 다음 날) ③ 라우트가 `computeStreak([...vocab, ...talkStreakSessions(talks)], today)` 한 번으로 계산한다(따로 계산해 합치지 않는다) ④ `todayLabel`은 오늘 한 것 중 **가장 늦게 시작한 것**(같은 시각이면 단어장 시험), 대화면 `talkStreakLabel` "자유대화 · {주제}", 발화 0 대화가 더 늦어도 라벨은 센 대화 ⑤ `listAllTalkSessions().catch(→ null)` → `talks = []`로 **은우 트랙은 단어장 시험만** — 대화 컬렉션 읽기 실패가 은우 트랙 전체를 죽이지 않는다(운동·영어 트랙의 중립값 규약과 같은 방향, 다만 여기는 중립값이 아니라 단어장만) ⑥ 대화가 아빠 세 트랙에 섞이지 않고, 일본어 시험이 은우에 섞이지 않는다. eval "자유대화" 6항목 + **라우트 in-process 반례**(스토어 대역을 주입해 `GET`을 직접 부른다 — 선례 scratchpad `qatalk2/streak.mts`, 11/11). 대화 읽기 실패처럼 파일 백엔드로 흉내 내기 어려운 경로는 이 대역으로 본다 |
 | 코어 분리 회귀 | eval "날짜 코어": `computeStreak` == 세션 → 일자 집합 → `computeStreakFromDays`(5/5) |
 | 운동 트랙 폴백 | `listWorkoutCycles`가 실패하거나 계산이 throw하면 `appaWorkout`만 `NEUTRAL_STREAK`가 되고 은우·일본어는 살아야 한다. 파일 백엔드에서는 운동만 실패시킬 수 없으므로 코드로 확인하고 e2e는 미검증으로 남긴다(선례) |
-| 응답 계약 | `StreakResponse {ok, today, eunwoo, appa, appaWorkout}`(`lib/streak-contract.ts`)와 `components/streak-headline.tsx`가 읽는 필드를 함께 열어 본다. `appa`는 이름만 호환용이고 실제로는 일본어 트랙이다 |
-| 즉시 갱신 | `STREAK_REFRESH_EVENT`를 쏘는 곳: `vocab-quiz-view.tsx`·`ja-quiz-runner.tsx`·`ja-kanji-quiz-runner.tsx`(저장 성공), `workout-view.tsx`(ok **와 409**, `mutate`·`onSessionResult`). 409 분기가 빠져 있던 것이 과거 P2였다. 전수는 `grep -rla STREAK_REFRESH_EVENT components app`로 본다 |
+| 응답 계약 | `StreakResponse {ok, today, eunwoo, appa, appaWorkout, appaEnglish}`(`lib/streak-contract.ts`)와 `components/streak-headline.tsx`가 읽는 필드를 함께 열어 본다. `appa`는 이름만 호환용이고 실제로는 일본어 트랙이다. `eunwoo` 주석이 자유대화 포함(§17-9)을 적는지 본다 |
+| 즉시 갱신 | `STREAK_REFRESH_EVENT`를 쏘는 곳: `vocab-quiz-view.tsx`·`ja-quiz-runner.tsx`·`ja-kanji-quiz-runner.tsx`(저장 성공), `workout-view.tsx`(ok **와 409**, `mutate`·`onSessionResult`), `toeic-quiz-runner.tsx`·`toeic-take-view.tsx`(토익 — `toeic.md`), `talk-call-overlay.tsx`(자유대화 저장에 **처음** 성공했을 때 한 번 — 멱등 재저장·겹친 요청에서 다시 쏘지 않는다). 409 분기가 빠져 있던 것이 과거 P2였다. 전수는 `grep -rla STREAK_REFRESH_EVENT components app`로 본다(`streak-headline.tsx`는 받는 쪽) |
 | 헤드라인 | 초기 렌더는 중립(`🔥··일`)이다가 마운트 후 채워진다(SSR HTML로 확인). `/unlock`에서는 숨긴다. `z-[15]`로 오버레이(20)보다 아래다. 겹친 재조회는 마지막 것만 반영한다(`seq`). `print-hide` |
 
 **운동 트랙의 "지킨 날"**(§17-7)은 eval:workout의 "운동 스트릭" 영역이 잠근다. 휴식일이 끊지 않는지, 실패일·회복 휴식을 포함하는지, 운동일을 건너뛰면 끊기는지, 마무리 휴식을 하루씩 세는지, 재측정 대기일은 빼고 재측정을 끝낸 날(도중 abandoned 포함, 사건 0개 사이클 제외)은 넣는지, 미래 휴식과 시작 전은 빼는지, 슬롯을 닫힌 날과 다음 사건 전날에서 자르는지, 오늘이 휴식이면 doneToday인지를 본다. 70일 시뮬레이션도 포함돼 있다.
@@ -114,6 +115,45 @@ eval:workout이 잠그는 것은 이렇다. **원안 오라클**: 원안 Python 
 **409 재현**: `/workout`을 열어 둔 채 db.json에 사건 하나를 추가하고 rev를 +1해 "다른 탭이 이미 기록함"을 흉내 낸다. 그다음 `✓ 전부 해냈어요`를 누른다.
 
 **"세션 소리가 안 나" 신고는 먼저 가른다** — 비프(Web Audio, 발음 관문 밖)인지 음성 안내(`speakQueue` ko-KR)인지. 코드로 대조할 것(`components/workout-session.tsx`, `ai-harness-impl/references/app-patterns.md` §14): `▶`·`✓` 탭 핸들러 안에서 **동기로** `ensureWorkoutAudio()`를 부르는지(휴식을 시작하지 않는 풀업 `✓` 포함), 휴식 시작(푸시업 `✓`) 때 `scheduleBeep`로 종료 시각에 미리 예약하는지, 길이 변경·`+30초`에서 `rescheduleBeep`가 도는지, `finishRest`가 예약분 미재생 시 즉시 울리고(컨텍스트 `running`일 때만) 예약분을 취소하는지, 복원 시 `running`일 때만 재예약하는지, `✓` 탭에서 `unlockSpeechPlayback()`을 부르는지, 음성 토글(`workout-voice:v1`)이 새로고침 뒤에도 유지되는지. 음성 쪽은 §1·§2의 발음 경로 검증을 그대로 쓴다(ko 엔진이 cloud인지 device인지부터).
+
+### 4-1. 총 운동 소요시간 (§19-8) — 독립 참조 모델 대조
+
+소요시간은 값 하나(`durationSec`)가 여섯 곳을 지난다 — 세션(클라이언트가 잰다) → 요청 계약 → 라우트 zod → `decideLog` → 쓰기 직전 정규화 → 읽을 때 엔진(`eventDuration`·합계·기록 목록) → 화면 문자열. 한 곳만 어긋나도 **에러 없이** 실측이 근사로, 근사가 엉뚱한 값으로 보인다. 그래서 §6의 차분 테스트를 이 기능에 맞춰 돌린다(선례 `_workspace/qa_report_common_workout-duration_1.md` — 78,475건 불일치 0, 변이 24종).
+
+**정합성 매트릭스 — 값이 사는 곳**
+
+| 제약 | 스펙 §19-8 | 엔진 `lib/workout.ts` | 계약 `lib/workout-contract.ts` | 라우트 zod | 세션 | eval:workout |
+|---|---|---|---|---|---|---|
+| 필드 | `durationSec: number \| null` 필수 nullable | `WorkoutEvent.durationSec`·`DecideLogInput.durationSec` | 두 갈래(complete·fail) 모두 | `z.number().int().min(0).nullable().default(null)` | 완료·실패 둘 다 싣는다 | 옛 사건 → null |
+| 형식 | 정수·0 이상 | `isValidDurationSec`(정수 0..상한) — 판정·정규화·표시가 이 한 함수 | 주석 | int·min(0) → 400 | `Math.round`, 음수·시작 모름 → null | 경계 |
+| 상한 3시간 | 넘으면 **기록은 받고 소요시간만 null** | `WORKOUT_DURATION_MAX_SEC` 10800, `decideLog`가 null로 | — | **막지 않는다**(막으면 기록 전체가 400) | 보지 않는다 | 0·10800 보존, 10801 → null |
+| 정규화 | 새 필드를 넣어야 한다(함정) | `normalizeWorkoutEvent`에 같은 검사 | — | — | — | 쓰기 경계 정규화 뒤에도 보존 |
+| 근사 계수 | 3·2·10초 + 휴식 120 | `DURATION_ESTIMATE_SEC`·`DEFAULT_REST_SEC`(정의처 하나) | — | — | `DEFAULT_REST_MS = DEFAULT_REST_SEC * 1000` | 상수 항목 |
+| 표시 | 실측 "14분 12초", 근사 "약 13분", 섞인 합계 "약 …" | `EventDuration`·`DurationTotal` | 타입 재수출 | — | — | 문자열 17건 |
+
+**방법 — 구현을 열기 전에 참조 모델부터**
+
+1. §19-8·§19-1만 보고 scratch에 참조 모델을 쓴다(스텝 → 실패 지점은 표로, 휴식은 `[1,3,5,7]` 표로 — 엔진의 공식을 옮기지 않는다). **자기검사**로 스펙 예시를 모두 맞힌 뒤에야 `lib/workout.ts`를 연다: Day 1 완주 710초 → "약 12분", Day 23 완주 805초 → "약 13분", 푸시업 3세트(스텝 5) 4회 실패 = 387초. 두 예시를 동시에 만족하는 반올림은 `round`뿐이다(floor면 Day 1이 11, ceil이면 Day 23이 14) — 표시 규칙의 오라클이 된다.
+2. 무작위 사용자 시뮬레이션(시드 고정, 400사이클 × 20~90일): 실패가 스텝 0~9를 전부 덮게 하고, 보고값 분포에 유효값·0·10800·10801·음수·소수·NaN·Infinity·문자열 `"600"`·undefined·1e9·99999를 섞는다.
+3. 대조 대상: `decideLog`가 싣는 값, **JSON 왕복 + `normalizeWorkoutCycle`(쓰기 경계) 뒤 보존**, `eventDuration`·`estimateEventSec`, `cycleDuration`, `snapshot.duration`·`lastEventDuration`, `workoutHistory[].duration`, `workoutLog`(행 수·key 유일·최신 먼저·입력 순서 무관·행 합 = 사이클 합).
+4. 원시 사건 수천 개(reps 길이 0~7·음수·소수·문자열·null·NaN, failed 손상, durationSec 유무·범위 밖)를 `normalizeWorkoutEvent`에 넣는다 — 필드 없음 → null, 유효 → 보존, 나머지 → null, undefined 필드 없음. 손상 fail 사건은 결정성만 본다.
+5. 표시 함수(`formatDurationExact`·`formatDurationApprox`·`formatElapsedClock`)를 참조 포맷터와 0~54,000초 대조한다. 근사가 30초 미만이면 "약 1분"(최소 1분) — 스펙에 없는 구현 선택이라 결함이 아니다.
+6. **변이 테스트**(§6-5): 선례에서 eval이 24종 중 23종을 잡았다. 살아남은 하나는 `eventDuration`의 조건을 `isValidDurationSec(d) && d > 0`으로 바꾼 것(**실측 0초가 근사로 바뀐다**)이다 — `eval:workout`에 `eventDuration({…, durationSec: 0})` → `{sec:0, source:"measured"}` 단언이 들어갔는지 본다(2026-09-26 현재 없음 — P2 열림, 담당 app-builder). 차분 테스트가 놓친 6종(표시 문자열·깨진 사건 합계·범위 밖 저장값)은 정규화·표시층이라 eval이 잡아야 한다.
+
+**코드·API·세션 대조**
+
+| 검증 | 방법 |
+|---|---|
+| 정규화 함정 | 변이 두 개가 둘 다 잡히는지: 정규화가 durationSec을 null로 버림 / 검증 없이 보존. Firestore는 코드 대조 — `logWorkoutEvent`·`undoWorkoutEvent`가 `toWorkoutCycle`(→ normalize) → `decide*` → `normalizeWorkoutCycle(r.next)` → `tx.update` 순서인지, `startWorkoutCycle`이 `workoutCycleData`(normalize)로 쓰는지. 파일 백엔드는 옛 모양 사건(필드 없음·99999·12.5)을 db.json에 심고 세션으로 기록해 저장값이 `[null,null,null,<실측>]`인지 본다 |
+| 계약 ↔ zod | `requestMatchesSchema`가 남아 있고 tsc 통과. zod 프로브로 `{}`·`{durationSec: undefined}` → `{durationSec: null}`(키 존재 — undefined가 새지 않는다). `.nullish()` 0건(`grep -rna`) |
+| API(dev, 접두어 + `APP_PIN=`) | -5·12.5·"abc"·1e20 → 400 `invalid_input`, `issues[].path = "durationSec"`, 기록 없음 / 99999·10801·필드 없음·null → 200, `event.durationSec`과 저장값 null / 10800·0 보존(0은 화면 "0초" 실측) / 낡은 rev·day에 실으면 409 `conflict`·`stale_state` 그대로 |
+| 세션 | ▶ 직후 0스텝이어도 `startedAt` 저장, 첫 ✓ 전 새로고침 → "이어서 하기 · 풀업 1세트부터"·startedAt 동일 / 복원 조건(rev·dateKst 불일치)이면 시작도 버린다 / **끝 시각 고정**: 마지막 ✓ 전송을 route `abort('failed')`로 끊고 다시 눌러도 두 요청의 durationSec이 같다, 오류 뒤 경과 시계가 멈춘다 / 실패 전송이 끊긴 뒤 "돌아가기" → 다시 실패 기록이면 새 끝 시각 / 옛 저장값(startedAt 없음) → 경과 시계 숨김·`durationSec: null` / 경과 시계 1초 틱·`role="timer"`·`aria-live="off"` / 기록 성공 → 보존값 삭제, undo → 사건과 소요시간이 함께 빠진다 |
+| 렌더 중 시계 금지 | `grep -na "Date.now()\|new Date(" components/workout-session.tsx`의 결과가 전부 effect·핸들러·타이머 콜백 안인지. e2e 콘솔 hydration 경고 0 |
+| 화면(360·390·320) | ① 오늘 기록 카드 "… · 14분 19초"(실측) / "✓ 전부 해냈어요" → "· 약 12분" + 어림 안내 ② 이번 사이클 누적 "총 운동 시간 약 30분 · 근사 3회"(사건 0이면 줄 없음) ③ 지난 사이클 "총 약 26분" ④ 📒 운동 기록(모든 사이클, 최신 먼저, 사이클 머리글, "HH:MM 끝냄"은 `at`의 KST — `lib/kst` `formatKst` 재사용) ⑤ 세션 머리 "⏱ 경과 m:ss"가 뷰포트 안. 가로 넘침 0. `textContent`는 `ml-*` 여백을 공백으로 옮기지 않으니 기대 문자열을 공백 없이 비교하거나 스크린샷으로 확인한다 |
+| 정의처 하나 | `DEFAULT_REST_SEC`만 120을 정의(세션의 옛 `120_000` 없음), KST 정의(`Asia/Seoul`·`9 * 60 * 60`)가 운동 파일에 0건 |
+| 문서 동기화 | §19-8은 들어갔지만 §19-2 사건 코드블록·§19-5 zod 줄·§19-6 진행 보존 값 모양(`startedAt`·0스텝 저장)·§19-7 eval import 예외가 같은 사실을 담는지 본다 — 어긋나면 결함이 아니라 doc-commit 요청(P2) |
+
+**관찰로 남길 것**: 실측 시작점이 "그날 세션을 **처음 연** 순간"이고 0스텝도 저장하므로, 세션을 잠깐 열어 보기만 해도 시계가 시작된다(18:00에 열어 보고 19:30~19:45에 운동 → 1시간 45분, 3시간 상한 안이라 걸러지지 않는다). 스펙대로라 결함이 아니지만 사용자 확인 거리다. 마지막 ✓ 전송이 실패한 뒤 세션을 **닫았다가 다시 열면** 끝 시각 ref가 초기화되는 것도 알려진 한계다.
 
 ## 5. 목록 순서변경·읽기 속도 (§15-1·§15-2)
 
@@ -142,7 +182,7 @@ eval:workout이 잠그는 것은 이렇다. **원안 오라클**: 원안 Python 
 
 ## 6. 차분 테스트·변이 테스트 — eval의 힘을 잰다
 
-eval을 통과한 엔진에서 규칙 위반을 더 찾거나, eval이 무엇을 놓치는지 잴 때 쓴다. 선례는 `_workspace/qa_report_workout-engine_1.md`다(시나리오 2,500개에서 불일치 0, eval의 변이 검출 18/23 → P2 보강 5건).
+eval을 통과한 엔진에서 규칙 위반을 더 찾거나, eval이 무엇을 놓치는지 잴 때 쓴다. 선례는 `_workspace/qa_report_workout-engine_1.md`다(시나리오 2,500개에서 불일치 0, eval의 변이 검출 18/23 → P2 보강 5건). 소요시간(§4-1)도 같은 방법이었다(`qa_report_common_workout-duration_1.md` — 78,475건 불일치 0, eval 변이 검출 23/24).
 
 1. **참조 모델을 먼저 쓴다.** `lib/workout.ts`를 열기 전에 SPEC §19-1~§19-3만 보고 작성한다. 공식을 옮기지 말고 다른 경로로 계산한다(Day 종류는 표로, 다음 운동일은 루프로). 자기검사로 §19-1 표 10행, 590/890, 원안 오라클, 실패 당일 upcoming 예시 `[회복, (X,X−1), (X,X)]`가 전부 맞은 **뒤에야** 구현을 연다.
 2. **무작위 사용자 시뮬레이션.** 시드를 고정하고 사이클 하나를 60~90일 굴린다. 매일 무작위로 행동한다. 아무것도 안 함, complete, fail(횟수 음수·목표 초과·null), undo 연속, 같은 날 두 번째 기록, 틀린 rev, 낡은 day·targetDay, 비운동일 기록, 닫힌 사이클에 기록·취소, 도중 재시작과 틀린 expected를 섞는다.
@@ -180,7 +220,7 @@ eval을 통과한 엔진에서 규칙 위반을 더 찾거나, eval이 무엇을
 - **실제 합성 품질**: 한국어 해설 속 「は」「が」를 일본어로 읽는지(소리 설정의 ▶ 미리듣기) 확인한다. 한자만 있는 일본어를 중국어로 읽은 전례가 있어서 **사람이 들어야** 한다. 이건 실호출이라 QA가 하지 않는다.
 - 속도 변경이 **다음 조각부터** 반영되는지 본다.
 - **순서변경 터치 드래그**: 폰에서 핸들을 끌 때 페이지가 같이 스크롤되지 않는지, 화면 끝에서 자동 스크롤이 도는지 본다. 에뮬레이션의 합성 포인터 이벤트로는 실제 터치 제스처 판정을 재현할 수 없다.
-- **운동 세션**: 휴식 종료 비프(종료 시각에 예약해 둔 재생, 백그라운드에서 복귀했을 때), 탭 밖에서 부른 `speakQueue`(ko-KR cloud)의 안내 음성, Wake Lock을 본다. `navigator.vibrate`는 iOS가 지원하지 않아 무시되는 것이 정상이다. **iOS 무음 스위치를 켠 상태**에서 비프가 나는지(Web Audio가 무음 모드를 따르는 것으로 알려져 있다), 백그라운드 복귀 뒤 컨텍스트가 `interrupted`·`suspended`면 `finishRest`의 `running` 조건 때문에 비프가 생략되는지도 본다.
+- **운동 세션**: 휴식 종료 비프(종료 시각에 예약해 둔 재생, 백그라운드에서 복귀했을 때), 탭 밖에서 부른 `speakQueue`(ko-KR cloud)의 안내 음성, Wake Lock을 본다. **소요시간**(§19-8): 화면을 끄거나 앱을 전환했다 돌아온 뒤 경과 시계와 기록된 실측값이 벽시계와 맞는지(타이머가 아니라 두 시각 차라 맞아야 한다), Safari 탭과 홈 화면 앱 각각에서 `workout-session:v1`의 `startedAt`이 유지되는지. `navigator.vibrate`는 iOS가 지원하지 않아 무시되는 것이 정상이다. **iOS 무음 스위치를 켠 상태**에서 비프가 나는지(Web Audio가 무음 모드를 따르는 것으로 알려져 있다), 백그라운드 복귀 뒤 컨텍스트가 `interrupted`·`suspended`면 `finishRest`의 `running` 조건 때문에 비프가 생략되는지도 본다.
 - 폰트 폭: 에뮬레이션은 Chromium이라 실제 폰과 몇 px 다를 수 있다.
 
 ## 9. 리포트 형식

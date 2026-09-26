@@ -31,6 +31,8 @@
 - **LLM을 쓰지 않는 기능** — **아빠의 운동**(러시안 파이터 루틴, SPEC §19)은 규칙이 전부 결정적이라 순수 함수 엔진(`lib/workout.ts`)이 하고, 회귀 가드는 오프라인 `npm run eval:workout`입니다. **학습 스트릭**(SPEC §17, `eval:streak`)도 AI가 없습니다. 토익스피킹 안에서도 표현 시험 출제·모의고사 형식표·Q1–2 지문 대조·추정 총점은 LLM이 아닌 순수 함수입니다(`docs/harness/toeic.md` §5-4·§5-5·§6).
 - **AI를 쓰지만 Structured Outputs 하네스 밖인 호출** — **클라우드 발음**(SPEC §16·§16-5, `lib/tts.ts`)은 OpenAI 유료 호출이지만 스키마 없는 오디오 호출이라 `callWithSchema()`·zod·재요청·토큰 로그를 거치지 않고, 키 규약(`OPENAI_API_KEY`, 없으면 501 → 기기 음성)만 공유합니다. 대화 해설 **낭독**(SPEC §18)은 일본어 해설 화면의 기능이고, 그 연속 재생 엔진(`speakQueue`)은 과목 공용이며 `eval:speech`가 잠급니다. 운동 세션의 음성 안내도 이 발음 경로를 거칩니다.
   토익스피킹의 **관문 P**(모의고사 Q3–4 사진 생성, `lib/toeic-image.ts`)와 **관문 T**(답변 음성 전사, `lib/toeic-transcribe.ts`)도 같은 부류입니다 — 이미지·오디오 바이트를 주고받는 호출이라 `callWithSchema()`·zod·재요청을 거치지 않고, 각자 **독립 OpenAI 클라이언트**를 쥐고(`lib/ai/client.ts`에 과목 분기를 넣지 않는다) 키 규약만 공유합니다(키가 없으면 네트워크 호출 없이 `no_api_key` → 라우트 501). 모델은 `OPENAI_IMAGE_MODEL`·`OPENAI_IMAGE_QUALITY`·`OPENAI_TRANSCRIBE_MODEL`(빈 값이면 기본값 — SPEC §11). 로그에는 모델·크기·ms 같은 숫자만 남기고 프롬프트·사진·전사문·오디오는 남기지 않습니다. 전사에는 기대 문장을 `prompt`로 넣지 않습니다(`docs/harness/toeic.md` §5-0).
+  **사진 생성 공용 코어**(`lib/image-gen.ts`, 2026-09-26): 관문 P의 모델 env 해석·키 규약·JPEG data URL 조립·크기 상한을 넘으면 다음 압축으로 1회 다시 만들기·로그 모양을 코어로 옮겼고, 토익 사진(`lib/toeic-image.ts` — medium·1536×1024·압축 70→50)과 은우 자유대화 주제 일러스트(`lib/talk-image.ts` — low 고정·1024×1024·60→40)가 **자기 설정만 인자로 넘겨** 같은 코어를 씁니다. 코어는 과목을 모릅니다(`lib/ai/client.ts`에 과목 분기를 두지 않는 것과 같은 원칙). 토익 동작은 불변입니다(`eval:toeic`, QA가 HEAD 원본과 같은 스텁에서 요청·결과 동일을 확인).
+  은우 자유대화의 **관문 R**(OpenAI Realtime — 음성 ↔ 음성 실시간 대화, `docs/harness/english.md` §12, SPEC §21)도 하네스 밖입니다. 브라우저가 OpenAI와 **WebRTC**로 직접 음성을 주고받고, 앱 서버는 연결(SDP 교환 — 통합 인터페이스 `POST /v1/realtime/calls`, `lib/talk-gateway.ts`)과 끊기(hangup)만 표준 키로 중계합니다 — 브라우저에는 키가 가지 않습니다. 모델 출력이 JSON이 아니라 음성·전사·도구 호출 이벤트라 `callWithSchema()`·zod·재요청·토큰 로그를 거치지 않고 **키 규약만 공유**합니다(키가 없으면 연결 라우트가 OpenAI를 부르지 않고 501). 대신 정확성 장치가 다른 자리에 있습니다: 선생님 지시문 원문은 spec-sync(`block-exact`)로, 세션 설정은 SDK GA 타입으로 tsc가, 이벤트 → 스크립트는 순수 리듀서(`lib/talk-transcript.ts`)가, 도구 호출 인자는 순수 검사 함수(`lib/talk-cards.ts` — 모델 출력을 믿지 않고 잘못된 항목만 버린다)가 잡습니다. 모델은 `OPENAI_REALTIME_MODEL`(기본 `gpt-realtime-2.1`)·`OPENAI_REALTIME_VOICE`(`marin`)·`OPENAI_REALTIME_TRANSCRIBE_MODEL`(`gpt-4o-mini-transcribe`), 빈 값이면 기본값(SPEC §11). 서버 로그에는 SDP·지시문·전사를 남기지 않고(상태·ms만), 은우 발화 전사에는 `language`·`prompt`를 주지 않습니다(관문 T와 같은 원칙 — 하지 않은 말이 맞게 적히는 위험). 대화가 끝난 뒤의 문장 설명(호출 I)은 하네스 **안**(`callWithSchema`)입니다.
 
 **작업할 때는 해당 과목의 문서만 읽으세요.** 여러 과목을 함께 읽으면 컨텍스트만 늘고 프롬프트가 섞입니다.
 
@@ -83,8 +85,12 @@ lib/ai/english/           # 영어 전용 프롬프트·스키마
 lib/ai/math/              # 수학 전용 프롬프트·스키마·검산 파이프라인
 lib/ai/japanese/          # 일본어 전용 프롬프트·스키마
 lib/ai/toeic/             # 토익스피킹 전용 프롬프트·스키마·후처리(호출 A~D)
-lib/toeic-image.ts        # 토익 관문 P(사진 생성) — 하네스 밖, lib/tts.ts와 같은 부류(서버 전용)
+lib/image-gen.ts          # 사진 생성 공용 코어(관문 P·자유대화 일러스트 공유) — 하네스 밖(서버 전용)
+lib/toeic-image.ts        # 토익 관문 P(사진 생성) — 공용 코어에 토익 설정만 넘긴다(서버 전용)
+lib/talk-image.ts         # 자유대화 주제 일러스트 — 공용 코어에 대화 설정만 넘긴다(서버 전용)
 lib/toeic-transcribe.ts   # 토익 관문 T(음성 전사) — 하네스 밖(서버 전용)
+lib/talk-session-config.ts # 자유대화 관문 R 세션 설정·지시문 조립(서버 전용, 네트워크 없음)
+lib/talk-gateway.ts       # 자유대화 관문 R 네트워크(연결·hangup) — 하네스 밖(서버 전용)
 scripts/eval-english.ts   # 영어 평가 하네스
 scripts/eval-math.ts      # 수학 평가 하네스
 scripts/eval-japanese.ts  # 일본어 평가 하네스
@@ -111,5 +117,7 @@ docs/harness/toeic.md     # 토익스피킹 스펙
   spec-sync 바이트 대조와 JSON Schema 8개 의미 동치)이라 언제든 돌려도 된다. 실호출은 **`EVAL_TOEIC=1`일 때만** 호출 A(사진 경로
   `EVAL_TOEIC_PHOTO`가 있을 때만)·B(표현 7개)·C(파트 하나, `EVAL_TOEIC_PART` 기본 opinion)·D(픽스처 전사문 하나)를 한 번씩 부르고,
   `EVAL_OFFLINE_ONLY=1`이면 게이트를 켜도 건너뛴다(네트워크 자체를 막는 2차 방어선). 관문 P·T는 실호출 점검 대상이 아니다 —
-  오프라인에서 env 빈 값 폴백·키 없음(`no_api_key`)·전사 `prompt` 부재 같은 계약을 잠근다. 교재 가져오기 파일 검증은 `data/private/`에 파일이 있을 때만 돌고
+  오프라인에서 env 빈 값 폴백·키 없음(`no_api_key`)·전사 `prompt` 부재 같은 계약을 잠근다. 자유대화 관문 R도 같다 — `eval:english`
+  오프라인이 지시문 spec-sync·세션 설정(env 빈 값 폴백·도구·전사에 `language`·`prompt` 없음)·리듀서·도구 호출 검사·도움 상태 기계를
+  잠그고, 실제 연결(WebRTC·음성)은 eval 밖이다(개발 빌드 전용 가짜 전송 e2e + 사용자 동의 후 실기기). 호출 I는 영어 게이트 `EVAL_TALK=1`(2회). 교재 가져오기 파일 검증은 `data/private/`에 파일이 있을 때만 돌고
   없으면 SKIP이다(공개 저장소·CI 기준). 게이트 실호출도 비용이 드는 검증이라 **사용자 동의 후 오케스트레이터가** 실행한다.

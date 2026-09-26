@@ -11,8 +11,8 @@ model: opus
 ## 핵심 역할
 
 1. **API 라우트** — `app/api/**`. AI는 반드시 `lib/ai/`의 export를 통해서만 부른다. 라우트↔화면 경계 타입은 `lib/*-contract.ts`에 두어 클라이언트가 안전하게 import하게 한다.
-2. **외부 연동** — 책 식별(`lib/identify.ts`: Google Books → Open Library 폴백), 낭독 영상 후보 검색(`lib/youtube-search.ts`, 서버 전용), 자막 fetch(`lib/youtube-transcript.ts`, Supadata). 토익의 하네스 밖 OpenAI 관문 — 사진 생성 P(`lib/toeic-image.ts`)·답변 전사 T(`lib/toeic-transcribe.ts`) — 도 여기에 든다(서버 전용, `callWithSchema`를 지나지 않는다).
-3. **화면** — 영어(북카드·서재·챕터 리더·단어장·시험·오답노트·기록), 수학(판독 확인·설명·서재), 일본어(허브·JLPT 단어장·대화 복습·한자 카드·시험 기록), 토익(허브·표현집 사진 판독/검토·파일로 가져오기·표현 카드·전체 듣기·시험 4모드·오답노트·기록, 모의고사 목록·학습 보기·응시 오버레이·결과/AI 채점), 운동(`/workout`), 상단 스트릭 헤드라인.
+2. **외부 연동** — 책 식별(`lib/identify.ts`: Google Books → Open Library 폴백), 낭독 영상 후보 검색(`lib/youtube-search.ts`, 서버 전용), 자막 fetch(`lib/youtube-transcript.ts`, Supadata). 토익의 하네스 밖 OpenAI 관문 — 사진 생성 P(`lib/toeic-image.ts`)·답변 전사 T(`lib/toeic-transcribe.ts`) — 와 은우 자유대화의 관문 R(`lib/talk-gateway.ts` — 서버가 SDP를 대신 넘기고 미디어는 브라우저 ↔ OpenAI 직통)·사진 공용 코어(`lib/image-gen.ts`, 토익과 공유)도 여기에 든다(서버 전용, `callWithSchema`를 지나지 않는다).
+3. **화면** — 영어(북카드·서재·챕터 리더·단어장·시험·오답노트·기록·**자유대화** — 시작·전면 대화 오버레이·지난 대화·대화 보기와 문장 설명 시트, 실시간 컨트롤러 `lib/talk-realtime.ts`), 수학(판독 확인·설명·서재), 일본어(허브·JLPT 단어장·대화 복습·한자 카드·시험 기록), 토익(허브·표현집 사진 판독/검토·파일로 가져오기·표현 카드·전체 듣기·시험 4모드·오답노트·기록, 모의고사 목록·학습 보기·응시 오버레이·결과/AI 채점), 운동(`/workout`), 상단 스트릭 헤드라인.
 4. **저장소** — `lib/store.ts`(file 백엔드·인터페이스)와 `lib/store-firestore.ts`. 렌더 가능 판정은 과목별 단일 정의처(`lib/math-record.ts`·`lib/japanese-record.ts`·`lib/vocabbook-record.ts`·`lib/toeic-record.ts`)에 둔다.
 5. **AI 없는 공통 기능** — 발음(`lib/speech.ts` 단일 관문 + `/api/tts`·`lib/tts.ts` + 영속 캐시 `lib/tts-cache.ts`), 스트릭(`lib/streak.ts`·`lib/kst.ts`·`/api/streak`·`components/streak-headline.tsx` — 아빠 칸은 일본어·영어(토익)·운동 세 트랙), 해설 낭독(`lib/ja-coaching-script.ts` + `speakQueue`), 목록 순서변경(`components/use-reorder.ts`·`lib/reorder-contract.ts`), 운동(순수 엔진 `lib/workout.ts` → 저장소 → `/api/workout/{cycle,log,undo}` → 화면), 녹음(`lib/mic-session.ts` 단일 관문 + 기기 보관 `lib/toeic-rec-store.ts` — 저장소 첫 녹음 경로).
 6. **폴백 UX** — 판독 실패·키 없음·외부 API 실패에서도 앱이 멈추거나 조용해지지 않게 한다.
@@ -25,7 +25,7 @@ model: opus
 
 | 대상 | 명세 | `ai-harness-impl` references |
 |---|---|---|
-| 영어 | `docs/harness/english.md`(경계면은 각 호출의 "호출 옵션·경계면" 절) + `docs/SPEC.md` §3·§14·§15 | `references/english-routes.md` |
+| 영어 | `docs/harness/english.md`(경계면은 각 호출의 "호출 옵션·경계면" 절, 자유대화는 §12-1·§12-4·§12-6) + `docs/SPEC.md` §3·§14·§15·§21·§17-9 | `references/english-routes.md`(자유대화 §7) + `app-patterns.md` §16(전이중 마이크·사진 코어·저장 멱등·keepalive 바이트·언마운트 정리) |
 | 수학 | `docs/harness/math.md` | SKILL.md 본문 |
 | 일본어 | `docs/harness/japanese.md` §7(저장)·§8(화면·경로)·§10(재사용 경계)·§13 | `references/japanese.md` |
 | 토익 | `docs/harness/toeic.md` §4-10(관문 P)·§5(관문 T·채점)·§6(시험·형식표·녹음 규칙)·§7(저장)·§8(화면·경로)·§10(재사용 경계) | `references/toeic.md` + `app-patterns.md` §15(녹음·기기 보관·파일로 가져오기·60초 상한) |
@@ -34,7 +34,8 @@ model: opus
 ## 작업 원칙
 
 - 작업 시작 시 `ai-harness-impl` 스킬을 로드한다. AI 호출 동작의 진실 원천은 해당 과목 스펙이고, 앱 동작은 `docs/SPEC.md`다.
-- OpenAI 클라이언트·API 키를 클라이언트 컴포넌트에서 절대 import하지 않는다. `lib/ai/client.ts`·`lib/ai/toeic/calls.ts`·`lib/tts.ts`·`lib/toeic-image.ts`·`lib/toeic-transcribe.ts`·`lib/youtube-search.ts`는 서버 전용이다.
+- OpenAI 클라이언트·API 키를 클라이언트 컴포넌트에서 절대 import하지 않는다. `lib/ai/client.ts`·`lib/ai/toeic/calls.ts`·`lib/tts.ts`·`lib/toeic-image.ts`·`lib/toeic-transcribe.ts`·`lib/image-gen.ts`·`lib/talk-image.ts`·`lib/talk-gateway.ts`·`lib/talk-session-config.ts`·`lib/youtube-search.ts`는 서버 전용이다.
+- **자유대화는 멈춰야 할 때 멈추는 것이 전부다.** 화면이 사라지면(뒤로가기 — 언마운트) 컨트롤러를 끝내 마이크·연결·과금을 닫고, 앱이 선생님에게 넣는 안내는 숨은 system 메시지 + 인자 없는 `response.create`(응답 단위 `instructions` 금지 — 안전 규칙을 덮어쓴다), 저장은 멱등 키(`clientSessionId`)와 keepalive **바이트** 판정(`planTalkSaveBody`), 개발 전용 가짜 전송·배율은 `NODE_ENV` 가드로 production에서 꺼진다(`english-routes.md` §7·`app-patterns.md` §16).
 - `lib/ai/`의 내부(프롬프트·스키마)를 복제하거나 우회하지 않는다. 이유: 검증·재시도·로깅이 `callWithSchema()`에 묶여 있어, 우회하면 비용 추적과 품질 보장이 깨진다.
 - 판독 실패는 예외가 아니라 정상 흐름이다 — 200 응답 + 명시적 폴백 신호로 처리하고, 500은 재시도 소진(throw)에만 쓴다. 키가 없으면 501이다.
 - **공개 저장소에 교재를 넣지 않는다(토익).** 교재 전사본은 git 밖 `data/private/`(읽기 전용)에 있고 사용자가 앱의 "파일로 가져오기"로 넣는다. 교재 원문을 시드·픽스처·`public/`·리포트·로그에 옮기지 않고, 로컬에서 프로덕션 DB로 쓰는 경로를 만들지 않는다(`toeic.md` §0-2·§7-6).

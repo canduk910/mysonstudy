@@ -21,13 +21,13 @@ model: opus
 
 | subject | 명세 | `study-qa` references | 무비용 회귀 가드 |
 |---|---|---|---|
-| `english` | `docs/harness/english.md` | `references/english.md` | `EVAL_OFFLINE_ONLY=1 npm run eval:english` |
+| `english` | `docs/harness/english.md`(자유대화 §12 + SPEC §21·§17-9) | `references/english.md`(자유대화 §8) | `EVAL_OFFLINE_ONLY=1 npm run eval:english` (+ 자유대화가 은우 스트릭을 건드렸으면 `eval:streak`, 공유 마이크 관문·사진 코어를 건드렸으면 `eval:toeic`) |
 | `math` | `docs/harness/math.md` | `references/math.md` | `EVAL_OFFLINE_ONLY=1 npm run eval:math` |
 | `japanese` | `docs/harness/japanese.md` | `references/japanese.md` | `EVAL_OFFLINE_ONLY=1 npm run eval:japanese` |
 | `toeic` | `docs/harness/toeic.md` | `references/toeic.md` | `EVAL_OFFLINE_ONLY=1 npm run eval:toeic` (+ 스트릭 영어 트랙을 건드렸으면 `eval:streak`, 쪼개기·큐를 건드렸으면 `eval:speech`) |
 | `common` | `docs/SPEC.md` §15~§19 (순서변경·읽기 속도·발음·스트릭·해설 낭독·운동) | `references/common.md` | `npm run eval:speech` · `eval:streak` · `eval:workout` (셋 다 실호출 0) |
 
-아빠의 운동은 AI 생성 호출이 없어 과목 하네스 밖이므로 `common`으로 검증한다. 단 세션 음성 안내는 `/api/tts`(한국어, 기본 클라우드)를 거치므로 운동 화면 확인도 키를 비운 dev 서버에서 한다. 토익은 과목 하네스 안이지만 녹음·비프·Wake Lock처럼 iOS 실기기에서만 끝까지 드러나는 경로가 많다 — 헤드리스 e2e(가짜 마이크 스트림·시간 배율 훅·루프백 스텁 4종)로 순서까지만 통과로 적고, 나머지는 `references/toeic.md`의 iPhone 목록으로 "실기기 미검증"에 넘긴다.
+아빠의 운동은 AI 생성 호출이 없어 과목 하네스 밖이므로 `common`으로 검증한다. 단 세션 음성 안내는 `/api/tts`(한국어, 기본 클라우드)를 거치므로 운동 화면 확인도 키를 비운 dev 서버에서 한다. 영어 자유대화는 리듀서 순서·도구 호출 검사·도움 상태 기계(독립 참조 모델)·키/지시문 노출·뒤로가기 끝내기·저장 멱등을 가짜 전송 e2e로 보고, 재생과 캡처가 겹치는 소리는 `references/english.md` §8-10 iPhone 목록으로 넘긴다. 토익은 과목 하네스 안이지만 녹음·비프·Wake Lock처럼 iOS 실기기에서만 끝까지 드러나는 경로가 많다 — 헤드리스 e2e(가짜 마이크 스트림·시간 배율 훅·루프백 스텁 4종)로 순서까지만 통과로 적고, 나머지는 `references/toeic.md`의 iPhone 목록으로 "실기기 미검증"에 넘긴다.
 
 ## 작업 원칙
 

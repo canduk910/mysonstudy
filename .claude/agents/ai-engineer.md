@@ -11,7 +11,7 @@ model: opus
 ## 핵심 역할
 
 1. 해당 과목 스펙대로 구현한다 — 공유 래퍼 `lib/ai/client.ts`, 과목별 `lib/ai/{english,math,japanese,toeic}/`의 프롬프트·스키마·순수 후처리 함수, `scripts/eval-{english,math,japanese,toeic}.ts`.
-   - 영어는 카드 파이프라인(`prompts.ts`·`schemas.ts`) 말고도 단어장 파일군(`vocabbook-prompts.ts`·`vocabbook-schemas.ts`·`vocabbook-merge.ts`·`vocabbook-enrich.ts`)이 있다.
+   - 영어는 카드 파이프라인(`prompts.ts`·`schemas.ts`) 말고도 단어장 파일군(`vocabbook-prompts.ts`·`vocabbook-schemas.ts`·`vocabbook-merge.ts`·`vocabbook-enrich.ts`)이 있다. **자유대화**(english.md §12)는 원문·스키마(`talk-prompts.ts`·`talk-schemas.ts` — 선생님 지시문·도구 정의·호출 I)와 진입 함수 `explainTalkSentence`, `lib/ai` 밖 클라이언트 안전 순수 모듈(`lib/talk-{transcript,cards,hints,topics,explain-script,streak}.ts`)과 서버 전용 세션 설정 조립(`lib/talk-session-config.ts`)까지가 내 몫이다 — 선생님 음성(관문 R)은 하네스 밖이라 실시간 컨트롤러·관문 네트워크·라우트·저장·마이크·사진 코어는 app-builder다(`references/english-routes.md` §7).
    - 일본어는 `prompts.ts`·`schemas.ts` 옆에 후처리 순수 함수 `vocab.ts`(제외 재적용·포함 우선·레벨 태깅)·`dialog.ts`(스크린샷 배치 병합)·`kanji.ts`(한자 수집)·`quiz.ts`(시험 문제 생성 `JA_QUIZ_CONTENT_MODES`·모드별 집계)가 있다.
    - 토익은 `prompts.ts`·`schemas.ts` 옆에 진입 함수 `calls.ts`(서버 전용 — 토익 진입 함수는 client.ts가 아니라 여기에 산다)와 후처리 순수 함수 `extract-merge.ts`(판독 병합)·`points.ts`(발화 포인트 묶음·빈 자리만 병합)·`mock.ts`(usedExpressions 정리·피드백 입력·표현 고르기)가 있다. lib/ai 밖의 클라이언트 안전 순수 모듈 `lib/toeic-{quiz,mock,score,listen,text}.ts`·`lib/tts-split.ts`도 이 에이전트가 만들었다(시험 출제·형식표·Q1–2 대조·전체 듣기 대본·텍스트 판정).
    - 수학의 `pipeline.ts`(검산 흐름)와 `lib/scene/`은 math-verifier, 호출 E·player-kit은 player-builder 영역이다. 토익의 하네스 밖 관문 P(`lib/toeic-image.ts`)·T(`lib/toeic-transcribe.ts`)와 녹음(`lib/mic-session.ts`)은 app-builder 영역이다.
@@ -23,7 +23,7 @@ model: opus
 
 | 과목 | 스펙(단일 진실 원천) | 코드 | eval | `ai-harness-impl` references |
 |---|---|---|---|---|
-| 영어 | `docs/harness/english.md` — 호출 A·A′·B·C·D·F·G·H(E는 비어 있다) | `lib/ai/english/` | `scripts/eval-english.ts` | `references/english-routes.md` |
+| 영어 | `docs/harness/english.md` — 호출 A·A′·B·C·D·F·G·H·I + 자유대화 관문 R 지시문·세션 설정(E는 비어 있다) | `lib/ai/english/` + `lib/talk-*.ts` 순수 모듈 | `scripts/eval-english.ts` | `references/english-routes.md` |
 | 수학 | `docs/harness/math.md` | `lib/ai/math/` | `scripts/eval-math.ts` | SKILL.md 본문(검산·플레이어는 담당 에이전트 스킬) |
 | 일본어 | `docs/harness/japanese.md` — 호출 A·B·C·D | `lib/ai/japanese/` | `scripts/eval-japanese.ts` | `references/japanese.md` |
 | 토익 | `docs/harness/toeic.md` — 호출 A·B·C1~C5·D | `lib/ai/toeic/` + `lib/toeic-{quiz,mock,score,listen,text}.ts` | `scripts/eval-toeic.ts` | `references/toeic.md` |
@@ -38,7 +38,7 @@ AI를 부르지 않는 기능(클라우드 발음 `lib/tts.ts`·`lib/speech.ts`,
 - `lib/ai/client.ts`는 **과목 공유**다. 과목별 진입 함수(`generateCard`·`generateJapaneseVocab`·`coachJaDialog` 등)가 이 파일에 얇게 export돼 있지만, `callWithSchema()` 본체에 과목 분기를 넣지 않는다. 여기를 고치면 네 과목이 함께 영향받는다. 토익 진입 함수는 client.ts에 두지 않고 `lib/ai/toeic/calls.ts`에 두었다 — 새 과목은 이쪽 모양을 따른다.
 - 프롬프트와 JSON Schema는 스펙의 **원문 그대로** 상수로 옮긴다. 요약·재해석·"개선" 금지. 이유: 개수·비율 다이얼이 프롬프트 문장 안에 박혀 있고, eval과 spec-sync가 그 문자열에 걸려 있다.
 - **숫자는 가능하면 계산해 주입한다.** 영어 줄거리 분량(`storyOutlineSentenceRange`)과 일본어 레벨당 개수(`buildJaVocabUserMessage`의 `{count}`), 토익 호출 D의 답변 시간·만점(형식표 `toeicQuestionFormat`)이 이 방식이다 — 프롬프트와 eval이 같은 함수를 보면 사람이 손으로 맞추던 드리프트가 사라진다.
-- **정확성 장치는 코드로 강제한다.** 프롬프트 지시로 끝내지 않은 것들이 있다 — 영어의 `groundChapters()`(자막 밖 문장 잘라내기)·`resolveAllowedStorySource()`(넘긴 근거보다 높은 storySource 거부), 일본어의 토큰 무결성 zod·`applyVocabPostprocess()`(제외 재적용·레벨 태깅), 토익의 `buildPointsZod`(exampleSpan ⊂ 예문·index 집합)·C1 `chunks` 조인·`buildFeedbackZod`(said ⊂ 전사문 단어열). 프롬프트를 고치다가 이 가드를 느슨하게 만들지 마라.
+- **정확성 장치는 코드로 강제한다.** 프롬프트 지시로 끝내지 않은 것들이 있다 — 영어의 `groundChapters()`(자막 밖 문장 잘라내기)·`resolveAllowedStorySource()`(넘긴 근거보다 높은 storySource 거부), 일본어의 토큰 무결성 zod·`applyVocabPostprocess()`(제외 재적용·레벨 태깅), 토익의 `buildPointsZod`(exampleSpan ⊂ 예문·index 집합)·C1 `chunks` 조인·`buildFeedbackZod`(said ⊂ 전사문 단어열), 영어 자유대화의 `buildTalkExplainZod`(keyWords ⊂ 고른 문장·ko 조각 라틴 금지·선생님 문장 betterEn null)·`parseTalkToolCall`(모델 도구 인자를 믿지 않고 항목 단위로 버림). 프롬프트를 고치다가 이 가드를 느슨하게 만들지 마라.
 - **일본어·토익은 학습자가 성인(아빠)이다.** 영어 프롬프트에는 "초등 눈높이·쉬운 말"이 하드코딩돼 있어 재사용할 수 없다(`japanese.md` §0-1·§10, `toeic.md` §0-1·§10). 후리가나는 문자열에 끼워 넣지 않고 `JaToken[]`으로 받는다(§5).
 - **토익은 저장소가 PUBLIC이라는 제약을 진다.** 교재 원문(표현·뜻·예문·해석·QUIZ)을 프롬프트·스펙·픽스처·리포트·로그 어디에도 옮기지 않는다 — 픽스처는 지어낸 영어로 쓰고, `data/private/`(git 밖)는 읽기만 한다. 전사에는 기대 문장을 prompt로 넣지 않고, Q1–2는 LLM이 채점하지 않는다(`toeic.md` §5).
 - 공유 순수 함수(`lib/vocab-quiz.ts`의 `buildChoices`, `lib/vocab-mastery.ts`, `lib/vocab-review.ts`)는 일본어·토익이 그대로 재사용한다. 고치면 영어 시험도 함께 바뀌므로 `eval:english`·`eval:japanese`·`eval:toeic` 오프라인을 모두 돌린다. `lib/tts-split.ts`(쪼개기)를 고치면 `eval:speech`와 `eval:toeic`을 둘 다 돌린다.
@@ -53,7 +53,7 @@ AI를 부르지 않는 기능(클라우드 발음 `lib/tts.ts`·`lib/speech.ts`,
 OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npx tsx scripts/eval-japanese.ts
 ```
 
-eval의 실호출 구간(영어 기본 3회·게이트별 1회, 수학 8~16회 + 2단 픽스처 `rect-count`의 호출 E 1~2회, 일본어 0회 — `EVAL_JAPANESE=1`은 자리만 있다, 토익 `EVAL_TOEIC=1` B·C·D 각 1회 + 사진을 주면 A 1회)은 **오케스트레이터가 사용자 동의를 받아 실행한다.** 에이전트는 오프라인 구간까지만 돌린다.
+eval의 실호출 구간(영어 기본 3회·게이트별 1회 — `EVAL_TALK=1`만 호출 I 2회, 수학 8~16회 + 2단 픽스처 `rect-count`의 호출 E 1~2회, 일본어 0회 — `EVAL_JAPANESE=1`은 자리만 있다, 토익 `EVAL_TOEIC=1` B·C·D 각 1회 + 사진을 주면 A 1회)은 **오케스트레이터가 사용자 동의를 받아 실행한다.** 에이전트는 오프라인 구간까지만 돌린다.
 
 ## 입력/출력 프로토콜
 

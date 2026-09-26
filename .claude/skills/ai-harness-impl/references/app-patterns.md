@@ -1,15 +1,15 @@
 # 앱 공통 패턴 — 과목과 무관하게 app-builder가 따르는 관용구
 
 > `ai-harness-impl` 스킬에서 **페이지·라우트·저장소·화면**을 만들거나 고칠 때 읽는다. AI 호출 규칙은 SKILL.md 본문에, 과목별 라우트는 `english-routes.md`·`japanese.md`·`toeic.md`에 있다.
-> 원문: `docs/SPEC.md` §15~§19(과목 공통 기능), `docs/DESIGN.md`(디자인), CLAUDE.md 서문(2026-08-17 프로덕션 DB 사고).
+> 원문: `docs/SPEC.md` §15~§19(과목 공통 기능 — 운동 소요시간 §19-8, 스트릭 은우 트랙의 자유대화 §17-9 포함), `docs/DESIGN.md`(디자인), CLAUDE.md 서문(2026-08-17 프로덕션 DB 사고).
 
 여기 적힌 관용구는 대부분 **한 번 사고가 난 자리**에서 나왔다. 규칙만 옮기지 말고 이유도 같이 읽어라. 새 기능이 관용구에서 벗어날 때 무엇을 잃는지는 이유를 봐야 안다.
 
-**목차** — 1 페이지와 `force-dynamic` · 2 라우트 관용구 · 3 계약 파일과 번들 경계 · 4 저장소 이원화 · 5 원자적 쓰기 · 6 prod-guard · 7 PIN 게이트 · 8 발음 관문·낭독 대본 · 9 KST 날짜(해소된 부채 포함) · 10 스트릭 갱신 이벤트 · 11 층·디자인 토큰 · 12 목록 순서변경 · 13 로컬 검증 안전 규칙 · 14 운동 세션 알림 · 15 토익이 더한 공통 패턴(녹음·기기 전용 보관·파일로 가져오기·60초 상한·하네스 밖 관문)
+**목차** — 1 페이지와 `force-dynamic` · 2 라우트 관용구 · 3 계약 파일과 번들 경계 · 4 저장소 이원화 · 5 원자적 쓰기 · 6 prod-guard · 7 PIN 게이트 · 8 발음 관문·낭독 대본 · 9 KST 날짜(해소된 부채 포함) · 10 스트릭 갱신 이벤트 · 11 층·디자인 토큰 · 12 목록 순서변경 · 13 로컬 검증 안전 규칙 · 14 운동 세션 알림(+ 총 운동 소요시간) · 15 토익이 더한 공통 패턴(녹음·기기 전용 보관·파일로 가져오기·60초 상한·하네스 밖 관문) · 16 자유대화가 더한 공통 패턴(전이중 마이크·사진 공용 코어·저장 멱등·keepalive 바이트·언마운트 정리·실시간 관문과 60초)
 
 ## 1. 페이지 — 서버 컴포넌트가 store를 읽는다
 
-- **`getStore()`를 부르는 `page.tsx`에는 반드시 `export const dynamic = "force-dynamic"`을 둔다.** 이게 빠지면 빌드할 때 빈 DB를 읽어 정적 페이지로 굳어 버린다. `/workout`이라면 "처음 시작" 화면이 영구히 박힌다(`app/workout/page.tsx` 주석, SPEC §19-5). 지금 store를 읽는 페이지 33개(2026-09-26, 토익 포함)는 전부 이 선언을 갖고 있다. 대조 방법은 `grep -rla getStore app --include=page.tsx`의 결과가 `grep -rla force-dynamic app --include=page.tsx`의 결과에 포함되는지 보는 것이다. 이 문서의 전수 확인 grep에는 전부 `-a`를 붙인다. NUL 문자가 든 파일을 셸 grep이 조용히 건너뛰기 때문이다(SKILL.md "코드를 grep으로 확인할 때의 함정").
+- **`getStore()`를 부르는 `page.tsx`에는 반드시 `export const dynamic = "force-dynamic"`을 둔다.** 이게 빠지면 빌드할 때 빈 DB를 읽어 정적 페이지로 굳어 버린다. `/workout`이라면 "처음 시작" 화면이 영구히 박힌다(`app/workout/page.tsx` 주석, SPEC §19-5). 지금 store를 읽는 페이지 35개(2026-09-26, 토익·자유대화 포함)는 전부 이 선언을 갖고 있다. 대조 방법은 `grep -rla getStore app --include=page.tsx`의 결과가 `grep -rla force-dynamic app --include=page.tsx`의 결과에 포함되는지 보는 것이다. 이 문서의 전수 확인 grep에는 전부 `-a`를 붙인다. NUL 문자가 든 파일을 셸 grep이 조용히 건너뛰기 때문이다(SKILL.md "코드를 grep으로 확인할 때의 함정").
 - GET으로 store를 읽는 라우트도 같다. `/api/streak`은 `dynamic = "force-dynamic"`과 `cache-control: no-store`를 함께 쓴다.
 - **Next 16 주의:** `cacheComponents`를 켜면 `dynamic` export 자체가 사라진다(`node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/02-route-segment-config/index.md`의 버전 표). 이 저장소의 `next.config.ts`는 이 설정을 켜지 않았다. 켜려면 store를 읽는 모든 페이지가 정적으로 굳지 않게 막는 수단을 먼저 다른 것으로 옮겨야 한다.
 - 서버 컴포넌트가 클라이언트 뷰에 넘기는 props는 **직렬화 가능한 값만** 쓴다. Date 객체를 넣지 말고, undefined 대신 null을 쓴다. "오늘"은 서버가 `kstTodayString()`으로 계산해 props로 넘긴다. 클라이언트가 **렌더 중에** `new Date()`나 localStorage를 읽으면 SSR 결과와 달라져 hydration이 깨진다. localStorage는 마운트 뒤 effect에서만 읽는다(`components/workout-session.tsx`의 `workout-session:v1`).
@@ -21,7 +21,7 @@
 
 | 조각 | 형태 | 왜 |
 |---|---|---|
-| 런타임 | `export const runtime = "nodejs"` | store(node:fs·firebase-admin)와 openai SDK는 Node가 필요하다. Edge는 Next 16에서 deprecated다. 지금 route.ts 67개(2026-09-26, 토익 18개 포함)가 전부 이 선언을 갖고 있다. 전수 확인은 `grep -a`로 한다. `app/api/japanese/vocab/generate/route.ts`에는 NUL 문자가 있어서 `-a` 없는 grep은 이 파일을 건너뛰고 "선언 없음"으로 잘못 센다(SKILL.md "grep 함정") |
+| 런타임 | `export const runtime = "nodejs"` | store(node:fs·firebase-admin)와 openai SDK는 Node가 필요하다. Edge는 Next 16에서 deprecated다. 지금 route.ts 76개(2026-09-26, 토익 18개·자유대화 9개 포함)가 전부 이 선언을 갖고 있다. 전수 확인은 `grep -a`로 한다. `app/api/japanese/vocab/generate/route.ts`에는 NUL 문자가 있어서 `-a` 없는 grep은 이 파일을 건너뛰고 "선언 없음"으로 잘못 센다(SKILL.md "grep 함정") |
 | 본문 파싱 | `req.json()`을 try/catch로 감싸고, 실패하면 400 `invalid_input` | 깨진 JSON이 500이 되면 원인을 알 수 없다 |
 | 검증 | `bodySchema.safeParse(raw)`. 실패하면 400, 필요하면 `issues: parsed.error.issues.map(i => ({ path: i.path.map(String).join("."), message: i.message }))`를 싣는다 | 화면이 어느 필드가 틀렸는지 보여 줄 수 있다 |
 | 응답 헬퍼 | `function json(body: XxxResponse, status = 200)`. 계약 타입을 인자로 받는다 | 응답 shape이 계약에서 벗어나면 tsc가 잡는다 |
@@ -91,13 +91,13 @@
 6. **사건만 저장하고, 파생 상태(현재 Day·진행률·스트릭)는 읽을 때 계산한다.** 파생 상태까지 저장하면 진실이 두 개가 되어 갈린다.
 7. 결과를 상태 코드로 옮긴다. ok는 200, not_found는 404, conflict·stale_state·not_active·empty는 409다.
 
-저장소 전체에서 Firestore 트랜잭션은 운동이 처음이다. 토익이 7개를 더했다(가져오기 멱등·발화 포인트 병합·빈 파트 채우기·사진 저장/실패 기록·응시 끝·문항별 채점 — `toeic.md` 10절). 새로 트랜잭션을 쓰면 이유를 주석으로 남긴다(`lib/store-firestore.ts` 운동 절·토익 절 주석이 견본이다).
+저장소 전체에서 Firestore 트랜잭션은 운동이 처음이다. 토익이 7개를 더했다(가져오기 멱등·발화 포인트 병합·빈 파트 채우기·사진 저장/실패 기록·응시 끝·문항별 채점 — `toeic.md` 10절). 자유대화는 설명 append 하나를 더했다(`addTalkExplanation` — `decideTalkExplanation`으로 "같은 키가 없을 때만"). 반대로 **확인과 생성만 원자적이면 되는 멱등 생성은 트랜잭션 대신 `batch.create`**로 한다 — 문서가 이미 있으면 배치 전체가 ALREADY_EXISTS로 거부되기 때문이다(자유대화 저장, §16). 새로 트랜잭션을 쓰면 이유를 주석으로 남긴다(`lib/store-firestore.ts` 운동 절·토익 절 주석이 견본이다).
 
 ## 6. prod-guard (`lib/prod-guard.ts`)
 
 - `assertDestructiveAllowed(op)`은 `NODE_ENV === "production"`이거나 `ALLOW_PROD_DESTRUCTIVE === "1"`일 때만 통과시키고, 그 밖에는 `ProdGuardError`(code `"prod_guard"`)를 던진다. 라우트는 `isProdGuardError(e)`로 판별해 403 `prod_guard`를 준다.
 - 가드를 부르는 곳은 **Firestore 구현(`lib/store-firestore.ts`)뿐이다.** 파일 백엔드는 로컬 데이터라 가드하지 않는 것이 관용구다.
-- `DestructiveOp`는 9종이다. `deleteBook`·`deleteCard`·`deleteExplanation`·`deleteVocabBook`·`deleteJaVocabBook`(대화 삭제 `deleteJaDialog`도 이 이름으로 막는다)·`undoWorkoutEvent`·`closeWorkoutCycle`·`deleteToeicSet`(세트 + 그 시험 세션)·`deleteToeicMock`(모의고사 + 생성 사진 + 응시 기록).
+- `DestructiveOp`는 10종이다. `deleteBook`·`deleteCard`·`deleteExplanation`·`deleteVocabBook`·`deleteJaVocabBook`(대화 삭제 `deleteJaDialog`도 이 이름으로 막는다)·`undoWorkoutEvent`·`closeWorkoutCycle`·`deleteToeicSet`(세트 + 그 시험 세션)·`deleteToeicMock`(모의고사 + 생성 사진 + 응시 기록)·`deleteTalkSession`(은우 자유대화 기록 + 딸린 주제 일러스트 `talkImages` — 연쇄 삭제를 이 op 하나로 막는다).
 - 대상을 가르는 기준은 "삭제 API냐"가 아니라 **"가족 기록을 되돌릴 수 없게 잃느냐"**다. 그래서 운동 기록 취소(`undoWorkoutEvent`, 첫 줄에서 가드)와 사건 있는 활성 사이클 닫기(`startWorkoutCycle` 트랜잭션 안, `tx.set` 전에 `closedHadEvents`일 때)가 대상이다. 최초 생성, 사건 0개 사이클의 제자리 교체, 기록(append), 편집(이름·재정렬·해설 재생성)은 대상이 아니다.
 - **가드는 삭제만 막는다.** 생성과 수정은 Firestore에 붙은 채로 그대로 실데이터가 된다. 가드는 마지막 방어선일 뿐이고, 로컬 실행을 안전하게 만드는 것은 §13이다.
 - 새 파괴적 작업을 만들면 세 가지를 한다. `DestructiveOp`에 이름을 추가하고, Firestore 메서드에서 쓰기 전에 가드를 부르고, 라우트에 403 분기를 둔다.
@@ -111,7 +111,7 @@
 
 ## 8. 발음 관문 — 화면은 `lib/speech.ts`만 부른다
 
-화면은 `speechSynthesis`로 직접 말하지 않고, `new Audio`로 음성을 재생하지 않고, `fetch("/api/tts")`를 직접 부르지 않는다. 속도(`getTtsRate`), 언어별 엔진(`getTtsEngine`), 두 겹 캐시, 폴백, 재생 취소 토큰이 전부 이 모듈에 모여 있다. 화면 하나가 우회하면 같은 단어가 화면마다 다른 목소리로 들리고, 연타할 때 소리가 겹치고, 폴백이 깨진다. 지금 `app`·`components`에서 직접 호출은 0건이다. 비프 같은 효과음은 발음이 아니다. `components/workout-session.tsx`는 `AudioContext`를 직접 쓴다.
+화면은 `speechSynthesis`로 직접 말하지 않고, `new Audio`로 음성을 재생하지 않고, `fetch("/api/tts")`를 직접 부르지 않는다. 속도(`getTtsRate`), 언어별 엔진(`getTtsEngine`), 두 겹 캐시, 폴백, 재생 취소 토큰이 전부 이 모듈에 모여 있다. 화면 하나가 우회하면 같은 단어가 화면마다 다른 목소리로 들리고, 연타할 때 소리가 겹치고, 폴백이 깨진다. 지금 `app`·`components`에서 직접 호출은 0건이다. 비프 같은 효과음은 발음이 아니다. `components/workout-session.tsx`는 `AudioContext`를 직접 쓴다. **은우 자유대화의 선생님 목소리도 이 관문 밖이다** — 합성 음성이 아니라 WebRTC 원격 트랙(`<audio autoplay playsinline>`, `lib/talk-realtime.ts`)이라 속도·엔진·캐시·폴백 설정이 전부 무관하고, 목소리도 앱 공통(alloy)이 아니라 Realtime 음성(env `OPENAI_REALTIME_VOICE`, 기본 marin)이다(SPEC §21-3 알려진 한계). 대화가 끝난 뒤 문장 설명 낭독만 `speakQueue`를 탄다(english-routes §7-7).
 
 | API | 쓸 때 | 규약 |
 |---|---|---|
@@ -154,8 +154,8 @@
 ## 10. 스트릭 갱신 이벤트
 
 - `STREAK_REFRESH_EVENT`(`lib/streak.ts`, 값 `"eunwoo:streak-refresh"`)는 `window.dispatchEvent(new CustomEvent(STREAK_REFRESH_EVENT))`로 쏜다. 헤드라인(`components/streak-headline.tsx`)이 이 이벤트를 받아 `/api/streak`를 다시 읽는다. 재조회가 겹치면 마지막 요청의 응답만 반영한다.
-- **스트릭에 세는 기록을 저장한 직후에 쏜다.** 영어 단어 시험(`vocab-quiz-view.tsx`), 일본어 시험(`ja-quiz-runner.tsx`), 한자 시험(`ja-kanji-quiz-runner.tsx`)은 저장에 성공했을 때 쏜다. 토익 표현 시험(`toeic-quiz-runner.tsx`)은 새로 저장된 모드가 하나라도 있으면, 모의고사 응시(`toeic-take-view.tsx`)는 finish가 성공하거나 409 `already_finished`이고 녹음된 문항이 1개 이상이면 쏜다. 운동은 기록·취소·사이클 시작이 성공했을 때와 **409일 때 둘 다** 쏜다(`workout-view.tsx`의 `mutate`·`onSessionResult`). 409는 서버 상태가 이미 바뀌었다는 뜻이라 다시 읽는 것이 맞다. 이 분기가 빠져 있던 것이 과거 QA의 P2였다.
-- 무엇을 세는지는 SPEC §17-1이 정한다. 시험(답한 문항 1개 이상)과 운동 "지킨 날"만 센다. 아빠의 🎙️ 영어 트랙은 토익 표현 시험(답한 문항 ≥ 1)과 모의고사 응시(녹음된 문항 ≥ 1)를 센다(`lib/toeic-streak.ts`, `toeic.md` §0-2) — 일본어·운동 트랙과 합치지 않고, 토익 컬렉션 읽기가 실패하면 이 트랙만 중립값으로 보낸다. 수학, 읽음, 대화 복습, 생성은 세지 않는다. 새로 "세는 기록"을 만들면 `app/api/streak/route.ts`와 이벤트를 쏘는 곳을 **같이** 바꾼다. 스트릭 값은 저장하지 않고 읽을 때 계산한다.
+- **스트릭에 세는 기록을 저장한 직후에 쏜다.** 영어 단어 시험(`vocab-quiz-view.tsx`), 일본어 시험(`ja-quiz-runner.tsx`), 한자 시험(`ja-kanji-quiz-runner.tsx`)은 저장에 성공했을 때 쏜다. 토익 표현 시험(`toeic-quiz-runner.tsx`)은 새로 저장된 모드가 하나라도 있으면, 모의고사 응시(`toeic-take-view.tsx`)는 finish가 성공하거나 409 `already_finished`이고 녹음된 문항이 1개 이상이면 쏜다. 은우 자유대화(`talk-call-overlay.tsx`)는 대화 저장에 **처음** 성공했을 때 한 번 쏜다(멱등 재저장·겹친 요청은 다시 쏘지 않는다 — 언마운트 뒤에 성공해도 다음 화면의 헤드라인이 받는다). 운동은 기록·취소·사이클 시작이 성공했을 때와 **409일 때 둘 다** 쏜다(`workout-view.tsx`의 `mutate`·`onSessionResult`). 409는 서버 상태가 이미 바뀌었다는 뜻이라 다시 읽는 것이 맞다. 이 분기가 빠져 있던 것이 과거 QA의 P2였다.
+- 무엇을 세는지는 SPEC §17-1이 정한다. 시험(답한 문항 1개 이상)과 운동 "지킨 날"만 센다. 아빠의 🎙️ 영어 트랙은 토익 표현 시험(답한 문항 ≥ 1)과 모의고사 응시(녹음된 문항 ≥ 1)를 센다(`lib/toeic-streak.ts`, `toeic.md` §0-2) — 일본어·운동 트랙과 합치지 않고, 토익 컬렉션 읽기가 실패하면 이 트랙만 중립값으로 보낸다. 은우 트랙은 §17-1의 예외로 **자유대화**(은우 발화 ≥ 1, `lib/talk-streak.ts`)도 센다(SPEC §17-9) — 대화는 "은우 발화 = 답한 문항"으로 옮겨 같은 코어(`computeStreak`)에 단어장 시험과 함께 넣고, 대화 컬렉션을 못 읽으면 은우 트랙은 단어장 시험만으로 계산한다(`listAllTalkSessions().catch(→ null)`). 수학, 읽음, 일본어 대화 복습, 생성은 세지 않는다. 새로 "세는 기록"을 만들면 `app/api/streak/route.ts`와 이벤트를 쏘는 곳을 **같이** 바꾼다. 스트릭 값은 저장하지 않고 읽을 때 계산한다.
 
 ## 11. 층·디자인 토큰
 
@@ -170,8 +170,8 @@
 새 목록에 순서변경을 붙일 때는 이미 있는 프리미티브를 그대로 쓴다. 라이브러리는 추가하지 않는다.
 
 - 화면은 `components/use-reorder.ts`를 쓴다. 이 훅은 id 순서만 알고, 포인터 드래그·자동 스크롤·↑/↓·키보드·낙관적 반영과 실패 시 되돌리기를 처리한다. **관리 모드일 때만** 켠다(`enabled`). 평소에 드래그 핸들이 있으면 모바일 세로 스크롤과 충돌한다.
-- 요청 계약은 `lib/reorder-contract.ts`의 범용 `{ orderedIds }` 하나다. zod 값(`reorderRequestSchema`)은 라우트에서만 쓴다. 빈 배열·중복·`REORDER_MAX_IDS` 초과를 거절하고, Firestore 문서 id 규칙(`isFirestoreDocId`: `/` 없음, `.`·`..` 아님, `__.*__` 아님, 올바른 UTF-8, 1,500바이트 이하)을 어기는 id도 400으로 막는다(2026-09-25). Firestore `col.doc("a/")`는 문서 `a`를 가리키므로, 막지 않으면 같은 요청에 두 백엔드 결과가 갈린다. 실제 저장 id(randomUUID, 자동 id 20자)는 전부 통과한다. 지금 라우트는 `/api/library/reorder`·`/api/math/reorder`·`/api/english/vocab/reorder`·`/api/japanese/vocab/reorder`·`/api/japanese/dialog/reorder`·`/api/toeic/sets/reorder`·`/api/toeic/mocks/reorder` 일곱이다.
-- 저장: 레코드마다 `sortIndex: number | null`(필수 nullable)을 둔다. 생성 입력 타입(`New*`)에서는 `sortIndex`를 `Omit`한다. 스토어가 null로 태어나게 하므로 새 항목은 맨 위에 뜬다. `reorder<X>(orderedIds)`는 넘어온 id들을 0..n으로 재색인하고 **목록에 없는 항목은 건드리지 않는다.** Firestore는 다섯 `reorder<X>`가 공유 본체 `reorderBySortIndex(db, col, orderedIds)`(`lib/store-firestore.ts`)를 부른다. **없는 id는 두 백엔드 모두 조용히 건너뛴다**(계약 주석 "존재하지 않는 id는 스토어가 조용히 건너뛴다"). 파일 백엔드는 `rank.get(id)`가 있는 레코드만 바꾸고, Firestore는 `getAll(...refs, { fieldMask: ["sortIndex"] })`로 존재하는 문서만 걸러 batch update한다(`BATCH_LIMIT` 단위 청크). `isFirestoreDocId`를 통과하지 못한 id는 `doc()`에 넘기지 않고 건너뛴다(계약과 같은 판정이라 스토어를 단독으로 불러도 파일 백엔드와 같다). **해소된 부채(2026-09-25):** 예전 Firestore 구현은 넘어온 id마다 `WriteBatch.update`를 걸어, 다른 탭에서 지운 id 하나가 배치 전체를 NOT_FOUND로 거부시켜 라우트가 500 `save_failed`를 줬다. 인덱스는 파일 백엔드와 같은 규칙이다 — 넘어온 **위치** 그대로(없는 id 자리는 당기지 않고 비운다), 중복이면 마지막 위치가 이긴다. 확인과 커밋 사이에 지워지면(NOT_FOUND, code 5) 한 번만 다시 걸러 쓴다(값이 고정이라 멱등). 에뮬레이터가 없어 이 함수는 db를 주입받는다 — 가짜 db로 검증한다. 새 목록을 붙이면 Firestore 쪽도 이 함수를 부르고 `batch.update`를 직접 걸지 않는다. 정렬은 페이지나 뷰가 한다. null이 먼저 오고(createdAt 역순), 그 뒤 sortIndex 오름차순이다.
+- 요청 계약은 `lib/reorder-contract.ts`의 범용 `{ orderedIds }` 하나다. zod 값(`reorderRequestSchema`)은 라우트에서만 쓴다. 빈 배열·중복·`REORDER_MAX_IDS` 초과를 거절하고, Firestore 문서 id 규칙(`isFirestoreDocId`: `/` 없음, `.`·`..` 아님, `__.*__` 아님, 올바른 UTF-8, 1,500바이트 이하)을 어기는 id도 400으로 막는다(2026-09-25). Firestore `col.doc("a/")`는 문서 `a`를 가리키므로, 막지 않으면 같은 요청에 두 백엔드 결과가 갈린다. 실제 저장 id(randomUUID, 자동 id 20자)는 전부 통과한다. 지금 라우트는 `/api/library/reorder`·`/api/math/reorder`·`/api/english/vocab/reorder`·`/api/japanese/vocab/reorder`·`/api/japanese/dialog/reorder`·`/api/toeic/sets/reorder`·`/api/toeic/mocks/reorder`·`/api/english/talk/reorder` 여덟이다.
+- 저장: 레코드마다 `sortIndex: number | null`(필수 nullable)을 둔다. 생성 입력 타입(`New*`)에서는 `sortIndex`를 `Omit`한다. 스토어가 null로 태어나게 하므로 새 항목은 맨 위에 뜬다. `reorder<X>(orderedIds)`는 넘어온 id들을 0..n으로 재색인하고 **목록에 없는 항목은 건드리지 않는다.** Firestore는 여덟 `reorder<X>`가 전부 공유 본체 `reorderBySortIndex(db, col, orderedIds)`(`lib/store-firestore.ts`)를 부른다. **없는 id는 두 백엔드 모두 조용히 건너뛴다**(계약 주석 "존재하지 않는 id는 스토어가 조용히 건너뛴다"). 파일 백엔드는 `rank.get(id)`가 있는 레코드만 바꾸고, Firestore는 `getAll(...refs, { fieldMask: ["sortIndex"] })`로 존재하는 문서만 걸러 batch update한다(`BATCH_LIMIT` 단위 청크). `isFirestoreDocId`를 통과하지 못한 id는 `doc()`에 넘기지 않고 건너뛴다(계약과 같은 판정이라 스토어를 단독으로 불러도 파일 백엔드와 같다). **해소된 부채(2026-09-25):** 예전 Firestore 구현은 넘어온 id마다 `WriteBatch.update`를 걸어, 다른 탭에서 지운 id 하나가 배치 전체를 NOT_FOUND로 거부시켜 라우트가 500 `save_failed`를 줬다. 인덱스는 파일 백엔드와 같은 규칙이다 — 넘어온 **위치** 그대로(없는 id 자리는 당기지 않고 비운다), 중복이면 마지막 위치가 이긴다. 확인과 커밋 사이에 지워지면(NOT_FOUND, code 5) 한 번만 다시 걸러 쓴다(값이 고정이라 멱등). 에뮬레이터가 없어 이 함수는 db를 주입받는다 — 가짜 db로 검증한다. 새 목록을 붙이면 Firestore 쪽도 이 함수를 부르고 `batch.update`를 직접 걸지 않는다. 정렬은 페이지나 뷰가 한다. null이 먼저 오고(createdAt 역순), 그 뒤 sortIndex 오름차순이다.
 - **부분 목록에서는 재배치를 끈다.** 필터나 검색으로 일부만 보일 때 재색인하면 숨은 항목과 인덱스가 겹친다. 수학 목록은 '전체'가 아니면 끄고, 서재는 검색 중에 끈다. 삭제는 필터와 무관하게 유지한다.
 - 순서 변경은 수정이라 prod-guard 대상이 아니다. 성공하면 `router.refresh()`로 서버 순서를 확정한다.
 
@@ -182,6 +182,7 @@
 - **db.json 백업과 복원:** 쓰기가 있는 검증을 하기 전에 `data/db.json`을 scratchpad로 복사하고 `shasum`을 기록한다. 끝나면 되돌린 뒤 shasum이 같은지, `data/db.json.tmp`가 남지 않았는지 확인한다(`_workspace/qa_report_streak-workout_e2e_1.md`의 "복원" 절이 선례다). `data/`는 gitignore 대상이다.
 - `npm run seed`는 파일 전용이다. `mergeDbForSeed`가 `readDb`·`writeDb`를 직접 쓰므로 Firestore는 건드리지 않는다. 다만 db.json에 시드 레코드를 upsert한다.
 - 공통 기능을 고쳤으면 오프라인 eval(`eval:streak`·`eval:speech`·`eval:workout`)부터 돌린다. 셋 다 store를 import하지 않는다.
+- 타입 검사는 `npx tsc --noEmit --incremental false`로 전수 확인한다. 자유대화 작업에서 incremental tsc가 `scripts/seed.ts`의 새 컬렉션 누락을 놓친 거짓 음성이 있었다(`_workspace/build_app-builder_english-talk-app_report.md` §5).
 - **하지 않는다:** `migrate-to-firestore` 실행, `ALLOW_PROD_DESTRUCTIVE=1`, `.env`의 `STORE_BACKEND`나 GCP 자격증명 줄 채우기, 서브 에이전트에게 어느 DB를 향하는지 알리지 않고 검증 맡기기(2026-08-17 사고의 직접 원인).
 
 ## 14. 운동 세션 알림 — 비프·진동·음성·Wake Lock (SPEC §19-6)
@@ -197,6 +198,13 @@
 - **세트 목록 순서·완료 축하는 표시일 뿐이다**(§19-6, 2026-09-25 사용자 요청). 순서(지금 할 세트 맨 위 → 남은 세트 → 완료 세트 맨 아래)는 `roundDisplayOrder(step, held)`로 **현재 스텝에서 파생**하고 따로 저장하지 않는다 — 그래서 복원·재진입은 애니메이션 없이 최종 순서다. 푸시업 `✓`는 휴식·비프 예약·저장을 **먼저** 끝낸 뒤 `celebrateRound`가 끝낸 세트를 약 1초(`CELEBRATE_MS`) 맨 위에 붙잡아 축하(체크 팝·이모지 버스트·"🎉 n세트 완료!"·`vibrate(40)`)하고, 타이머가 위치를 재(`measureFlip`) 붙잡기를 풀면 다음 커밋의 `useLayoutEffect`가 FLIP(`el.animate` transform → 0)을 재생한다. 붙잡기는 표시 상태(`celebrating`)일 뿐이라 축하 중에도 조작은 상태 기준이다. 행은 세트 번호로 key를 걸고 한 줄 배열(`flatMap`)로 그려야 DOM이 재사용돼 같은 요소가 움직인다. `prefers-reduced-motion`이면 붙잡지 않고(즉시 재배치) CSS도 팝·버스트를 끈다. 스크린리더는 `role="status"` 알림("n세트 완료!")과 행마다 숨은 상태 글자(지금 할 세트·남은 세트·완료)로 순서 변화를 따라간다. 마지막 `✓`는 축하 없이 곧바로 완료 기록이다.
 - **세트 완료 축하·목록 순서**(SPEC §19-6): 목록 순서는 엔진 `roundDisplayOrder(step, held)`에서만 파생한다(화면에 규칙을 두지 않는다 — eval:workout이 잠근다). 축하는 1초(`CELEBRATE_MS`) 동안 완료 행을 제자리에 잡아 두고(`held`) 끝나면 FLIP으로 아래로 옮긴다. 축하 문구는 휴식 영역 캡션 자리에도 띄운다(작은 화면에서는 목록이 첫 화면 아래라서). 휴식 시작 직후 `CHAIN_TAP_GUARD_MS` 동안은 휴식 버튼을 무시한다(`restStartedAtRef` — 이중 탭이 같은 자리의 "3분"에 떨어지는 문제). `prefers-reduced-motion`이면 애니메이션 없이 즉시 재배치한다.
 
+**총 운동 소요시간** (SPEC §19-8, 2026-09-26 — 실측은 세션이 재고, 없으면 엔진이 읽을 때 근사한다)
+
+- **실측 = 그날 세션을 처음 연 순간부터 기록 요청을 처음 보낸 순간까지**(휴식 포함, 같은 기기 시계의 두 시각 차라 폰·서버 시계 차이와 무관). 시작은 진행 보존값 `workout-session:v1`에 `startedAt`(epoch ms)으로 둔다(키는 그대로, 옛 값은 null → 그 세션은 근사). **0스텝·휴식 없음이어도 저장한다** — 첫 ✓ 전에 새로고침해도 시작이 남게. 부수 효과로 세션을 한 번 열면 오늘 카드가 "이어서 하기 · 풀업 1세트부터"가 된다(시계가 이미 돈다는 뜻). QA 관찰 O1("열어 보기만 해도 시계가 시작")은 2026-09-26 사용자가 **"처음 연 순간"으로 확정**했다 — 첫 ✓를 시작점으로 바꾸지 않는다(SPEC §19-8). 끝 시각은 **처음 보낸 순간을 ref(`endAtRef`)에 고정**한다 — 네트워크 오류 뒤 다시 눌러도 값이 늘지 않는다. 실패 입력 패널에서 "돌아가기"를 누르면 그 끝 시각을 버린다(운동을 이어 가면 그건 끝이 아니다). `durationSec = round((끝 − 시작)/1000)`, 음수이거나 시작을 모르면 null. 렌더는 state(`clockNow`·`endAt`·`startedAt`)만 읽고 `Date.now()`는 effect·핸들러·타이머 콜백 안에서만 부른다(hydration). 머리의 "⏱ 경과" 시계는 `role="timer"`·`aria-live="off"`.
+- **정규화 함정 — 새 필드는 정규화 함수에도 넣는다.** `WorkoutEvent.durationSec: number | null`(필수 nullable). `normalizeWorkoutEvent`가 이 필드를 모르면 두 백엔드가 쓰기 직전에 태우는 정규화(`normalizeWorkoutCycle`, §4)가 값을 **조용히 지운다** — 에러도 없이 실측이 전부 근사로 보인다. 사건에 필드를 더할 때마다 정규화에 같은 검사로 넣고, eval에 "쓰기 경계 정규화 뒤에도 보존"을 단언한다(eval:workout "소요시간"이 잠근다). 옛 사건(필드 없음)은 null이 되고, 활성 사이클에 기록을 한 번 쓰면 그 사이클의 옛 사건 전부에 `durationSec: null` 키가 생긴다(의미는 같다 — undefined가 Firestore로 새지 않는 것이 요점).
+- **zod는 형식만, 상한은 엔진이 본다.** 라우트는 `z.number().int().min(0).nullable().default(null)`이다. `.nullish()`가 아니라 `.default(null)`인 이유는 배포 스큐다 — version-watch가 자동 새로고침을 하지 않아 며칠 열린 폰 화면(옛 번들)이 필드 없이 보낸 기록이 400으로 날아가지 않게 null로 채운다. 출력 타입이 `number | null`(필수)이라 양방향 계약 검사(§2)도 그대로 묶인다. 3시간 상한(`WORKOUT_DURATION_MAX_SEC` 10800)은 zod에 두지 않는다 — 두면 닫아 둔 채 몇 시간 뒤 끝낸 기록 **전체**가 400이 된다. `decideLog`가 `isValidDurationSec`(정수 0..10800)으로 보고 넘으면 **기록은 받고 소요시간만 null**. 판정·정규화·표시(`eventDuration`)가 이 한 함수를 쓴다. 이것은 §5 "서버는 자기가 계산한 값으로 기록한다"의 유일한 예외(클라이언트 보고값)라 서버는 형식·범위만 검증한다.
+- **근사는 저장하지 않는다.** `estimateEventSec`(Σ풀업 reps×3 + Σ푸시업 reps×2 + 수행 스텝×10 + 쉰 휴식×`DEFAULT_REST_SEC` — 계수 `DURATION_ESTIMATE_SEC`)는 읽을 때 엔진이 계산하고 백필로 프로덕션 DB를 고치지 않는다(§5 6 "사건만 저장"). 기본 휴식 2분은 세션 컴포넌트도 `DEFAULT_REST_SEC`을 import한다(정의처 하나 — 옛 `120_000` 리터럴 금지). 화면 문자열("14분 12초"·"약 13분"·섞인 합계 "약 …")의 정의처는 `components/workout-shared.tsx`의 순수 포맷 함수라, eval:workout이 예외적으로 이 화면 파일을 import한다(`lib/kst`·`lib/workout`만 끌어와 store 전이가 없다 — study-qa common.md §0). undo하면 소요시간도 사건과 함께 빠진다.
+
 ## 15. 토익이 더한 공통 패턴 — 녹음·기기 전용 보관·파일로 가져오기·60초 상한·하네스 밖 관문
 
 아빠의 영어(토익스피킹, `docs/harness/toeic.md`)가 저장소에 처음 들여온 경로들이다. 토익 전용 규칙은 `toeic.md`에 있고, 여기에는 **다음 기능이 같은 일을 할 때 따를 모양**만 적는다. 운동(§14)처럼 전부 iOS 실기기에서만 끝까지 확인된다.
@@ -205,7 +213,7 @@
 
 - 오디오 세션 전환·`getUserMedia`·`MediaRecorder`·레벨 미터·WAV 정규화를 이 모듈 한 곳에 둔다. **`navigator.audioSession.type`을 바꾸는 코드는 이 모듈 밖에 두지 않는다** — 순서를 어기면 녹음이 끊긴다.
 - 순서: 녹음 직전 `play-and-record` → `getUserMedia` → `recorder.start()`(timeslice 없음 — 단일 Blob이 표준 mp4라 디코드에 유리) → 답변 타이머는 recorder `start` 이벤트에서 → 끝나면 `recorder.stop()` → 트랙 `stop()` → **그다음** `playback`. 녹음 중(`activeCaptures > 0`)에는 `setAudioSessionPlayback()`이 아무것도 하지 않는다(바꾸면 트랙이 끝난다). 녹음하지 않는 구간은 `playback`이어야 비프가 무음 스위치에 묻히지 않고 재생이 수화기로 가지 않는다. API가 없는 브라우저(Safari 16.4 미만 등)는 조용히 넘어간다.
-- **재생과 캡처를 시간상 겹치지 않는다.** 질문 음성·비프가 끝난 뒤 녹음을 연다. 답변마다 마이크를 새로 잡고 끝나면 놓는다(전략 A).
+- **재생과 캡처를 시간상 겹치지 않는다.** 질문 음성·비프가 끝난 뒤 녹음을 연다. 답변마다 마이크를 새로 잡고 끝나면 놓는다(전략 A). 유일한 예외가 은우 자유대화다 — 실시간 대화는 마이크를 대화 내내 연다(`acquireMicStream`, §16).
 - **`getUserMedia` 대기에는 모듈 안에 상한을 둔다.** 상한 없이 기다리면 권한 창이 탭 밖에서 멈췄을 때 `activeCaptures`가 새어 이후 세션이 `play-and-record`에 갇힌다(QA `qa_report_toeic_m2_1.md` P2-B). 화면 쪽 감시만으로는 모듈 상태를 되돌리지 못한다. 지금은 `getUserMediaWithin`이 답변 `MIC_GUM_TIMEOUT_MS`(8초)·마이크 점검 `MIC_CHECK_GUM_TIMEOUT_MS`(15초)를 넘기면 카운트를 되돌리고 `playback`으로 복귀한 뒤 `MicError("timeout")`을 던지고, 늦게 도착한 스트림은 트랙을 즉시 stop한다. `started`가 거부되면 모듈이 스스로 녹음을 버린다(호출부가 `abort()`를 잊어도 새지 않게). 기다림 상한 4종(gUM·점검 gUM·start·stop)은 이 모듈 한 절에만 두고, 화면의 감시 타이머는 그 숫자를 import한다(`MIC_START_WATCHDOG_MS = MIC_GUM_TIMEOUT_MS`).
 - 첫 권한 창은 **탭 안**(마이크 점검 버튼)에서 띄운다. 거부·미지원이면 "녹음 없이 연습"(타이머만)으로 계속 갈 수 있게 한다.
 - 형식: Apple WebKit은 `audio/mp4` 우선, 그 밖은 webm/opus(`pickMimeTypeFrom` — 순수, eval이 잠근다). 요청과 실제가 다를 수 있으니 **`recorder.mimeType`을 기록**한다. 서버에 ffmpeg가 없으므로 업로드 전 클라이언트가 16kHz mono 16-bit WAV로 정규화하고(`toWav16kMono`), 디코드가 실패하면 원본을 올린다.
@@ -237,10 +245,58 @@
 - 한 단위가 그래도 상한을 넘을 수 있고 결과를 잃으면 안 되는 작업(사진 생성)은 **`req.signal`을 넘기지 않고** 서버 쪽 상한만 걸어 끝까지 저장한다. 화면은 실패를 받으면 한 번 새로 읽어 이미 저장됐는지 확인한 뒤에만 실패로 보인다. 같은 인스턴스 안의 같은 작업은 진행 중 약속에 합류시켜(`IN_FLIGHT`) 두 번 과금하지 않는다.
 - 반대로 끊기면 멈춰야 하는 작업(전사)은 `req.signal`을 상류까지 넘기고 499 `client_closed`로 끝낸다(§2, `/api/tts`와 같은 비용 가드).
 
-**하네스 밖 관문의 공통 모양** (`lib/tts.ts`·`lib/toeic-image.ts`·`lib/toeic-transcribe.ts`)
+**하네스 밖 관문의 공통 모양** (`lib/tts.ts`·`lib/toeic-image.ts`·`lib/toeic-transcribe.ts` + 자유대화의 `lib/image-gen.ts`·`lib/talk-gateway.ts`)
 
 - Structured Outputs가 아닌 OpenAI 호출(오디오·이미지)은 `callWithSchema`를 지나지 않고 **독립 클라이언트**를 쥔다. 공유하는 것은 키 규약 하나다 — 키가 없으면 네트워크 없이 `no_api_key`, 라우트는 501.
 - 모델·품질 env는 `process.env.X?.trim() || 기본값`으로 읽는다(빈 값이 `""`로 새면 400으로 조용히 실패한다, SPEC §11 빈 값 폴백). 모르는 값도 기본값으로 떨어뜨린다.
-- 토익 관문 둘은 throw하지 않고 결과 값(`{ok:true,…} | {ok:false, error, detail}`)을 돌려준다 — 라우트가 사진 칸을 `failed`로 적거나 전사 실패를 `transcribe_failed`로 옮기는 등 상태를 사실대로 기록하게. `lib/tts.ts`는 먼저 생긴 관문이라 throw하고 라우트가 500으로 잡는다(클라이언트는 기기 음성으로 폴백). 새 관문은 결과 값 쪽을 따른다. 로그에는 모델·크기·ms만 남기고 프롬프트·바이트·전사문은 남기지 않는다.
+- 토익 관문 둘(과 뒤에 생긴 사진 공용 코어·관문 R 네트워크)은 throw하지 않고 결과 값(`{ok:true,…} | {ok:false, error, detail}`)을 돌려준다 — 라우트가 사진 칸을 `failed`로 적거나 전사 실패를 `transcribe_failed`로 옮기는 등 상태를 사실대로 기록하게. `lib/tts.ts`는 먼저 생긴 관문이라 throw하고 라우트가 500으로 잡는다(클라이언트는 기기 음성으로 폴백). 새 관문은 결과 값 쪽을 따른다. 로그에는 모델·크기·ms만 남기고 프롬프트·바이트·전사문은 남기지 않는다.
 
 **라우트 입력 오류의 한국어화는 per-parse로만** — 토익 라우트는 `safeParse(raw, { error: toeicZodErrorKo })`(`lib/toeic-zod-ko.ts`)로 zod 기본 문구만 한국어로 바꾼다. 전역 `z.config`나 로캘을 바꾸면 `callWithSchema`가 모델에게 돌려주는 재요청 문구(네 과목)까지 바뀐다.
+
+## 16. 은우 자유대화가 더한 공통 패턴 — 전이중 마이크·사진 공용 코어·저장 멱등·keepalive 바이트·언마운트 정리·실시간 관문과 60초
+
+은우 자유대화(SPEC §21, `docs/harness/english.md` §12, 라우트·관문 R·호출 I는 `english-routes.md` §7)가 들여온 경로다. 여기에는 **다음 기능이 같은 일을 할 때 따를 모양**만 적는다. §15처럼 끝까지는 iOS 실기기에서만 확인된다.
+
+**전이중 마이크 — `acquireMicStream`** (`lib/mic-session.ts`, 녹음기 없이 스트림만)
+
+- 토익 녹음(`startRecording`)은 재생과 캡처를 겹치지 않는다(§15 전략 A). 실시간 대화는 그럴 수 없다 — WebRTC가 마이크 트랙을 **대화 내내** 보내고 선생님 목소리가 그 사이에 나온다. 그래서 같은 모듈에 두 번째 입구를 두었다: `acquireMicStream(opts?) → { stream, release() }`. 녹음기·WAV 정규화는 없고, 세션 전환과 대기 상한과 놓는 순서는 §15 규약 그대로다 — `activeCaptures += 1` → `play-and-record`(캡처 **전**) → `getUserMediaWithin`(기본 `MIC_CHECK_GUM_TIMEOUT_MS` 15초 — 대화 시작 탭이 처음 권한 창을 띄울 수 있어서 토익 마이크 점검과 같은 값) → 실패하면 카운트를 되돌리고 `playback` 복귀 후 `MicError` throw.
+- `release()`는 **멱등**이고 순서가 정해져 있다: 트랙 stop → `activeCaptures -= 1` → **그다음** `playback`. 대화 중 다른 화면 코드가 `setAudioSessionPlayback()`을 불러도 `activeCaptures > 0`이라 무시돼 트랙이 끊기지 않는다. WebRTC 쪽(`lib/talk-realtime.ts`)은 `getUserMedia`·`navigator.audioSession`을 직접 부르지 않는다 — 오디오 세션을 바꾸는 코드는 여전히 이 모듈 한 곳이다.
+- **탭 핸들러 안에서 동기로** 부른다(async 함수 본문은 첫 await까지 동기로 돌아 getUserMedia 요청이 탭 안에서 나간다). 📞 탭의 동기 구간 순서(`components/talk-start-view.tsx`): `stopSpeaking()` → `unlockSpeechPlayback()`(대화 뒤 설명 낭독이 탭 밖에서도 나게) → 원격 `<audio>` 요소 `play()`(소스는 연결 뒤에 붙는다 — iOS 탭 밖 재생 잠금 해제) → `acquireMicStream()` → 컨트롤러 생성. **주제 일러스트 요청은 마이크를 얻은 뒤** 연결과 병렬로 보낸다 — 마이크 거부·대화 전 끝내기에는 이미지 생성 요청이 0이어야 한다(QA english_talk_1 P2-4, "자동으로 도는 비용은 없다" SPEC §21-4).
+- 위험은 실기기에서만 보인다: 재생·캡처가 겹치면 iOS가 소리를 **수화기**로 보내거나 음량을 낮출 수 있고, 스피커 소리가 마이크로 되들어가 선생님이 스스로 끼어들 수 있다(SPEC §21-5 1·2 — 안 되면 이어폰). 전이중이 필요한 다음 기능도 이 입구를 쓰고 같은 실기기 항목을 넘긴다.
+
+**사진 생성 공용 코어 — `lib/image-gen.ts`** (토익 관문 P와 자유대화 주제 일러스트가 공유)
+
+- `generateJpegImage({tag, prompt, model, quality, size, compressions, maxDataUrlChars, signal})` 하나에 모델 env 해석(`resolveImageModel` — `OPENAI_IMAGE_MODEL?.trim() || "gpt-image-2"`)·키 규약(`hasImageApiKey` — 없으면 네트워크 없이 `no_api_key`)·JPEG data URL 조립·**크기 초과 시 다음 압축값으로 1회 재생성**(마지막 값도 넘으면 `too_large`)·로그 모양(태그·모델·품질·압축·크기·ms — 프롬프트·바이트 없음)이 산다. 독립 OpenAI 클라이언트(`maxRetries: 1` — 한 장이 오래 걸려 기본 3회면 너무 길다)를 두 과목이 함께 쓴다.
+- 코어는 과목을 모른다 — 차이는 호출부 인자다(`lib/ai/client.ts`에 과목 분기를 두지 않는 것과 같은 원칙). 토익(`lib/toeic-image.ts`): medium·1536×1024·압축 70→50·프롬프트 접미사·태그 `toeic_scene`. 자유대화(`lib/talk-image.ts`): **low**·1024×1024·압축 60→40·상한 `TALK_SCENE_DATA_URL_MAX` 900,000자(계약 파일 정의 — 저장 라우트가 같은 값으로 검사)·태그 `talk_scene`. 자유대화 품질은 env로 바꾸지 않는다(토익 품질 env와 섞이지 않게).
+- **코어를 고치면 토익이 함께 움직인다.** 옮길 때 기준은 "토익 동작 불변"이었고, QA가 HEAD의 옛 `toeic-image.ts`와 새 코어판을 같은 루프백 스텁에 돌려 요청(모델·크기·품질·압축·프롬프트 접미사)과 결과(오류 문구 포함)가 바이트 단위로 같은지 봤다. 코어를 바꾸면 `eval:toeic` 오프라인과 이 대조를 다시 한다.
+- 실패는 결과 값이다 — 자유대화 장면 라우트는 501/500으로 옮기고 **대화는 그림 없이 그대로 간다**. 저장하지 않는다(대화를 저장할 때 화면이 그림을 함께 보내야 `talkImages`에 들어간다 — 저장하지 않는 대화의 그림이 서버에 남지 않게).
+
+**저장 멱등 — 멱등 키 = 문서 id** (`POST /api/english/talk`)
+
+- 화면 쪽 재시도 경로가 많다(끝남·화면 숨김·"다시 저장"·화면 복귀 자동 재시도·언마운트 정리·pagehide). 응답만 유실돼도 재시도가 새 대화를 만들면 대화·그림이 두 벌 생긴다(QA english_talk_1 P2-1 — 실제로 재현됐다). 그래서 **대화 한 번에 컨트롤러가 멱등 키 하나**(`newTalkSaveId()` — `crypto.randomUUID`, 없으면 `getRandomValues`로 v4)를 만들어 모든 저장 본문에 `clientSessionId`로 싣는다.
+- 스토어는 그 키를 **문서 id로** 쓴다(그림 문서도 같은 id). 별도 필드 + 조회는 Firestore에서 쿼리 트랜잭션과 인덱스가 필요하지만, 문서 id면 확인과 생성이 한 원자 단위다: 파일은 `mutate` 한 번, Firestore는 `batch.create`(대화 + 그림) — 문서가 이미 있으면 ALREADY_EXISTS(gRPC code 6, `GRPC_ALREADY_EXISTS`)로 배치 전체가 거부돼 아무것도 써지지 않는다. 그때 대화를 읽어 **같은 `startedAt`이면 기존 대화를 200으로 돌려주고**(`{record, created:false}`), 다르면(키 충돌 — 비정상 클라이언트·난수 충돌) 새 UUID로 만든다. 남의 대화를 돌려주거나 덮지 않고, 409 같은 새 오류 코드도 만들지 않는다(화면 분기가 늘지 않게). 같은 id의 고아 그림만 있어도 새 id로 만든다.
+- 멱등 키 형식은 계약 상수 하나(`TALK_SAVE_ID_RE` — 소문자 UUID, Firestore 문서 id 규칙도 만족)를 라우트 zod가 쓴다. 이미지 GET·보기·설명·이름·삭제의 id 판정(`isFirestoreDocId`·`/^[A-Za-z0-9_-]{1,64}$/`)이 모두 통과하는지 확인했다.
+- 알려진 끝: 대화를 지운 뒤 같은 키의 늦은 저장이 도착하면 대화가 되살아난다(재시도는 대화 화면에서만 나가 현실 경로는 거의 없다 — QA 2 관찰).
+
+**keepalive는 바이트로 잰다**
+
+- 화면이 숨겨지는 중·문서가 내려가는 중에도 저장이 끝까지 가려면 `fetch(…, {keepalive:true})`가 필요한데, 브라우저 keepalive 본문 한도는 **64KiB = 65,536바이트**이고 **진행 중인 keepalive 요청들의 합**에 걸린다(Chromium 실측 — 40KB 두 개를 동시에 보내면 두 번째가, 64,000바이트를 붙잡은 채 3,000바이트를 보내도 거부된다. 그래서 본문이 작아도 거부될 수 있다). **글자 수(`String.length`, UTF-16)로 재면 틀린다** — 한글 한 글자는 UTF-8 3바이트라 6만 자 미만 본문도 한도를 넘고, 그러면 keepalive fetch가 곧바로 `TypeError`로 거부된다. 모든 재시도가 같은 판정을 되풀이하므로 그 대화는 **영영 저장되지 않는다**(QA english_talk_2 P2-A — Chromium 실측: 한글 6,000자 섞인 56,000글자 = 68,000바이트 → 거부).
+- 규칙: 본문 바이트는 `new TextEncoder().encode(body).byteLength`로 잰다(계약 `talkSaveBodyBytes`), 상한 상수는 바이트 의미로 둔다(`TALK_SAVE_KEEPALIVE_MAX_BYTES` 60,000 — 한도보다 조금 작게), 저장 경로는 전부 한 계획 함수를 지난다(`planTalkSaveBody(payload, {unloading})` → `{body, bytes, keepalive, sceneDropped}`). 바이트가 상한 미만이면 keepalive, 넘으면 일반 요청. **pagehide(unloading)이고 그림이 실려 넘으면 그림을 뺀 본문으로 다시 잰다** — 그림보다 대화가 남아야 한다(이 경로로 저장된 대화에는 그림이 없고, bfcache에서 돌아와 전체 본문으로 다시 보내도 멱등이라 그림 없는 대화가 돌아온다 — 감수한 비용). 그림을 빼도 넘으면(아주 긴 전사) keepalive 없이 보낸다.
+- **거부되면 한 번은 일반 요청으로 다시 보낸다.** keepalive 요청이 `TypeError`로 거부되면(한도 초과·합산 초과·연결 끊김은 JS에서 구별되지 않는다) 문서가 내려가는 중이 **아닐 때만** keepalive 없이 1회 다시 보낸다 — 같은 본문·같은 멱등 키라 응답만 유실된 경우에도 대화는 하나다. "내려가는 중"은 두 신호로 본다: pagehide 경로가 보낸 저장(`unloading`)과 `unloadingRef`(pagehide에서 켜고 `pageshow` — bfcache 복귀 — 에서 끈다). 내려가는 중에 일반 요청을 보내면 어차피 끊기므로 보내지 않는다. 일반 요청까지 실패해야 "저장하지 못했어요"가 뜬다. 새로 keepalive를 쓰는 기능도 이 모양(바이트 판정 한 곳 + 거부 시 1회 일반 요청)을 따른다. `planTalkSaveBody`의 단위 반례(바이트 경계 59,999/60,000·이모지 4바이트·그림 빼기)는 eval-english 오프라인 "자유대화 저장 본문" 12행(`runTalkSaveBodyChecks`)이 잠근다 — 글자 수로 되돌리거나 pagehide 그림 빼기를 지우면 FAIL이다(QA 3 P2-B → QA 4에서 해소).
+
+**화면이 사라지면 끝낸다 — 언마운트 정리·숨김·pagehide** (`components/talk-call-overlay.tsx`)
+
+- 대화 화면이 사라져도 컨트롤러(타이머·WebRTC·마이크)는 컴포넌트 밖에 산다. 대화 중 뒤로가기(iPhone 가장자리 스와이프·안드로이드 뒤로)로 오버레이만 언마운트되면 아이 마이크가 화면 없이 계속 OpenAI로 흐르고 과금·도움 요청이 이어졌다(QA english_talk_1 **P1-1**). 그래서 세 겹으로 끝낸다.
+  - **언마운트 정리**: `controller.end("user")`(전송 close → 마이크 release → hangup 비콘) + 저장이 아직이거나 실패했으면 저장 1회. 개발 StrictMode는 마운트 직후 "정리 → 재실행"을 흉내 내므로 정리를 `setTimeout(0)`으로 한 틱 미루고, 같은 컨트롤러로 재실행되면 취소한다 — 그러지 않으면 dev에서 대화가 마운트 직후 끝난다.
+  - **visibilitychange hidden**: 즉시 끝내고 저장을 바로 시작한다(다음 렌더의 효과를 기다리지 않는다 — 숨겨진 뒤 렌더가 늦어도 요청이 먼저 나가게).
+  - **pagehide**: 끝내고 `unloading` 저장(진행 중 저장이 있어도 keepalive로 한 번 더 — 진행 중 요청은 끊긴다).
+- **이탈은 즉시, 사용자 종료만 기다린다**(2026-09-26 확정). "끝내기" 버튼과 5분 마무리 뒤 종료는 `controller.finish()`로 아직 전사 중인 은우 말을 최대 2.5초 기다린다(그동안 "은우 말을 받아 적는 중…", 버튼 "끝내는 중…"으로 잠김, 도움 카드 숨김 — english-routes §7-4). 위 세 겹(언마운트·숨김·pagehide)과 끊김은 `end()`를 바로 불러 기다리는 중이어도 즉시 닫는다 — 이탈 경로에 기다림을 넣으면 화면 없이 과금·마이크가 2.5초 더 산다. 결과 패널은 선생님이 한마디도 하기 전에 끝난 대화(연결 중 끝내기·첫 인사 전 끊김)에 "다음엔 한마디 해 볼까요?" 대신 "연결되기 전에 끝났어요 — 다시 시작해 볼까요?"를 보인다(판정은 스크립트에 선생님 턴이 있는가).
+- 겹친 저장 요청은 수를 세고, 하나라도 성공하면 "저장됨"이 이긴다. 실패 표시는 다른 요청이 진행 중이 아닐 때만. 저장이 실패한 채 숨겨졌으면 화면이 돌아올 때 한 번 더(멱등 키라 첫 요청이 사실 저장됐어도 하나로 남는다).
+- `history.pushState`로 뒤로가기를 가로채 결과 패널을 보이는 방식은 **넣지 않았다** — Next 라우터의 popstate 처리, 정상 종료 뒤 중복 항목 정리, `router.refresh()`와 얽혀 위험이 크다. 언마운트 정리와 pagehide만으로 과금·마이크·hangup·저장이 모두 닫힌다(QA 2가 대화 중·연결 중·마무리 중 세 시점과 실제 문서 이탈로 확인).
+- 전면 오버레이 관용구는 운동·토익과 같다 — z 20 + `lockBodyScroll`, Wake Lock은 토익 응시 훅 `useToeicWakeLock`(`components/use-toeic-wake-lock.ts`)을 그대로 import한다(대화가 끝나면 푼다).
+
+**실시간 관문과 60초 상한 — 미디어는 우리 서버를 지나지 않는다**
+
+- §15의 "한 요청은 한 단위(60초)"는 여전히 지킨다. 다만 실시간 음성은 브라우저 ↔ OpenAI WebRTC 직통이라 대화 길이(최대 5분)가 요청 상한과 무관하다. 우리 서버를 지나는 것은 SDP 교환(서버 20초 + `req.signal`)·hangup(8초)·장면 그림(55초 + `req.signal` — 화면이 요청을 버리면 상류 생성도 멈춘다)·저장·설명뿐이다.
+- 그 대신 **시간 상한과 과금 중지는 클라이언트의 몫**이 된다 — 5분 상한은 컨트롤러가 세고(개발 전용 배율 `talk-debug-timescale`이 곱해진다, production은 1), 끝낼 때마다 서버 hangup을 `sendBeacon`으로 한 번 더 부른다(탭이 닫혀도 간다). 서버는 통화 길이를 강제하지 않는다. 그래서 "화면이 사라졌는데 컨트롤러가 산다"가 곧 과금 사고다(위 언마운트 정리).
+- 키 노출 0: 브라우저가 OpenAI와 직접 미디어를 주고받아도 키는 브라우저에 가지 않는다 — 서버가 표준 키로 `/v1/realtime/calls`에 SDP를 대신 넘기고(통합 인터페이스) answer·callId만 돌려준다. 다음 실시간 기능도 임시 클라이언트 키를 브라우저에 주지 않고 이 모양을 따른다(`english-routes.md` §7-2).

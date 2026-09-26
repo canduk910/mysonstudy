@@ -1,6 +1,6 @@
 ---
 name: ai-harness-impl
-description: "ai-engineer·app-builder 에이전트가 구현 작업을 수행할 때 로드하는 스킬(과목 공통 — 영어·수학·일본어·토익 + 앱 공통 기능). lib/ai/client.ts(공유 래퍼) 작성 규칙, OpenAI Responses API + Structured Outputs 호출, callWithSchema 래퍼, zod 이중 검증, 라우트 상태코드·계약 파일(lib/*-contract.ts) 연결 규약, 로컬 실행 안전 명령을 담는다. 과목별 상세는 references/english-routes.md(영어 호출 A~H·라우트 전체)·japanese.md(일본어 호출 A~D·후리가나·저장)·toeic.md(토익 호출 A~D·관문 P/T·녹음·60초 상한), AI가 없는 기능(아빠의 운동)과 과목 공통 기능(클라우드 발음·학습 스트릭·해설 낭독·순서변경)은 references/app-patterns.md, 수학은 본문에 있다. 스펙은 docs/harness/{english,math,japanese,toeic}.md와 docs/SPEC.md를 따른다. 사용자의 구현·수정 요청 진입점은 study-orchestrator 스킬이다."
+description: "ai-engineer·app-builder 에이전트가 구현 작업을 수행할 때 로드하는 스킬(과목 공통 — 영어·수학·일본어·토익 + 앱 공통 기능). lib/ai/client.ts(공유 래퍼) 작성 규칙, OpenAI Responses API + Structured Outputs 호출, callWithSchema 래퍼, zod 이중 검증, 라우트 상태코드·계약 파일(lib/*-contract.ts) 연결 규약, 로컬 실행 안전 명령을 담는다. 과목별 상세는 references/english-routes.md(영어 호출 A~I·자유대화 관문 R·라우트 전체)·japanese.md(일본어 호출 A~D·후리가나·저장)·toeic.md(토익 호출 A~D·관문 P/T·녹음·60초 상한), AI가 없는 기능(아빠의 운동)과 과목 공통 기능(클라우드 발음·학습 스트릭·해설 낭독·순서변경)은 references/app-patterns.md, 수학은 본문에 있다. 스펙은 docs/harness/{english,math,japanese,toeic}.md와 docs/SPEC.md를 따른다. 사용자의 구현·수정 요청 진입점은 study-orchestrator 스킬이다."
 ---
 
 # AI Harness Impl — 스펙 기반 구현 가이드
@@ -13,7 +13,7 @@ AI 호출은 해당 과목 스펙(`docs/harness/english.md` · `math.md` · `jap
 
 | 대상 | 스펙 | 프롬프트·스키마 | 진입 함수가 사는 곳 | eval (npm) | 이 스킬에서 읽을 것 |
 |---|---|---|---|---|---|
-| 영어 (북카드·단어장·챕터 리더) | `docs/harness/english.md` — 호출 A·A′·B·C·D·F·G·H (E는 없다) | `lib/ai/english/` | `lib/ai/client.ts` (`extractBook`·`digestPages`·`generateCard`·`enrichVocab`·`chapterizeTranscript`·`lookupWordMeaning`·`suggestRelatedWords`). 호출 C만 라우트가 `callWithSchema`를 직접 부른다 | `scripts/eval-english.ts` (`eval:english`) | `references/english-routes.md` |
+| 영어 (북카드·단어장·챕터 리더·자유대화) | `docs/harness/english.md` — 호출 A·A′·B·C·D·F·G·H·I + 하네스 밖 관문 R(자유대화 실시간 음성) (E는 없다) | `lib/ai/english/` + 자유대화 순수 모듈 `lib/talk-*.ts` | `lib/ai/client.ts` (`extractBook`·`digestPages`·`generateCard`·`enrichVocab`·`chapterizeTranscript`·`lookupWordMeaning`·`suggestRelatedWords`·`explainTalkSentence`). 호출 C만 라우트가 `callWithSchema`를 직접 부른다. 관문 R은 `lib/talk-gateway.ts`(세션 설정 조립은 `lib/talk-session-config.ts`) | `scripts/eval-english.ts` (`eval:english`) | `references/english-routes.md` |
 | 수학 (수학코치) | `docs/harness/math.md` | `lib/ai/math/` | `lib/ai/math/extract.ts`·`pipeline.ts`·`player.ts` (client.ts에 수학 진입 함수는 없다) | `scripts/eval-math.ts` (`eval:math`) | 이 본문 "수학" 절 |
 | 일본어 (아빠의 일본어) | `docs/harness/japanese.md` — 호출 A·B·C·D | `lib/ai/japanese/` | `lib/ai/client.ts` (`generateJapaneseVocab`·`extractJaDialog`·`coachJaDialog`·`generateKanjiInfo`) | `scripts/eval-japanese.ts` (`eval:japanese`) | `references/japanese.md` |
 | 토익 (아빠의 영어 · 토익스피킹) | `docs/harness/toeic.md` — 호출 A·B·C1~C5·D + 하네스 밖 관문 P(사진)·T(전사) | `lib/ai/toeic/` | **`lib/ai/toeic/calls.ts`** (`extractToeicPage`·`generatePointsChunk`·`generateMockPart`·`generateFeedback` — client.ts에는 토익 진입 함수가 없다). 관문은 `lib/toeic-image.ts`·`lib/toeic-transcribe.ts` | `scripts/eval-toeic.ts` (`eval:toeic`) | `references/toeic.md` |
@@ -27,7 +27,7 @@ AI 호출은 해당 과목 스펙(`docs/harness/english.md` · `math.md` · `jap
 
 - 프롬프트와 JSON Schema는 스펙의 **원문 그대로** 상수로 옮긴다. 문구를 다듬거나 요약하지 않는다. 이유: 개수·비율 다이얼이 문장 안에 있고, eval과 spec-sync가 그 문자열에 걸려 있다. 다만 **자동 대조가 덮는 범위는 과목마다 다르다.** 어디까지가 사람 몫인지 알고 고쳐야 "eval 통과"를 "스펙과 일치"로 오해하지 않는다.
   - **시스템 프롬프트와 고정 사용자 텍스트**는 네 과목 모두 각 eval의 오프라인 구간이 `scripts/spec-sync.ts`로 스펙 코드블록과 바이트 대조한다(각 eval의 `SPEC_SYNC_TARGETS`). **새 프롬프트 상수를 만들면 그 과목 eval의 `SPEC_SYNC_TARGETS`에 등록해야 끝이다**(`scripts/eval-english.ts`·`eval-math.ts`·`eval-japanese.ts`·`eval-toeic.ts`).
-  - **JSON Schema를 스펙과 대조하는 것은 일본어와 토익이다.** 각 eval의 `runJsonSchemaSyncChecks`가 스펙의 스키마 코드블록(일본어 4개, 토익 8개)을 파싱해 의미 동치로 본다. 토익은 여기에 사용자 메시지 **템플릿**(값 보간 전 형식)과 호출 옵션 문장(temperature·maxOutputTokens·call 라벨)까지 스펙과 대조한다. 영어·수학 eval은 JSON Schema를 스펙과 대조하지 않는다. 영어는 `WORD_MEANING_JSON_SCHEMA`·`RELATED_SUGGESTION_JSON_SCHEMA`의 strict 모양만 스스로 점검하고, 수학 eval에는 스키마 점검이 없다.
+  - **JSON Schema를 스펙과 대조하는 것은 일본어와 토익, 그리고 영어 자유대화 두 JSON(호출 I 스키마·도구 정의 `TALK_TOOLS`)이다.** 각 eval의 `runJsonSchemaSyncChecks`가 스펙의 스키마 코드블록(일본어 4개, 토익 8개)을 파싱해 의미 동치로 본다. 토익은 여기에 사용자 메시지 **템플릿**(값 보간 전 형식)과 호출 옵션 문장(temperature·maxOutputTokens·call 라벨)까지 스펙과 대조한다. 영어 자유대화 원문 11개는 조립 규칙을 끈 `block-exact`로 대조되고, §12의 산문 숫자(zod·카드 폭·5초·12초 등)도 스펙 문장을 needle로 읽어 상수와 맞춘다. 그 밖의 영어·수학 JSON Schema는 스펙과 대조하지 않는다. 영어는 `WORD_MEANING_JSON_SCHEMA`·`RELATED_SUGGESTION_JSON_SCHEMA`의 strict 모양만 스스로 점검하고, 수학 eval에는 스키마 점검이 없다.
   - **값을 보간하는 사용자 메시지 빌더는 spec-sync 대상이 아니다.** 영어 `buildPagesUserMessage`·`buildCardUserMessage`·`buildChapterizeUserMessage`·`buildWordMeaningUserMessage`·`buildRelatedSuggestUserMessage`, 수학 `buildExplainUserMessage`·`buildVerifyUserMessage`·`buildPracticeUserMessage`·`buildPlayerHtmlUserMessage`, 일본어 `buildJaKanjiUserMessage`·`buildJaDialogCoachUserMessage`가 여기 든다(일본어 `buildJaVocabUserMessage`는 템플릿 `JA_VOCAB_USER_TEMPLATE`이 대조되고 치환도 eval이 본다).
   - 그래서 **영어·수학 JSON Schema나 등록되지 않은 사용자 메시지 템플릿을 고쳤으면 스펙과 눈으로 diff하고 그 결과를 빌드 리포트에 적는다.** 이 부분의 드리프트는 eval이 통과해도 잡히지 않는다.
 - 레퍼런스·리포트에 스펙의 프롬프트 원문을 복사하지 않는다. 원문은 스펙 한 곳에만 살고, 다른 곳에는 §번호 포인터만 둔다.
@@ -80,7 +80,7 @@ const raw = res.output_text; // SDK 편의 getter
 
 프롬프트 지시로 끝내지 않은 가드가 과목마다 있다. 프롬프트를 고치다 이 가드를 느슨하게 만들면 틀린 결과가 에러 없이 통과한다.
 
-- 영어: `groundChapters()`(자막에 없는 문장 잘라내기), `resolveAllowedStorySource()`(실제로 넘긴 근거보다 높은 storySource 거부), `mergeEnrichment()`(이미 채운 정의는 어떤 재생성도 덮어쓰지 않음). → `references/english-routes.md`
+- 영어: `groundChapters()`(자막에 없는 문장 잘라내기), `resolveAllowedStorySource()`(실제로 넘긴 근거보다 높은 storySource 거부), `mergeEnrichment()`(이미 채운 정의는 어떤 재생성도 덮어쓰지 않음). 자유대화: `buildTalkExplainZod`(keyWords ⊂ 고른 문장·ko 조각 라틴 금지·선생님 문장 betterEn null), `parseTalkToolCall`(모델 도구 인자를 항목 단위로 검사), 전사 설정에 `language`·`prompt` 없음(하지 않은 말이 맞게 적히지 않게). → `references/english-routes.md`
 - 수학: 호출 C 독립 검산·`verifyScene`·`held` 판정. math-verifier 소관이다.
 - 일본어: 토큰 무결성 zod(토큰을 이어 붙이면 원문과 같다), `applyVocabPostprocess()`(제외 재적용·레벨 태깅), `applyKanjiPostprocess()`(요청 밖 한자 버리기). → `references/japanese.md`
 - 토익: `exampleSpan` ⊂ 예문·index 집합(호출 B zod), `chunks` 조인 = 지문(C1), `said` ⊂ 전사문 단어열(D), 후처리의 목록 밖 버림(`cleanKeyExpressions`·`cleanUsedExpressions`·`postprocessFeedback`), 전사에 기대 문장 금지(관문 T), Q1–2 비AI 대조(`alignReadAloud`). → `references/toeic.md`

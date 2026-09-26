@@ -12,7 +12,7 @@
 
 ## 1. 구성 개요
 
-앱의 AI 호출은 8종입니다(A·A′·B·C·D·F·G·H — E는 결번). 아래 temperature·출력 한도는 코드의 호출 옵션
+앱의 AI 호출은 9종입니다(A·A′·B·C·D·F·G·H·I — E는 결번). 여기에 Structured Outputs 밖의 **관문 R**(자유대화 실시간 음성, §12)이 하나 있습니다. 아래 temperature·출력 한도는 코드의 호출 옵션
 상수와 같은 값이고, 각 값을 고른 근거는 표의 "상세" 절에 있습니다.
 
 | 호출 | 목적 | 성격 | temperature | 출력 한도 (max_output_tokens) | 옵션 상수 (파일) | 상세 |
@@ -25,11 +25,17 @@
 | **F. 챕터화** | 목차 챕터 제목 + 낭독 자막 → 챕터별 영어 원문·우리말 해석 문장 | 전사 + 번역 (자막 밖 창작 금지) | 0 | 16,000 | `CHAPTERIZE_CALL_OPTIONS` (`lib/ai/client.ts`) | §9-6 |
 | **G. 단어 뜻 조회** | 단어 + 그 문장 → 그 문맥의 우리말 뜻 한 낱말 | 정확성 우선 (같은 입력은 같은 뜻) | 0 | 600 | `WORD_MEANING_CALL_OPTIONS` (`lib/ai/english/prompts.ts`) | §10-5 |
 | **H. 유의어·반의어 추천** | 단어 + 뜻 + 관계 종류 → 초등 눈높이 후보 5~6개 | 정확성 우선 + 후보 다양성 | 0.3 | 800 | `RELATED_SUGGEST_CALL_OPTIONS` (`lib/ai/english/vocabbook-prompts.ts`) | §11-6 |
+| **I. 자유대화 문장 설명** | 대화 스크립트의 문장 하나 + 앞뒤 대화 → 1학년 눈높이 선생님 말투 설명 대본(한/영 조각) | 창작(설명) + 환각 차단(짚은 단어 ⊂ 문장) | 0.5 | 1,500 | `TALK_EXPLAIN_CALL_OPTIONS` (`lib/ai/english/talk-prompts.ts`) | §12-3 |
 
 호출 C는 **단어장 정복** 기능(§7)의 판독 호출로, A→A′→B 카드 파이프라인과는 별개의 경로입니다.
 사진 1장 = 판독 1회이고, DAY 하나가 사진 여러 장이면 병렬 호출 후 앱이 번호로 병합합니다(§7-5).
 호출 D·H도 단어장 쪽 호출(보강·연결 후보)이고, F·G는 챕터 리더(낭독 자막 → 챕터별 원문·해석,
 단어 더블탭 뜻)의 호출입니다. 넷 다 카드 파이프라인과 별개 경로라 실패해도 카드를 막지 않습니다.
+호출 I는 **자유대화**(§12 — 은우가 AI 전화영어 선생님과 5분 음성 대화, 제품 흐름은 `docs/SPEC.md` §21)가 끝난 뒤
+문장 하나를 탭했을 때만 도는 설명 호출이고, 대화 자체는 표에 없는 **관문 R**(OpenAI Realtime — 브라우저 ↔ OpenAI
+WebRTC 음성 ↔ 음성)이 맡습니다. 관문 R은 Structured Outputs가 아니라 `callWithSchema`·zod·재요청을 거치지 않고
+키 규약만 공유합니다(클라우드 TTS·토익 관문 P/T와 같은 부류 — `docs/HARNESS.md` §0). 대화 중 주제 일러스트는
+토익 관문 P와 같은 사진 생성 공용 코어(`lib/image-gen.ts`)로 만듭니다(§12-6).
 옵션 값을 바꾸면 이 표와 해당 "상세" 절을 함께 고칩니다. 추론형 모델은 temperature 파라미터를 400으로
 거부하므로, `callWithSchema`(`lib/ai/client.ts`)가 그 모델에 한해 파라미터를 빼고 다시 부릅니다 — 그 동안은
 표의 temperature가 적용되지 않습니다.
@@ -73,6 +79,9 @@ scripts/eval-english.ts      # §5 평가 하네스
 ```
 
 `lib/ai/client.ts`는 수학코치와 함께 쓰는 모듈이다. 과목별 분기는 client가 아니라 호출부에 둔다.
+위 블록은 카드 파이프라인의 최소 배치다. 단어장·챕터 리더 호출의 프롬프트는 `lib/ai/english/vocabbook-prompts.ts`
+·`prompts.ts`(표의 "옵션 상수" 열), 자유대화(관문 R + 호출 I)는 `lib/ai/english/talk-prompts.ts`·`talk-schemas.ts`와
+`lib/talk-*.ts` 여러 파일로 나뉜다 — 전체 목록은 §12-0이다.
 
 ## 2. 호출 A — 표지 판독 (vision)
 
@@ -651,9 +660,10 @@ zod 추가 검증(스키마가 못 잡는 것):
   - 기본 실행은 카드 3회(Wolves / Pooh / Pooh+장면 메모). `EVAL_SKIP_PAGES=1`이면 2회, `EVAL_THIN_PAGES=1`은
     3번째 입력만 얇은 근거로 바꿀 뿐 3회 그대로다.
   - 실호출 게이트 `EVAL_TRANSCRIPT=1`(자막 카드, 위)·`EVAL_CHAPTERS=1`(챕터화, §9-7)·`EVAL_VOCAB=1`(호출 D 보강
-    텍스트)·`EVAL_WORDMEANING=1`(단어 뜻, §10-6)은 **서로 배타적**이다. `main`이 이 순서로 확인해 처음 켜진
-    하나만 실호출 1회로 돌리고 return하므로, 게이트는 기본 카드 3회에 **더해지는 것이 아니라 그것을 대체한다.**
-    둘 이상 켜면 앞의 것만 돈다.
+    텍스트)·`EVAL_WORDMEANING=1`(단어 뜻, §10-6)·`EVAL_TALK=1`(자유대화 호출 I, §12-5)은 **서로 배타적**이다.
+    `main`이 이 순서로 확인해 처음 켜진 하나만 돌리고 return하므로(앞의 넷은 실호출 1회, `EVAL_TALK`만 선생님 문장 1 ·
+    은우 문장 1로 2회), 게이트는 기본 카드 3회에 **더해지는 것이 아니라 그것을 대체한다.** 둘 이상 켜면 앞의 것만 돈다.
+    호출 H(유의어·반의어 추천)의 실호출 프로브는 게이트가 아니라 오케스트레이터가 따로 돌린다(§11-7).
   - 게이트 실행에서는 앞서 돈 오프라인 점검의 결과를 표에 찍지도, 판정(exit code)에 넣지도 않는다 — 그 실행의
     PASS/FAIL은 게이트 항목만의 판정이다. 기본 실행(게이트 없음)은 오프라인 점검과 카드 점검을 함께 판정한다.
     오프라인만 보려면 `EVAL_OFFLINE_ONLY=1`(실호출 0회)을 쓴다.
@@ -1562,3 +1572,483 @@ zod 추가 검증(스키마가 못 잡는 것):
 - 실호출 프로브(오케스트레이터가 동의 하에 별도로 돌린다 — 기본 eval에는 넣지 않는다): 실제 단어·뜻·kind 1건이
   (a) kind에 맞는 관계인지(유의어 자리에 반의어가 안 섞였는지), (b) 받은 뜻에 맞는 후보인지, (c) 초등 눈높이인지.
   이 셋은 의미 판단이라 코드로 못 잡는다. 오프라인 게이트(`EVAL_OFFLINE_ONLY=1`)에서는 절대 도달하지 않는다.
+
+
+---
+
+## 12. 자유대화 — 관문 R(실시간 음성) + 호출 I(문장 설명)
+
+은우(초등 1학년)가 **AI 전화영어 선생님**과 짧게 영어로 이야기하는 기능이다(제품 흐름·결정·비용은 `docs/SPEC.md` §21). 카드·단어장 파이프라인과 별개 경로다. 두 부분으로 나뉜다.
+
+- **관문 R — 실시간 음성 대화.** OpenAI Realtime(`gpt-realtime-2.1`, 음성 ↔ 음성). Structured Outputs가 아니라 **하네스 밖 관문**이다(클라우드 TTS·토익 관문 P/T와 같은 부류 — `callWithSchema`·zod·재요청을 거치지 않고 키 규약만 공유). 여기서 스펙이 못박는 것은 **선생님 지시문 원문**(spec-sync 대상), 세션 설정, 이벤트 → 스크립트 규칙이다.
+- **호출 I — 문장 설명.** 대화가 끝난 뒤 스크립트의 문장 하나를 탭하면, 그 문장과 앞뒤 대화로 **선생님 말투의 설명 대본**(한국어·영어 조각)을 만든다. 하네스 안(`callWithSchema`)이다.
+
+**눈높이**: 이 절의 모든 문구는 **초등학교 1학년**(약 7세, 영어 초급) 기준이다. 기존 은우 프롬프트("초등학생·저학년")보다 한 단계 구체적이다 — 기존 문구는 이번에 바꾸지 않는다. **아이 이름은 AI에 보내지 않는다**(화면의 "은우" 라벨은 로컬 표시일 뿐이다).
+
+**스코프 경계**: 이 절은 지시문·세션 설정·리듀서 규칙·호출 I(프롬프트·스키마·zod·옵션·eval)까지다. WebRTC 연결·마이크(`lib/mic-session.ts` 단일 관문)·화면·저장·라우트 배선은 앱(app-builder) 몫이다.
+
+### 12-0. 파일 배치
+
+```
+lib/ai/english/talk-prompts.ts    # §12-1 지시문·수업 블록·인사·마무리 문구, §12-3 호출 I 프롬프트·옵션 (원문 상수)
+lib/ai/english/talk-schemas.ts    # §12-3 JSON Schema + buildTalkExplainZod + 타입
+lib/talk-topics.ts                # 주제 프리셋 단일 정의(클라이언트 안전, 런타임 import 0)
+lib/talk-session-config.ts        # 서버 전용: 주제/단어 → 지시문 조립 + Realtime 세션 설정(관문 R, 모델·음성 env 해석)
+lib/talk-transcript.ts            # §12-2 이벤트 → 스크립트 순수 리듀서 + 저장용 턴 변환 + 문장 나누기
+lib/talk-explain-script.ts        # 설명 대본 → speakQueue 조각(ko-KR/en-US, splitForTts)
+lib/talk-streak.ts                # SPEC §17-9 대화 → StreakSession
+```
+
+위 블록은 스펙을 쓸 때 정한 AI·순수 모듈이다. 구현(2026-09-26)이 더한 파일은 아래와 같다 — 화면 카드(§12-6)의 순수 모듈 둘과 앱(라우트·저장·실시간 클라이언트·화면) 쪽이다. **클라이언트 번들 경계**가 파일을 가르는 기준이다: 화면이 값으로 import하는 모듈(`talk-transcript`·`talk-topics`·`talk-cards`·`talk-hints`·`talk-streak`·`talk-contract`·`talk-realtime`)은 런타임 import가 서로와 `mic-session`뿐이고 `lib/ai`·openai·zod는 `import type`만 한다 — 선생님 지시문·호출 I 프롬프트·키가 폰 번들로 새지 않게.
+
+| 파일 | 경계 | 맡은 일 |
+|---|---|---|
+| `lib/talk-cards.ts` | 클라이언트 안전 | §12-6 도구 호출 검사 `parseTalkToolCall`·카드 정리 `sanitizeTalkCard(s)`·기본 문구 `TALK_FALLBACK_HINTS`·단어장 ✓ `matchTalkWord`·폭 `TALK_CARD_LIMITS`, 응답에서 function_call 꺼내기·응답 끝 요약·호출 결과 항목 |
+| `lib/talk-hints.ts` | 클라이언트 안전 | §12-6 말문 막힘 도움 **순수 상태 기계**(시계는 인자) + 서버 이벤트 옮기기 `talkHintEventFromServer` + 화면 뷰 `viewTalkHints` |
+| `lib/talk-realtime.ts` | 클라이언트 전용 | 실시간 클라이언트 — 대화 한 번의 컨트롤러 `TalkCallController`(useSyncExternalStore용)와 WebRTC 전송(마이크 트랙·원격 `<audio>`·데이터 채널 `oai-events`). 안내 넣기·도구 호출 처리·응답 진행 중 보류·5분 마무리·끝내기(hangup `sendBeacon`)·저장 본문 |
+| `lib/talk-fake-transport.ts` | 개발 빌드 전용 | 합성 이벤트 가짜 전송(e2e 대역, 동적 import — production 번들에 없다) |
+| `lib/talk-contract.ts` | 클라이언트 안전 | 라우트 ↔ 화면 요청·응답 계약, 상한 상수(일러스트 900,000자·제목 60자·저장 키 형식·keepalive 한도), 저장 키 `newTalkSaveId`, 주소 함수 |
+| `lib/talk-gateway.ts` | 서버 전용 | 관문 R 네트워크 — `POST {OPENAI_BASE_URL \|\| https://api.openai.com/v1}/realtime/calls`(multipart `sdp`+`session`, 상한 20초)·hangup(상한 8초). 실패는 결과 값 |
+| `lib/talk-topic-request.ts` | 서버 전용 | connect·scene 공용 주제 요청 zod + 해석(단어장은 스토어에서 읽어 404를 가린다, 계약 ↔ zod 양방향 묶음) |
+| `lib/talk-record.ts` | 서버(페이지·라우트) | 렌더 판정 `isRenderableTalkSession`, 기본 제목 `defaultTalkTitle`("{주제} 대화"), 목록 줄 `toTalkHistoryItem`·정렬 |
+| `lib/talk-normalize.ts` | 서버 전용 | 두 백엔드 공용 정규화(`normalizeTalkSessionRecord`·`normalizeTalkImageRecord`)와 설명 추가 판정 `decideTalkExplanation` |
+| `lib/talk-image.ts` | 서버 전용 | 주제 일러스트 `generateTalkSceneImage`(low·1024×1024·압축 60→40·태그 `talk_scene`) — 공용 코어를 대화 설정으로 부른다 |
+| `lib/image-gen.ts` | 서버 전용 | **사진 생성 공용 코어**(토익 관문 P와 공유) — 모델 env·키 규약·JPEG data URL·크기 초과 시 다음 압축으로 1회 재생성·로그 모양. 과목을 모른다 |
+| `lib/mic-session.ts` `acquireMicStream` | 클라이언트 | 대화 내내 열린 마이크(녹음기 없이 스트림만) — play-and-record → getUserMedia(대기 상한 15초) → `release()`(트랙 stop → playback). 토익 녹음과 같은 단일 관문 |
+| `app/api/english/talk/**` | 라우트 9개 | `connect`·`scene`·`hangup`·저장(`route.ts`)·`reorder`·`[id]`(DELETE)·`[id]/explain`·`[id]/rename`·`images/[id]`(GET) — 전부 `runtime = "nodejs"`, 상태코드는 계약 파일 |
+| `app/english/talk/page.tsx`·`[id]/page.tsx` | 서버 컴포넌트 | 시작 화면(단어장 줄 정보·지난 대화·안내 글 props)·대화 보기 |
+| `components/talk-*.tsx`·`talk.module.css` | 화면 | 시작(`talk-start-view`)·대화 오버레이(`talk-call-overlay`)·지난 대화 목록(`talk-history-list`)·대화 보기와 설명 시트(`talk-review-view`)·제목 편집(`talk-title-editor`) |
+
+### 12-1. 관문 R — 선생님 지시문과 세션 설정
+
+지시문은 영어로 쓴다(선생님이 영어로 말하고, Realtime 모델의 지시 준수가 영어에서 가장 안정적이다). 한국어 사용 규칙은 지시문 안에 둔다.
+
+**선생님 지시문 (원문 그대로 사용 — `TALK_TEACHER_INSTRUCTIONS`).** `{lesson}` 자리에 아래 수업 블록 하나를 끼운다(치환은 이 한 자리뿐).
+
+```
+You are Sunny, a warm and cheerful English tutor talking with a Korean child on a short phone call. The child is in the first grade of elementary school (about 7 years old) and is a beginner in English. A parent is nearby.
+
+# Your manner
+- Talk like a kind home tutor who loves kids: gentle, playful, and encouraging.
+- Speak slowly and clearly. Pause briefly between sentences.
+
+# How you talk
+- Use very easy English that a first-grade beginner can understand.
+- Say only one or two short sentences, then ask one easy question. Ask only one question at a time.
+- Prefer questions the child can answer with a word or two: yes/no questions, choices ("Is it red or blue?"), or "What is it?".
+- Be patient. The child may pause for a long time, say "um", or answer with one word. That is fine.
+- If the child is stuck or quiet, help: give two choices, give the first word, or say a short model answer and invite the child to say it with you ("Can you say: I like apples?").
+- Praise often and specifically ("Great job!", "Wow, you said it!").
+- Never say "wrong" or "No, that's not right." When the child makes a mistake, happily say the correct sentence back and keep going. For example, the child says "I like dog." and you say "Oh, you like dogs! Me too!"
+- Keep your turns short so the child can talk a lot.
+
+# Korean
+- Speak English almost all the time.
+- If the child speaks Korean or doesn't understand, you may say one very short Korean phrase to help (for example, "사과는 apple이야!"). Then go back to English right away and invite the child to try in English.
+- Never give long explanations in Korean.
+
+# Today's lesson
+{lesson}
+
+# Staying on track
+- Keep the talk on today's lesson. If the child talks about something else, answer kindly in one short sentence and gently come back to the lesson.
+- If the child's words are unclear, ask again with a short, friendly phrase such as "Can you say that again?"
+
+# Safety
+- Never ask for personal information: the child's full name, school name, address, phone number, passwords, photos, or where the child is right now. If the child says such things, do not repeat them.
+- If the child shares something scary or sad, respond gently, say it is a good idea to tell mom or dad, and return to the lesson.
+- If asked, say honestly that you are an AI English teacher.
+- Keep everything kind, safe, and right for a young child.
+```
+
+**수업 블록 — 주제 (`TALK_LESSON_TOPIC`).** `{topic}` = 프리셋이면 `"{labelEn} ({labelKo})"`, 직접 입력이면 입력한 글자(정리 후).
+
+```
+Today's topic is: {topic}
+Talk about this topic with easy words and simple questions. If the topic is written in Korean, understand it and talk about it in English.
+```
+
+**수업 블록 — 단어장 (`TALK_LESSON_WORDS`).** `{title}` = 단어장 표시 이름, `{words}` = 줄마다 `- {word} ({우리말 뜻})`.
+
+```
+Today's words come from the child's word book "{title}":
+{words}
+Use these words naturally in the conversation and practice about 4 to 6 of them. For each word you practice, say it clearly, use it in a very short sentence, and invite the child to say it or use it. Do not read the list out loud; weave the words into the talk.
+```
+
+**첫 인사 (`TALK_GREETING_INSTRUCTIONS`).** 데이터 채널이 열리면 앱이 이 문구를 **숨은 system 메시지 항목**(`conversation.item.create`, id 접두사 `app_`)으로 넣고 `response.create`(인자 없음)를 보낸다 — 선생님이 먼저 말한다. 응답 단위 `instructions`로 보내지 않는다: 그 값은 세션 지시문을 **덮어써** 그 응답에서 선생님 성격·안전 규칙이 빠질 수 있다(2026-09-26 정정 — 앱이 넣는 안내는 전부 이 방식이다, §12-6).
+
+```
+Start the call now: say hello warmly, say that your name is Sunny, and ask one easy warm-up question about today's lesson. Use no more than two short sentences and one question.
+```
+
+**마무리 (`TALK_WRAPUP_INSTRUCTIONS`).** 5분 상한에 닿으면 앱이 같은 방식(숨은 system 메시지 + `response.create`)으로 보낸다.
+
+```
+Our time is almost up. Finish the call now: praise one thing the child did well today in one short sentence, then say a warm goodbye. Do not ask any more questions.
+```
+
+**입력 정리(서버, 순수 함수 — 지시문에 넣기 전에 끝낸다):**
+- 주제 프리셋 키는 `lib/talk-topics.ts`에 있는 것만 받는다(프리셋 10개: 동물·음식·가족·학교와 친구·놀이·날씨·색깔과 모양·오늘 하루·공룡·생일 — 키·한국어·영어 라벨·이모지를 한 곳에).
+- 직접 입력 주제: 줄바꿈·제어문자 제거, 앞뒤 공백 정리, 1~30자. 지시문 주입을 막으려고 따옴표·`#`·백틱을 걷어 낸다.
+- 단어장: 서버가 `getVocabBook(id)`로 읽고(클라이언트는 id만 보낸다) 렌더 판정(`isRenderableVocabBook`)으로 404를 가린다. 단어는 책 순서로 **최대 20개**, 각각 `word`와 첫 우리말 뜻(`meanings[0].ko`, 없으면 `definitionKo`, 둘 다 없으면 뜻 생략). "모은 단어" 단어장도 같은 방식이다(`word`·`meanings[].ko`만 있다).
+- 저장 레코드에는 **실제로 넘긴 주제·단어를 스냅샷**으로 남긴다(나중에 단어장이 바뀌어도 대화 기록은 그대로).
+- 구현이 정한 세부(`lib/talk-session-config.ts` — 전부 결정적): 직접 입력이 30자를 넘으면 **자르지 않고** 거부한다(null → 400 — 조용히 잘린 주제가 저장되지 않게, 글자 수는 코드 포인트). 굽은 따옴표·전각 `＃`도 걷는다. 단어장 단어는 빈 단어·같은 단어(대소문자 무시) 되풀이를 건너뛰고(20자리 낭비 방지), 첫 뜻이 빈 문자열이면 `definitionKo`로 간다. 단어장 제목은 지시문에서 큰따옴표 안에 들어가므로 줄바꿈·제어문자·큰따옴표·백틱을 걷고, 비면 "단어장"이다. 넘길 단어가 0개면 400이다.
+
+**세션 설정(통합 인터페이스 — 서버가 `POST {OPENAI_BASE_URL}/realtime/calls`에 multipart `sdp` + `session`으로 보낸다. 필드 이름은 설치된 SDK의 GA 타입과 맞춘다):**
+
+| 필드 | 값 | 근거 |
+|---|---|---|
+| `type` | `"realtime"` | GA 필수 |
+| `model` | env `OPENAI_REALTIME_MODEL`(빈 값이면 `gpt-realtime-2.1`) | 사용자 결정 |
+| `instructions` | `TALK_TEACHER_INSTRUCTIONS`의 `{lesson}` 치환 결과 | 위 |
+| `output_modalities` | `["audio"]` | 오디오 + 발화 전사가 같이 온다 |
+| `reasoning.effort` | `"low"` (SDK가 지원할 때 — 구현은 모델 이름이 `gpt-realtime-2` 계열일 때만 싣는다, `supportsRealtimeReasoning`) | 음성 대화 지연 — 공식 권장 출발점. env로 비추론 모델(mini 등)로 바꿨을 때 이 필드 때문에 연결이 거부되지 않게 |
+| `max_output_tokens` | 1200 | 선생님 차례를 짧게(오디오 1초 ≈ 20토큰). 짧게 말하기는 지시문이 1차로 강제한다 |
+| `audio.input.transcription` | `{ model: env OPENAI_REALTIME_TRANSCRIBE_MODEL(빈 값이면 gpt-4o-mini-transcribe) }`, **language·prompt 지정 없음** | 은우가 한국어를 섞는다(영어 고정 시 억지 전사). 단어장 단어를 prompt로 주지 않는다 — 하지 않은 말이 맞게 적히는 위험(토익 관문 T와 같은 원칙) |
+| `audio.input.turn_detection` | `{ type: "semantic_vad", eagerness: "low", create_response: true, interrupt_response: true }` | 아이의 긴 쉼·"음…"에서 끊지 않게(최대 대기 약 8초) |
+| `audio.input.noise_reduction` | `{ type: "far_field" }` | 폰을 들고 스피커로 말하는 상황 |
+| `audio.output.voice` | env `OPENAI_REALTIME_VOICE`(빈 값이면 `marin`) | 공식 권장 음성 |
+| `audio.output.speed` | 천천히 0.85(기본) · 보통 1.0 | 화면에서 고른 값(서버가 두 값만 받는다) |
+
+- 연결 응답의 `Location` 헤더 마지막 조각이 `callId`다. 라우트는 SDP answer와 `callId`, 그리고 **해석한 주제 스냅샷**(`TalkTopic`)을 돌려준다. 키가 없으면 OpenAI를 부르지 않고 501.
+  구현(`POST /api/english/talk/connect` → `lib/talk-gateway.ts`): 응답에는 저장 레코드용 `model`·`voice`(세션 설정에 넣은 값과 같은 해석 함수)도 실린다. `rtc_…` 모양은 추정이라 callId는 접두사를 강제하지 않고 `[A-Za-z0-9_-]{1,200}`만 받는다(hangup 경로 조작 차단이 목적). `Location`을 못 읽으면 연결은 살리고 `callId: null`로 준다(서버 hangup 이중 장치만 빠진다 — 경고 로그). 상류 오류·시간 초과(20초)·answer가 SDP 모양이 아니면 500 `connect_failed`, 모르는 프리셋·30자 초과·단어 없는 단어장은 400, 없는 단어장은 404.
+- 서버 로그에는 SDP·지시문·전사를 남기지 않는다(모델·상태·ms만).
+- 끝낼 때 `POST /v1/realtime/calls/{callId}/hangup`(서버). 실패해도 무시한다(이미 끊겼을 수 있다). 브라우저는 앱 라우트 `POST /api/english/talk/hangup`에 `sendBeacon`(본문은 `text/plain` JSON — content-type에 기대지 않고 글자를 읽는다, 안 되면 `fetch` keepalive)으로 부르고, 라우트는 상류가 실패해도 200 `{hungUp:false}`다.
+- **끝내기 전 전사 기다림**(구현 `lib/talk-realtime.ts` `finish`, 2026-09-26 확정 — 제품 흐름은 SPEC §21-2 4). "끝내기" 버튼과 5분 마무리 뒤 종료는 아직 전사 중인 은우 줄(§12-2의 `listening`·`partial`)이 있으면 바로 닫지 않고, 그 줄의 전사가 끝나기(`completed`·`failed`)를 **최대 2.5초**(`TALK_FINISH_TRANSCRIPT_WAIT_MS`) 기다린 뒤 닫는다 — 은우가 말을 마치자마자(또는 말하는 도중에) 끝내기를 눌러도 마지막 말이 저장에서 빠지지 않게. 기다리는 동안(`finishing` — 화면은 "은우 말을 받아 적는 중…", 끝내기 버튼 잠김, 도움 카드 숨김) 클라이언트는 대화 중인 세션에 이벤트를 넷까지 보낸다. 먼저 `session.update`로 턴 감지를 끈다(`audio.input.turn_detection: null`만 싣는 부분 갱신 — 새 은우 차례도 자동 응답도 생기지 않는다). 은우가 말하는 중이었으면 `input_audio_buffer.commit`으로 그때까지의 소리를 넘긴다 — 턴 감지를 끄면 서버가 스스로 커밋하지 않기 때문이고, 말하는 중이 아니면 보내지 않는다(침묵을 커밋하면 전사 모델이 하지 않은 말을 지어낼 수 있다). 진행 중 응답이 있으면 `response.cancel`, 선생님 소리가 나는 중이면 `output_audio_buffer.clear`를 보낸다. 마이크 트랙은 끄고(무음 프레임 — 트랙을 멈추는 것은 끝낼 때의 release다) 선생님 소리는 음소거한다. 턴 감지 끄기가 늦게 먹어 응답이 새로 시작되면(`response.created`) 그 자리에서 다시 취소하고, 새로 나는 소리도 비운다(두 겹). 기다리는 동안에는 도움 요청·일러스트 안내·도구 결과가 나가지 않는다(대화 중일 때만 보내므로). 기다릴 줄이 없거나 아직 연결 중이면 곧바로 끝낸다. **화면 숨김·뒤로가기(언마운트)·`pagehide`·연결 끊김은 기다리지 않는다** — 기다리는 중이어도 즉시 닫는다(과금 중지가 먼저다). 2.5초 안에 오지 않은 전사는 저장에서 빠진다. 대화가 끝난 시각(`endedAt`)은 끝내기를 누른 때다(기다린 시간은 대화가 아니다). 2.5초는 개발 전용 시간 배율을 곱하지 않는 벽시계 값이다. 네 이벤트의 모양은 설치된 SDK GA 타입(`SessionUpdateEvent`·`InputAudioBufferCommitEvent`·`ResponseCancelEvent`·`OutputAudioBufferClearEvent`)에 `satisfies`로 묶여 tsc가 검사한다. 이 흐름은 오프라인 eval 밖이고 가짜 전송 e2e로 확인했다(QA 4회차). 실제 연결에서 대화 도중의 턴 감지 끄기와 수동 커밋이 받아들여지는지는 실연결·실기기로 본다(SPEC §21-5 11).
+
+### 12-2. 이벤트 → 실시간 스크립트 (순수 리듀서 `lib/talk-transcript.ts`)
+
+화면은 이벤트를 직접 그리지 않고, 리듀서가 접은 `lines`만 그린다. 줄 모양: `{ itemId, speaker: "teacher" | "child", text, status: "listening" | "partial" | "final" | "interrupted" | "failed" | "empty" }`.
+
+1. **자리는 글자 도착 순서가 아니라 항목 연결로 정한다.** 은우 전사는 별도 음성 인식이 비동기로 만들어 선생님 응답보다 늦게 올 수 있다.
+   - `input_audio_buffer.speech_started{item_id}` → 은우 줄을 **맨 뒤에** 만든다(`listening`, "듣는 중…").
+   - `conversation.item.added`(구형 `conversation.item.created`)·`input_audio_buffer.committed`의 `previous_item_id` → 그 항목을 `previous_item_id` **바로 뒤로** 옮긴다(모르면 맨 뒤). 선생님 항목은 은우 항목이 커밋된 뒤 생기므로, 은우 글자가 아직 비어 있어도 선생님 줄이 그 아래에 선다.
+2. 은우 글자: `conversation.item.input_audio_transcription.delta` → 이어 붙임(`partial`), `.completed` → 최종 글자로 **교체**(`final`). 빈 문자열(잡음·무응답 커밋)이면 `empty`(화면에서 숨김), `.failed`면 `failed`("잘 안 들렸어요").
+3. 선생님 글자: `response.output_audio_transcript.delta` → 이어 붙임, `.done` → 교체(`final`).
+4. `response.done`의 status가 `cancelled`(은우가 끼어듦 등)면 그 선생님 줄을 `interrupted`로 둔다(글자는 남긴다). `incomplete` + `content_filter`면 줄을 흐리게 표시한다.
+5. 앱이 넣은 숨은 항목(아이디 접두사 `app_`)은 줄로 만들지 않는다.
+6. 같은 이벤트가 두 번 와도 결과가 같아야 한다(멱등). 모르는 이벤트는 무시한다.
+7. 저장용 변환 `toTalkTurns(lines)`: `empty`·`failed`·글자 없는 줄을 빼고 `{speaker, text, interrupted}`로. `childTurnCount` = 은우 턴 수.
+8. **문장 나누기** `splitTalkSentences(text)`: `.`·`?`·`!`(와 한국어 문장 끝) 뒤 공백에서 자른다. 숫자 속 마침표("3.5")는 자르지 않는다. 설명의 키는 `(turnIndex, sentenceIndex)`이므로 **같은 글자는 늘 같게 나뉘어야 한다**(결정적).
+
+구현이 정한 세부(2026-09-26 — 위 규칙을 좁히거나 넓히지 않고, 규칙이 말하지 않은 자리를 채웠다):
+- 줄 모양에 불리언 `filtered`가 하나 더 있다 — 4의 "흐리게"를 status를 바꾸지 않고 표시하려고. 화면은 말풍선을 **`isVisibleTalkLine`으로만** 거른다: `empty`와 **글자 없이 끝난 `interrupted`/`final` 줄**(글자가 오기 전에 끊긴 응답)은 숨기고, `listening`과 진행 중 `partial`은 보인다.
+- 4의 끊김에는 `response.done` status `failed`도 든다(`cancelled`처럼 `interrupted`, 글자는 남긴다). `completed`/`incomplete`면 남은 `partial`을 `final`로 접는다(전사 `.done`이 빠져도 "입력 중"이 남지 않게). 확정 전사가 먼저 와 있으면 늦은 `failed`가 이기지 않는다.
+- 1의 "모르면 맨 뒤"는 **새 줄**에만 적용한다 — 이미 있는 줄은 앞 항목을 모르면 제자리다(먼저 받은 더 나은 연결 정보를 깨지 않게). 한 번 적용한 연결은 다시 적용하지 않아 이벤트 재생·중복에도 멱등이고, delta는 `event_id`로 한 번만 붙인다(개발용 가짜 전송도 이벤트마다 고유 `event_id`를 넣는다). `previous_item_id: null`도 "모름"이다.
+- 5를 연결까지 넓혔다: `app_` 항목, **선생님의 도구 호출 항목(`function_call`, §12-6)**, 앱이 아닌 system 메시지 같은 "말이 아닌 항목"은 줄을 만들지 않되 연결은 기억해, 그 항목을 `previous_item_id`로 가리키는 줄은 숨은 항목의 앞 항목 뒤에 선다 — 도구 호출이 선생님 말 앞뒤에 끼어도 스크립트 순서가 흔들리지 않는다. 앱 항목 id는 `app_` + 영문·숫자·`_`·`-` 1~28자(32자 이하, 형식이 틀리면 빌더가 던진다).
+- 8의 끝 부호에 말줄임 `…`과 전각 `。？！`를 더하고, 닫는 따옴표·괄호는 앞 문장에 붙이며, 호칭 약어(Mr·Mrs·Ms·Dr) 뒤 마침표는 자르지 않는다. 설명 라우트는 과금 전에 같은 함수(`pickTalkSentence`)로 범위 밖 번호를 400으로 가른다.
+- 이벤트 이름은 설치된 SDK(openai 7.4.0)의 GA 타입 `RealtimeServerEvent["type"]`으로 tsc가 검사한다 — 이름을 틀리면 빌드가 막힌다.
+
+### 12-3. 호출 I — 문장 설명
+
+**시스템 프롬프트 (원문 그대로 사용 — `TALK_EXPLAIN_SYSTEM_PROMPT`):**
+
+```
+너는 초등학교 1학년 아이의 영어 가정교사다. 아이가 방금 AI 영어 선생님과 짧은 영어 전화 대화를 했다. 대화 스크립트에서 아이가 고른 문장 하나를, 전화영어 선생님이 옆에서 다정하게 말로 설명해 주듯 풀어 준다.
+
+[누가 한 말인가]
+- speaker가 teacher면 선생님(AI)이 한 영어 문장이다. 아이가 이 문장을 알아듣고 대답도 해 볼 수 있게 돕는다: 우리말 뜻을 쉽게 알려 주고, 중요한 단어 한두 개를 짚고, 아이가 이렇게 대답할 수 있다는 아주 짧은 영어 대답 예시를 하나 보여 준다.
+- speaker가 child면 아이가 한 말이다. 먼저 잘한 점을 구체적으로 칭찬한다. 틀린 곳이 있으면 "이렇게 말하면 더 멋져요"처럼 더 자연스러운 영어 문장을 보여 주고, 왜 그런지 아주 쉽게 한 줄로 말한다. 아이가 한국어로 말했으면 그 말을 영어로 어떻게 하는지 알려 준다. 이미 잘 말했으면 억지로 고치지 않는다.
+- 아이의 말은 음성 인식으로 옮긴 글이라 틀리게 적혔을 수 있다. 인식 실수로 보이는 것은 고치지 말고, 뜻이 통하는 쪽으로 너그럽게 읽는다.
+
+[말투]
+- 1학년 아이에게 말하듯 아주 쉽고 짧게, 다정한 해요체로 쓴다. 예: "이 말은 '나는 강아지를 좋아해요'라는 뜻이에요!"
+- 어려운 문법 용어(주어·동사·복수형 같은 말)를 쓰지 않는다. 예: "주어" 대신 "누가", "동사" 대신 "무엇을 해요"처럼 쉬운 말로 풀어요.
+- 아이 이름을 부르지 않는다.
+
+[script — 소리 내어 읽을 설명 대본]
+- 설명을 짧은 조각 3~8개로 나눈다. 조각마다 lang(ko 또는 en)과 text를 쓴다.
+- 한국어 조각(ko)에는 영어 글자를 넣지 않는다. 영어 단어나 문장은 반드시 따로 떼어 en 조각으로 쓴다. 예: [ko "이 단어는", en "like", ko "'좋아해요'라는 뜻이에요."]
+- 영어 조각 바로 뒤의 한국어 조각은 조사(는·를·가·이 같은 말)로 시작하지 않게 문장을 짠다.
+- 영어 조각(en)은 영어만 쓰고, 한 조각에 12단어를 넘기지 않는다.
+- 한국어 조각 하나는 60자 이내로 쓴다. 전체를 소리 내어 읽어서 20초 안팎이 되게 짧게 쓴다.
+- en 조각을 하나 이상 넣는다(고른 문장, 대답 예시, 고친 문장 같은 것).
+
+[betterEn — 더 멋진 문장]
+- speaker가 child이고 더 자연스러운 영어 문장이 있으면 그 문장 하나를 쓴다. 이미 잘 말했거나 speaker가 teacher면 null로 둔다.
+
+[keyWords — 짚어 준 단어]
+- 고른 문장 안에 실제로 있는 영어 단어 가운데 설명에서 짚은 것 0~3개와 그 쉬운 우리말 뜻을 쓴다. 문장에 없는 단어는 넣지 않는다.
+
+[금지]
+- 대화 스크립트에 없는 말을 아이나 선생님이 했다고 하지 않는다.
+- 무섭거나 어른스러운 내용을 쓰지 않는다.
+- 출력은 지정된 JSON 스키마로만. 스키마 밖 텍스트 금지.
+```
+
+**사용자 메시지 템플릿 (`TALK_EXPLAIN_USER_TEMPLATE` — `{…}` 자리만 치환):**
+
+```
+주제: {topicLabel}
+누가 한 말: {speaker}
+고른 문장: {sentence}
+앞뒤 대화:
+{context}
+```
+
+- `{speaker}` = `teacher` 또는 `child`. `{topicLabel}` = 주제 한국어 라벨(단어장이면 단어장 이름).
+- `{context}` = 고른 문장이 속한 턴의 앞 4줄 + 그 턴 + 뒤 2줄, 줄마다 `선생님: …` / `아이: …`, 고른 턴 앞에 `▶ ` 표시. 아이 이름은 넣지 않는다.
+
+**출력 JSON Schema (strict):**
+
+```json
+{
+  "name": "talk_sentence_explanation",
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["script", "betterEn", "keyWords"],
+    "properties": {
+      "script": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["lang", "text"],
+          "properties": {
+            "lang": { "type": "string", "enum": ["ko", "en"] },
+            "text": { "type": "string" }
+          }
+        }
+      },
+      "betterEn": { "type": ["string", "null"] },
+      "keyWords": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["en", "ko"],
+          "properties": {
+            "en": { "type": "string" },
+            "ko": { "type": "string" }
+          }
+        }
+      }
+    }
+  },
+  "strict": true
+}
+```
+
+**zod (`buildTalkExplainZod({ speaker, sentence })` — 입력을 알고 만든다; 폭은 프롬프트보다 넓게):**
+- `script` 2~10조각, ko·en 각 1개 이상. ko 조각: 한글 포함, **라틴 문자 금지**, 80자 이하. en 조각: 라틴 포함, 한글 금지, 16단어 이하. ko 조각 글자 합 400자 이하.
+- `betterEn`: speaker가 `teacher`면 **반드시 null**. 값이 있으면 라틴 포함·한글 금지·25단어 이하.
+- `keyWords` 0~3개, `en`은 **라틴 포함·한글 금지**이고(2026-09-26 QA가 찾은 구멍 — 은우 문장 "나는 강아지 좋아."에서 `{en:"강아지"}`나 부분 글자 "강아"가 경계 판정을 통과했다) **고른 문장 안에 단어 경계로 있어야** 한다(대소문자 무시 — 문장에 없는 단어를 짚었다면 환각이다), `ko`는 한글 포함 20자 이하. 거부 → 재요청 1회(§4 규약).
+
+**호출 옵션 (`TALK_EXPLAIN_CALL_OPTIONS`)**: call `talk_explain`, temperature 0.5, max_output_tokens 1500. 추론형 모델이면 §4대로 temperature 자동 생략.
+
+**경계면(app-builder)**: 진입 함수는 `lib/ai/client.ts`에 편의 함수로(예: `explainTalkSentence(input)` — 과목 분기 없이 `callWithSchema`만 부른다, 기존 `lookupWordMeaning`·`suggestRelatedWords` 관용구). 라우트 `POST /api/english/talk/[id]/explain {turnIndex, sentenceIndex}`는 저장된 대화에서 문장·문맥을 서버가 꺼내 부르고(클라이언트가 문장을 보내지 않는다), 결과를 대화 기록의 `explanations`에 **처음 한 번만** 저장한다(같은 키가 이미 있으면 그것을 돌려준다 — 두 번 탭해도 한 번 과금). 키 없음 501, 없는 대화·범위 밖 번호 404/400, 실패 500.
+구현(`lib/ai/client.ts` `explainTalkSentence` — `callWithSchema`만 부른다, 로그 라벨 `talk_explain`, 모델 `resolveModel()`을 결과 `model`에 남긴다): 라우트는 **저장된 설명이 있으면 키 검사보다 먼저** 돌려준다(`cached: true` — 키가 없는 환경에서도 이미 들은 설명은 다시 볼 수 있다). 범위 밖 번호는 과금 전에 400 `sentence_not_found`. 설명 상한(200개)에 닿았으면 저장하지 않고 보여만 주고(`saved: false`), 저장이 실패해도 이미 과금한 설명은 보여 준다. 동시에 두 번 탭하면 AI는 두 번 불릴 수 있지만 저장은 한 건이다(스토어의 "같은 키가 없을 때만 append").
+
+**설명 낭독**: `script` → `speakQueue` 조각(ko → `ko-KR`, en → `en-US`, 300자 넘으면 `splitForTts`, 한국어는 `normalizeKoForTts`). 결과가 fetch 뒤에 오므로 **문장 탭 핸들러 안에서 동기로 `unlockSpeechPlayback()`**을 먼저 부른다(탭 밖 재생 잠금 — 운동·토익 응시 관용구).
+
+### 12-4. 저장 모델 — `TalkSessionRecord` (컬렉션 `talkSessions`)
+
+`lib/store.ts` 새 레코드 12항목 체크리스트를 전부 밟는다(선택 키 `?` 금지 — 전부 필수 nullable).
+
+```ts
+interface TalkTopic {
+  kind: "preset" | "custom" | "vocab";
+  key: string | null;            // 프리셋 키(그 밖 null)
+  labelKo: string;               // 화면 라벨(프리셋 한국어·직접 입력 글자·단어장 이름)
+  labelEn: string | null;        // 프리셋 영어 라벨
+  vocabBookId: string | null;
+  words: { en: string; ko: string | null }[];  // 단어장이면 실제로 넘긴 단어 스냅샷(최대 20), 아니면 []
+}
+interface TalkTurn { speaker: "teacher" | "child"; text: string; interrupted: boolean }
+interface TalkExplanation {
+  turnIndex: number; sentenceIndex: number;
+  speaker: "teacher" | "child"; sentence: string;
+  script: { lang: "ko" | "en"; text: string }[];
+  betterEn: string | null;
+  keyWords: { en: string; ko: string }[];
+  model: string; createdAt: string;
+}
+interface TalkSessionRecord {
+  id: string;
+  titleKo: string;               // 기본 "{주제 라벨} 대화"
+  topic: TalkTopic;
+  turns: TalkTurn[];
+  explanations: TalkExplanation[];
+  startedAt: string; endedAt: string;
+  durationSec: number;
+  childTurnCount: number;        // 은우 턴 수(스트릭 §17-9, 저장 조건 ≥ 1)
+  model: string; voice: string;
+  createdAt: string;
+  sortIndex: number | null;
+}
+```
+
+- 저장 조건: `childTurnCount ≥ 1`(은우가 한마디도 안 했으면 400 — 화면은 저장을 부르지 않는다). 상한: 턴 200개, 턴 글자 1,000자, 설명 200개.
+- 삭제는 `DestructiveOp`에 `deleteTalkSession`(Firestore 가드, 라우트 403 `prod_guard`). 설명 추가는 파일 `mutate`·Firestore `runTransaction` 안에서 "같은 키가 없을 때만 append".
+
+구현이 정한 저장 규칙(`POST /api/english/talk`, 2026-09-26 — AI를 부르지 않아 키 검사가 없다):
+- **상한을 넘으면 거부하지 않고 앞에서부터 잘라 저장한다**(`trimmed: true`) — 5분 대화 전체를 400으로 잃지 않게. 설명 키가 앞 턴부터라 앞쪽을 남기면 번호가 보존된다. zod는 넉넉한 방어선(2,000턴·20,000자)만 둔다.
+- **멱등 — 저장 키가 문서 id다.** 요청의 `clientSessionId`(소문자 UUID, 대화 한 번에 화면이 하나 만든다)를 스토어가 대화 문서 id로, 그리고 주제 일러스트 문서 id로도 쓴다. 같은 키가 이미 있고 `startedAt`이 같으면 새로 만들지 않고 그 대화를 돌려준다(200, 같은 id — 응답 유실 뒤 다시 저장·화면 복귀 재시도·뒤로가기 정리가 겹쳐도 하나). 같은 키에 시작 시각이 다르면(충돌) 남의 문서를 덮지 않고 새 UUID로 만든다(새 오류 코드를 만들지 않는다). 파일 백엔드는 `mutate` 하나 안에서 찾고 만들고, Firestore는 `batch.create`(대화 + 그림)가 ALREADY_EXISTS면 배치 전체가 거부되므로 그때 읽어서 판정한다. 별도 필드 + 조회 방식은 Firestore 쿼리 트랜잭션·인덱스가 필요해 택하지 않았다.
+- 주제 스냅샷: connect가 돌려준 값을 받되, 프리셋·직접 입력은 서버 해석 함수로 **다시 만든 값**을 저장하고(모르는 키면 400), 단어장은 모양·상한만 본다(그 사이 단어장이 바뀌어도 "실제로 넘긴 단어"가 기록이다).
+- 시각은 시간대가 있는 ISO만 받고, `durationSec`은 서버가 두 시각에서 계산한다(0~3600초, 끝이 시작보다 앞이면 0). 모델·음성은 이름 형식만 본다. 은우 발화 수는 서버가 turns에서 다시 센다.
+- 화면 이름(`titleKo`)은 60자까지(`POST /api/english/talk/[id]/rename`), 목록 순서는 범용 재배치 계약(`POST /api/english/talk/reorder`, `sortIndex`).
+
+### 12-5. eval (`scripts/eval-english.ts` — 실호출 0회 + 게이트)
+
+- **spec-sync**: `TALK_TEACHER_INSTRUCTIONS`·`TALK_LESSON_TOPIC`·`TALK_LESSON_WORDS`·`TALK_GREETING_INSTRUCTIONS`·`TALK_WRAPUP_INSTRUCTIONS`·`TALK_EXPLAIN_SYSTEM_PROMPT`·`TALK_EXPLAIN_USER_TEMPLATE`(block), `talk_sentence_explanation` JSON Schema 의미 동치.
+  구현(2026-09-26): 자유대화 원문 11개(위 7개 + §12-6의 4개)는 전부 **`block-exact`** 모드로 대조한다 — `scripts/spec-sync.ts`에 더한 모드로, 호출 B용 조립 규칙(3줄·40자 이상 블록 떼어 내기)을 끄고 **블록 하나와 정확히** 일치해야 통과한다. 기존 `block` 모드로는 교사 지시문 상수에 수업 블록 원문을 통째로 이어 붙여도 통과했다(QA 실측). eval이 "이어 붙인 상수는 `block`에서 통과, `block-exact`에서 거부"를 직접 확인한다. 영어 `SPEC_SYNC_TARGETS`는 이로써 22개다.
+  **이 절(§12)의 숫자 문장 일부는 eval이 스펙 문장 그대로 찾는다**(`runTalkSpecChecks` — 호출 옵션 문장, §12-1 표의 기본값·`max_output_tokens`·속도·턴 감지·소음 억제, 저장 상한, zod 폭 7개, §12-6의 카드 폭·5초·12초·도움 요청 연속 2번·30장·6장·`tool_choice`·기본 문구·호출 결과 글·장면 앞머리·지시문 이음, 프리셋 장면 표의 키·장면·순서). 상수를 바꾸면 스펙 문장과 함께 바꿔야 하고, 문서만 고칠 때도 이 문장들의 모양을 바꾸면 `eval:english`가 깨진다.
+- **오프라인**: 지시문 조립(프리셋 → 라벨, 직접 입력 정리 — 줄바꿈·따옴표·30자, 단어장 20개 상한·뜻 없는 단어), 세션 설정 값(모델·음성 env 빈 값 폴백, 속도 두 값), 리듀서(합성 이벤트 — 은우 전사가 선생님 응답보다 늦게 와도 은우 줄이 위, 중복 이벤트 멱등, cancelled → interrupted, 빈 전사 empty, 실패 failed, `app_` 항목 제외, 모르는 이벤트 무시), `toTalkTurns`·`childTurnCount`, 문장 나누기 결정성(숫자 속 마침표), 호출 I zod 반례(ko 조각 속 영어 글자, en 조각 속 한글, 선생님 문장의 betterEn, 문장에 없는 keyWords, en 조각 0개), 설명 낭독 대본(ko-KR/en-US 매핑·300자 분할).
+- **실호출 프로브**(오케스트레이터가 동의 후 별도로): 호출 I 1회(선생님 문장·아이 문장 각 1). 관문 R 실연결은 eval 밖 — 실기기·동의 후.
+  구현: 게이트 `EVAL_TALK=1`이 호출 I를 **2회**(지어낸 대화의 선생님 문장 1 · 은우 문장 1) 부르고 출력과 화자별 기대(선생님 문장 betterEn null, keyWords ⊂ 문장, en 조각 ≥ 1)를 찍는다. §5의 다섯째 배타 게이트이고 `EVAL_OFFLINE_ONLY=1`에서는 도달하지 않는다.
+- **수치(2026-09-26 기준)**: 오프라인 505항목(자유대화 이전 176 + 자유대화 329). 자유대화 329 = spec-sync 11 + 스펙 대조 43 · 카드 62(이어 말하기 판정 포함) · 도움 47 · 호출 I 44 · 지시문 29 · 리듀서 28 · 세션 설정 24 · 문장 12 · 저장 본문 12 · 장면 8 · 스트릭 6 · 낭독 3. 합성 서버 이벤트와 앱이 보내는 이벤트는 SDK GA 타입(`RealtimeServerEvent`·`ConversationItemCreateEvent`·`ResponseCreateEvent`)으로 만들어 이름·필드를 틀리면 tsc가 막는다. 픽스처 대화는 전부 지어낸 영어·한국어다.
+- **eval 밖에 남은 것**: `TALK_FALLBACK_HINTS`의 한국어 뜻 4개(스펙이 뜻 글자를 정하지 않아 한글 포함·라틴 금지만 본다). 화면 흐름(WebRTC 배선·저장 멱등·뒤로가기·작은 폰)은 오프라인 eval이 아니라 개발 빌드 전용 가짜 전송 e2e로 본다(SPEC §21-6). "도움 카드가 **떠 있는 상태에서** 선생님이 다시 말하면 접힌다"는 처음엔 은우 발화로 이미 접힌 뒤 재개하는 열뿐이라 잠기지 않았는데(QA 변이가 통과), 2026-09-26 선행 조건(재개 직전 카드가 떠 있음)을 함께 단언하는 열 4개로 잠갔다 — 카드 표시 중 재개, 12초 요청 뒤 재개(새 차례로 셈), 기본 문구 표시 중 재개, 요청 응답이 도구를 먼저 부르고 말하는 순서.
+
+
+### 12-6. 화면 카드 — 말문 막힘 도움 · 그림 카드 · 주제 일러스트 (2026-09-26 추가)
+
+사용자 요청: "은우가 말문이 막히면 화면에 표현이나 단어를 표시해서 자연스러운 발화를 유도하자. 대화하는 동안 관련 내용을 설명하는 그림이나 사진, 문서 등을 화면에 띄우자." 사용자 확정: **그림 카드(이모지) + 주제 일러스트 1장**, 도움 카드는 **5초 조용하면 자동 + 🙋 버튼**.
+
+**원리.** 선생님(Realtime 모델)이 **도구 호출**(function calling)로 화면 카드를 보낸다 — 카드는 조용하다(말로 "카드를 보여 줄게"라고 하지 않는다). 앱은 카드를 그리기만 하고 **소리를 내지 않는다**: 대화 중에는 마이크가 계속 열려 있어, 앱이 따로 소리를 내면 모델이 그 소리를 은우 발화로 들을 수 있다(카드의 🔊 없음).
+
+**지시문 덧붙임 (원문 그대로 — `TALK_CARDS_INSTRUCTIONS`).** 세션 지시문 = `TALK_TEACHER_INSTRUCTIONS`(`{lesson}` 치환) + `"\n\n"` + 이 블록.
+
+```
+# Screen cards
+The child also sees a screen during the call. You can put helpful cards on it with your tools. Cards are silent: keep talking as usual, and never say that you are showing a card.
+- Speak your whole turn first, including your question, and call your tools only after you have finished speaking. Never talk about thinking or preparing, and never say things like "let me think".
+- Every time you ask the child a question, also call show_hints with 2 or 3 short answers the child could say (2 to 6 easy words each, like "I like apples." or "It is red.") and up to 3 key words with an emoji and the Korean meaning. The app shows them only if the child gets stuck.
+- When you talk about a new thing, animal, food, color, or action, call show_picture with one to three emoji that show it, the English word, and its easy Korean meaning.
+- If a message says that a picture is on the child's screen, you may ask one easy question about it, like "What do you see in the picture?"
+```
+
+**도구 정의 (세션 설정 `tools`, `tool_choice: "auto"` — 의미 동치로 spec-sync):**
+
+```json
+[
+  {
+    "type": "function",
+    "name": "show_hints",
+    "description": "Silently prepare answer help for the question you just asked. The app shows it on the child's screen only if the child gets stuck.",
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "answers": {
+          "type": "array",
+          "description": "2 or 3 short English answers the child could say (2 to 6 easy words each).",
+          "items": { "type": "string" }
+        },
+        "words": {
+          "type": "array",
+          "description": "Up to 3 key words for the answers.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "emoji": { "type": "string" },
+              "en": { "type": "string" },
+              "ko": { "type": "string" }
+            },
+            "required": ["emoji", "en", "ko"]
+          }
+        }
+      },
+      "required": ["answers", "words"]
+    }
+  },
+  {
+    "type": "function",
+    "name": "show_picture",
+    "description": "Silently show a picture card on the child's screen for a thing, animal, food, color, or action you are talking about.",
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "emoji": { "type": "string", "description": "One to three emoji that show the word." },
+        "en": { "type": "string", "description": "The English word or short phrase." },
+        "ko": { "type": "string", "description": "Its easy Korean meaning." }
+      },
+      "required": ["emoji", "en", "ko"]
+    }
+  }
+]
+```
+
+**도구 호출 처리(앱, 클라이언트).**
+- 응답의 `function_call` 항목(`response.output_item.done` 또는 `response.done`의 output)에서 `name`·`call_id`·`arguments`를 꺼내 **순수 함수 `parseTalkToolCall(name, argumentsJson)`**(`lib/talk-cards.ts`)로 검사한다. 모델 출력이라 믿지 않는다 — `answers` 1~3개(각 60자 이하·라틴 포함·한글 금지), `words` 0~3개(`emoji` 1~16자 비어 있지 않음, `en` 라틴 30자 이하, `ko` 한글 20자 이하), `show_picture`도 같은 폭. **잘못된 항목만 버리고**, 남는 게 없으면 null(무시). 모르는 도구 이름도 무시.
+  - 구현이 정한 세부(`lib/talk-cards.ts`): 같은 호출이 `response.output_item.done`과 `response.done`에 다 나오므로 **`call_id`로 한 번만** 처리한다. `show_hints`는 검사를 통과한 답이 **하나도 없으면 null**이다(단어만 남아도 버린다 — 답 예시가 도움 카드의 본체다. 화면은 기본 문구를 보인다). 개수가 넘치면 앞에서부터 자르고, 같은 영어(대소문자·공백 무시)는 처음 것 하나만 둔다. 값의 줄바꿈·제어문자는 공백으로 바꾸고 앞뒤를 다듬는다(이모지 결합 ZWJ·이체 선택자는 건드리지 않는다). 글자 수는 코드 포인트로 센다(가족 이모지는 5, 키캡은 3).
+  - **이모지 칸 규칙**(2026-09-26 확정 — 위 문장의 "비어 있지 않음"을 이 규칙으로 좁힌다): 1~16자에 더해 **그림 문자가 하나는 있어야** 한다. 그림 문자는 이모지(`\p{Extended_Pictographic}`)·국기(`\p{Regional_Indicator}`)·키캡(U+20E3), 그리고 **도형·기호 블록**(Geometric Shapes U+25A0–25FF·Misc Symbols U+2600–26FF·Dingbats U+2700–27BF·Misc Symbols and Arrows U+2B00–2BFF·Geometric Shapes Extended U+1F780–1F7FF — 단 그 블록 안의 글자·숫자 `\p{L}`·`\p{N}`, 예: ❶~➓는 제외)이다. **라틴(반각·전각)·한글은 한 글자도 안 된다** — 모델이 `:dog:`·`dog`·`개` 같은 글자를 넣으면 그림 자리에 글자가 뜨기 때문이다(`▲A`·`●빨강`처럼 그림 옆에 글자가 붙어도 버린다). **Ⓐ·①·㉠ 같은 글자형 기호는 그림이 아니다** — 도형·기호 블록 밖의 기호(`\p{So}`)는 열지 않는다. 도형·기호 블록은 "색깔과 모양" 주제에서 모델이 ▲ ● ■ ◆ 같은 텍스트 기호를 주면 카드가 조용히 사라지던 것을 막으려고 넣었다. 판정은 `lib/talk-cards.ts` 한 곳(`containsPictograph` + 라틴·한글 금지)이고 `show_picture`·`show_hints`의 `words`·저장 요청 카드(`sanitizeTalkCards`)가 모두 같은 판정을 지난다 — 단어장·일본어 이모지 검사(`\p{Extended_Pictographic}`만)보다 도형·기호 블록만큼 넓다. 카드의 `en`도 한글을 금지한다(위 문장의 "라틴 30자"를 좁힌 것). `ko`에 라틴을 허용한 것은 카드가 소리를 내지 않기 때문이다.
+- 호출마다 `conversation.item.create {type: "function_call_output", call_id, output: "{\"shown\":true}"}`를 보낸다(id 접두사 `app_`). **검사에 떨어져 버린 호출에도 같은 값을 보낸다** — `shown:false`를 받으면 모델이 같은 도구를 되풀이해, 도구만 부르는 응답과 `response.create`가 반복될 수 있다(카드는 조용하므로 대화에는 차이가 없다). 호출 결과는 응답이 진행 중일 때 끼우지 않고 그 응답의 `response.done`에서 한꺼번에 넣는다(`app_out_<n>`).
+- 도구를 부르고 정상 완료(`completed`)한 응답에서 **선생님이 말한 글자에 질문이 없으면**(`?`·`？` 없음 — 오디오가 없던 응답, 즉 도구만 부르고 끝난 응답 포함) `response.create`를 보내 선생님이 이어 말하게 한다. 질문이 있었으면 보내지 않는다(은우 차례를 빼앗지 않는다). 마무리 중에는 도구 호출을 무시한다(표시·호출 결과·이어 말하기 모두 없음). (2026-09-26 정정 — 전에는 "오디오가 없었으면"이었다. 실연결에서 선생님이 "Nice, that's a lovely choice. Let me think of a small next question for you."처럼 한두 마디 하다 도구를 부르고 응답을 끝냈는데, 오디오가 있어 이어 말하기가 막혀 은우가 질문을 못 듣고 기다렸다. 지시문 첫 항목 "말을 다 한 뒤에 도구"가 첫째 겹, 이 판정이 둘째 겹이다.)
+  - 말한 글자는 그 응답 `response.done`의 `output` 가운데 assistant 메시지 항목의 `content[].transcript`(오디오 전사 — 글자 모드면 `text`)를 이은 것이다. 거기에 전사가 없으면 스크립트 리듀서(§12-2)가 `response.output_audio_transcript.*`로 모은 그 항목의 선생님 줄로 대신 보고, 그래도 모르면 **보내지 않는다**(질문했을지 모른다 — 은우 차례를 빼앗지 않는다). 판정은 `lib/talk-cards.ts`의 `summarizeTalkResponseDone`(`shouldContinue`)·`stepTalkContinue` 한 곳이다.
+  - 상한(`lib/talk-cards.ts` `TALK_CONTINUE_CHAIN_MAX`): 이어 말하기는 **연속 2회**까지다 — 넘으면 더 보내지 않고 도움 카드·12초 도움 요청 경로에 맡긴다(매 응답이 대화 전체를 다시 입력으로 과금한다). 셈은 **은우 발화(`input_audio_buffer.speech_started`)에서만** 0으로 돌아간다 — 소리 있는 응답으로는 되돌리지 않는다(말만 하고 질문 없이 도구로 끝나는 응답이 이어 말하기를 끝없이 부르지 않게).
+- **응답이 진행 중일 때는 `response.create`를 보내지 않는다**(구현 — SDK 주석 "한 번에 한 응답만 대화에 쓸 수 있다"). 컨트롤러가 `response.created` → 진행 중, `response.done` → 끝으로 따라가고, 우리가 보낸 `response.create`에 5초 안에 `response.created`가 안 오면 거부된 것으로 보고 풀어 준다. 진행 중에 생긴 도움 요청(12초·🙋)은 **보류**했다가 그 응답이 **오디오 없이** 끝나면 보내고, 오디오가 있었으면(선생님이 방금 새 차례를 말했다) 버리며, 은우가 말을 시작해도 버린다. 마무리 안내도 진행 중 응답을 기다린다 — 선생님이 말하는 중이면 최대 8초(`TALK_WRAPUP_WAIT_MS`) 기다리고, 그 뒤에도 응답이 진행 중이면 `response.cancel`로 끊은 다음 tick에 보낸다(24초가 지나도 끝나지 않으면 안내 없이 끝낸다). 안내를 보낸 뒤에는 그 응답의 소리가 멈추면(`response_id` 일치) 또는 오디오 없이 끝나면, 늦어도 25초(`TALK_WRAPUP_END_MS`) 안에 끝낸다. 일러스트 안내(`TALK_SCENE_NOTE`)도 진행 중이면 `response.done`까지 미룬다.
+- 리듀서(§12-2)는 `function_call` 항목·`app_` 항목을 줄로 만들지 않는다(스크립트에 안 보인다).
+
+**말문 막힘 도움 (순수 상태 기계 `lib/talk-hints.ts` — 시계는 인자로 받는다).**
+- 최신 `show_hints`를 "지금 질문의 도움"으로 둔다. 선생님이 다시 말하기 시작하면(`output_audio_buffer.started`) 도움 카드를 접고 이전 도움을 버린다.
+- 선생님 소리가 멈춘 뒤(`output_audio_buffer.stopped`) **5초** 동안 은우 발화(`input_audio_buffer.speech_started`)가 없으면 도움 카드를 **살짝 띄운다**("이렇게 말해 볼까요?" — 답 예시 큰 글씨 + 단어 이모지·영어·뜻). 은우가 말을 시작하면 접는다.
+- 받은 도움이 없으면 기본 문구(`TALK_FALLBACK_HINTS` — `Yes!`·`No.`·`I don't know.`·`Can you say it again?`, 각 한국어 뜻)를 보인다.
+- **12초** 동안 계속 조용하면 앱이 선생님에게 도움을 한 번 청한다: 숨은 system 메시지 `TALK_NUDGE_NOTE` + `response.create`. **선생님 차례 하나에 한 번만.** semantic VAD는 아이가 아무 말도 안 하면 차례를 넘기지 않아 선생님이 끝없이 기다리기 때문이다.
+- 은우가 말하기 전까지 도움 요청(12초 자동·🙋 합산)은 **연속 2번**까지다(`TALK_HINT_NUDGE_STREAK_MAX`, 2026-09-26 확정). 은우가 말을 시작하면(`input_audio_buffer.speech_started`) 다시 0부터 센다. 상한에 닿으면 도움 카드는 그대로 띄우되(5초·🙋) 요청은 보내지 않는다 — 은우가 계속 조용할 때 선생님 차례마다 요청이 되풀이되며 매번 대화 전체를 다시 입력으로 과금하지 않게.
+- **🙋 도와줘요** 버튼: 누르면 도움 카드를 바로 띄우고, 선생님이 말하는 중이 아니며 이 차례에 아직 청하지 않았고 연속 상한 아래면 같은 도움 요청을 바로 보낸다.
+- 5·12초는 개발 전용 시간 배율의 적용을 받는다(e2e).
+
+구현이 정한 동작(2026-09-26 — 스펙 문장이 말하지 않은 자리, QA가 독립 참조 모델과 대조해 스펙 의도에 맞다고 본 결정):
+- **선생님이 말하는 중에 🙋를 누르면** 카드는 바로 띄우고, 요청은 **그 선생님 소리가 멈춘 뒤** 보낸다(보류). 새 차례가 먼저 시작되면 보류를 버린다 — 같은 차례 안에서만 유효하다.
+- **선생님이 아직 한 번도 말하지 않았으면**(연결 중, 첫 인사 전) 🙋는 **카드만** 띄운다 — 청할 질문이 없고, 인사 응답과 요청이 부딪치지 않게.
+- **은우가 말을 멈추면**(`input_audio_buffer.speech_stopped` → `child_speech_stopped`) 조용함 시계를 **다시 시작한다** — "음…" 하고 말하다 막힌 경우에도 5초 뒤 카드가 뜨고 12초 뒤 요청이 나간다(스펙 문장은 선생님 소리가 멈춘 때만 센다).
+- `output_audio_buffer.cleared`(은우가 끼어들어 선생님 소리가 끊김)도 "멈춤"으로 옮긴다. 시작 없이 온 멈춤이나 `stopped` 뒤의 `cleared`처럼 **겹친 멈춤**은 도는 조용함 시계를 되감지 않고 멈춘 횟수도 늘리지 않는다.
+- "이전 도움"은 **선생님 소리가 마지막으로 멈춘 것보다 먼저 받은 도움**이다(받을 때의 멈춘 횟수 `epoch`와 비교) — 선생님이 도구만 먼저 부르고(오디오 없는 응답) 이어서 질문을 말하는 순서에서도 그 질문의 도움이 재개 순간에 버려지지 않는다.
+- "선생님 차례 하나에 한 번"의 차례는 `output_audio_buffer.started`마다 새로 센다. 그래서 도움 요청 응답(선생님의 예시 답) 뒤에도 12초 조용하면 한 번 더 청할 수 있다(선생님이 끝없이 기다리지 않게라는 목적에 맞춘 것). 되풀이는 위의 **연속 2번** 상한이 끊는다 — 차례마다 새로 세는 "차례 하나에 한 번"과 달리 이 수는 선생님 차례로는 되돌아가지 않고 은우 발화로만 0이 된다. 상한에 닿은 차례는 "청한 차례"로 치지 않아서, 그 차례 안에서 은우가 "음…" 하고 말하다 멈추면 12초 뒤 다시 청할 수 있다. 🙋가 선생님 말하는 중에 눌려 보류된 요청도 소리가 멈출 때 상한을 다시 본다. 상한에 이미 닿았으면 선생님 말하는 중의 🙋는 보류를 만들지 않는다(카드만 띄운다).
+- 5분 마무리가 시작되면(`wrapup_started`) 카드도 요청도 없다 — 작별 인사 뒤에 선생님을 다시 부르지 않는다.
+- 상태 기계 이벤트는 `teacher_audio_started`·`teacher_audio_stopped`·`child_speech_started`·`child_speech_stopped`·`hints_received`·`help_tapped`·`wrapup_started`·`tick`(250ms) 여덟 가지이고, 서버 이벤트 옮기기는 `talkHintEventFromServer` 한 곳이다. `shouldNudge`는 **그 전이에서만** 참이라 화면은 전이 직후 요청을 한 번 보낸다.
+
+`TALK_NUDGE_NOTE` (원문 그대로):
+
+```
+The child seems stuck and has been quiet. Help gently now: say one very short model answer to your last question and invite the child to say it with you. Use one or two short sentences.
+```
+
+**그림 카드.** `show_picture`가 오면 화면 위쪽에 큰 카드(이모지 + 영어 + 뜻)로 띄우고, 지난 카드는 작은 칩으로 최근 6장까지 남긴다. 단어장 모드에서는 카드의 `en`이 오늘의 단어와 같으면(대소문자 무시, 끝의 s 허용) **"오늘의 단어" 목록**(접이식 패널 — 단어·뜻, 연습하면 ✓)에 표시한다. 대화 기록에는 보인 카드를 최대 30장 남긴다(대화 보기 "오늘 본 그림 카드").
+✓ 매칭(`matchTalkWord`)은 스펙("끝의 s 허용")보다 조금 넓다 — `es`(box ↔ boxes)와 `y ↔ ies`(berry ↔ berries)도 같은 단어로 보고, 앞 관사(a/an/the)와 앞뒤 문장부호를 무시한다. 맞으면 목록에 적힌 `en` 그대로 ✓를 단다. do/dog·hotdog/dog·dogss/dog는 거부한다(eval). 오판정의 대가는 ✓ 표시 하나뿐이라 넓게 잡았다 — 짧은 낱말에서 거짓 양성이 날 수 있다(카드 `his` → 목록 `hi`, `news` → `new`, QA 관찰). 도움 카드가 뜨면 "오늘의 단어" 목록을 자동으로 접는다(작은 폰에서 스크립트·끝내기를 밀어내지 않게 — 다시 펼치는 것은 사용자).
+
+**주제 일러스트 1장.**
+- 대화를 시작할 때 연결과 **병렬로** `POST /api/english/talk/scene {topic}`을 부른다(연결을 기다리게 하지 않는다). 구현은 **마이크를 얻은 뒤에** 연결과 함께 보낸다 — 마이크 거부·대화 전 끝내기에는 생성 요청이 나가지 않는다(QA가 "마이크를 기다리기 전에 요청이 상류에 닿는다"를 잡아 옮겼다). 대화가 그림보다 먼저 끝나면 요청을 끊고(라우트가 `req.signal`을 상류로 넘긴다 — 서버 쪽 상한 55초와 함께) 그림 없이 저장한다. 서버는 주제를 연결과 같은 함수로 해석해 장면 문장 `sceneEn`을 만들고, 아래 프롬프트로 사진 생성 관문을 부른다 → `{dataUrl, sceneEn}`.
+  - 프리셋은 장면 문장을 `lib/talk-topics.ts`에 함께 둔다(아래 표). 직접 입력은 `a cheerful scene about: {주제}`, 단어장은 `a cheerful scene with: {앞 4개 단어를 ", "로}`.
+  - 관문: 토익 관문 P(`lib/toeic-image.ts`)의 모델·크기 제한 규약을 공용 코어로 옮겨 함께 쓴다(토익 동작 불변 — `eval:toeic` 통과). 대화용 설정은 모델 `OPENAI_IMAGE_MODEL`(빈 값이면 `gpt-image-2`), **품질 low**(빠르게), 1024×1024, JPEG 압축 60, 900,000자 초과 시 압축 40으로 1회 재생성. 키가 없으면 501, 실패하면 500 — **대화는 그림 없이 그대로 간다**.
+  - 구현: 공용 코어는 `lib/image-gen.ts`(`generateJpegImage` — 모델 env·키 규약·JPEG data URL·다음 압축으로 1회 재생성·`too_large`·실패는 결과 값·재시도 1회 독립 클라이언트, 과목을 모른다), 대화 설정은 `lib/talk-image.ts`(`generateTalkSceneImage`, 로그 태그 `talk_scene`, 품질은 env를 보지 않는 low 고정 — 토익 품질 env와 섞이지 않게). 토익은 `lib/toeic-image.ts`가 같은 코어에 자기 설정(medium·1536×1024·70→50·접미사·태그 `toeic_scene`)만 넘긴다 — QA가 HEAD 원본과 같은 스텁에서 요청·결과가 같음을 확인했다. 장면 라우트 응답은 `{dataUrl, sceneEn, note, model}`이다 — `note`는 서버가 조립한 `TALK_SCENE_NOTE` 치환 결과라 화면이 프롬프트 원문·치환 규칙을 따로 갖지 않는다. 장면 라우트는 아무것도 저장하지 않는다.
+- 그림이 도착하면(대화 중이고 마무리 전이면) 화면 위 그림 칸에 띄우고, 숨은 system 메시지 `TALK_SCENE_NOTE`(`{scene}` = `sceneEn`)를 넣는다 — `response.create`는 보내지 않는다(선생님이 다음 차례에 자연스럽게 쓴다).
+  구현: "대화 중"에는 연결 중도 든다(도착 전엔 "그림을 그리는 중…" 자리 표시). **마무리 중에 도착한 그림은 띄우지도 알리지도 않고 저장 본문에만 싣는다**(스냅숏 `scene.shown: false`) — 마무리가 시작될 때 아직 그리는 중이면 자리 표시도 거둔다. 이미 끝났으면 결과를 버린다. 안내는 응답이 진행 중이면 `response.done`까지 미룬다(`app_scene`). 실패면 칸을 숨긴다.
+- 저장: 대화 저장 요청에 `scene: {dataUrl, sceneEn} | null`을 함께 보내면 서버가 새 컬렉션 `talkImages`(한 장 = 문서 하나)에 넣고 대화 기록에 `sceneImageId`·`sceneEn`을 단다. 대화를 지우면 그림도 지운다(연쇄). 대화 보기에서 그림을 보인다(`GET /api/english/talk/images/[id]`, PIN 게이트 안, `cache-control: private`). 저장하지 않는 대화(은우 발화 0)의 그림은 서버에 남지 않는다.
+  구현: 저장 라우트는 그림의 data URL 모양(JPEG base64만)과 크기(≤ 900,000자)를 검사해 **떨어지면 그림만 빼고** 대화는 저장한다(`sceneSaved: false` — 대화가 우선). `sceneEn`은 클라이언트 값을 쓰지 않고 저장된 주제 스냅샷에서 `buildTalkSceneEn(topic)`으로 다시 만들고, 그림 `model`은 저장 시점의 사진 모델이다. 그림 문서 id는 대화 id(= 저장 키, §12-4)와 같다. 이미지 GET은 id 모양(`[A-Za-z0-9_-]{1,64}`)을 먼저 봐 `x.png` 같은 요청은 스토어를 읽지 않고 404이며, 응답은 `image/jpeg` 바이트에 `cache-control: private, max-age=31536000, immutable`이다. 카드 목록도 서버가 `sanitizeTalkCards`로 다시 검사한다(같은 영어 1장, 보인 순서대로 30장).
+
+`TALK_SCENE_NOTE` (원문 그대로):
+
+```
+A picture is now on the child's screen. It shows: {scene}
+When it fits the talk, you may ask the child one easy question about the picture.
+```
+
+`TALK_SCENE_IMAGE_PROMPT` (원문 그대로 — 사진 생성 프롬프트):
+
+```
+A bright, friendly children's picture-book illustration of {scene}. Simple shapes, cheerful colors, and a cute, gentle style for a 7-year-old. No text, no letters, no logos.
+```
+
+프리셋 장면 문장(`sceneEn`, `lib/talk-topics.ts`):
+
+| 키 | 장면 |
+|---|---|
+| animals | a sunny farm with a dog, a cat, a cow, and a duck |
+| food | a picnic blanket with apples, bananas, sandwiches, and juice |
+| family | a happy family of four eating dinner together at home |
+| school | a bright classroom with desks, books, crayons, and a smiling teacher |
+| play | a playroom with blocks, a ball, a teddy bear, and a toy car |
+| weather | a park with a rainbow, a few clouds, trees, and puddles |
+| colors | red, blue, yellow, and green balloons and blocks |
+| myday | a cozy morning with a bed, an alarm clock, and breakfast on the table |
+| dinosaurs | friendly cartoon dinosaurs in a green jungle with a volcano far away |
+| birthday | a birthday party with a cake, candles, balloons, and presents |
+
+**저장 모델 추가**(§12-4에 더한다 — 12항목 체크리스트): `TalkSessionRecord`에 `cards: {emoji, en, ko}[]`(최대 30)·`sceneImageId: string | null`·`sceneEn: string | null`. 새 컬렉션 `talkImages` — `{id, dataUrl, sceneEn, model, createdAt}`(대화 저장 때 함께 생성, 대화 삭제 때 연쇄 삭제, prod-guard는 `deleteTalkSession` 하나로).
+
+**eval 추가**(§12-5에 더한다): spec-sync `TALK_CARDS_INSTRUCTIONS`·`TALK_NUDGE_NOTE`·`TALK_SCENE_NOTE`·`TALK_SCENE_IMAGE_PROMPT`(block), 도구 정의 의미 동치, 세션 설정에 도구·`tool_choice`·지시문 덧붙임, 프리셋 장면 10개, `parseTalkToolCall` 반례(한글 섞인 answers·빈 이모지·너무 긴 값은 그 항목만 버림, 모르는 도구 null), 도움 상태 기계(5초 표시·말 시작 접힘·선생님 재개 시 버림·12초 한 번만 요청·🙋 즉시·도움 없음 → 기본 문구·은우 발화 전 연속 2번 상한과 은우 발화 뒤 초기화), 단어장 ✓ 매칭(복수 s).
