@@ -623,7 +623,7 @@ export function resampleLinear(input: Float32Array, fromRate: number, toRate: nu
   return out;
 }
 
-/** mono float 샘플 → 16-bit PCM WAV 바이트(RIFF/fmt/data — lib/speech.ts makeSilentWavUrl의 헤더 작성과 같은 구조, 16bit). */
+/** mono float 샘플 → 16-bit PCM WAV 바이트(RIFF/fmt/data — lib/speech.ts makeSilentWav의 헤더 작성과 같은 구조, 16bit). */
 export function encodeWavPcm16(samples: Float32Array, sampleRate: number): ArrayBuffer {
   const bytesPerSample = 2;
   const dataLen = samples.length * bytesPerSample;

@@ -28,7 +28,7 @@
 앱 전체 명세는 [`docs/SPEC.md`](./SPEC.md), 디자인 원본은 `design/`에 있습니다.
 
 **하네스(이 문서의 `callWithSchema()` 규약) 밖에 있는 것 두 종류:**
-- **LLM을 쓰지 않는 기능** — **아빠의 운동**(러시안 파이터 루틴, SPEC §19)은 규칙이 전부 결정적이라 순수 함수 엔진(`lib/workout.ts`)이 하고, 회귀 가드는 오프라인 `npm run eval:workout`입니다. **학습 스트릭**(SPEC §17, `eval:streak`)도 AI가 없습니다. 토익스피킹 안에서도 표현 시험 출제·모의고사 형식표·Q1–2 지문 대조·추정 총점은 LLM이 아닌 순수 함수입니다(`docs/harness/toeic.md` §5-4·§5-5·§6).
+- **LLM을 쓰지 않는 기능** — **아빠의 운동**(러시안 파이터 루틴, SPEC §19)은 규칙이 전부 결정적이라 순수 함수 엔진(`lib/workout.ts`)이 하고, 회귀 가드는 오프라인 `npm run eval:workout`입니다. **학습 스트릭**(SPEC §17, `eval:streak`)도 AI가 없습니다. 토익스피킹 안에서도 표현 시험 출제·모의고사 형식표·Q1–2 지문 대조·추정 총점은 LLM이 아닌 순수 함수입니다(`docs/harness/toeic.md` §5-4·§5-5·§6). **유형별 공략**(2026-09-27, `toeic.md` §12)도 새 AI 호출이 없습니다 — 공략·틀 은행은 파일로 가져오고(AI 0), 따라 말하기 대본·틀 테스트의 받아쓰기 비교(전사문 ↔ 틀 고정 부분)·전사문 속 틀 찾기는 순수 함수(`lib/toeic-template.ts`)이며, 한 문제 연습은 호출 C를 입력만 바꿔 부르고 템플릿 테스트는 관문 T만 씁니다(기대 문장을 보내지 않는 규칙 그대로).
 - **AI를 쓰지만 Structured Outputs 하네스 밖인 호출** — **클라우드 발음**(SPEC §16·§16-5, `lib/tts.ts`)은 OpenAI 유료 호출이지만 스키마 없는 오디오 호출이라 `callWithSchema()`·zod·재요청·토큰 로그를 거치지 않고, 키 규약(`OPENAI_API_KEY`, 없으면 501 → 기기 음성)만 공유합니다. 대화 해설 **낭독**(SPEC §18)은 일본어 해설 화면의 기능이고, 그 연속 재생 엔진(`speakQueue`)은 과목 공용이며 `eval:speech`가 잠급니다. 운동 세션의 음성 안내도 이 발음 경로를 거칩니다.
   토익스피킹의 **관문 P**(모의고사 Q3–4 사진 생성, `lib/toeic-image.ts`)와 **관문 T**(답변 음성 전사, `lib/toeic-transcribe.ts`)도 같은 부류입니다 — 이미지·오디오 바이트를 주고받는 호출이라 `callWithSchema()`·zod·재요청을 거치지 않고, 각자 **독립 OpenAI 클라이언트**를 쥐고(`lib/ai/client.ts`에 과목 분기를 넣지 않는다) 키 규약만 공유합니다(키가 없으면 네트워크 호출 없이 `no_api_key` → 라우트 501). 모델은 `OPENAI_IMAGE_MODEL`·`OPENAI_IMAGE_QUALITY`·`OPENAI_TRANSCRIBE_MODEL`(빈 값이면 기본값 — SPEC §11). 로그에는 모델·크기·ms 같은 숫자만 남기고 프롬프트·사진·전사문·오디오는 남기지 않습니다. 전사에는 기대 문장을 `prompt`로 넣지 않습니다(`docs/harness/toeic.md` §5-0).
   **사진 생성 공용 코어**(`lib/image-gen.ts`, 2026-09-26): 관문 P의 모델 env 해석·키 규약·JPEG data URL 조립·크기 상한을 넘으면 다음 압축으로 1회 다시 만들기·로그 모양을 코어로 옮겼고, 토익 사진(`lib/toeic-image.ts` — medium·1536×1024·압축 70→50)과 은우 자유대화 주제 일러스트(`lib/talk-image.ts` — medium 고정·1024×1024·60→40)가 **자기 설정만 인자로 넘겨** 같은 코어를 씁니다. 코어는 과목을 모릅니다(`lib/ai/client.ts`에 과목 분기를 두지 않는 것과 같은 원칙). 토익 동작은 불변입니다(`eval:toeic`, QA가 HEAD 원본과 같은 스텁에서 요청·결과 동일을 확인).
@@ -85,7 +85,7 @@ lib/ai/client.ts          # 공통 래퍼 + OpenAI 클라이언트 — 과목 �
 lib/ai/english/           # 영어 전용 프롬프트·스키마
 lib/ai/math/              # 수학 전용 프롬프트·스키마·검산 파이프라인
 lib/ai/japanese/          # 일본어 전용 프롬프트·스키마
-lib/ai/toeic/             # 토익스피킹 전용 프롬프트·스키마·후처리(호출 A~D)
+lib/ai/toeic/             # 토익스피킹 전용 프롬프트·스키마·후처리(호출 A~D) + 유형별 공략 가져오기 판정(guide-import.ts)
 lib/image-gen.ts          # 사진 생성 공용 코어(관문 P·자유대화 일러스트 공유) — 하네스 밖(서버 전용)
 lib/toeic-image.ts        # 토익 관문 P(사진 생성) — 공용 코어에 토익 설정만 넘긴다(서버 전용)
 lib/talk-image.ts         # 자유대화 주제 일러스트 — 공용 코어에 대화 설정만 넘긴다(서버 전용)
@@ -96,6 +96,7 @@ scripts/eval-english.ts   # 영어 평가 하네스
 scripts/eval-math.ts      # 수학 평가 하네스
 scripts/eval-japanese.ts  # 일본어 평가 하네스
 scripts/eval-toeic.ts     # 토익스피킹 평가 하네스
+scripts/eval-toeic-guides*.ts # 토익 유형별 공략 eval 조각 넷(eval-toeic.ts가 불러 한 번에 돈다)
 docs/harness/english.md   # 영어 스펙 (단일 진실 원천)
 docs/harness/math.md      # 수학 스펙
 docs/harness/japanese.md  # 일본어 스펙
@@ -121,5 +122,5 @@ docs/harness/toeic.md     # 토익스피킹 스펙
   오프라인에서 env 빈 값 폴백·키 없음(`no_api_key`)·전사 `prompt` 부재 같은 계약을 잠근다. 자유대화 관문 R도 같다 — `eval:english`
   오프라인이 지시문 spec-sync·세션 설정(env 빈 값 폴백·도구 없음·전사는 `language: "en"`·`prompt` 없음)·리듀서·호출 J 후처리·도움 상태 기계와
   (2026-09-27부터) 합성 이벤트 전송 위의 실시간 컨트롤러를 잠그고, 실제 연결(WebRTC·음성)은 eval 밖이다(개발 빌드 전용 가짜 전송 e2e + 사용자 동의 후 실기기).
-  호출 I는 영어 게이트 `EVAL_TALK=1`(2회). 호출 J는 게이트가 없다 — 진입 함수 배선은 오프라인 정적 점검이 소스로 잠근다. 교재 가져오기 파일 검증은 `data/private/`에 파일이 있을 때만 돌고
+  호출 I는 영어 게이트 `EVAL_TALK=1`(2회). 호출 J는 게이트가 없다 — 진입 함수 배선은 오프라인 정적 점검이 소스로 잠근다. 교재 가져오기 파일 검증(표현집 파일과 유형별 공략 파일 `data/private/toeic-strategy/toeic-guides.json` 둘)은 `data/private/`에 파일이 있을 때만 돌고
   없으면 SKIP이다(공개 저장소·CI 기준). 게이트 실호출도 비용이 드는 검증이라 **사용자 동의 후 오케스트레이터가** 실행한다.

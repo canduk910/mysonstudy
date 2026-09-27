@@ -37,7 +37,8 @@ import {
   type ToeicMockCreateResponse,
 } from "@/lib/toeic-mock-contract";
 import { TOEIC_MOCK_PARTS, TOEIC_TARGET_GRADES, type ToeicMockPart } from "@/lib/toeic-mock";
-import { isRenderableToeicSet } from "@/lib/toeic-record";
+import { isToeicQuizModeSession } from "@/lib/toeic-quiz";
+import { isRenderableToeicSet, isToeicDrill, isToeicGuideSet } from "@/lib/toeic-record";
 import { collapseSpaces } from "@/lib/toeic-text";
 import { toToeicIssues, toeicZodErrorKo } from "@/lib/toeic-zod-ko";
 
@@ -126,8 +127,15 @@ export async function POST(req: Request) {
       store.listAllToeicQuizzes(),
       store.listToeicMocks(),
     ]);
-    expressions = normalizeMockExpressions(pickExpressionsForMock(sets.filter(isRenderableToeicSet), sessions));
-    existingTitles = mocks.map((m) => m.titleKo);
+    // 실전 모의고사의 활용할 표현은 **표현집만**(§12-3 표·§12-12 1): 공략 계열(유형 공략·틀 은행)을 빼고, 숙련도를 매기는 시험 세션도
+    // 표현집 세트의 것만(setId ∈ 표현집) + 표현 시험 모드만(레코드 mode는 틀 테스트 모드까지 넓다 — "모드 타입 넓히기"). 통계 키가
+    // 표현 문자열이라 공략 시험 세션이 섞이면 같은 글자의 표현집 표현 순위가 바뀐다.
+    const bookSets = sets.filter((s) => !isToeicGuideSet(s)).filter(isRenderableToeicSet);
+    const bookSetIds = new Set(bookSets.map((s) => s.id));
+    const bookSessions = sessions.filter(isToeicQuizModeSession).filter((q) => bookSetIds.has(q.setId));
+    expressions = normalizeMockExpressions(pickExpressionsForMock(bookSets, bookSessions));
+    // 제목 번호는 모의고사끼리만 센다 — 한 문제 연습(drillPart)은 먼저 뺀다(§12-3 표, 연습은 "{유형} 연습 n"으로 따로 센다)
+    existingTitles = mocks.filter((m) => !isToeicDrill(m)).map((m) => m.titleKo);
   } catch (err) {
     console.error("[/api/toeic/mocks] 표현집 읽기 실패:", err);
     return json({ ok: false, error: "save_failed", messageKo: "표현집을 읽지 못했어요. 잠시 후 다시 시도해 주세요." }, 500);
@@ -165,6 +173,7 @@ export async function POST(req: Request) {
       expressionsUsed: expressions,
       topicHints,
       parts,
+      drillPart: null,
       model: resolveModel(),
     });
     return json({

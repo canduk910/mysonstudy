@@ -82,18 +82,21 @@ import type {
   ToeicAttemptScope,
   ToeicBookQuiz,
   ToeicExprEntry,
+  ToeicGuideDoc,
   ToeicMockParts,
   ToeicMockPartRecordMap,
   ToeicPointsItem,
   ToeicSetSource,
 } from "./ai/toeic/schemas";
 import type { ToeicMockPart, ToeicTargetGrade } from "./toeic-mock";
-import type { ToeicQuizMode } from "./toeic-quiz";
+import type { ToeicQuizMode, ToeicTemplateQuizMode } from "./toeic-quiz";
 import { applyPointsResults } from "./ai/toeic/points";
 // 모의고사 파트 채우기·사진 저장 판정 — 두 백엔드가 같은 함수로(lib/toeic-mock-apply.ts, 런타임 import 0)
 import { applyFillPart, applyPictureImage, decideFillPart, decidePictureImage } from "./toeic-mock-apply";
 // 응시 끝/그만두기는 한 번만 — 두 백엔드가 같은 판정으로(lib/toeic-attempt-rules.ts, 런타임 import는 순수 lib/toeic-mock뿐)
 import { decideAttemptFinish } from "./toeic-attempt-rules";
+// 유형별 공략 가져오기(§12-2-5) — 다시 가져오기 판정은 두 백엔드가 같은 순수 함수로(원자 단위 **안에서**, 모두 읽은 뒤)
+import { decideGuideUpsert, type ToeicGuideImportItem, type ToeicGuideUpsertDecision } from "./ai/toeic/guide-import";
 import {
   normalizeToeicAnswer,
   normalizeToeicAttemptRecord,
@@ -560,6 +563,12 @@ export interface ToeicSetRecord {
   createdAt: string; // ISO 8601
   /** 목록 수동 정렬 인덱스 — 서재와 같은 규약(미정렬 null이 맨 위, 생성부는 null로 시작) */
   sortIndex: number | null;
+  /**
+   * 유형별 공략(docs/harness/toeic.md §12-3) — null이면 **표현집**. null이 아니면 공략 계열 문서다: 유형 공략(`kind:"part"`, id
+   * `guide-{part}`)과 틀 은행(`kind:"templates"`, id `guide-templates`, entries·quiz 빈 배열). 옛 문서는 null로 읽는다.
+   * 목록에서 가리는 판정은 lib/toeic-record.ts isToeicGuideSet 하나다. 정규화는 깨진 guide도 null로 떨어뜨리지 않는다(렌더 판정이 막는다).
+   */
+  guide: ToeicGuideDoc | null;
 }
 
 /** 표현 시험 문항 결과(§7-3) — 영어·일본어와 같은 3상태. `word` = 항목 키(§6-1: 표현 또는 QUIZ 키) */
@@ -576,7 +585,11 @@ export interface ToeicQuizItem {
 export interface ToeicQuizRecord {
   id: string;
   setId: string;
-  mode: ToeicQuizMode;
+  /**
+   * 표현 시험 네 모드 + 템플릿 테스트 두 모드(§12-3 — setId `guide-templates`, 항목 키 `tpl:{key}`). 세트 단위 화면·모의고사 라우트는
+   * isToeicQuizModeSession(lib/toeic-quiz)으로 표현 시험 모드만 걸러 넘긴다.
+   */
+  mode: ToeicQuizMode | ToeicTemplateQuizMode;
   startedAt: string;
   /** 끝까지 풀면 ISO, 그만하기면 null */
   finishedAt: string | null;
@@ -596,6 +609,11 @@ export interface ToeicMockRecord {
    */
   topicHints: string[];
   parts: ToeicMockParts;
+  /**
+   * 유형별 공략의 **한 문제 연습**이면 그 파트(docs/harness/toeic.md §12-3·§12-7) — 그 파트만 non-null이다. null = 모의고사.
+   * 필드가 없는 옛 문서는 null(normalize). 모의고사 목록·제목 번호·학습 보기는 이 값으로 연습을 가린다(lib/toeic-record isToeicDrill).
+   */
+  drillPart: ToeicMockPart | null;
   model: string;
   createdAt: string;
   sortIndex: number | null;
@@ -618,6 +636,11 @@ export interface ToeicAttemptRecord {
   mockId: string;
   scope: ToeicAttemptScope;
   parts: ToeicMockPart[];
+  /**
+   * 응시 범위의 문항 번호(오름차순, docs/harness/toeic.md §12-3·§12-7-4) — 시작 라우트가 decideAttemptScope에서 받아 적는다(연습의 사진
+   * 묘사는 [3]). 끝내기 범위·채점 범위·응시/결과 화면이 이 값을 읽는다. 필드가 없는 옛 문서는 toeicAttemptQuestions(parts)(normalize).
+   */
+  questions: number[];
   startedAt: string;
   /** null = 중간에 그만둠 */
   finishedAt: string | null;
@@ -829,6 +852,14 @@ export type NewVocabQuiz = Omit<VocabQuizRecord, "id">;
 export type NewToeicSet = Omit<ToeicSetRecord, "id" | "createdAt" | "sortIndex">;
 /** 토익 표현 시험 세션 저장 입력 */
 export type NewToeicQuiz = Omit<ToeicQuizRecord, "id">;
+/**
+ * 멱등 키로 저장한 결과(docs/harness/toeic.md §12-5-6 — 템플릿 테스트 기록). `reused`면 같은 id·같은 판(mode·startedAt)이 이미 있어
+ * 새로 쓰지 않고 그 문서를 돌려준 것이다. 같은 id에 **다른 판**이 있으면 덮지 않고 새 id로 쓴다(record.id가 요청 id와 다르다).
+ */
+export interface AddToeicQuizWithIdResult {
+  record: ToeicQuizRecord;
+  reused: boolean;
+}
 /** 토익 모의고사 생성 입력 */
 export type NewToeicMock = Omit<ToeicMockRecord, "id" | "createdAt" | "sortIndex">;
 /** 토익 응시 시작 입력(녹음 IndexedDB 키로 id가 필요해 시작에 만든다, §7-5) */
@@ -1132,9 +1163,24 @@ export interface StudyStore {
    * "만들기" 버튼이 겹쳐도 먼저 채운 포인트를 뒤 호출이 덮지 않는다. 수정이라 prod-guard 무관. 없는 id면 null.
    */
   mergeToeicSetPoints(id: string, items: ToeicPointsItem[], opts: { force: boolean }): Promise<MergeToeicSetPointsResult | null>;
+  /**
+   * 유형별 공략 파일 가져오기(docs/harness/toeic.md §12-2-5) — 제자리 갱신·멱등. 결정적 id 문서(`guide-{part}`·`guide-templates`)와
+   * presetKey가 같은 문서를 **모두 읽은 뒤** `decideGuideUpsert`(순수)로 판정한다: created는 새 문서, updated는 titleKo·entries·quiz·
+   * guide·enriched만(`TOEIC_GUIDE_UPDATE_FIELDS` — id·createdAt·sortIndex·presetKey 그대로), unchanged는 쓰지 않는다. 충돌이 하나라도
+   * 있으면 **아무것도 쓰지 않고** `{ok:false, conflicts}`(라우트가 409). 확인과 쓰기가 한 원자 단위(파일 mutate / Firestore runTransaction).
+   * 시험·테스트 기록(toeicQuizzes)은 건드리지 않는다. 생성·수정이라 prod-guard 무관. `nowIso`는 라우트가 한 번만 정한다(재시도에도 같은 값).
+   */
+  upsertToeicGuides(items: readonly ToeicGuideImportItem[], nowIso: string): Promise<ToeicGuideUpsertDecision>;
 
   /** 시험 세션 저장(append 전용 — prod-guard 없음). */
   addToeicQuiz(input: NewToeicQuiz): Promise<ToeicQuizRecord>;
+  /**
+   * 시험 세션을 **정해진 문서 id**로 저장한다(멱등 — 템플릿 테스트 기록, docs/harness/toeic.md §12-5-6). 판정은 순수 함수
+   * `decideToeicQuizWithId` 하나: 같은 id가 없으면 그 id로 만든다(reused false) · 있고 mode·startedAt이 같으면 쓰지 않고 그 문서(reused
+   * true — "다시 저장"이 같은 판을 두 벌 쌓아 거짓 졸업을 만들지 않게) · 있는데 다른 판이면 **덮지 않고** 새 id로 쓴다(reused false).
+   * 확인과 쓰기가 한 원자 단위(파일 mutate / Firestore `create` — ALREADY_EXISTS면 읽어서 판정). append 전용이라 prod-guard 없음.
+   */
+  addToeicQuizWithId(id: string, input: NewToeicQuiz): Promise<AddToeicQuizWithIdResult>;
   /** 그 세트의 시험 세션 — startedAt 오름차순(숙련도 streak의 시간 축). 모르는 mode 레코드는 버린다. */
   listToeicQuizzes(setId: string): Promise<ToeicQuizRecord[]>;
   /** 전 세트의 시험 세션 — startedAt 오름차순(스트릭·모의고사 활용할 표현 고르기가 읽는다). */
@@ -1143,8 +1189,14 @@ export interface StudyStore {
   /** 모의고사 생성(T3). */
   createToeicMock(input: NewToeicMock): Promise<ToeicMockRecord>;
   getToeicMock(id: string): Promise<ToeicMockRecord | null>;
-  /** 최신순. limit 생략이면 전체 */
+  /** 최신순. limit 생략이면 전체(연습 문서도 섞여 온다 — 모의고사 목록은 lib/toeic-record listableToeicMocks로 먼저 거른다) */
   listToeicMocks(limit?: number): Promise<ToeicMockRecord[]>;
+  /**
+   * 한 유형의 **한 문제 연습**(drillPart = mockPart) — 최신순(createdAt 내림차순), 전부(docs/harness/toeic.md §12-8). Firestore는
+   * `where("drillPart", "==", mockPart)` 등호 하나(orderBy 없음 — 복합 색인 불필요, 정렬은 메모리), 파일은 메모리에서 거른다.
+   * 필드가 없는 옛 문서는 빠진다(맞는 결과 — 옛 문서는 연습이 아니다).
+   */
+  listToeicDrills(mockPart: ToeicMockPart): Promise<ToeicMockRecord[]>;
   /** 모의고사 삭제 — 생성 사진·응시 기록까지 연쇄(딸린 것 먼저, 모의고사 마지막). **prod-guard**(`deleteToeicMock`). */
   deleteToeicMock(id: string): Promise<DeleteToeicResult>;
   updateToeicMockTitle(id: string, titleKo: string): Promise<ToeicMockRecord | null>;
@@ -2459,11 +2511,52 @@ class JsonFileStore implements BookCardStore {
     });
   }
 
+  async upsertToeicGuides(items: readonly ToeicGuideImportItem[], nowIso: string): Promise<ToeicGuideUpsertDecision> {
+    // 확인(판정)과 쓰기를 한 mutate 안에서 — 같은 파일을 두 번 눌러도(큐 직렬화) 두 번째는 앞 쓰기를 본 뒤 unchanged가 된다.
+    // 판정 입력은 Firestore와 같은 모양: 결정적 id 문서 + presetKey가 같은 문서(겹쳐도 된다 — decideGuideUpsert가 id로 접는다).
+    return this.mutate((db) => {
+      const ids = new Set(items.map((it) => it.docId));
+      const keys = new Set(items.map((it) => it.presetKey));
+      const existing = db.toeicSets.filter((s) => ids.has(s.id) || (s.presetKey !== null && keys.has(s.presetKey)));
+      const decision = decideGuideUpsert(items, existing, nowIso);
+      if (!decision.ok) return decision; // 충돌 — 아무것도 쓰지 않는다(파일 전체 거부)
+      for (const w of decision.writes) {
+        const record = normalizeToeicSetRecord(w.record);
+        const i = db.toeicSets.findIndex((s) => s.id === record.id);
+        if (w.outcome === "created") {
+          // 판정이 "없음"을 본 뒤 같은 mutate 안이라 생길 수 없다 — 생기면 덮지 않고 던진다(쓰기 0, 라우트 500)
+          if (i >= 0) throw new Error(`[store] guide 문서가 이미 있다: ${record.id}`);
+          db.toeicSets.push(record);
+        } else {
+          if (i < 0) throw new Error(`[store] 고칠 guide 문서가 없다: ${record.id}`);
+          db.toeicSets[i] = record;
+        }
+      }
+      return decision;
+    });
+  }
+
   async addToeicQuiz(input: NewToeicQuiz): Promise<ToeicQuizRecord> {
     const record: ToeicQuizRecord = { ...input, items: input.items.map(normalizeToeicQuizItem), id: randomUUID() };
     return this.mutate((db) => {
       db.toeicQuizzes.push(record);
       return record;
+    });
+  }
+
+  async addToeicQuizWithId(id: string, input: NewToeicQuiz): Promise<AddToeicQuizWithIdResult> {
+    // 확인과 쓰기를 한 mutate 안에서(큐 직렬화) — 같은 키로 동시에 두 번 와도 한 번만 생긴다
+    return this.mutate((db): AddToeicQuizWithIdResult => {
+      const found = db.toeicQuizzes.find((q) => q.id === id) ?? null;
+      const decision = decideToeicQuizWithId(found, input);
+      if (decision === "reuse" && found) return { record: found, reused: true };
+      const record: ToeicQuizRecord = {
+        ...input,
+        items: input.items.map(normalizeToeicQuizItem),
+        id: decision === "create" ? id : randomUUID(),
+      };
+      db.toeicQuizzes.push(record);
+      return { record, reused: false };
     });
   }
 
@@ -2494,6 +2587,11 @@ class JsonFileStore implements BookCardStore {
     const db = await readDb();
     const sorted = [...db.toeicMocks].sort(byCreatedAtDesc);
     return limit == null ? sorted : sorted.slice(0, limit);
+  }
+
+  async listToeicDrills(mockPart: ToeicMockPart): Promise<ToeicMockRecord[]> {
+    const db = await readDb();
+    return db.toeicMocks.filter((m) => m.drillPart === mockPart).sort(byCreatedAtDesc);
   }
 
   async deleteToeicMock(id: string): Promise<DeleteToeicResult> {
@@ -2732,6 +2830,20 @@ class JsonFileStore implements BookCardStore {
       return decision;
     });
   }
+}
+
+/**
+ * 멱등 키 저장의 판정(순수 — 두 백엔드가 원자 단위 **안에서** 같은 함수를 부른다, docs/harness/toeic.md §12-5-6).
+ * - 같은 id 문서가 없다 → "create"(그 id로 만든다)
+ * - 있고 mode·startedAt이 같다(같은 판) → "reuse"(쓰지 않고 그 문서를 돌려준다 — 응답을 잃은 뒤 "다시 저장"·동시 두 요청)
+ * - 있는데 다른 판이다 → "create_new_id"(덮지 않고 새 id로 — 키 충돌이 남의 기록을 지우지 않게, 자유대화 저장 관용구)
+ */
+export function decideToeicQuizWithId(
+  existing: Pick<ToeicQuizRecord, "mode" | "startedAt"> | null,
+  input: Pick<NewToeicQuiz, "mode" | "startedAt">,
+): "create" | "reuse" | "create_new_id" {
+  if (existing === null) return "create";
+  return existing.mode === input.mode && existing.startedAt === input.startedAt ? "reuse" : "create_new_id";
 }
 
 /**

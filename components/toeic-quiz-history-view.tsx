@@ -30,7 +30,14 @@ function scoreOf(items: ToeicHistorySession["items"]): { correct: number; answer
   return { correct, answered };
 }
 
-export default function ToeicQuizHistoryView({ sessions }: { sessions: ToeicHistorySession[] }) {
+export default function ToeicQuizHistoryView({
+  sessions,
+  modeLabelsKo = TOEIC_QUIZ_MODE_LABELS_KO,
+}: {
+  sessions: ToeicHistorySession[];
+  /** 모드 이름 — 유형별 공략 세트는 말하기를 "교재 문장 말하기"로(§12-6) */
+  modeLabelsKo?: Record<ToeicQuizMode, string>;
+}) {
   let totalCorrect = 0;
   let totalAnswered = 0;
   for (const sn of sessions) {
@@ -66,7 +73,7 @@ export default function ToeicQuizHistoryView({ sessions }: { sessions: ToeicHist
               <details className={s.session}>
                 <summary className={s.sessionHead}>
                   <span className={s.when}>{formatKst(sn.startedAt)}</span>
-                  <span className={s.badge}>{TOEIC_QUIZ_MODE_LABELS_KO[sn.mode]}</span>
+                  <span className={s.badge}>{modeLabelsKo[sn.mode]}</span>
                   {sn.finishedAt === null ? <span className={s.incomplete}>중단</span> : null}
                   <span className={s.score}>
                     <b>{correct}</b> / {answered}

@@ -4,7 +4,7 @@
  * 본문 `{finishedAt: ISO | null, answers: [{q, recorded, durationMs}]}` → 응시 기록에 문항별 녹음 여부·길이를 채운다.
  * 녹음 자체는 기기(IndexedDB)에만 있다 — 서버에는 녹음 여부·길이만(§0-2 "녹음은 기기에만").
  * - finishedAt: 끝까지 마쳤으면 시각, 중간에 그만뒀으면 null(§7-5).
- * - answers: 응시 범위의 문항만(범위 밖·중복 q는 400). 보내지 않은 문항은 서버가 recorded:false로 채운다
+ * - answers: 응시 범위(레코드 `questions`)의 문항만(범위 밖·중복 q는 400). 보내지 않은 문항은 서버가 recorded:false로 채운다
  *   (completeFinishAnswers — "닫힌 응시" 판정의 근거, lib/toeic-attempt-rules 머리 주석).
  * - durationMs: recorded면 필수(0 초과 ~ 답변 시간 + 여유), 아니면 null 또는 그 범위.
  *
@@ -32,7 +32,6 @@ import {
   decideAttemptFinish,
   maxToeicRecordingMs,
   recordedToeicCount,
-  toeicAttemptQuestions,
 } from "@/lib/toeic-attempt-rules";
 import { TOEIC_QUESTION_COUNT } from "@/lib/toeic-mock";
 import { toToeicIssues, toeicZodErrorKo } from "@/lib/toeic-zod-ko";
@@ -89,8 +88,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     );
   }
 
-  // 응시 범위·중복·길이 검사(범위는 레코드의 parts에서 — 형식표 단일 정의)
-  const qs = toeicAttemptQuestions(attempt.parts);
+  // 응시 범위·중복·길이 검사(범위는 레코드의 questions에서 — 시작 라우트가 decideAttemptScope로 적었다. 연습의 사진 묘사는 [3]이라
+  // Q4가 오면 "이 응시 범위에 없는 문항" 400 — §12-7-4, 상태코드·오류 이름은 기존 계약 그대로)
+  const qs = attempt.questions;
   const allowed = new Set(qs);
   const seen = new Set<number>();
   const issues: { path: string; message: string }[] = [];

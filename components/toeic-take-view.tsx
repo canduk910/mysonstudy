@@ -19,6 +19,10 @@
  * - 녹음 중 화면이 숨겨지면 즉시 녹음을 버리고 그 문항 "중단됨" — 돌아오면 "이 문항 다시"/"다음 문항으로".
  * - 비프는 준비 종료 시각에 미리 예약(lib/toeic-audio-cue), Wake Lock은 visible 복귀 때 재요청(use-toeic-wake-lock).
  * - **개발 빌드 전용** 시간 배율(localStorage `toeic-debug-timescale`) — production 번들에서는 1로 고정된다.
+ * - 유형별 공략 **한 문제 연습**도 이 화면 그대로(docs/harness/toeic.md §12-7-4) — 형식표·시간·질문 음성·녹음 규칙이 실전과 같다.
+ *   바뀌는 것은 셋: ① 지시문은 응시하는 그 파트 문항 수로 `toeicPartDirections(part, count)`(사진 1장 연습이면 한 장짜리 문장 —
+ *   읽기·프리페치·화면 글 **세 곳이 같은 함수**라 캐시 글자가 맞는다) ② "뒤로"는 서버 페이지가 내려준 `back`(연습이면 유형 폴더)
+ *   ③ 녹음 보관 풀 `recPool`(연습은 "drill" — 실전 녹음을 밀어내지 않게, §12-7-6).
  */
 
 import Link from "next/link";
@@ -53,17 +57,18 @@ import {
 import { TOEIC_BEEP_SEC, cancelToeicBeep, ensureToeicAudio, getToeicAudioContext, resumeToeicAudio, scheduleToeicBeep } from "@/lib/toeic-audio-cue";
 import {
   TOEIC_DIRECTIONS_LANG,
-  TOEIC_PART_DIRECTIONS,
   beginAnswer,
   firstPhase,
   nextPhase,
   remainingMs,
+  toeicPartDirections,
   toeicSpeechOutcome,
   type ToeicMockPart,
   type ToeicPhaseState,
 } from "@/lib/toeic-mock";
 import { toeicImageUrl } from "@/lib/toeic-mock-contract";
-import { saveToeicRecording } from "@/lib/toeic-rec-store";
+import type { ToeicSetBackLink } from "@/lib/toeic-guide-view";
+import { saveToeicRecording, type ToeicRecPool } from "@/lib/toeic-rec-store";
 import { TTS_TEXT_MAX_CHARS } from "@/lib/tts-shared";
 import { splitForTts } from "@/lib/tts-split";
 import s from "./toeic-take-view.module.css";
@@ -166,6 +171,8 @@ export default function ToeicTakeView({
   parts,
   scopeLabelKo,
   questions,
+  back,
+  recPool,
 }: {
   mockId: string;
   titleKo: string;
@@ -173,9 +180,19 @@ export default function ToeicTakeView({
   parts: ToeicMockPart[];
   scopeLabelKo: string;
   questions: ToeicQuestionView[];
+  /** "뒤로"(헤더 링크·끝/오류 화면 버튼) — 모의고사면 학습 보기, 연습이면 유형 폴더(서버 페이지가 정한다) */
+  back: ToeicSetBackLink;
+  /** 녹음 보관 풀 — 연습은 "drill"(§12-7-6) */
+  recPool: ToeicRecPool;
 }) {
   const qs = useMemo(() => questions.map((v) => v.q), [questions]);
   const viewByQ = useMemo(() => new Map(questions.map((v) => [v.q, v] as const)), [questions]);
+  /** 파트 → 그 파트 지시문(응시하는 문항 수로 — 사진 1장 연습이면 한 장짜리 문장). 읽기·프리페치·화면 글이 이것 하나를 본다. */
+  const directionsByPart = useMemo(() => {
+    const count = new Map<ToeicMockPart, number>();
+    for (const v of questions) count.set(v.part, (count.get(v.part) ?? 0) + 1);
+    return new Map([...count].map(([part, n]) => [part, toeicPartDirections(part, n)] as const));
+  }, [questions]);
 
   // ── 화면 상태 ──
   const [stage, setStage] = useState<Stage>("intro");
@@ -282,12 +299,12 @@ export default function ToeicTakeView({
   // ── 녹음 보관(IndexedDB) ──
   const storeRecording = useCallback(
     (aid: string, q: number, r: RecordingResult & { createdAt: number }) => {
-      const p = saveToeicRecording({ attemptId: aid, q, blob: r.blob, mimeType: r.mimeType, durationMs: r.durationMs, size: r.size, createdAt: r.createdAt })
+      const p = saveToeicRecording({ attemptId: aid, pool: recPool, q, blob: r.blob, mimeType: r.mimeType, durationMs: r.durationMs, size: r.size, createdAt: r.createdAt })
         .then((where) => patchAnswer(q, { stored: where }))
         .catch(() => patchAnswer(q, { stored: "memory" }));
       savesRef.current.push(p);
     },
-    [patchAnswer],
+    [patchAnswer, recPool],
   );
 
   // ── 단계 진입(부수 효과는 여기서 — 탭 핸들러에서 불리면 speakQueue가 탭 안에서 동기로 불린다) ──
@@ -484,7 +501,7 @@ export default function ToeicTakeView({
       switch (st.phase) {
         case "directions": {
           const v = st.q !== null ? viewByQ.get(st.q) : undefined;
-          playSpeech(v ? enPieces(TOEIC_PART_DIRECTIONS[v.part].en) : [], token, "directions");
+          playSpeech(v ? enPieces(directionsByPart.get(v.part)?.en ?? null) : [], token, "directions");
           break;
         }
         case "question": {
@@ -530,7 +547,7 @@ export default function ToeicTakeView({
         beepTimerRef.current = null;
       }
     },
-    [advance, beginAnswerPhase, endTest, playSpeech, setPause, setPhase, viewByQ],
+    [advance, beginAnswerPhase, directionsByPart, endTest, playSpeech, setPause, setPhase, viewByQ],
   );
   useEffect(() => {
     enterRef.current = enterPhase;
@@ -705,7 +722,7 @@ export default function ToeicTakeView({
     unlockSpeechPlayback();
     setAudioSessionPlayback();
     const texts: string[] = [];
-    for (const part of parts) texts.push(...enPieces(TOEIC_PART_DIRECTIONS[part].en).map((p) => p.text));
+    for (const part of parts) texts.push(...enPieces(directionsByPart.get(part)?.en ?? null).map((p) => p.text));
     for (const v of questions) texts.push(...enPieces(v.spokenIntro).map((p) => p.text), ...enPieces(v.question).map((p) => p.text));
     prefetchStopRef.current = prefetchSpeech(texts, TOEIC_DIRECTIONS_LANG);
     // Q3–4 사진을 미리 받아 둔다 — 준비 시간(45초)이 사진 로딩으로 깎이지 않게(비공개 캐시 응답이라 두 번째는 즉시)
@@ -822,8 +839,8 @@ export default function ToeicTakeView({
             <button type="button" className="u-btn u-btn-primary" onClick={() => window.location.reload()}>
               ↻ 처음부터 다시
             </button>
-            <Link href={`/toeic/mocks/${encodeURIComponent(mockId)}`} className="u-btn u-btn-secondary">
-              학습 보기로
+            <Link href={back.href} className="u-btn u-btn-secondary">
+              {back.buttonKo}
             </Link>
           </div>
         </div>
@@ -838,8 +855,8 @@ export default function ToeicTakeView({
       <div className={s.overlay} role="dialog" aria-modal="true" aria-label="모의고사 응시 준비">
         <div className={s.inner}>
           <div className={s.head}>
-            <Link href={`/toeic/mocks/${encodeURIComponent(mockId)}`} className="u-navbtn">
-              ← 학습 보기
+            <Link href={back.href} className="u-navbtn">
+              {back.labelKo}
             </Link>
             {scale !== 1 && <span className={s.devBadge}>⏩ 시간 ×{scale} (개발용)</span>}
           </div>
@@ -962,8 +979,8 @@ export default function ToeicTakeView({
                 📊 결과 보기 · AI 채점
               </button>
             )}
-            <Link href={`/toeic/mocks/${encodeURIComponent(mockId)}`} className="u-btn u-btn-secondary">
-              학습 보기로
+            <Link href={back.href} className="u-btn u-btn-secondary">
+              {back.buttonKo}
             </Link>
           </div>
         </div>
@@ -1081,9 +1098,9 @@ export default function ToeicTakeView({
           <section className={s.card} aria-label="지시문">
             <p className={s.cardTitle}>{view.partLabelKo}</p>
             <p className={s.en} lang="en">
-              {TOEIC_PART_DIRECTIONS[view.part].en}
+              {directionsByPart.get(view.part)?.en}
             </p>
-            <p className={s.caption}>{TOEIC_PART_DIRECTIONS[view.part].ko}</p>
+            <p className={s.caption}>{directionsByPart.get(view.part)?.ko}</p>
           </section>
         )}
 

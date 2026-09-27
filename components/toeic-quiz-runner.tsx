@@ -26,6 +26,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { prefetchSpeech, speak, stopSpeaking } from "@/lib/speech";
 import { STREAK_REFRESH_EVENT } from "@/lib/streak";
 import { TOEIC_PART_BADGE_KO } from "@/lib/toeic-set-contract";
+import type { ToeicSetBackLink } from "@/lib/toeic-guide-view";
 import type {
   ToeicChoiceQuestion,
   ToeicQuizMode,
@@ -162,6 +163,7 @@ function ResultsView({
   saveMsg,
   onResave,
   retryHref,
+  back,
 }: {
   id: string;
   completed: boolean;
@@ -172,6 +174,8 @@ function ResultsView({
   saveMsg: string | null;
   onResave: () => void;
   retryHref: string;
+  /** 끝 화면의 "뒤로" — 서버 페이지가 세트를 보고 내려준다(표현집 → 표현집 상세, 유형 공략 → 그 폴더 ③ 탭, §12-3) */
+  back: ToeicSetBackLink;
 }) {
   const router = useRouter();
   return (
@@ -210,8 +214,8 @@ function ResultsView({
           <Link href={`/toeic/sets/${id}/history`} className="u-btn u-btn-secondary">
             <span aria-hidden>📊</span> 시험 기록
           </Link>
-          <Link href={`/toeic/sets/${id}`} className="u-btn u-btn-secondary">
-            <span aria-hidden>📒</span> 표현집으로
+          <Link href={back.href} className="u-btn u-btn-secondary">
+            {back.buttonKo}
           </Link>
         </div>
       </div>
@@ -248,6 +252,7 @@ export function ToeicChoiceRunner({
   entries,
   retryHref,
   isReview,
+  back,
 }: {
   id: string;
   titleKo: string;
@@ -257,6 +262,7 @@ export function ToeicChoiceRunner({
   entries: ToeicQuizEntryInfo[];
   retryHref: string;
   isReview: boolean;
+  back: ToeicSetBackLink;
 }) {
   const [answers, setAnswers] = useState<(boolean | null)[]>(() => new Array(questions.length).fill(null));
   const [current, setCurrent] = useState(0);
@@ -324,6 +330,7 @@ export function ToeicChoiceRunner({
         saveMsg={saveMsg}
         onResave={() => void submit(collect(), completed)}
         retryHref={retryHref}
+        back={back}
       />
     );
   }
@@ -432,12 +439,20 @@ export function ToeicSpeakRunner({
   questions,
   retryHref,
   isReview,
+  back,
+  speakLabelKo = TOEIC_QUIZ_MODE_LABELS_KO.speak,
+  quizSourceKo = "교재 QUIZ",
 }: {
   id: string;
   titleKo: string;
   questions: ToeicSpeakQuestion[];
   retryHref: string;
   isReview: boolean;
+  back: ToeicSetBackLink;
+  /** 말하기 이름 — 유형별 공략 세트는 "교재 문장 말하기"(② "🧩 틀 테스트"와 가른다, §12-6 검토 S11) */
+  speakLabelKo?: string;
+  /** 교재 문항(source "quiz")의 출처 칩 — 표현집 "교재 QUIZ", 공략 "교재 문장" */
+  quizSourceKo?: string;
 }) {
   const [answers, setAnswers] = useState<(boolean | null)[]>(() => new Array(questions.length).fill(null));
   const [current, setCurrent] = useState(0);
@@ -498,6 +513,7 @@ export function ToeicSpeakRunner({
         saveMsg={saveMsg}
         onResave={() => void submit(collect(), completed)}
         retryHref={retryHref}
+        back={back}
       />
     );
   }
@@ -509,8 +525,8 @@ export function ToeicSpeakRunner({
 
       <div className={s.prompt}>
         <p className={s.promptLabel}>
-          <span className={s.modeBadge}>{TOEIC_QUIZ_MODE_LABELS_KO.speak}</span>
-          {q.source === "quiz" ? "교재 QUIZ" : q.part ? TOEIC_PART_BADGE_KO[q.part] : "활용 문장"}
+          <span className={s.modeBadge}>{speakLabelKo}</span>
+          {q.source === "quiz" ? quizSourceKo : q.part ? TOEIC_PART_BADGE_KO[q.part] : "활용 문장"}
         </p>
         <p className={s.promptText} lang="ko">
           {q.promptKo}

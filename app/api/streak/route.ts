@@ -16,7 +16,17 @@ import { computeStreak, computeStreakFromDays, type StreakSession } from "@/lib/
 import type { PersonStreak, StreakResponse } from "@/lib/streak-contract";
 import { getStore, type TalkSessionRecord, type ToeicAttemptRecord, type ToeicQuizRecord, type WorkoutCycleRecord } from "@/lib/store";
 import { isCountedTalkSession, talkStreakLabel, talkStreakSessions } from "@/lib/talk-streak";
-import { isCountedToeicAttempt, toeicStreakSessions } from "@/lib/toeic-streak";
+import { TOEIC_GUIDE_PART_TO_MOCK_PART, isToeicGuidePart } from "@/lib/toeic-guide";
+import { toeicMockPartLabelKo } from "@/lib/toeic-mock-contract";
+import { TOEIC_MOCK_PARTS, type ToeicMockPart } from "@/lib/toeic-mock";
+import { TOEIC_TEMPLATE_QUIZ_MODE_LABELS_KO, isToeicTemplateQuizMode } from "@/lib/toeic-quiz";
+import {
+  isCountedToeicAttempt,
+  toeicAttemptStreakLabel,
+  toeicQuizStreakLabel,
+  toeicStreakSessions,
+  type ToeicQuizLabelNames,
+} from "@/lib/toeic-streak";
 import { workoutKeptDays, workoutStreakTodayLabel } from "@/lib/workout";
 
 export const runtime = "nodejs";
@@ -28,6 +38,19 @@ function todaysAnswered<T extends StreakSession>(sessions: T[], today: string): 
     .filter((s) => kstDateString(s.startedAt) === today && s.items.some((i) => i.answered === true))
     .sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0));
 }
+
+/** 연습 응시 라벨의 유형 이름(긴 이름 — toeicMockPartLabelKo 단일 정의처). 다섯 파트 밖이면 null(→ 모의고사 라벨) */
+const TOEIC_DRILL_PART_KO = (part: string): string | null =>
+  (TOEIC_MOCK_PARTS as readonly string[]).includes(part) ? toeicMockPartLabelKo(part as ToeicMockPart) : null;
+
+/**
+ * 영어 트랙 라벨 이름표(docs/harness/toeic.md §12-9) — 틀 모드 이름·공략 유형 이름(긴 이름)은 단일 정의처(lib/toeic-quiz·
+ * lib/toeic-mock-contract)에서 가져온다. 틀 테스트는 `템플릿 훈련 · {모드}`, 공략 표현 시험은 `공략 표현 · {유형}`.
+ */
+const TOEIC_LABEL_NAMES: ToeicQuizLabelNames = {
+  templateModeKo: (mode) => (isToeicTemplateQuizMode(mode) ? TOEIC_TEMPLATE_QUIZ_MODE_LABELS_KO[mode] : null),
+  guidePartKo: (part) => (isToeicGuidePart(part) ? toeicMockPartLabelKo(TOEIC_GUIDE_PART_TO_MOCK_PART[part]) : null),
+};
 
 /** 운동·영어 트랙 중립값 — 그 트랙 계산이 실패해도 헤드라인 전체(은우·일본어)는 살린다 */
 const NEUTRAL_STREAK: PersonStreak = { info: { current: 0, doneToday: false, lastDate: null, best: 0 }, todayLabel: null };
@@ -114,11 +137,13 @@ export async function GET() {
         .filter((a) => kstDateString(a.startedAt) === today && isCountedToeicAttempt(a))
         .sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0))[0];
       if (tQuiz && (!tAttempt || tQuiz.startedAt >= tAttempt.startedAt)) {
+        // 라벨만 가른다(§12-9) — 틀 테스트 `템플릿 훈련 · {모드}` / 공략 표현 시험 `공략 표현 · {유형}` / 그 밖 `표현집 · {세트}`
         const set = await store.getToeicSet(tQuiz.setId);
-        appaEnglish.todayLabel = set ? `표현집 · ${set.titleKo}` : "표현집";
+        appaEnglish.todayLabel = toeicQuizStreakLabel(tQuiz, set, TOEIC_LABEL_NAMES);
       } else if (tAttempt) {
+        // 한 문제 연습이면 `공략 연습 · {유형}`, 모의고사면 `모의고사 · {제목}`(§12-9)
         const mock = await store.getToeicMock(tAttempt.mockId);
-        appaEnglish.todayLabel = mock ? `모의고사 · ${mock.titleKo}` : "모의고사";
+        appaEnglish.todayLabel = toeicAttemptStreakLabel(mock, TOEIC_DRILL_PART_KO);
       }
     } catch (err) {
       console.error("[streak] 영어 스트릭 계산 실패 — 영어 트랙만 중립값으로 보낸다", err);

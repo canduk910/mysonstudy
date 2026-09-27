@@ -8,6 +8,8 @@
  * 규칙(lib/tts-cache.ts 관용구):
  * - DB `eunwoo-toeic-rec`, 키 `{attemptId}:{q}`. 같은 키에 다시 쓰면 바꾼다("이 문항 다시").
  * - **최근 응시 5회분만** 남긴다(응시마다 가장 최근 녹음 시각으로 순위, 6번째부터 통째로 지운다) — 한 회 11문항 × 최대 ~1MB.
+ *   **풀마다 따로** 센다(docs/harness/toeic.md §12-7-6): 메타 `pool`이 "mock"(모의고사 — 필드가 없는 옛 메타도)·"drill"(유형별 공략
+ *   한 문제 연습). 실전 응시 뒤 채점 전에 연습을 여러 번 해도 실전 녹음이 밀려 지워지지 않게 — 같은 pickAttemptsToEvict를 풀별로 부른다.
  * - 목록·정리는 메타 store만 읽는다(녹음 바이트를 한꺼번에 메모리에 올리지 않는다). 바이트는 `rec` store에 따로.
  * - **조용한 실패**: IndexedDB를 못 쓰는 환경(프라이빗 모드 등)이면 메모리에만 두고(이 탭의 마지막 응시분) 정상 동작한다.
  *   응시 → 결과 화면은 같은 탭 안 이동이라 메모리만으로도 다시 듣기·채점이 된다(새로고침하면 사라진다).
@@ -20,11 +22,22 @@ const DB_VERSION = 1;
 const STORE_REC = "rec";
 const STORE_META = "meta";
 
-/** 남길 응시 수(§6-4 "최근 응시 5회분") */
+/** 남길 응시 수(§6-4 "최근 응시 5회분") — 풀마다 같은 값(§12-7-6) */
 export const TOEIC_REC_KEEP_ATTEMPTS = 5;
+
+/** 녹음 보관 풀 — 모의고사 응시 / 한 문제 연습 응시(§12-7-6). 응시 화면이 문서의 drillPart로 고른다. */
+export type ToeicRecPool = "mock" | "drill";
+export const TOEIC_REC_POOLS: readonly ToeicRecPool[] = ["mock", "drill"];
+
+/** 메타의 풀 — "drill"이 아니면 전부 "mock"(필드가 없는 옛 메타 = 모의고사 응시) */
+export function toeicRecPoolOf(meta: { pool?: unknown }): ToeicRecPool {
+  return meta.pool === "drill" ? "drill" : "mock";
+}
 
 export interface ToeicRecordingMeta {
   attemptId: string;
+  /** 보관 풀(§12-7-6). 옛 메타에는 없다 — 읽을 때 toeicRecPoolOf로 "mock" */
+  pool: ToeicRecPool;
   q: number;
   /** 실제 녹음 형식(recorder.mimeType) */
   mimeType: string;
@@ -58,6 +71,24 @@ export function pickAttemptsToEvict(
   const kept = new Set(ranked.slice(0, Math.max(0, keep)));
   if (keepAlso !== null) kept.add(keepAlso);
   return ranked.filter((id) => !kept.has(id));
+}
+
+/**
+ * 풀마다 따로 지울 응시 id들(순수, §12-7-6) — 메타를 풀(toeicRecPoolOf — 옛 메타는 mock)로 나눠 풀마다 pickAttemptsToEvict(keep)를
+ * 부르고 합친다. 연습을 몇 번 해도 모의고사 풀의 순위는 바뀌지 않는다(반대도 같다). keepAlso(지금 쓰는 응시)는 늘 남긴다.
+ */
+export function pickAttemptsToEvictByPool(
+  entries: readonly { attemptId: string; createdAt: number; pool?: unknown }[],
+  keep: number = TOEIC_REC_KEEP_ATTEMPTS,
+  keepAlso: string | null = null,
+): string[] {
+  return TOEIC_REC_POOLS.flatMap((pool) =>
+    pickAttemptsToEvict(
+      entries.filter((e) => toeicRecPoolOf(e) === pool),
+      keep,
+      keepAlso,
+    ),
+  );
 }
 
 // ───────────────────────── 메모리 폴백(이 탭의 마지막 응시분) ─────────────────────────
@@ -116,12 +147,13 @@ function isMeta(v: unknown): v is ToeicRecordingMeta {
 
 async function listAllMeta(db: IDBDatabase): Promise<ToeicRecordingMeta[]> {
   const all = await reqToPromise(db.transaction(STORE_META, "readonly").objectStore(STORE_META).getAll());
-  return (all as unknown[]).filter(isMeta);
+  // 옛 메타(pool 없음)는 모의고사 풀로 읽는다(§12-7-6)
+  return (all as unknown[]).filter(isMeta).map((m) => ({ ...m, pool: toeicRecPoolOf(m) }));
 }
 
 /**
  * 녹음 한 문항 저장. 반환: "idb"(기기에 남음) / "memory"(IndexedDB 불가 — 이 탭에서만). 던지지 않는다.
- * 저장 뒤 최근 5회분만 남기고 지운다(지금 응시는 늘 남긴다).
+ * 저장 뒤 풀마다 최근 5회분만 남기고 지운다(지금 응시는 늘 남긴다 — §12-7-6).
  */
 export async function saveToeicRecording(rec: ToeicRecording): Promise<"idb" | "memory"> {
   rememberInMemory(rec);
@@ -132,6 +164,7 @@ export async function saveToeicRecording(rec: ToeicRecording): Promise<"idb" | "
     const key = toeicRecKey(rec.attemptId, rec.q);
     const meta: ToeicRecordingMeta = {
       attemptId: rec.attemptId,
+      pool: toeicRecPoolOf(rec),
       q: rec.q,
       mimeType: rec.mimeType,
       durationMs: rec.durationMs,
@@ -153,7 +186,7 @@ export async function saveToeicRecording(rec: ToeicRecording): Promise<"idb" | "
 
 async function evict(db: IDBDatabase, current: string): Promise<void> {
   const metas = await listAllMeta(db);
-  const drop = new Set(pickAttemptsToEvict(metas, TOEIC_REC_KEEP_ATTEMPTS, current));
+  const drop = new Set(pickAttemptsToEvictByPool(metas, TOEIC_REC_KEEP_ATTEMPTS, current));
   if (drop.size === 0) return;
   const tx = db.transaction([STORE_REC, STORE_META], "readwrite");
   for (const m of metas) {

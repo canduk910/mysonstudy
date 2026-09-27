@@ -77,6 +77,7 @@
 
 - 두 백엔드가 **같은 정규화 함수**를 쓴다. 파일 백엔드는 `readDb`에서, Firestore는 `toX`(읽기)와 쓰기 직전에 부른다. 예로 `normalizeWorkoutCycle`(`lib/workout.ts`), `normalizeJaDialogRecord`·`normalizeJaVocabBook`·`normalizeVocabEntry`(`lib/store.ts`), `normalizeJaVocabEntry`(`lib/ai/japanese/vocab.ts`)가 있다. 정의처는 하나뿐이다. 순수 함수라면 store가 값으로 import해도 AI 모듈에 묶이지 않는다.
 - 정규화는 **던지지 않는다.** 없는 키는 null이나 기본값으로 채우고, 깨진 부분은 버린 뒤 `console.warn`한다(`normalizeWorkoutCycle`이 깨진 사건을 버린다). 읽기가 던지면 페이지가 500이 된다.
+- **Firestore는 배열 속 배열도 거부한다**(원소가 곧 배열인 값 — INVALID_ARGUMENT). 파일 백엔드(JSON)는 받으므로 로컬·eval에서는 드러나지 않고 **프로덕션 쓰기만 500**이 된다. 새 필드·컬렉션에 그런 모양(`string[][]` 등)이 있으면 Firestore 쓰기 헬퍼에서 `{x: [...]}[]`로 감싸고 읽기 변환에서 푼다 — 앱 레코드 타입·파일 백엔드·정규화는 그대로 두고 저장 계층만 바꾼다(선례 `lib/toeic-firestore-codec.ts` — 토익 틀 은행 `testFills`, eval이 실제 문서로 "인코딩 뒤 배열 속 배열 0 · 왕복 불변"을 잠근다). 새 필드 체크리스트를 밟을 때 한 번 본다.
 - **Firestore는 undefined를 거부한다.** `getDb()`는 `getFirestore(app)`만 부르고 `ignoreUndefinedProperties`를 켜지 않는다. 그래서 선택 값은 반드시 null로 쓰고, 저장 계층이 마지막 관문이 되어 쓰기 직전에 normalize를 한 번 더 태운다.
 
 ## 5. 원자적 쓰기 — 순수 판정 + mutate/트랜잭션 + `rev`
@@ -119,9 +120,12 @@
 | `speakSequence(words, lang?)` | 단어 배열을 한 문장처럼 읽기 | `join(" ")`한 뒤 `speak`를 1회 부른다. 단어마다 쪼개면 로봇처럼 들린다 |
 | `stopSpeaking()` | 화면 이탈, 다음 문제로 넘어갈 때 | 단발 재생과 큐를 모두 멈춘다 |
 | `prefetchSpeech(texts, lang)` | 화면에 보이는 문장을 미리 합성 | 반환값은 중단 함수다. `useEffect(() => prefetchSpeech(…), [key])`로 쓴다. 새 배치가 오면 직전 배치를 끊는다. 한 화면에서 부모와 자식이 따로 부르면 자식 쪽 효과가 먼저 돌아서 끊긴다. 그러니 한 곳에서 합쳐 부르고, 의존성은 배열 참조가 아니라 문자열 키로 준다(`components/ja-dialog-detail-view.tsx`). device 엔진 언어면 네트워크 0이지만 요청은 "마지막 프리페치"로 기억한다 — 그 언어 엔진을 cloud로 바꾸면 즉시, 속도를 바꾸면 옛 속도 배치를 누르는 순간 멈추고 마지막 조작 `RATE_PREFETCH_DEBOUNCE_MS`(600ms) 뒤 한 번, 화면 코드 없이 새 설정으로 다시 돈다(§16-5 — 연타마다 배치를 쏘면 상류 합성이 쌓인다). 그러니 화면이 설정 변경에 맞춰 프리페치를 다시 부르지 않는다. 한 번에 최대 `PREFETCH_MAX_ITEMS`(90)개다 |
-| `speakQueue(items, { onItem, onEnd })` | 여러 조각 이어 읽기 | **탭 핸들러 안에서 동기로** 부른다. 첫 await 전에 iOS 재생 잠금을 풀기 때문이다. 반환값은 멈추기 함수다. 정지할 때는 `stopSpeaking`이 아니라 이 함수를 써야 다른 🔊를 죽이지 않는다. `onEnd`는 정확히 한 번 온다. 핸들러 안에서 `speak`/`speakQueue`를 다시 부르면 안 된다(재진입 금지). `onEnd(reason, info)`의 둘째 인자 `info.sounded`(`SpeakQueueEndInfo`, 2026-09-26 하위 호환 추가)는 끝까지 소리를 냈다고 본 조각 수다 — 무음 조각이 연속 `QUEUE_SILENT_STOP`(3)개여야 `"stopped"`이므로 **짧은 큐는 전부 무음이어도 `"done"`**이다. 소리가 반드시 나야 하는 화면(토익 응시 질문 음성)은 `sounded`로 다시 판정한다(`toeicSpeechOutcome`) |
+| `speakQueue(items, { onItem, onEnd })` | 여러 조각 이어 읽기 | **탭 핸들러 안에서 동기로** 부른다. 첫 await 전에 iOS 재생 잠금을 풀기 때문이다. 반환값은 멈추기 함수다. 정지할 때는 `stopSpeaking`이 아니라 이 함수를 써야 다른 🔊를 죽이지 않는다. `onEnd`는 정확히 한 번 온다. 핸들러 안에서 `speak`/`speakQueue`를 다시 부르면 안 된다(재진입 금지). `onEnd(reason, info)`의 둘째 인자 `info.sounded`(`SpeakQueueEndInfo`, 2026-09-26 하위 호환 추가)는 끝까지 소리를 냈다고 본 조각 수다 — 무음 조각이 연속 `QUEUE_SILENT_STOP`(3)개여야 `"stopped"`이므로 **짧은 큐는 전부 무음이어도 `"done"`**이다. 소리가 반드시 나야 하는 화면(토익 응시 질문 음성)은 `sounded`로 다시 판정한다(`toeicSpeechOutcome`). **조각 뒤 쉼**(2026-09-27 하위 호환 추가 — 토익 따라 말하기): 조각에 선택 칸 `pauseAfterMs`, 핸들러에 `onPause(index, ms)`. 칸이 유한한 양수일 때만 쉰다 — `ms = min(round(pauseAfterMs ÷ 그 조각의 실제 말 속도 배율), pauseMaxMs 15초)`이고, 쉼은 JS 타이머가 아니라 **같은 큐 오디오 요소로 트는 무음 WAV**(250ms 올림 칸마다 한 벌 — 잠금 화면에서도 오디오 세션이 이어진다). 요소가 없거나 AbortError 아닌 거부면 타이머(자기 stop일 때만 비움), AbortError는 `"stopped"`. 쉼은 `sounded`·무음 연속 판정 밖이고 마지막 조각 뒤 쉼 다음에 `"done"`. 큐는 입력을 다시 만들 때 이 칸을 옮긴다 — 빠뜨리면 쉼이 조용히 사라지고 기존 eval은 다 통과한다 |
+| `prepareSpeech(items, { signal, onProgress })` | ▶를 누른 뒤 고른 범위를 미리 받아 두고 시작할 때(토익 따라 말하기 "준비 n/m") | 고유·지금 클라우드·`canUseCloud`·메모리 캐시에 없는 조각을 문서 순서로 90개까지, 한 번에 하나, 조각마다 대기 상한 `fetchMs`(8초 — 넘은 요청은 끊지 않아 늦게라도 캐시에 남는다). 처음에 `onProgress(0, total)`, 조각마다 +1(성공·실패·상한 모두). 501이면 곧바로 끝(`{ready: 0, total}`), `signal`로 끊어도 reject하지 않는다. 전역 `prefetchSpeech`와 서로 끊지 않는다. 준비 뒤 시작은 탭 밖이므로 ▶ 탭 안에서 `unlockSpeechPlayback()`을 먼저 부른다 |
+| `getSpeechSpeedFactor(lang)` | 화면이 재생 길이를 추정할 때 | 설정 기준 말 속도 배율(클라우드 `cloudSpeed()`, 기기 `getTtsRate() ÷ TTS_RATE`). 큐의 쉼과 같은 정의라 예상 시간(`estimateShadowMs`)이 한 벌로 맞는다 |
 | `unlockSpeechPlayback()` | 탭 밖(타이머 콜백 등)에서 나중에 소리 낼 화면 | 탭 핸들러 안에서 동기로 부른다. 지금 나고 있는 소리는 끊지 않는다(`components/workout-session.tsx`의 ✓ 탭) |
 
+- **잠금 화면 조작(Media Session)은 `lib/speech.ts` 밖의 관문 `lib/media-session.ts`**(`bindMediaSession({title, artist, actions})` → 풀기 함수, `setMediaSessionPlaybackState`, `isMediaSessionSupported` — 런타임 import 0)이고, **토익 따라 말하기 플레이어만** 부른다. 풀기 함수는 자기 바인딩일 때만 푼다(낡은 정리가 뒤의 바인딩을 지우지 않게). 다른 화면은 잠금 화면 ⏸ = 큐 `"stopped"`(SPEC §18-2)가 그대로다 — 큐·`speak`·stop은 `navigator.mediaSession`을 건드리지 않는다(eval "잠금화면" M1). 새 화면이 잠금 화면 조작을 원하면 이 관문을 쓰고 ⏸에서 바인딩을 풀지 않는다(▶로 이어 들으려면 `playbackState = "paused"`로 남겨야 한다 — `components/toeic-template-view.tsx`).
 - 공유 상수는 `lib/tts-shared.ts`(런타임 의존 0)에만 둔다. `lib/speech.ts`가 `lib/tts.ts`를 import하면 openai가 폰 번들에 내려간다.
 - 새 발음 언어는 `TTS_LANGS`에 추가하면 라우트 zod enum이 따라온다. `lib/tts.ts`의 `TTS_INSTRUCTIONS_VERSION`(지금 2)은 영속 캐시 지문 전체에 걸려 있다. 올리면 **전 언어의 캐시가 비워져** 재합성 비용이 난다. 지시문을 고칠 때만, 그 비용을 감수하고 올린다.
 - 폴백이 핵심이다. 키가 없으면(501) 실패하거나 300자를 넘기면 에러 UI 없이 기기 음성으로 간다. 키를 비운 로컬에서 🔊가 기기 음성으로 나는 것이 정상이다. 속도는 전역값 하나를 localStorage에 보존한다(`components/tts-speed-control.tsx`). 엔진 선택 UI는 `components/tts-engine-control.tsx`다.
@@ -239,7 +243,7 @@
 **기기 전용 보관 — 원본은 서버에 올리지 않는다**
 
 - 녹음 원본은 기기 IndexedDB(`lib/toeic-rec-store.ts`, DB `eunwoo-toeic-rec`, 키 `{attemptId}:{q}`)에만 두고, 서버에는 전사문·점수·피드백만 저장한다(원본 미저장 SPEC §13, Firestore 문서 1MB, 버킷 없음). 채점할 때만 한 문항씩 업로드하고 서버는 저장하지 않는다.
-- 보관량에 상한을 둔다(최근 `TOEIC_REC_KEEP_ATTEMPTS` 5회분, 지금 응시는 늘 남김 — 순수 판정 `pickAttemptsToEvict`). IndexedDB를 못 쓰면(프라이빗 모드) 이 탭의 메모리로 폴백하고 사실대로 알린다. 다른 기기에서 기록을 열면 "녹음은 응시한 기기에만 있어요"로 안내하고, 녹음이 필요한 동작(AI 채점)을 막는다. 저장 함수는 던지지 않는다.
+- 보관량에 상한을 둔다(최근 `TOEIC_REC_KEEP_ATTEMPTS` 5회분, 지금 응시는 늘 남김 — 순수 판정 `pickAttemptsToEvict`). **종류가 다른 녹음은 풀을 나눠 센다**(2026-09-27 — 메타 `pool: "mock" | "drill"`, 옛 메타 = mock, `pickAttemptsToEvictByPool`): 한 풀로 세면 연습 몇 번이 채점 전 실전 녹음을 지운다. IndexedDB 버전·store 이름은 그대로 두고 메타 필드만 더했다(업그레이드 없음). IndexedDB를 못 쓰면(프라이빗 모드) 이 탭의 메모리로 폴백하고 사실대로 알린다. 다른 기기에서 기록을 열면 "녹음은 응시한 기기에만 있어요"로 안내하고, 녹음이 필요한 동작(AI 채점)을 막는다. 저장 함수는 던지지 않는다.
 
 **몰입 세션 화면 — 운동 관용구를 import하지 않고 따라 새로 쓴다**
 

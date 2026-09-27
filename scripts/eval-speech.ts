@@ -20,6 +20,14 @@
  * - G. 영속 캐시 v2 형식·자가 치유 (§16-5, 2026-09-27 iPhone "재생 NotSupportedError") — 바이트 저장·조회 때 오디오 레코드 재기록 0·
  *      옛 Blob 이전(G1~G9, G17)·자가 치유 1회와 대상(G10~G13, G15·G16)·content-type(G14), 그리고 QA 2회차 eval 공백 보강:
  *      큐 치유의 fromCache 가드(G18)·치유 삭제는 먼저 시작된 저장 뒤(G19)·빈 옛 레코드(G5 확장·G20)
+ * - H. 조각 뒤 쉼 `pauseAfterMs`(docs/harness/toeic.md §12-5-2·§12-10, 2026-09-27 — 템플릿 따라 말하기·공략 읽기 "영어만" 틈):
+ *      쉼 = 같은 큐 요소의 무음 WAV 조각 1회(H1)·입력 재구성의 칸 보존과 칸 없는 큐 불변(H2)·말 속도 배율(H3)·상한·250ms 올림·
+ *      길이 칸 재사용(H4)·공백 조각·마지막 조각(H5)·쉼 도중 멈춤 세 경로와 외부 pause(H6)·타이머 폴백과 stop 자기일 때만(H7)·
+ *      무음 조각 안전 타임아웃(H8)·sounded·무음 연속 판정 무관(H9)·onPause 예외 격리(H10)·쉼 도중 속도 변경(H11)·
+ *      그 조각이 실제로 난 경로의 배율(H3 실제 속도 — 클라우드 설정인데 기기로 폴백한 조각)
+ * - I. 범위 미리 받기 `prepareSpeech` — 고유·클라우드만(제외 대상은 상한 앞)·캐시 건너뜀·90 상한·진행 단조·abort·501·프리페치와 독립·
+ *      대기 상한(P1~P8)·도중 기기 엔진 전환도 진행에 셈(P9)
+ * - J. 잠금 화면 조작 `lib/media-session.ts` — 기존 경로는 Media Session을 건드리지 않는다·걸고 풀기·낡은 풀기 무시·미지원(M1~M4)
  *
  * 끝까지 못 간 실행은 FAIL(exit 1)이다 — 비동기 대기가 풀리지 않아 이벤트 루프가 비면 beforeExit, 루프가 붙잡혀 있으면 워치독(파일 끝).
  *
@@ -382,6 +390,17 @@ interface Env {
   /** 합성 응답 content-type(기본 audio/mpeg) — 200인데 오디오가 아닌 응답 모사 */
   postContentTypeFor: ((text: string) => string) | null;
   deviceMs: number;
+  /**
+   * 쉼 무음 WAV(0.1초 잠금 해제용이 아닌 것)의 가짜 재생 길이 배율 — null이면 예전처럼 2ms. 숫자면 round(WAV 길이 × 배율)ms
+   * (헤더에서 읽은 길이 — 쉼 도중 멈춤을 잡을 수 있게 늘린다). duration도 그 값으로 알린다(실브라우저처럼 재생 길이 = duration).
+   */
+  silentScale: number | null;
+  /** 이름이 있으면 쉼 무음 WAV의 play()가 그 이름의 DOMException으로 거부된다(타이머 폴백 검증). 잠금 해제용 WAV는 영향 없음. */
+  silentRejectName: string | null;
+  /** true면 쉼 무음 WAV의 ended가 끝내 안 온다(재생 안전 타임아웃 검증). */
+  silentNeverEnds: boolean;
+  /** 쉼 무음 WAV 재생 기록(시작 순) — 헤더에서 읽은 길이·재생한 요소·URL */
+  silentPlays: { ms: number; el: FakeAudio; url: string }[];
   /** 잠금 해제용 빈 발화(" ")가 말하는 시간(ms). 기본 0(다음 틱). 길게 두면 "빈 발화가 아직 말하는 중"에 폴백이 오는 경우를 만든다. */
   blankMs: number;
   postStatus: (text: string) => Status;
@@ -429,6 +448,10 @@ const env: Env = {
   postBodyFor: null,
   postContentTypeFor: null,
   deviceMs: 5,
+  silentScale: null,
+  silentRejectName: null,
+  silentNeverEnds: false,
+  silentPlays: [],
   blankMs: 0,
   postStatus: () => 200,
   getStatus: 200,
@@ -463,6 +486,10 @@ function resetEnv(): void {
   env.postBodyFor = null;
   env.postContentTypeFor = null;
   env.deviceMs = 5;
+  env.silentScale = null;
+  env.silentRejectName = null;
+  env.silentNeverEnds = false;
+  env.silentPlays = [];
   env.blankMs = 0;
   env.postStatus = () => 200;
   env.getStatus = 200;
@@ -552,6 +579,9 @@ const isUnplayable = (b: Blob | undefined): boolean =>
 /** createObjectURL이 만든 tts URL → 그 Blob(재생 판정·형식 확인용) */
 const urlBlob = new Map<string, Blob>();
 let lastTtsUrl = "";
+/** 무음 WAV URL → 그 Blob(헤더 확인용)·길이(ms — 8kHz·8bit·mono라 (바이트 − 44) ÷ 8). 잠금 해제용 0.1초는 100. */
+const silentBlobOf = new Map<string, Blob>();
+const silentMsOf = new Map<string, number>();
 
 /** 가짜 <audio>. play()는 다음 틱에 시작해 audioMs 뒤 끝난다(끝날 때 실브라우저처럼 pause → ended). */
 class FakeAudio {
@@ -607,6 +637,15 @@ class FakeAudio {
           return;
         }
         const silent = this._src.startsWith("blob:silent/");
+        const silentMs = silent ? (silentMsOf.get(this._src) ?? 100) : 0;
+        /** 쉼 무음 조각(잠금 해제용 0.1초가 아닌 무음 WAV) */
+        const pauseWav = silent && silentMs > 100;
+        if (pauseWav && env.silentRejectName) {
+          this.paused = true;
+          env.log.push(`silent-reject:${silentMs}`);
+          reject(new DOMException("silent play rejected", env.silentRejectName));
+          return;
+        }
         if (!silent && isUnplayable(urlBlob.get(this._src))) {
           // WebKit: 읽을 수 없는 Blob → error.code 4 + play() NotSupportedError(QA 1절 d·p·q)
           this.paused = true;
@@ -621,13 +660,20 @@ class FakeAudio {
           return;
         }
         if (!silent) this.duration = env.audioDuration;
+        const dur = silent ? (pauseWav && env.silentScale !== null ? Math.max(1, Math.round(silentMs * env.silentScale)) : 2) : env.audioMs;
+        if (pauseWav) {
+          this.duration = dur / 1000;
+          env.silentPlays.push({ ms: silentMs, el: this, url: this._src });
+          env.log.push(`silent:${silentMs}`);
+        }
         resolve();
         if (!silent && env.audioNeverEnds) return; // ended가 끝내 안 온다
-        const dur = silent ? 2 : env.audioMs;
+        if (pauseWav && env.silentNeverEnds) return; // 쉼 무음 조각의 ended가 끝내 안 온다
         this.endTimer = setTimeout(() => {
           if (g !== this.gen || this.paused) return;
           this.ended = true;
           this.paused = true;
+          if (pauseWav) env.log.push(`silent-end:${silentMs}`);
           this.onpause?.();
           this.onended?.();
         }, dur);
@@ -767,7 +813,10 @@ function installStubs(): void {
     if (b.type === "audio/wav") {
       env.silentCreated++;
       silentTotal++;
-      return `blob:silent/${seq}`;
+      const su = `blob:silent/${seq}`;
+      silentBlobOf.set(su, b);
+      silentMsOf.set(su, (b.size - 44) / 8);
+      return su;
     }
     env.urlCreated++;
     const u = `blob:tts/${seq}`;
@@ -836,15 +885,21 @@ interface Run {
   ends: string[];
   /** onEnd 둘째 인자의 sounded(소리를 낸 조각 수) — ends와 같은 순서 */
   sounded: number[];
+  /** onPause(i, ms) 기록 — 쉼 칸이 없는 큐에서는 늘 비어 있다(H) */
+  pauses: [number, number][];
   stop: () => void;
 }
-function startQueue(sp: SpeechMod, items: { text: string; lang: string }[], tag = "Q", throwOnItem = false): Run {
-  const run: Run = { items: [], ends: [], sounded: [], stop: () => {} };
+function startQueue(sp: SpeechMod, items: { text: string; lang: string; pauseAfterMs?: number }[], tag = "Q", throwOnItem = false): Run {
+  const run: Run = { items: [], ends: [], sounded: [], pauses: [], stop: () => {} };
   run.stop = sp.speakQueue(items, {
     onItem: (i) => {
       run.items.push(i);
       env.log.push(`${tag}:item${i}`);
       if (throwOnItem) throw new Error("handler boom");
+    },
+    onPause: (i, ms) => {
+      run.pauses.push([i, ms]);
+      env.log.push(`${tag}:pause${i}:${ms}`);
     },
     onEnd: (r, info) => {
       run.ends.push(r);
@@ -1460,6 +1515,723 @@ async function main(): Promise<void> {
       `${el}ms pause+${(qa?.pauseCalls ?? 0) - pz} ends=${r.ends.join(",")}`,
     );
     await settle(sp);
+  }
+
+  // -------------------------------------------------------------------------
+  // H. 조각 뒤 쉼 pauseAfterMs (docs/harness/toeic.md §12-5-2·§12-10, 2026-09-27) — 템플릿 따라 말하기·공략 읽기 "영어만" 틈.
+  //    쉼 = 같은 큐 오디오 요소로 트는 무음 WAV 조각(잠금 화면에서도 오디오 세션이 이어지게), 못 틀면 타이머. 칸이 없으면 예전 경로.
+  //    예문은 전부 지어낸 것이다.
+  // -------------------------------------------------------------------------
+  const en = (text: string, pauseAfterMs?: number) =>
+    pauseAfterMs === undefined ? { text, lang: "en-US" } : { text, lang: "en-US", pauseAfterMs };
+  const kop = (text: string, pauseAfterMs: number) => ({ text, lang: "ko-KR", pauseAfterMs });
+  /** WAV 헤더와 본문 — 8kHz·8bit·mono 무음이면 길이(ms)가 헤더에서 읽힌다. */
+  const wavInfo = async (b: Blob | undefined) => {
+    if (!b) return null;
+    const buf = await b.arrayBuffer();
+    const v = new DataView(buf);
+    const tag = (o: number) => String.fromCharCode(v.getUint8(o), v.getUint8(o + 1), v.getUint8(o + 2), v.getUint8(o + 3));
+    if (buf.byteLength < 44 || tag(0) !== "RIFF" || tag(8) !== "WAVE" || tag(12) !== "fmt " || tag(36) !== "data") return null;
+    const ch = v.getUint16(22, true);
+    const rate = v.getUint32(24, true);
+    const bits = v.getUint16(34, true);
+    const dataBytes = v.getUint32(40, true);
+    const riffOk = v.getUint32(4, true) === 36 + dataBytes && buf.byteLength === 44 + dataBytes;
+    const silent = new Uint8Array(buf, 44).every((x) => x === 128);
+    return { ch, rate, bits, ms: (dataBytes / (rate * ch * (bits / 8))) * 1000, riffOk, silent };
+  };
+  const pauseSeq = (tag: string) => env.log.filter((l) => l.startsWith(`${tag}:`) || l.startsWith("silent"));
+
+  // H1 쉼 = 무음 조각 재생 1회 — onPause(i, ms) → 같은 큐 요소에서 ms 길이 무음 WAV 1회(헤더 8kHz·8bit·mono) → 다음 onItem.
+  //    마지막 조각 뒤 쉼도 지키고 그다음 onEnd("done"). 무음 조각은 sounded에 들지 않는다.
+  let h1Seq: string[] = [];
+  {
+    env.silentScale = 0.02;
+    const r = startQueue(sp, [en("Pause one.", 1000), en("Pause two.", 500)], "H");
+    await waitFor(() => r.ends.length > 0, 2000);
+    const seq = pauseSeq("H");
+    h1Seq = seq.map((l) => l.replace(/^H:/, ""));
+    const expected = ["H:item0", "H:pause0:1000", "silent:1000", "silent-end:1000", "H:item1", "H:pause1:500", "silent:500", "silent-end:500", "H:end:done"];
+    const qEl = queueEls()[0];
+    const infos = await Promise.all(env.silentPlays.map((p) => wavInfo(silentBlobOf.get(p.url))));
+    const hdrOk =
+      infos.length === 2 &&
+      infos.every((x) => !!x && x.ch === 1 && x.rate === 8000 && x.bits === 8 && x.riffOk && x.silent) &&
+      infos[0]?.ms === 1000 &&
+      infos[1]?.ms === 500;
+    add(
+      "쉼",
+      "H1 쉼 = 무음 조각 1회: onItem → onPause(i, ms) → 같은 큐 요소에서 ms 무음 WAV 1회 → 다음 onItem, 마지막 조각 뒤 쉼 → onEnd('done')",
+      JSON.stringify(seq) === JSON.stringify(expected) && JSON.stringify(r.pauses) === "[[0,1000],[1,500]]" &&
+        queueEls().length === 1 && env.silentPlays.length === 2 && env.silentPlays.every((p) => p.el === qEl),
+      `seq=${seq.join(">")} 요소=${queueEls().length} 무음재생=${env.silentPlays.map((p) => p.ms).join(",")}`,
+    );
+    add(
+      "쉼",
+      "H1 무음 WAV의 길이가 헤더에서 읽힌다 — RIFF/WAVE·PCM 8kHz·8bit·mono·본문 전부 128(무음)·1000ms/500ms",
+      hdrOk,
+      infos.map((x) => (x ? `${x.rate}Hz/${x.bits}bit/${x.ch}ch/${x.ms}ms/riff=${x.riffOk}/silent=${x.silent}` : "헤더 없음")).join(" · "),
+    );
+    add(
+      "쉼",
+      "H1 쉼은 소리 낸 조각이 아니다 — sounded 2(조각 수)·POST 2·기기 0·합성 URL 생성 == 회수",
+      JSON.stringify(r.sounded) === "[2]" && env.posts.length === 2 && deviceTexts().length === 0 && env.urlCreated === env.urlRevoked && env.urlCreated === 2,
+      `sounded=${r.sounded.join(",")} POST ${env.posts.length} device=${deviceTexts().join("|") || "0"} URL ${env.urlCreated}/${env.urlRevoked}`,
+    );
+    await settle(sp);
+  }
+
+  // H2 칸 보존·칸 없는 큐 불변 — 입력을 {text, lang}으로 다시 만드는 첫 줄이 pauseAfterMs를 버리면 쉼이 조용히 사라진다(검토 개선 3).
+  //    칸만 다른 두 입력의 재생 기록이 달라야 하고, 칸이 없거나 0 이하·유한수가 아니면 onPause·무음 재생이 0이고 나머지 기록은 같다.
+  {
+    env.silentScale = 0.02;
+    const plain = startQueue(sp, [en("Pause one."), en("Pause two.")], "H");
+    await waitFor(() => plain.ends.length > 0, 2000);
+    const plainSeq = pauseSeq("H").map((l) => l.replace(/^H:/, ""));
+    const plainRec = JSON.stringify([plain.items, plain.ends, plain.sounded, env.posts]);
+    const plainSilent = env.silentPlays.length;
+    await settle(sp);
+    const bad: string[] = [];
+    const weird: [string, unknown][] = [["0", 0], ["-5", -5], ["NaN", NaN], ["Infinity", Infinity], ["문자열 '1000'", "1000"], ["null", null]];
+    for (const [label, v] of weird) {
+      env.silentScale = 0.02;
+      const r = startQueue(sp, [{ text: "Pause one.", lang: "en-US", pauseAfterMs: v as number }, { text: "Pause two.", lang: "en-US", pauseAfterMs: v as number }], "W");
+      await waitFor(() => r.ends.length > 0, 2000);
+      const rec = JSON.stringify([r.items, r.ends, r.sounded, env.posts]);
+      if (r.pauses.length !== 0 || env.silentPlays.length !== 0 || rec !== plainRec) bad.push(`${label}: pause ${r.pauses.length} 무음 ${env.silentPlays.length} rec=${rec}`);
+      await settle(sp);
+    }
+    add(
+      "쉼",
+      "H2 칸 보존: 칸만 다른 두 입력의 재생 기록이 다르다(쉼 있음 onPause 2·무음 2 / 없음 0·0) — 재구성이 pauseAfterMs를 옮긴다",
+      h1Seq.length > 0 && JSON.stringify(h1Seq) !== JSON.stringify(plainSeq) && plainSilent === 0 && !plainSeq.some((l) => l.startsWith("pause")),
+      `있음=${h1Seq.join(">")} / 없음=${plainSeq.join(">")}`,
+    );
+    add(
+      "쉼",
+      "H2 칸 없음·0·음수·NaN·Infinity·비숫자·null → 쉼 경로를 타지 않음(onPause 0·무음 0) + 순서·끝·sounded·POST가 칸 없는 큐와 같음",
+      bad.length === 0 && JSON.stringify(plain.ends) === '["done"]',
+      bad.join(" / ") || `${weird.length}가지 모두 칸 없는 큐와 같음`,
+    );
+  }
+
+  // H3 쉼 ÷ 실제 말 속도 배율 — 클라우드 cloudSpeed()(천천히 0.85·보통 1·빠르게 1.15), 기기 getTtsRate() ÷ TTS_RATE(보통 1).
+  //    기본 설정에서 쉼은 공식 그대로다(getTtsRate()로 바로 나누면 0.9 때문에 11% 길다 — 검토 개선 4). WAV는 250ms 단위로 올린다.
+  {
+    const cases: { label: string; rate: number; engine: "cloud" | "device"; ms: number; wav: number; factor: number }[] = [
+      { label: "클라우드 보통", rate: 0.9, engine: "cloud", ms: 1000, wav: 1000, factor: 1 },
+      { label: "클라우드 천천히(0.85)", rate: 0.7, engine: "cloud", ms: 1176, wav: 1250, factor: 0.85 },
+      { label: "클라우드 빠르게(1.15)", rate: 1.1, engine: "cloud", ms: 870, wav: 1000, factor: 1.15 },
+      { label: "기기 보통(0.9÷0.9)", rate: 0.9, engine: "device", ms: 1000, wav: 1000, factor: 1 },
+      { label: "기기 천천히(0.7÷0.9)", rate: 0.7, engine: "device", ms: 1286, wav: 1500, factor: 0.7 / 0.9 },
+    ];
+    const bad: string[] = [];
+    for (const c of cases) {
+      sp.__setQueueTiming({ rateDebounceMs: 1 });
+      sp.setTtsRate(c.rate);
+      sp.setTtsEngine("en-US", c.engine);
+      env.silentScale = 0.01;
+      const f = sp.getSpeechSpeedFactor("en-US");
+      const r = startQueue(sp, [en("Speed check.", 1000)], "V");
+      await waitFor(() => r.ends.length > 0, 2000);
+      const got = `${JSON.stringify(r.pauses)} wav=${env.silentPlays.map((p) => p.ms).join(",")} f=${f.toFixed(4)} ${c.engine === "device" ? `device=${deviceTexts().length}` : `POST=${env.posts.length}`}`;
+      const ok =
+        JSON.stringify(r.pauses) === JSON.stringify([[0, c.ms]]) &&
+        env.silentPlays.length === 1 && env.silentPlays[0].ms === c.wav &&
+        Math.abs(f - c.factor) < 1e-9 &&
+        JSON.stringify(r.ends) === '["done"]' &&
+        (c.engine === "device" ? deviceTexts().length === 1 && env.posts.length === 0 : env.posts.length === 1);
+      if (!ok) bad.push(`${c.label}: ${got}`);
+      await settle(sp);
+    }
+    sp.__setQueueTiming({ rateDebounceMs: 1 });
+    sp.setTtsRate(0.9);
+    sp.setTtsEngine("en-US", "cloud");
+    await sleep(10);
+    sp.__setQueueTiming(null);
+    add(
+      "쉼",
+      "H3 쉼 ÷ 말 속도 배율: 클라우드 보통 1000·천천히 1176(WAV 1250)·빠르게 870(WAV 1000), 기기 보통 1000(공식 그대로 — 0.9로 바로 나누면 1111)·천천히 1286(WAV 1500) — getSpeechSpeedFactor와 같은 배율",
+      bad.length === 0,
+      bad.join(" / ") || `${cases.length}가지`,
+    );
+  }
+
+  // H3 (실제 속도) 쉼은 **그 조각이 실제로 난 경로**의 배율로 나눈다 — 클라우드 엔진·천천히(0.7 → 클라우드 0.85)인데 그 조각이
+  //    501로 기기 음성으로 났으면 기기 배율(0.7 ÷ 0.9 → 1286, WAV 1500)이다. 쉼 시점 설정(getSpeechSpeedFactor = 0.85 → 1176)으로
+  //    다시 재면 틀린다(QA speech-pause_1 O1 — 변이 L7).
+  {
+    sp.__setQueueTiming({ rateDebounceMs: 1 });
+    sp.setTtsRate(0.7);
+    sp.setTtsEngine("en-US", "cloud");
+    env.postStatus = () => 501;
+    env.silentScale = 0.01;
+    const f = sp.getSpeechSpeedFactor("en-US");
+    const r = startQueue(sp, [en("Fallback speed.", 1000)], "V");
+    await waitFor(() => r.ends.length > 0, 2000);
+    const wavs = env.silentPlays.map((p) => p.ms);
+    const posts = env.posts.length;
+    const dev = deviceTexts().length;
+    sp.setTtsRate(0.9);
+    await sleep(10);
+    add(
+      "쉼",
+      "H3 실제 속도: 클라우드 엔진·천천히 0.7인데 501로 기기 폴백한 조각 → onPause 1286(기기 0.7÷0.9)·WAV 1500 — 설정 배율 0.85(1176)가 아니다",
+      JSON.stringify(r.pauses) === "[[0,1286]]" && JSON.stringify(wavs) === "[1500]" && Math.abs(f - 0.85) < 1e-9 &&
+        posts === 1 && dev === 1 && JSON.stringify(r.ends) === '["done"]',
+      `pauses=${JSON.stringify(r.pauses)} wav=${wavs.join(",")} 설정배율=${f.toFixed(4)} POST=${posts} device=${dev} ends=${r.ends.join(",")}`,
+    );
+    await settle(sp);
+  }
+
+  // H4 상한·올림·칸 재사용 — pauseMaxMs(15초)에서 자르고, WAV는 250ms 단위로 올린 길이(최소 250), 같은 칸은 같은 Blob(모듈에 한 번).
+  {
+    env.silentScale = 0.002; // 15초 WAV → 30ms
+    const r = startQueue(sp, [en("Very long pause.", 40_000), en("Tiny pause.", 1), en("Just over.", 251), en("Same bucket.", 490)], "C");
+    await waitFor(() => r.ends.length > 0, 3000);
+    const wavs = env.silentPlays.map((p) => p.ms);
+    const infos = await Promise.all(env.silentPlays.map((p) => wavInfo(silentBlobOf.get(p.url))));
+    const sameBlob = env.silentPlays.length === 4 && silentBlobOf.get(env.silentPlays[2].url) === silentBlobOf.get(env.silentPlays[3].url);
+    const buckets = sp.__speechPlaybackState().pauseWavBuckets;
+    add(
+      "쉼",
+      "H4 상한 15초·250ms 올림: 40000 → onPause 15000·WAV 15000 / 1 → 1·WAV 250 / 251 → WAV 500 / 490 → WAV 500(같은 칸은 같은 Blob) · 칸 수 ≤ 60",
+      JSON.stringify(r.pauses) === "[[0,15000],[1,1],[2,251],[3,490]]" && JSON.stringify(wavs) === "[15000,250,500,500]" &&
+        infos[0]?.ms === 15000 && sameBlob && buckets <= 60 && JSON.stringify(r.ends) === '["done"]',
+      `pauses=${JSON.stringify(r.pauses)} wav=${wavs.join(",")} 헤더0=${infos[0]?.ms} 같은Blob=${sameBlob} 칸=${buckets}`,
+    );
+    await settle(sp);
+    sp.__setQueueTiming({ pauseMaxMs: 600 });
+    env.silentScale = 0.02;
+    const r2 = startQueue(sp, [en("Hook cap.", 1000)], "C");
+    await waitFor(() => r2.ends.length > 0, 2000);
+    add(
+      "쉼",
+      "H4 상한은 테스트 훅(__setQueueTiming pauseMaxMs)으로 줄어든다 — 1000 → 600·WAV 750",
+      JSON.stringify(r2.pauses) === "[[0,600]]" && env.silentPlays.map((p) => p.ms).join(",") === "750",
+      `pauses=${JSON.stringify(r2.pauses)} wav=${env.silentPlays.map((p) => p.ms).join(",")}`,
+    );
+    await settle(sp);
+  }
+
+  // H5 공백이라 건너뛴 조각의 쉼은 건너뛴다(인덱스 보존) — 쉼은 "조각이 끝난 뒤"라 공백 조각에는 끝이 없다.
+  {
+    env.silentScale = 0.02;
+    const r = startQueue(sp, [en("Before.", 300), en("   ", 700), en("After.", 400)], "B");
+    await waitFor(() => r.ends.length > 0, 2000);
+    add(
+      "쉼",
+      "H5 공백 조각의 쉼은 건너뜀 — onItem 0,2·onPause (0,300),(2,400)·무음 2회·done",
+      JSON.stringify(r.items) === "[0,2]" && JSON.stringify(r.pauses) === "[[0,300],[2,400]]" && env.silentPlays.map((p) => p.ms).join(",") === "500,500" &&
+        JSON.stringify(r.ends) === '["done"]',
+      `items=${r.items.join(",")} pauses=${JSON.stringify(r.pauses)} wav=${env.silentPlays.map((p) => p.ms).join(",")}`,
+    );
+    await settle(sp);
+  }
+
+  // H6 쉼 도중 멈춤 — stop·stopSpeaking()·새 큐가 무음 조각을 **즉시** 끊고, 옛 onEnd("stopped")는 동기로(새 큐 onItem(0)보다 먼저),
+  //    옛 큐는 그 뒤 onItem을 내지 않는다. 쉼 도중 외부 pause(잠금 화면 ⏸ 흉내)도 "stopped"(§18-2 그대로).
+  for (const how of ["stop", "stopSpeaking", "새 큐", "외부 pause"] as const) {
+    env.silentScale = 1; // 250ms 무음이 실제로 250ms — 그 사이에 멈춘다
+    const r = startQueue(sp, [en("Stop during pause.", 250), en("Never reached.")], "X");
+    const inPause = await waitFor(() => env.silentPlays.length === 1, 1500);
+    await sleep(20);
+    const el = env.silentPlays[0]?.el;
+    const pz = el?.pauseCalls ?? 0;
+    let syncEnd = false;
+    let newRun: Run | null = null;
+    if (how === "stop") {
+      r.stop();
+      syncEnd = r.ends.length === 1;
+    } else if (how === "stopSpeaking") {
+      sp.stopSpeaking();
+      syncEnd = r.ends.length === 1;
+    } else if (how === "새 큐") {
+      newRun = startQueue(sp, [en("New queue.")], "N");
+      syncEnd = r.ends.length === 1;
+    } else {
+      el?.pause(); // 시스템이 멈춤
+      await waitFor(() => r.ends.length > 0, 500);
+      syncEnd = r.ends.length === 1;
+    }
+    if (newRun) await waitFor(() => newRun!.ends.length > 0, 1500);
+    await sleep(300); // 무음 조각이 원래 끝났을 시점을 넘긴다
+    const order = newRun ? env.log.indexOf("X:end:stopped") < env.log.indexOf("N:item0") : true;
+    add(
+      "쉼",
+      `H6 쉼 도중 ${how} → 옛 onEnd('stopped') ${how === "외부 pause" ? "" : "동기 "}1회·이후 onItem 없음·무음 요소 pause${how === "새 큐" ? "·새 큐 onItem(0)보다 먼저·새 큐 done" : ""}·기기 폴백 0`,
+      inPause && syncEnd && JSON.stringify(r.ends) === '["stopped"]' && JSON.stringify(r.items) === "[0]" && (el?.pauseCalls ?? 0) > pz &&
+        order && deviceTexts().length === 0 && (!newRun || JSON.stringify(newRun.ends) === '["done"]') && !env.log.includes("silent-end:250"),
+      `쉼중=${inPause} ends=${r.ends.join(",")} items=${r.items.join(",")} pause+${(el?.pauseCalls ?? 0) - pz} 순서=${order}${newRun ? ` 새=${newRun.ends.join(",")}` : ""}`,
+    );
+    await settle(sp);
+  }
+
+  // H7 타이머 폴백 — 무음 조각 play()가 AbortError가 아닌 이유로 거부되면 ms만큼 타이머로 기다린다. 기다림은 currentPlayStop에
+  //    등록돼 stop이 즉시 끊고, 끝나면 **자기일 때만** 비운다(낡은 stop이 남으면 다음 stopCloudAudio가 URL 회수를 건너뛴다).
+  //    AbortError 거부는 "시작 순간의 외부 멈춤"이라 정지다(§18-2 — 타이머로 가지 않는다).
+  {
+    // 마지막 조각 뒤 쉼도 타이머 — 그 뒤에는 stop을 덮어쓸 재생이 없으므로 "끝난 뒤 비움"이 여기서만 드러난다.
+    env.silentRejectName = "NotAllowedError";
+    const r = startQueue(sp, [en("Timer one.", 120), en("Timer two.", 120)], "T");
+    await waitFor(() => env.log.includes("silent-reject:250"), 1500);
+    const tRej = Date.now();
+    const during = sp.__speechPlaybackState();
+    await waitFor(() => r.items.includes(1), 1500);
+    const waited = Date.now() - tRej;
+    await waitFor(() => r.ends.length > 0, 1500);
+    const after = sp.__speechPlaybackState();
+    add(
+      "쉼",
+      "H7 무음 재생 거부(NotAllowedError) → 타이머로 ms(120) 기다린 뒤 다음 조각·마지막 쉼 뒤 done, 기다리는 동안 stop 등록·끝난 뒤 비움(자기일 때만 — 낡은 stop 0)",
+      JSON.stringify(r.pauses) === "[[0,120],[1,120]]" && waited >= 100 && waited < 1000 && JSON.stringify(r.items) === "[0,1]" && JSON.stringify(r.ends) === '["done"]' &&
+        JSON.stringify(r.sounded) === "[2]" && during.playStop && !after.playStop && !after.audioUrl && env.liveUrls.size === 0,
+      `대기 ${waited}ms 쉼중stop=${during.playStop} 끝난뒤stop=${after.playStop} url=${after.audioUrl} ends=${r.ends.join(",")} sounded=${r.sounded.join(",")}`,
+    );
+    await settle(sp);
+
+    env.silentRejectName = "NotAllowedError";
+    const r2 = startQueue(sp, [en("Timer stop.", 400), en("Not reached.")], "T");
+    await waitFor(() => env.log.includes("silent-reject:500"), 1500);
+    await sleep(20);
+    r2.stop();
+    const syncEnd = r2.ends.length === 1;
+    const st = sp.__speechPlaybackState();
+    await sleep(450);
+    add(
+      "쉼",
+      "H7 타이머 쉼 도중 stop → onEnd('stopped') 동기·stop 비움·타이머가 끝나도 다음 조각 없음",
+      syncEnd && JSON.stringify(r2.ends) === '["stopped"]' && JSON.stringify(r2.items) === "[0]" && !st.playStop,
+      `동기=${syncEnd} ends=${r2.ends.join(",")} items=${r2.items.join(",")} stop=${st.playStop}`,
+    );
+    await settle(sp);
+
+    env.silentRejectName = "AbortError";
+    const r3 = startQueue(sp, [en("Abort start.", 300), en("Not reached.")], "T");
+    await waitFor(() => r3.ends.length > 0, 1500);
+    await sleep(350);
+    add(
+      "쉼",
+      "H7 무음 재생이 AbortError로 거부(시작 순간 외부 멈춤) → 타이머가 아니라 'stopped'·다음 조각 없음·기기 폴백 0",
+      JSON.stringify(r3.ends) === '["stopped"]' && JSON.stringify(r3.items) === "[0]" && deviceTexts().length === 0,
+      `ends=${r3.ends.join(",")} items=${r3.items.join(",")}`,
+    );
+    await settle(sp);
+  }
+
+  // H8 무음 조각의 ended가 끝내 안 와도 재생 안전 타임아웃(duration×1000 + 여유)으로 다음 조각 — 큐가 쉼에서 영영 멈추지 않게.
+  {
+    env.silentNeverEnds = true;
+    env.silentScale = 0.04; // 250ms WAV → 10ms, duration 0.01
+    sp.__setQueueTiming({ playSlackMs: 20 });
+    const t0 = Date.now();
+    const r = startQueue(sp, [en("Hung pause.", 250), en("Next one.")], "E");
+    await waitFor(() => r.ends.length > 0, 1500);
+    add(
+      "쉼",
+      "H8 무음 조각 ended 안 옴 → 재생 안전 타임아웃 뒤 다음 조각·done(요소 pause·기기 0)",
+      JSON.stringify(r.items) === "[0,1]" && JSON.stringify(r.ends) === '["done"]' && deviceTexts().length === 0 && Date.now() - t0 < 1500,
+      `${Date.now() - t0}ms items=${r.items.join(",")} ends=${r.ends.join(",")}`,
+    );
+    await settle(sp);
+  }
+
+  // H9 쉼은 sounded·무음 연속 판정(QUEUE_SILENT_STOP)에 들지 않는다 — 소리를 못 낸 조각(501 + 기기 오류) 뒤에도 쉼은 지키고,
+  //    무음 조각 셋이 이어지면(사이의 쉼은 소리가 아니다) 셋째 조각 뒤 쉼 없이 "stopped"·sounded 0.
+  {
+    env.postStatus = () => 501;
+    env.deviceFailFor = () => true;
+    env.silentScale = 0.02;
+    const r = startQueue(sp, [kop("일.", 300), kop("이.", 300), kop("삼.", 300), kop("사.", 300)], "D");
+    await waitFor(() => r.ends.length > 0, 2000);
+    add(
+      "쉼",
+      "H9 못 낸 조각 뒤에도 쉼(0·1)·쉼은 소리가 아니다 → 무음 3조각 연속 'stopped'·sounded 0·셋째 뒤 쉼 없음",
+      JSON.stringify(r.ends) === '["stopped"]' && JSON.stringify(r.sounded) === "[0]" && JSON.stringify(r.items) === "[0,1,2]" &&
+        JSON.stringify(r.pauses) === "[[0,300],[1,300]]" && env.silentPlays.length === 2,
+      `ends=${r.ends.join(",")} sounded=${r.sounded.join(",")} items=${r.items.join(",")} pauses=${JSON.stringify(r.pauses)} 무음=${env.silentPlays.length}`,
+    );
+    await settle(sp);
+  }
+
+  // H10 onPause 핸들러 예외는 큐를 깨지 않는다(onItem과 같은 규약).
+  {
+    env.silentScale = 0.02;
+    const ends: string[] = [];
+    const items: number[] = [];
+    sp.speakQueue([en("Throw here.", 300), en("Still fine.")], {
+      onItem: (i) => items.push(i),
+      onPause: () => {
+        throw new Error("pause boom");
+      },
+      onEnd: (r) => ends.push(r),
+    });
+    await waitFor(() => ends.length > 0, 2000);
+    add(
+      "쉼",
+      "H10 onPause 예외 격리 — 무음 조각·다음 조각·done 그대로",
+      JSON.stringify(items) === "[0,1]" && JSON.stringify(ends) === '["done"]' && env.silentPlays.length === 1,
+      `items=${items.join(",")} ends=${ends.join(",")} 무음=${env.silentPlays.length}`,
+    );
+    await settle(sp);
+  }
+
+  // H11 쉼 도중 속도를 바꾸면 **다음 쉼부터** 반영 — 지금 쉼은 이미 정한 길이, 다음 조각은 새 속도로 합성·그 뒤 쉼은 새 배율.
+  {
+    sp.__setQueueTiming({ rateDebounceMs: 1 });
+    env.silentScale = 0.02;
+    let changed = false;
+    const run: Run = { items: [], ends: [], sounded: [], pauses: [], stop: () => {} };
+    run.stop = sp.speakQueue([en("Rate one.", 1000), en("Rate two.", 1000)], {
+      onItem: (i) => run.items.push(i),
+      onPause: (i, ms) => {
+        run.pauses.push([i, ms]);
+        if (!changed) {
+          changed = true;
+          sp.setTtsRate(0.7); // 쉼이 시작된 순간(무음 조각 재생 전) — 이 쉼은 이미 1000으로 정해졌다
+        }
+      },
+      onEnd: (r) => run.ends.push(r),
+    });
+    await waitFor(() => run.ends.length > 0, 2000);
+    const speedOfTwo = env.postSpeeds[env.posts.lastIndexOf("Rate two.")];
+    sp.setTtsRate(0.9);
+    await sleep(10);
+    add(
+      "쉼",
+      "H11 쉼 도중 속도 변경 → 이번 쉼 1000 그대로·다음 조각 speed 0.85로 합성·다음 쉼 1176",
+      JSON.stringify(run.pauses) === "[[0,1000],[1,1176]]" && speedOfTwo === 0.85 && JSON.stringify(run.ends) === '["done"]',
+      `pauses=${JSON.stringify(run.pauses)} 'Rate two.' speed=${speedOfTwo} ends=${run.ends.join(",")}`,
+    );
+    await settle(sp);
+  }
+
+  // -------------------------------------------------------------------------
+  // I. 범위 미리 받기 prepareSpeech (toeic.md §12-5-2·§12-10) — ▶ 전에 기다리는 준비("준비 n/m"). 전역 프리페치와 따로 선다.
+  // -------------------------------------------------------------------------
+  const prepared = async (items: { text: string; lang: string }[], opts: { signal?: AbortSignal; onProgress?: (d: number, t: number) => void } = {}) => {
+    const prog: [number, number][] = [];
+    const res = await sp.prepareSpeech(items, {
+      signal: opts.signal,
+      onProgress: (d, t) => {
+        prog.push([d, t]);
+        opts.onProgress?.(d, t);
+      },
+    });
+    return { res, prog };
+  };
+  const monotone = (prog: [number, number][], total: number) =>
+    prog.length > 0 && prog.every(([d, t], i) => t === total && d >= 0 && d <= total && (i === 0 || d >= prog[i - 1][0])) && prog[0][0] === 0;
+
+  // P1 고유 글자만·지금 클라우드로 읽을 것만(ja-JP 기본 기기·300자 초과·공백 제외)·90에서 자름·진행 단조 0 → total.
+  //    제외 대상(ja·301자·공백)은 **90개 상한 앞**에 둔다 — 상한 뒤에 두면 거르기에 닿기 전에 break해 아무것도 증명하지 못한다
+  //    (QA speech-pause_1 F1: canUseCloud·!text 제거 변이가 살아남았다). 걸러지지 않으면 첫 POST가 'Prepare line 0.'이 아니게 된다.
+  {
+    env.fetchDelayMs = 1;
+    const many = Array.from({ length: 100 }, (_, n) => ({ text: `Prepare line ${n}.`, lang: "en-US" }));
+    const items = [
+      ja("にほんご"),
+      { text: "x".repeat(301), lang: "en-US" },
+      { text: "   ", lang: "en-US" },
+      ...many.slice(0, 5),
+      ...many,
+      ...many.slice(0, 5),
+      ja("ねこ"),
+    ];
+    const { res, prog } = await prepared(items);
+    const uniq = new Set(env.posts).size;
+    add(
+      "준비",
+      "P1 고유 글자만·클라우드로 읽을 것만(상한 앞의 ja 기기·301자·공백 제외)·90에서 자름 — POST 90(중복 0)·ready 90·total 90·첫 'Prepare line 0.'",
+      res.total === 90 && res.ready === 90 && env.posts.length === 90 && uniq === 90 &&
+        !env.posts.some((t) => /[ぁ-ん]/.test(t) || t.length > 300 || !t.trim()) &&
+        env.posts[0] === "Prepare line 0." && env.posts[89] === "Prepare line 89.",
+      `total ${res.total} ready ${res.ready} POST ${env.posts.length}(고유 ${uniq}) 첫=${env.posts[0]} 끝=${env.posts[env.posts.length - 1]}`,
+    );
+    add(
+      "준비",
+      "P1 onProgress 단조 증가 — 처음 (0, 90), 조각마다 +1, 마지막 (90, 90)",
+      monotone(prog, 90) && prog.length === 91 && JSON.stringify(prog[prog.length - 1]) === "[90,90]",
+      `호출 ${prog.length}회 처음=${JSON.stringify(prog[0])} 끝=${JSON.stringify(prog[prog.length - 1])}`,
+    );
+    // P2 이미 메모리 캐시에 있으면 건너뜀 → total 0·POST 0, 그리고 준비한 조각은 큐에서 합성 0(P8)
+    const postsBefore = env.posts.length;
+    const again = await prepared(many.slice(0, 10));
+    add(
+      "준비",
+      "P2 캐시에 있으면 건너뜀 — 같은 조각 다시 준비 → total 0·ready 0·POST 0·onProgress (0, 0) 한 번",
+      again.res.total === 0 && again.res.ready === 0 && env.posts.length === postsBefore && JSON.stringify(again.prog) === "[[0,0]]",
+      `total ${again.res.total} POST +${env.posts.length - postsBefore} prog=${JSON.stringify(again.prog)}`,
+    );
+    const r = startQueue(sp, many.slice(0, 3), "R");
+    await waitFor(() => r.ends.length > 0, 2000);
+    add(
+      "준비",
+      "P8 준비한 조각은 큐에서 합성 0(캐시 적중) — 전부 클라우드로 done",
+      env.posts.length === postsBefore && JSON.stringify(r.ends) === '["done"]' && JSON.stringify(r.sounded) === "[3]" && deviceTexts().length === 0,
+      `POST +${env.posts.length - postsBefore} ends=${r.ends.join(",")} sounded=${r.sounded.join(",")}`,
+    );
+    await settle(sp);
+  }
+
+  // P3 signal로 끊으면 그 뒤 요청이 없다 — 진행 중 요청은 자기 몫만 물러나고(소비자 0 → 끊김), 약속은 reject 없이 그때까지의 수로.
+  {
+    env.fetchDelayMs = 25;
+    const ac = new AbortController();
+    const items = Array.from({ length: 10 }, (_, n) => ({ text: `Abort line ${n}.`, lang: "en-US" }));
+    let postsAtAbort = -1;
+    let rejected = false;
+    const out = await prepared(items, {
+      signal: ac.signal,
+      onProgress: (d) => {
+        if (d === 2 && postsAtAbort < 0) {
+          // 셋째 조각 요청이 나간 뒤 끊는다(다음 틱)
+          setTimeout(() => {
+            postsAtAbort = env.posts.length;
+            ac.abort();
+          }, 5);
+        }
+      },
+    }).catch(() => {
+      rejected = true;
+      return null;
+    });
+    await sleep(80);
+    add(
+      "준비",
+      "P3 signal abort → 그 뒤 POST 0·진행 중 요청은 끊김(소비자 0)·reject 없이 {ready 2, total 10}",
+      !rejected && !!out && out.res.total === 10 && out.res.ready === 2 && postsAtAbort === 3 && env.posts.length === postsAtAbort && env.postAborted.length === 1,
+      `ready=${out?.res.ready} total=${out?.res.total} abort때POST=${postsAtAbort} 지금POST=${env.posts.length} 끊긴요청=${env.postAborted.join("|") || "0"}`,
+    );
+    await settle(sp);
+  }
+
+  // P4 키 없음(501) → 곧바로 끝(나머지 요청 0 — 재생은 기기 음성).
+  {
+    env.postStatus = () => 501;
+    const items = Array.from({ length: 6 }, (_, n) => ({ text: `No key ${n}.`, lang: "en-US" }));
+    const t0 = Date.now();
+    const { res } = await prepared(items);
+    add(
+      "준비",
+      "P4 501 → 곧바로 끝 — POST 1·ready 0·total 6",
+      env.posts.length === 1 && res.ready === 0 && res.total === 6 && Date.now() - t0 < 500,
+      `POST ${env.posts.length} ready ${res.ready} total ${res.total} ${Date.now() - t0}ms`,
+    );
+    await settle(sp);
+  }
+
+  // P5 기존 prefetchSpeech와 서로 끊지 않는다(다른 abort) — ① 프리페치가 도는 중 준비를 시작해도 프리페치 요청이 안 끊기고
+  //    ② 준비 도중 새 프리페치가 와도(전역 "최근 요청이 이긴다") 준비는 끝까지 간다. 같은 문장은 진행 중 합성을 함께 쓴다(POST 1).
+  {
+    env.fetchDelayMs = 10;
+    const A = Array.from({ length: 6 }, (_, n) => `Prefetch A ${n}.`);
+    const B = Array.from({ length: 6 }, (_, n) => ({ text: `Prepare B ${n}.`, lang: "en-US" }));
+    const stopA = sp.prefetchSpeech([...A, "Shared line."], "en-US");
+    const p = prepared([{ text: "Shared line.", lang: "en-US" }, ...B]);
+    let stopD: (() => void) | null = null;
+    const D = Array.from({ length: 3 }, (_, n) => `Prefetch D ${n}.`);
+    setTimeout(() => {
+      stopD = sp.prefetchSpeech(D, "en-US"); // 준비 도중 새 프리페치 — A 배치는 끊겨도(설계) 준비는 안 끊긴다
+    }, 35);
+    const { res } = await p;
+    await waitFor(() => D.every((t) => env.posts.includes(t)), 1500);
+    await sleep(30);
+    const aborted = env.postAborted;
+    const bAll = B.every((b) => env.posts.includes(b.text));
+    const sharedPosts = env.posts.filter((t) => t === "Shared line.").length;
+    add(
+      "준비",
+      "P5 prefetchSpeech와 독립 — 준비 7/7(새 프리페치에 안 끊김)·B 전부 POST·같은 문장 POST 1(공유)·준비 요청 중 끊긴 것 0",
+      res.total === 7 && res.ready === 7 && bAll && sharedPosts === 1 && !aborted.some((t) => t.startsWith("Prepare B") || t === "Shared line."),
+      `ready ${res.ready}/${res.total} B전부=${bAll} 공유POST=${sharedPosts} 끊김=${aborted.join("|") || "0"}`,
+    );
+    stopA();
+    (stopD as (() => void) | null)?.();
+    await settle(sp);
+  }
+
+  // P6 매달린 조각은 대기 상한(fetchMs) 뒤 건너뛴다(요청은 살려 둔다) — 준비가 "준비 n/m"에서 영영 멈추지 않게.
+  {
+    sp.__setQueueTiming({ fetchMs: 40 });
+    env.postStatus = (t) => (t === "Hang line." ? "hang" : 200);
+    const { res, prog } = await prepared([
+      { text: "Before hang.", lang: "en-US" },
+      { text: "Hang line.", lang: "en-US" },
+      { text: "After hang.", lang: "en-US" },
+    ]);
+    add(
+      "준비",
+      "P6 매달린 조각 → fetchMs 뒤 건너뛰고 다음 조각·진행 3/3·ready 2·매달린 요청은 안 끊음",
+      res.total === 3 && res.ready === 2 && env.posts.includes("After hang.") && JSON.stringify(prog[prog.length - 1]) === "[3,3]" && !env.postAborted.includes("Hang line."),
+      `ready ${res.ready}/${res.total} prog끝=${JSON.stringify(prog[prog.length - 1])} POST=${env.posts.join("|")}`,
+    );
+    await settle(sp);
+  }
+
+  // P7 이미 끊긴 signal → 요청 0, 진행 (0, total)만 — 그리고 브라우저 밖이 아니어도 기기 엔진 언어만 있으면 total 0.
+  {
+    const ac = new AbortController();
+    ac.abort();
+    const a = await prepared([{ text: "Already aborted.", lang: "en-US" }], { signal: ac.signal });
+    const b = await prepared([ja("いぬ"), ja("さる")]);
+    add(
+      "준비",
+      "P7 이미 끊긴 signal → POST 0·{ready 0, total 1} / 기기 엔진 언어(ja 기본)만 → total 0·POST 0",
+      env.posts.length === 0 && a.res.ready === 0 && a.res.total === 1 && b.res.total === 0,
+      `POST ${env.posts.length} a=${JSON.stringify(a.res)} b=${JSON.stringify(b.res)}`,
+    );
+    await settle(sp);
+  }
+
+  // P9 준비 도중 그 언어를 기기 엔진으로 바꾸면 남은 조각은 받지 않되 **진행에는 센다** — "준비 n/m"이 m에 닿는다
+  //    (QA speech-pause_1 O2 — 변이 P-i: 기기로 바뀐 조각을 안 세면 진행이 1/4에서 멈춘다. 약속은 그래도 풀린다).
+  {
+    env.fetchDelayMs = 5;
+    let switched = false;
+    const items = Array.from({ length: 4 }, (_, n) => ({ text: `Switch line ${n}.`, lang: "en-US" }));
+    const { res, prog } = await prepared(items, {
+      onProgress: (d) => {
+        if (d === 1 && !switched) {
+          switched = true;
+          sp.setTtsEngine("en-US", "device"); // 첫 조각을 받은 직후 — 나머지 셋은 기기로 읽힌다
+        }
+      },
+    });
+    const posts = [...env.posts];
+    sp.setTtsEngine("en-US", "cloud");
+    add(
+      "준비",
+      "P9 준비 도중 기기 엔진으로 전환 → 남은 조각 POST 0·진행은 total까지 (0,4)…(4,4)·ready 1·total 4",
+      switched && res.total === 4 && res.ready === 1 && JSON.stringify(posts) === '["Switch line 0."]' &&
+        monotone(prog, 4) && prog.length === 5 && JSON.stringify(prog[prog.length - 1]) === "[4,4]",
+      `ready ${res.ready}/${res.total} POST=${posts.join("|")} prog=${JSON.stringify(prog)}`,
+    );
+    await settle(sp);
+  }
+
+  // -------------------------------------------------------------------------
+  // J. 잠금 화면 조작 — lib/media-session.ts. 큐·단발은 Media Session을 걸지 않는다(기존 화면의 잠금 화면 ⏸ = 정지 그대로),
+  //    쓰는 플레이어만 bindMediaSession으로 켠다(toeic.md §12-5-2).
+  // -------------------------------------------------------------------------
+  {
+    const msMod = await import("../lib/media-session");
+    const g = globalThis as unknown as Record<string, unknown>;
+    const navDesc = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    const handlers = new Map<string, ((d?: unknown) => void) | null>();
+    const fakeMs = {
+      metadata: null as unknown,
+      playbackState: "none",
+      setCalls: 0,
+      metaSets: 0,
+      setActionHandler(action: string, h: ((d?: unknown) => void) | null) {
+        if (action === "stop") throw new TypeError("unsupported action"); // 지원하지 않는 동작 모사
+        this.setCalls++;
+        handlers.set(action, h);
+      },
+    };
+    let meta: unknown = null;
+    Object.defineProperty(fakeMs, "metadata", {
+      configurable: true,
+      get: () => meta,
+      set: (v) => {
+        fakeMs.metaSets++;
+        meta = v;
+      },
+    });
+    Object.defineProperty(globalThis, "navigator", { configurable: true, writable: true, value: { mediaSession: fakeMs } });
+    g.MediaMetadata = class {
+      title: string;
+      artist: string;
+      album: string;
+      constructor(init: { title?: string; artist?: string; album?: string }) {
+        this.title = init.title ?? "";
+        this.artist = init.artist ?? "";
+        this.album = init.album ?? "";
+      }
+    };
+
+    // M1 기존 경로(쉼 있는 큐·단발 speak·stop)는 Media Session을 건드리지 않는다.
+    env.silentScale = 0.02;
+    const r = startQueue(sp, [en("No session.", 250), en("Still none.")], "M");
+    await waitFor(() => r.ends.length > 0, 2000);
+    sp.speak("Single shot.");
+    await sleep(40);
+    sp.stopSpeaking();
+    add(
+      "잠금화면",
+      "M1 큐(쉼 포함)·speak·stop은 navigator.mediaSession을 건드리지 않는다(핸들러 0·metadata 0) — 기존 화면의 잠금 화면 ⏸ = 정지 그대로",
+      fakeMs.setCalls === 0 && fakeMs.metaSets === 0 && JSON.stringify(r.ends) === '["done"]',
+      `setActionHandler ${fakeMs.setCalls} metadata ${fakeMs.metaSets}`,
+    );
+    await settle(sp);
+
+    // M2 걸고 풀기 — metadata·지원하는 동작 핸들러, 핸들러 예외 삼킴, 풀면 전부 null·playbackState none.
+    const calls: string[] = [];
+    const unbind = msMod.bindMediaSession({
+      title: "Shadowing",
+      artist: "Made-up group",
+      actions: {
+        play: () => calls.push("play"),
+        pause: () => calls.push("pause"),
+        nexttrack: () => calls.push("next"),
+        previoustrack: () => {
+          calls.push("prev");
+          throw new Error("handler boom");
+        },
+        stop: () => calls.push("stop"),
+      },
+    });
+    msMod.setMediaSessionPlaybackState("playing");
+    const m = meta as { title?: string; artist?: string } | null;
+    let threw = false;
+    try {
+      for (const a of ["play", "pause", "nexttrack", "previoustrack"]) handlers.get(a)?.({ action: a });
+    } catch {
+      threw = true;
+    }
+    const boundOk = m?.title === "Shadowing" && m?.artist === "Made-up group" && ["play", "pause", "nexttrack", "previoustrack"].every((a) => typeof handlers.get(a) === "function");
+    const stateWhile = fakeMs.playbackState;
+    unbind();
+    const cleared = ["play", "pause", "nexttrack", "previoustrack"].every((a) => handlers.get(a) === null) && meta === null && fakeMs.playbackState === "none";
+    add(
+      "잠금화면",
+      "M2 bindMediaSession: metadata·⏯⏭⏮ 핸들러를 걸고(지원 안 하는 stop은 조용히 건너뜀)·핸들러 예외 삼킴 → 풀면 핸들러 null·metadata null·상태 none",
+      boundOk && !threw && JSON.stringify(calls) === '["play","pause","next","prev"]' && stateWhile === "playing" && cleared,
+      `걸림=${boundOk} 호출=${calls.join(",")} 예외전파=${threw} 상태=${stateWhile} 풀림=${cleared}`,
+    );
+
+    // M3 낡은 풀기는 뒤에 건 바인딩을 지우지 않는다.
+    const unA = msMod.bindMediaSession({ title: "A", actions: { play: () => calls.push("A") } });
+    const unB = msMod.bindMediaSession({ title: "B", actions: { play: () => calls.push("B") } });
+    unA();
+    const stillB = (meta as { title?: string } | null)?.title === "B" && typeof handlers.get("play") === "function";
+    handlers.get("play")?.();
+    unB();
+    add(
+      "잠금화면",
+      "M3 앞 바인딩의 풀기 함수는 뒤에 건 바인딩을 지우지 않는다(자기일 때만) — B 유지·B 핸들러가 불림 → B 풀기로 null",
+      stillB && calls[calls.length - 1] === "B" && handlers.get("play") === null && meta === null,
+      `B유지=${stillB} 마지막호출=${calls[calls.length - 1]} 풀림=${handlers.get("play") === null && meta === null}`,
+    );
+
+    // M4 미지원(navigator.mediaSession 없음) → 조용히 no-op.
+    Object.defineProperty(globalThis, "navigator", { configurable: true, writable: true, value: {} });
+    let m4Threw = false;
+    let supported = true;
+    try {
+      supported = msMod.isMediaSessionSupported();
+      const un = msMod.bindMediaSession({ title: "X", actions: { play: () => {} } });
+      msMod.setMediaSessionPlaybackState("paused");
+      un();
+    } catch {
+      m4Threw = true;
+    }
+    add("잠금화면", "M4 Media Session 미지원 → isMediaSessionSupported false·걸기/풀기/상태 모두 예외 없이 no-op", !m4Threw && supported === false, `예외=${m4Threw} 지원=${supported}`);
+
+    if (navDesc) Object.defineProperty(globalThis, "navigator", navDesc);
+    else delete g.navigator;
+    delete g.MediaMetadata;
   }
 
   // -------------------------------------------------------------------------

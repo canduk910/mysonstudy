@@ -9,12 +9,14 @@
  * 파트도 같은 세트의 일부처럼 읽힌다. picture를 채우면 사진은 pending으로 저장되고, 화면이 `POST [id]/image`로 따로 요청한다.
  *
  * 키 검사(501)는 AI 호출 **앞**(400 → 404 → 409 → 501 순 — 채울 수 없는 요청에 키 안내를 먼저 보이지 않는다).
+ * 유형별 공략의 **한 문제 연습**(drillPart가 있는 문서)은 409 `is_drill` — 연습에 다른 파트가 생기지 않게(docs/harness/toeic.md §12-3).
  *
  * 응답 shape (단일 정의처는 `lib/toeic-mock-contract.ts` ToeicMockRegenerateResponse):
  * - 200 { ok:true, id, part }
  * - 400 { ok:false, error:"invalid_input", messageKo }            ← part 쿼리 없음·모르는 값
  * - 404 { ok:false, error:"mock_not_found", messageKo }
  * - 409 { ok:false, error:"part_exists", messageKo }              ← 이미 있다(그사이 채워진 경우 포함 — 만든 결과는 버림)
+ * - 409 { ok:false, error:"is_drill", messageKo }                 ← 한 문제 연습 문서(파트를 더하지 않는다 — 키 검사·AI보다 먼저)
  * - 501 { ok:false, error:"no_api_key", messageKo }
  * - 500 { ok:false, error:"ai_failed", messageKo, retriable:true } / 500 save_failed
  */
@@ -25,7 +27,7 @@ import type { ToeicMockPartRecordMap } from "@/lib/ai/toeic/schemas";
 import { getStore } from "@/lib/store";
 import { toeicMockPartLabelKo, type ToeicMockRegenerateResponse } from "@/lib/toeic-mock-contract";
 import { TOEIC_MOCK_PARTS, type ToeicMockPart } from "@/lib/toeic-mock";
-import { isRenderableToeicMock } from "@/lib/toeic-record";
+import { isRenderableToeicMock, isToeicDrill } from "@/lib/toeic-record";
 
 export const runtime = "nodejs";
 
@@ -51,6 +53,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const mock = await store.getToeicMock(id);
   if (!mock || !isRenderableToeicMock(mock)) {
     return json({ ok: false, error: "mock_not_found", messageKo: "없거나 열 수 없는 모의고사예요." }, 404);
+  }
+  if (isToeicDrill(mock)) {
+    return json({ ok: false, error: "is_drill", messageKo: "공략 연습에는 다른 파트를 만들지 않아요 — 유형 폴더에서 새 문제를 만들어 주세요." }, 409);
   }
   if (mock.parts[part] !== null) {
     return json({ ok: false, error: "part_exists", messageKo: EXISTS_KO }, 409);

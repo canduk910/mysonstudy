@@ -208,6 +208,13 @@ import {
   type SpecSyncOutcome,
   type SpecSyncTarget,
 } from "./spec-sync";
+// 유형별 공략(§12) — 가져오기 zod·틀 순수 함수·대본·비교·테스트·연습·번들 경계·실제 가져오기 파일(§12-10). 픽스처는 전부 지어낸 것.
+import { runToeicGuideChecks } from "./eval-toeic-guides";
+// 유형별 공략 앱 층(S1 — 가져오기 라우트·스토어·목록 가리기·화면 순수 함수·Firestore 본문 모양·화면 번들 경계). 픽스처는 전부 지어낸 것.
+import { runToeicGuideAppChecks } from "./eval-toeic-guides-app";
+import { runToeicGuideS2Checks } from "./eval-toeic-guides-s2";
+// 유형별 공략 S3(T9 한 문제 연습 · T12 실전 적용 — 연습 레코드·녹음 풀·연습 화면 순수 함수·틀 점검·파일 백엔드·소스 대조). 픽스처는 지어낸 것.
+import { runToeicGuideS3Checks } from "./eval-toeic-guides-s3";
 
 // .env.local / .env 로드 (없으면 무시). 이미 설정된 환경 변수가 우선한다(빈 값으로 미리 둔 키는 덮지 않는다).
 for (const envFile of [".env.local", ".env"]) {
@@ -1667,7 +1674,7 @@ async function runMockStoreRuleChecks(): Promise<CheckResult[]> {
   }
 
   // 번들 경계 — 화면이 import하는 계약·판정 모듈
-  for (const f of ["toeic-mock-contract.ts", "toeic-mock-apply.ts"]) {
+  for (const f of ["toeic-mock-contract.ts", "toeic-mock-apply.ts", "toeic-guide-contract.ts"]) {
     const src = readFileSync(new URL(`../lib/${f}`, import.meta.url), "utf-8");
     const bad = src.split("\n").filter((l) => /^\s*import\s+(?!type\b)[^;]*from\s+["'][^"']*(\/ai\/|\/store|openai|zod)["']/.test(l));
     const lookbehind = /\(\?<[=!]/.test(src);
@@ -1726,6 +1733,7 @@ async function runAttemptChecks(): Promise<CheckResult[]> {
     mockId: "mock-1",
     scope: "part" as const,
     parts: ["respond" as const],
+    questions: [5, 6, 7],
     startedAt: "2026-09-26T00:00:00.000Z",
     finishedAt: null,
     answers: [],
@@ -2182,7 +2190,21 @@ async function runMicSessionChecks(): Promise<CheckResult[]> {
 function runBundleBoundaryChecks(): CheckResult[] {
   const results: CheckResult[] = [];
   const add = makeAdder(results, "번들 경계");
-  const files = ["toeic-quiz.ts", "toeic-mock.ts", "toeic-score.ts", "toeic-listen.ts", "toeic-text.ts", "tts-split.ts"];
+  // §12-10: 유형별 공략의 클라이언트 안전 모듈(toeic-guide·toeic-template·toeic-drill)과 단위표를 쓰게 된 toeic-attempt-rules도 등록
+  // (여러 줄 import·lookbehind·허용 목록은 eval-toeic-guides.ts "공략 번들 경계"가 더 엄격하게 본다)
+  const files = [
+    "toeic-quiz.ts",
+    "toeic-mock.ts",
+    "toeic-score.ts",
+    "toeic-listen.ts",
+    "toeic-text.ts",
+    "tts-split.ts",
+    "toeic-guide.ts",
+    "toeic-template.ts",
+    "toeic-drill.ts",
+    "toeic-attempt-rules.ts",
+    "toeic-drill-view.ts",
+  ];
   for (const f of files) {
     const src = readFileSync(new URL(`../lib/${f}`, import.meta.url), "utf-8");
     const bad = src.split("\n").filter((l) => /^\s*import\s+(?!type\b)[^;]*from\s+["'][^"']*(\/ai\/|\/store|openai|zod)["']/.test(l));
@@ -2371,6 +2393,10 @@ async function main(): Promise<void> {
   all.push(...(await runAttemptChecks()));
   all.push(...(await runMicSessionChecks()));
   all.push(...runBundleBoundaryChecks());
+  all.push(...runToeicGuideChecks());
+  all.push(...runToeicGuideAppChecks());
+  all.push(...runToeicGuideS2Checks());
+  all.push(...runToeicGuideS3Checks());
   all.push(...runSpecSyncChecks());
   all.push(...runJsonSchemaSyncChecks());
 

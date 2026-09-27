@@ -18,7 +18,10 @@
 import { readFileSync } from "node:fs";
 import { computeStreak, computeStreakFromDays, type StreakSession } from "../lib/streak";
 import { formatKst, formatKstDate, isZonedIsoTimestamp, kstDateString, shiftDateString } from "../lib/kst";
-import { isCountedToeicAttempt, toeicStreakSessions } from "../lib/toeic-streak";
+import { isCountedToeicAttempt, toeicAttemptStreakLabel, toeicQuizStreakLabel, toeicStreakSessions, type ToeicQuizLabelNames } from "../lib/toeic-streak";
+import { TOEIC_GUIDE_PART_TO_MOCK_PART, isToeicGuidePart } from "../lib/toeic-guide";
+import { toeicMockPartLabelKo } from "../lib/toeic-mock-contract";
+import { TOEIC_TEMPLATE_QUIZ_MODE_LABELS_KO, isToeicTemplateQuizMode } from "../lib/toeic-quiz";
 import { isCountedTalkSession, talkStreakLabel, talkStreakSessions } from "../lib/talk-streak";
 
 interface CheckResult {
@@ -377,6 +380,73 @@ const TODAY = "2026-09-21";
     "⑥ /api/streak 배선: 영어=toeicStreakSessions(토익 2컬렉션)만, 은우(단어장+자유대화 §17-9)·일본어 계산식 그대로",
     wiredEnglish && eunwooUntouched && jaUntouched && noLeak,
     `영어배선=${wiredEnglish} 은우=${eunwooUntouched} 일본어=${jaUntouched} 무혼합=${noLeak}`,
+  );
+
+  // ⑦ 오늘 라벨(docs/harness/toeic.md §12-9) — 계산식은 그대로, 라벨만 가른다. 이름표는 라우트와 같은 단일 정의처에서.
+  const names: ToeicQuizLabelNames = {
+    templateModeKo: (m) => (isToeicTemplateQuizMode(m) ? TOEIC_TEMPLATE_QUIZ_MODE_LABELS_KO[m] : null),
+    guidePartKo: (p) => (isToeicGuidePart(p) ? toeicMockPartLabelKo(TOEIC_GUIDE_PART_TO_MOCK_PART[p]) : null),
+  };
+  const bankSet = { titleKo: "템플릿 훈련", guide: { kind: "templates", flows: [], items: [] } };
+  const partSet = { titleKo: "Q3–4 사진 묘사", guide: { kind: "part", part: "q3_4", sections: [] } };
+  const legacyPart = { titleKo: "Q11 의견 말하기", guide: { part: "q11", sections: [] } }; // kind 없음 → "part"로 읽는다
+  const brokenPart = { titleKo: "지어낸 세트", guide: { kind: "part", part: "q1_2" } }; // 유형 밖 → 표현집 라벨로
+  const bookSet = { titleKo: "DAY 03 여행", guide: null };
+  const labels = {
+    recall: toeicQuizStreakLabel({ mode: "tpl-recall" }, bankSet, names),
+    swap: toeicQuizStreakLabel({ mode: "tpl-swap" }, null, names),
+    guide: toeicQuizStreakLabel({ mode: "speak" }, partSet, names),
+    legacy: toeicQuizStreakLabel({ mode: "ko-to-expr" }, legacyPart, names),
+    broken: toeicQuizStreakLabel({ mode: "speak" }, brokenPart, names),
+    book: toeicQuizStreakLabel({ mode: "ko-to-expr" }, bookSet, names),
+    none: toeicQuizStreakLabel({ mode: "speak" }, null, names),
+  };
+  add(
+    "영어 트랙",
+    "⑦ 오늘 라벨: 틀 테스트 `템플릿 훈련 · {모드}`(유형 이름 없음) · 공략 `공략 표현 · {유형}` · 표현집 `표현집 · {세트}` 그대로",
+    labels.recall === "템플릿 훈련 · 예문 말하기" &&
+      labels.swap === "템플릿 훈련 · 틀 바꿔 말하기" &&
+      labels.guide === "공략 표현 · Q3–4 사진 묘사" &&
+      labels.legacy === "공략 표현 · Q11 의견 말하기" &&
+      labels.broken === "표현집 · 지어낸 세트" &&
+      labels.book === "표현집 · DAY 03 여행" &&
+      labels.none === "표현집",
+    JSON.stringify(labels),
+  );
+  // 틀 모드 세션도 영어 트랙에 든다(모드를 보지 않는다 — 답한 문항 ≥ 1) + 라우트가 라벨을 이 함수로 만든다(소스 대조)
+  const tplDay = computeStreak(toeicStreakSessions([{ startedAt: "2026-09-21T03:00:00.000Z", items: [{ answered: true }] }], []), TODAY);
+  const labelWired = /toeicQuizStreakLabel\(tQuiz, set, TOEIC_LABEL_NAMES\)/.test(route) && /isToeicTemplateQuizMode\(mode\) \? TOEIC_TEMPLATE_QUIZ_MODE_LABELS_KO\[mode\]/.test(route) && /toeicMockPartLabelKo\(TOEIC_GUIDE_PART_TO_MOCK_PART\[part\]\)/.test(route);
+  add(
+    "영어 트랙",
+    "⑦ 틀 테스트 세션(답한 문항 ≥ 1)도 영어 트랙에 든다 + /api/streak가 라벨을 toeicQuizStreakLabel(단일 정의처 이름표)로 만든다",
+    tplDay.doneToday && tplDay.current === 1 && labelWired,
+    `오늘=${JSON.stringify(tplDay)} 라벨배선=${labelWired}`,
+  );
+
+  // ⑧ 한 문제 연습 응시(§12-9) — 계산식 그대로(녹음된 문항 ≥ 1 응시), 라벨만 `공략 연습 · {유형}`. 이름표는 라우트와 같은 단일 정의처.
+  const drillPartKo = (p: string) => (["read", "picture", "respond", "info", "opinion"].includes(p) ? toeicMockPartLabelKo(p as "picture") : null);
+  const aLabels = {
+    drill: toeicAttemptStreakLabel({ titleKo: "사진 묘사 연습 2", drillPart: "picture" }, drillPartKo),
+    drill11: toeicAttemptStreakLabel({ titleKo: "의견 말하기 연습 1", drillPart: "opinion" }, drillPartKo),
+    mock: toeicAttemptStreakLabel({ titleKo: "모의고사 4", drillPart: null }, drillPartKo),
+    legacy: toeicAttemptStreakLabel({ titleKo: "모의고사 1", drillPart: undefined }, drillPartKo),
+    broken: toeicAttemptStreakLabel({ titleKo: "모의고사 5", drillPart: "q3_4" }, drillPartKo),
+    none: toeicAttemptStreakLabel(null, drillPartKo),
+  };
+  const drillDay = computeStreak(toeicStreakSessions([], [ta("2026-09-21", [true])]), TODAY);
+  const drillNoRec = computeStreak(toeicStreakSessions([], [ta("2026-09-21", [false])]), TODAY);
+  const attemptLabelWired = /toeicAttemptStreakLabel\(mock, TOEIC_DRILL_PART_KO\)/.test(route) && /toeicMockPartLabelKo\(part as ToeicMockPart\)/.test(route);
+  add(
+    "영어 트랙",
+    "⑧ 연습 응시 라벨 `공략 연습 · {유형}`(모의고사·옛 문서는 `모의고사 · {제목}` 그대로) · 녹음 1문항 연습 응시는 세고 녹음 0은 안 센다 · 라우트 배선",
+    aLabels.drill === "공략 연습 · Q3–4 사진 묘사" &&
+      aLabels.drill11 === "공략 연습 · Q11 의견 말하기" &&
+      aLabels.mock === "모의고사 · 모의고사 4" &&
+      aLabels.legacy === "모의고사 · 모의고사 1" &&
+      aLabels.broken === "모의고사 · 모의고사 5" &&
+      aLabels.none === "모의고사" &&
+      drillDay.doneToday && !drillNoRec.doneToday && attemptLabelWired,
+    `${JSON.stringify(aLabels)} 배선=${attemptLabelWired}`,
   );
 }
 

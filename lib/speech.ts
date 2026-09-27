@@ -13,6 +13,10 @@
  *
  * ⚠️ 이 파일은 **클라이언트 번들에 들어간다.** 그래서 서버 전용 `lib/tts.ts`(openai 클라이언트)를
  * import하지 않는다 — 공유 상수는 런타임 의존성 0인 `lib/tts-shared.ts`에서만 가져온다(번들 유입 방지).
+ *
+ * 따라 말하기(2026-09-27, `docs/harness/toeic.md` §12-5-2)가 더한 것 — 전부 하위 호환: 큐 조각 뒤 쉼(`SpeakQueueItem.pauseAfterMs`
+ * + `onPause` — 무음 WAV 조각으로 재생, 칸이 없으면 예전 경로 그대로), 범위 미리 받기(`prepareSpeech`), 무음 WAV 생성기의 길이
+ * 인자(`makeSilentWav`), 말 속도 배율(`getSpeechSpeedFactor`). 잠금 화면 조작(Media Session)은 여기 두지 않는다(`lib/media-session.ts`).
  */
 
 import { audioMediaType, isTtsLang, TTS_TEXT_MAX_CHARS } from "./tts-shared";
@@ -215,6 +219,24 @@ const TTS_CLOUD_SPEEDS = [0.85, 1.0, 1.15];
 function cloudSpeed(): number {
   const idx = TTS_RATE_PRESETS.findIndex((p) => Math.abs(p.rate - getTtsRate()) < 0.001);
   return TTS_CLOUD_SPEEDS[idx] ?? 1.0;
+}
+
+/**
+ * 기기 음성의 **말 속도 배율**(보통 = 1) = `getTtsRate() ÷ TTS_RATE`. 기기 발화는 `rate = getTtsRate()`로 읽고 "보통"이 0.9라,
+ * `getTtsRate()`로 바로 나누면 기본 설정에서 쉼이 11% 길어진다(toeic.md §12-5-2 검토 개선 4).
+ */
+function deviceSpeedFactor(): number {
+  const r = getTtsRate();
+  return Number.isFinite(r) && r > 0 ? r / TTS_RATE : 1;
+}
+
+/**
+ * 이 언어를 **지금 설정으로** 읽을 때의 말 속도 배율(보통 = 1) — 클라우드 엔진이면 `cloudSpeed()`(천천히 0.85·보통 1·빠르게 1.15),
+ * 기기 음성이면 `getTtsRate() ÷ TTS_RATE`. 큐의 쉼이 이 배율로 나뉘고(느리게 들으면 틈도 길어진다), 화면의 예상 시간
+ * ("약 n분" — 토익 `estimateShadowMs(script, speedFactor)`)도 같은 값을 쓴다. 재생 시점에만 부른다(렌더 중 금지 — hydration).
+ */
+export function getSpeechSpeedFactor(lang: string = TTS_LANG): number {
+  return getTtsEngine(lang) === "cloud" && isTtsLang(lang) ? cloudSpeed() : deviceSpeedFactor();
 }
 
 // ───────────────────────── 기기 음성 품질 선택 (device 엔진) ─────────────────────────
@@ -1125,6 +1147,90 @@ export function prefetchSpeech(texts: string[], lang: string = TTS_LANG): () => 
   };
 }
 
+// ───────────────────────── 범위 미리 받기 (따라 말하기 플레이어 — toeic.md §12-5-2) ─────────────────────────
+
+/** `prepareSpeech` 옵션. `signal`로 끊고, `onProgress(done, total)`로 "준비 n/m"을 그린다. */
+export interface PrepareSpeechOptions {
+  signal?: AbortSignal;
+  /** 처음 한 번 `(0, total)`, 그 뒤 조각 하나를 처리할 때마다(성공·실패·대기 상한 모두) 단조 증가로 `total`까지. */
+  onProgress?: (done: number, total: number) => void;
+}
+
+/** `prepareSpeech` 결과 — `total` = 받으려 한 조각 수(고유·클라우드·캐시에 없음·상한 90 안), `ready` = 실제로 받아 둔 수. */
+export interface PrepareSpeechResult {
+  ready: number;
+  total: number;
+}
+
+/**
+ * **범위 미리 받기**(▶ 전에 기다리는 준비 — toeic.md §12-5-2, 검토 B1 (가)). 조각 목록의 고유 글자 중 **지금 클라우드 엔진으로 읽을
+ * 것**을 지금 속도로 합성해 두 겹 캐시에 둔다(메모리에 이미 있으면 건너뛴다 — IndexedDB 적중은 합성 요청 없이 끝난다).
+ * 한 번에 하나씩, `PREFETCH_MAX_ITEMS`(90)에서 자른다. 조각마다 대기 상한 `fetchMs`(8초) — 넘으면 그 조각은 두고 다음으로
+ * (요청은 살려 둬 늦게라도 캐시에 남는다, 큐와 같은 규칙). 키가 없으면(501) 곧바로 끝낸다(재생은 기기 음성).
+ *
+ * 기존 `prefetchSpeech`(최근 요청이 이긴다 — 전역 abort)와 **따로** 선다: 준비는 플레이어가 기다리는 요청이라 다른 화면의 프리페치에
+ * 끊기면 안 되고, 준비도 프리페치를 끊지 않는다(같은 문장은 진행 중 합성을 함께 쓴다 — 요청 하나). 끊기(`signal`)면 그 뒤 요청이
+ * 없고 진행 중인 것도 자기 몫만 물러난다. 끊겨도 reject하지 않고 그때까지의 수로 resolve한다 — 이어서 재생할지는 호출부가
+ * 자기 `signal`로 정한다. 비용: 어차피 재생할 조각이라 같다. 브라우저 밖이면 `{ ready: 0, total: 0 }`.
+ */
+export async function prepareSpeech(
+  items: readonly { text: string; lang: string }[],
+  opts: PrepareSpeechOptions = {},
+): Promise<PrepareSpeechResult> {
+  const { signal, onProgress } = opts;
+  if (typeof window === "undefined" || typeof fetch === "undefined") return { ready: 0, total: 0 };
+
+  const seen = new Set<string>();
+  const targets: { text: string; lang: string }[] = [];
+  for (const raw of items ?? []) {
+    const text = (raw?.text ?? "").trim();
+    const lang = raw?.lang || TTS_LANG;
+    if (!text || getTtsEngine(lang) !== "cloud" || !canUseCloud(lang, text)) continue; // 기기로 읽을 조각은 받지 않는다
+    const key = `${lang}:${cloudSpeed()}:${text}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (cloudCache.has(key)) continue; // 이미 메모리에 있다(네트워크 0)
+    targets.push({ text, lang });
+    if (targets.length >= PREFETCH_MAX_ITEMS) break; // 개수 상한(비용 가드)
+  }
+
+  const total = targets.length;
+  let done = 0;
+  let ready = 0;
+  const progress = () => {
+    try {
+      onProgress?.(done, total);
+    } catch {
+      /* 진행 콜백 예외는 준비를 깨지 않는다 */
+    }
+  };
+  const ac = new AbortController(); // 준비 전용 — 전역 prefetchAbort와 무관
+  const onAbort = () => ac.abort();
+  if (signal?.aborted) ac.abort();
+  else signal?.addEventListener("abort", onAbort, { once: true });
+  progress();
+  try {
+    for (const t of targets) {
+      if (ac.signal.aborted) break;
+      if (getTtsEngine(t.lang) === "cloud") {
+        try {
+          await waitWithTimeout(getAudioBlob(t.text, t.lang, cloudSpeed(), ac.signal), queueTiming.fetchMs);
+          ready += 1;
+        } catch (e) {
+          if (ac.signal.aborted) break;
+          if (e instanceof Error && e.message === "tts 501") break; // 키 없음 — 나머지도 같다(기기 음성으로 재생)
+          /* 그 밖의 실패·대기 상한은 그 조각만 건너뛴다(재생 때 다시 시도하거나 기기 음성) */
+        }
+      } // 도중에 기기 엔진으로 바꿨으면 받지 않고 센다
+      done += 1;
+      progress();
+    }
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
+  return { ready, total };
+}
+
 // ───────────────────────── 공개 API (시그니처 불변) ─────────────────────────
 
 /**
@@ -1175,6 +1281,14 @@ export function stopSpeaking(): void {
   cancelPlayback();
 }
 
+/**
+ * 테스트 전용 — 재생 상태 표식(값이 아니라 있고 없음만). 쉼 타이머 폴백이 끝난 뒤 `currentPlayStop`을 남기지 않는지(자기일 때만
+ * 비우기 — 낡은 stop이 남으면 다음 stopCloudAudio가 URL 회수를 건너뛴다)와 무음 WAV 칸 수(최대 60)를 eval이 본다.
+ */
+export function __speechPlaybackState(): { playStop: boolean; audioUrl: boolean; pauseWavBuckets: number } {
+  return { playStop: currentPlayStop !== null, audioUrl: currentAudioUrl !== null, pauseWavBuckets: pauseWavCache.size };
+}
+
 /** 테스트 전용 — 1차(메모리) 캐시를 비운다(새 세션 모사: 2차 IDB가 살아나는지 검증). */
 export function __clearTtsMemoryCache(): void {
   cloudCache.clear();
@@ -1190,6 +1304,15 @@ export function __clearTtsMemoryCache(): void {
 export interface SpeakQueueItem {
   text: string;
   lang: string;
+  /**
+   * **조각 뒤 쉼**(ms, 속도 1 기준 — 선택, 2026-09-27 하위 호환 추가, toeic.md §12-5-2). 따라 말하기의 "따라 말할 틈"이다.
+   * 칸이 없거나 0 이하·유한수가 아니면 쉼 경로를 **아예 타지 않는다**(기존 호출부 전부 — 동작·마이크로태스크 순서 불변).
+   * 있으면 조각이 끝난 뒤(소리를 냈든 못 냈든, 공백이라 건너뛴 조각은 빼고) `ms = min(pauseAfterMs ÷ 그 조각의 실제 말 속도 배율,
+   * pauseMaxMs 15초)`만큼 큐 오디오 요소로 **무음 WAV 조각**을 튼다(잠금 화면에서도 오디오 세션이 끊기지 않게 — JS 타이머는
+   * iOS가 멈춘다). 무음 조각을 틀 수 없으면 타이머로 기다린다. 쉼 길이의 계산(문장 길이 비례)은 호출부 몫이다(토익 `shadowPauseMs`).
+   * 함수 입력이라 선택 칸을 쓴다 — 저장 레코드의 "선택 키 금지"와 무관하다.
+   */
+  pauseAfterMs?: number;
 }
 
 /**
@@ -1211,6 +1334,11 @@ export interface SpeakQueueEndInfo {
 export interface SpeakQueueHandlers {
   onItem?: (index: number) => void;
   onEnd?: (reason: "done" | "stopped", info: SpeakQueueEndInfo) => void;
+  /**
+   * 조각 `index` 뒤 쉼이 **시작될 때** 한 번(`ms` = 실제로 쉴 길이 — 속도로 나누고 상한에서 자른 값, 정수 ms). 쉼은 다음
+   * `onItem` 또는 `onEnd`로 끝난다(화면의 "🗣️ 따라 말해 보세요" 표시). `pauseAfterMs`가 없는 조각에는 오지 않는다(하위 호환 추가).
+   */
+  onPause?: (index: number, ms: number) => void;
 }
 
 /**
@@ -1245,6 +1373,8 @@ const QUEUE_TIMING_DEFAULT = {
   fingerprintMs: FINGERPRINT_TIMEOUT_MS,
   /** 속도 변경 → 프리페치 재실행 trailing 디바운스(마지막 조작 뒤 이만큼). 큐 전용은 아니지만 테스트 훅을 하나로 둔다 */
   rateDebounceMs: RATE_PREFETCH_DEBOUNCE_MS,
+  /** 조각 뒤 쉼 한 번의 상한(속도로 나눈 뒤 자른다 — toeic.md §12-5-2). 무음 WAV 길이 칸 수도 이 값 ÷ 250ms로 묶인다(최대 60개) */
+  pauseMaxMs: 15_000,
 };
 type QueueTiming = typeof QUEUE_TIMING_DEFAULT;
 let queueTiming: QueueTiming = { ...QUEUE_TIMING_DEFAULT };
@@ -1268,10 +1398,16 @@ export function __setQueueTiming(t: Partial<QueueTiming> | null): void {
   queueTiming = t ? { ...queueTiming, ...t } : { ...QUEUE_TIMING_DEFAULT };
 }
 
-/** 0.1초 무음 WAV(8kHz·8bit·mono, 844바이트)의 objectURL. */
-function makeSilentWavUrl(): string {
-  const rate = 8000;
-  const n = 800;
+/** 무음 WAV 표본률(8kHz·8bit·mono — 1ms = 8바이트). 잠금 해제용 0.1초와 쉼 조각이 같이 쓴다. */
+const SILENT_WAV_RATE = 8000;
+
+/**
+ * `ms` 길이의 무음 WAV(8kHz·8bit·mono) Blob. 0.1초면 844바이트(잠금 해제용), 15초면 약 120KB(쉼 상한).
+ * 잠금 해제용과 쉼 조각(toeic.md §12-5-2)이 이 생성기 하나를 쓴다 — 헤더를 두 벌 두지 않는다. 순수(브라우저 API는 Blob만).
+ */
+export function makeSilentWav(ms: number): Blob {
+  const rate = SILENT_WAV_RATE;
+  const n = Math.max(1, Math.round((Number.isFinite(ms) && ms > 0 ? ms : 0) * (rate / 1000)));
   const buf = new ArrayBuffer(44 + n);
   const v = new DataView(buf);
   const str = (off: number, s: string) => {
@@ -1291,7 +1427,23 @@ function makeSilentWavUrl(): string {
   str(36, "data");
   v.setUint32(40, n, true);
   new Uint8Array(buf, 44).fill(128); // 8bit PCM의 무음 = 128
-  return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+/** 쉼 무음 조각의 길이 단위 — 이 단위로 올린 길이마다 WAV를 한 번만 만든다(15초 상한이면 최대 60개). */
+const PAUSE_WAV_STEP_MS = 250;
+/** 길이(250ms 단위) → 무음 WAV Blob. 모듈 수명 동안 둔다(Blob만 — objectURL은 재생마다 만들고 회수한다). */
+const pauseWavCache = new Map<number, Blob>();
+
+/** 쉼 `ms`를 250ms 단위로 **올린** 길이와 그 무음 WAV(최소 250ms). */
+function pauseWav(ms: number): { ms: number; blob: Blob } {
+  const len = Math.max(PAUSE_WAV_STEP_MS, Math.ceil(ms / PAUSE_WAV_STEP_MS) * PAUSE_WAV_STEP_MS);
+  let blob = pauseWavCache.get(len);
+  if (!blob) {
+    blob = makeSilentWav(len);
+    pauseWavCache.set(len, blob);
+  }
+  return { ms: len, blob };
 }
 
 /**
@@ -1305,7 +1457,7 @@ function unlockPlayback(afterCancel: boolean): void {
     try {
       if (!queueAudio) queueAudio = new Audio();
       if (afterCancel || currentAudio !== queueAudio) {
-        if (!silentUrl) silentUrl = makeSilentWavUrl();
+        if (!silentUrl) silentUrl = URL.createObjectURL(makeSilentWav(100)); // 0.1초·844바이트(예전 그대로)
         queueAudio.onended = null;
         queueAudio.onerror = null;
         queueAudio.onpause = null;
@@ -1428,6 +1580,62 @@ function speakDeviceAwait(text: string, lang: string, token: number): Promise<bo
   });
 }
 
+/**
+ * 조각 뒤 쉼 길이(큐 전용) = `min(round(pauseAfterMs ÷ 배율), pauseMaxMs)`, 최소 1ms. 배율은 그 조각의 **실제 말 속도**
+ * (클라우드로 났으면 그 조각을 합성한 speed, 아니면 기기 배율 — toeic.md §12-5-2). 배율이 이상하면 1로 본다.
+ */
+function queuePauseMs(pauseAfterMs: number, factor: number): number {
+  const f = Number.isFinite(factor) && factor > 0 ? factor : 1;
+  return Math.min(Math.max(1, Math.round(pauseAfterMs / f)), queueTiming.pauseMaxMs);
+}
+
+/**
+ * 쉼 한 번(큐 전용, toeic.md §12-5-2). **무음 WAV 조각을 큐 오디오 요소로** 클라우드 조각과 같은 재생 경로(`playBlob` — `ended`
+ * 사슬·`currentPlayStop`·재생 안전 타임아웃·외부 pause 판정)로 튼다. 오디오 세션이 끊기지 않으므로 화면이 잠겨도 다음 조각으로
+ * 이어질 수 있다(JS 타이머로 기다리면 iOS가 화면 잠금과 함께 멈춘다 — SPEC §18-2). WAV 길이는 `ms`를 250ms 단위로 올린 값이다.
+ * 무음 조각을 틀 수 없으면(재사용 요소가 없는 환경, `play()`가 AbortError가 아닌 이유로 거부, 오류 이벤트) 타이머로 기다린다.
+ * 끝남·취소(cancelPlayback — 큐 stop·새 재생·stopSpeaking)·외부 pause(`playBlob`이 cancelPlayback — "stopped") 모두 resolve한다.
+ * 호출부가 돌아온 뒤 자기 세대로 이어 갈지 정한다. 무음 조각은 소리를 낸 조각이 아니다(`sounded`·무음 연속 판정과 무관).
+ */
+async function playQueuePause(ms: number, token: number): Promise<void> {
+  if (token !== playToken) return;
+  const el = queueAudio;
+  if (el) {
+    const wav = pauseWav(ms);
+    try {
+      await playBlob(wav.blob, token, el, { fallbackMs: wav.ms + queueTiming.playSlackMs, slackMs: queueTiming.playSlackMs });
+      return;
+    } catch {
+      if (token !== playToken) return;
+      /* 무음 조각을 못 튼다(재생 거부·오류) → 아래 타이머 */
+    }
+  }
+  await waitPauseTimer(ms, token);
+}
+
+/**
+ * 타이머로 기다리는 쉼(무음 조각을 틀 수 없을 때의 폴백). `currentPlayStop`에 등록해 cancelPlayback이 기다리지 않고 즉시 푼다.
+ * 끝날 때는 **자기일 때만** 비운다(`speakDeviceAwait`의 finish 관용구) — 낡은 stop이 남으면 다음 `stopCloudAudio`가 그 stop만
+ * 부르고 URL 회수 분기를 건너뛴다(toeic.md §12-5-2 검토 개선 3).
+ */
+function waitPauseTimer(ms: number, token: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (token !== playToken) return resolve();
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (currentPlayStop === stop) currentPlayStop = null;
+      resolve();
+    };
+    const stop = () => finish();
+    currentPlayStop = stop;
+    timer = setTimeout(finish, ms);
+  });
+}
+
 /** 합성 **대기** 타임아웃 표식 — 요청 실패가 아니다(요청은 살아 있다). */
 const WAIT_TIMEOUT = new Error("tts wait timeout");
 
@@ -1468,9 +1676,18 @@ function waitWithTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
  * - 조각마다 그 시점의 엔진·속도. cloud 실패(합성·재생·타임아웃)면 그 조각만 기기 음성. 501(키 없음)이면 이후 기기 직행.
  * - onEnd 둘째 인자 `{ sounded }`(SpeakQueueEndInfo) — 소리를 낸 조각 수. 짧은 큐가 전부 무음이어도 "done"이므로
  *   소리가 꼭 나야 하는 호출부는 `sounded`로 다시 판정한다.
+ * - 조각 뒤 쉼(`pauseAfterMs`, 2026-09-27 — toeic.md §12-5-2): 칸이 있는 조각만 끝난 뒤 `onPause(i, ms)` → 큐 요소로 무음 WAV
+ *   조각(못 틀면 타이머) → 다음 조각. stop·새 재생·`stopSpeaking()`·외부 pause가 쉼을 즉시 끊는다(onEnd는 지금처럼 동기로).
+ *   칸이 없는 조각은 예전 경로 그대로다. 잠금 화면 조작(Media Session)은 큐가 걸지 않는다 — 쓰는 플레이어가 `lib/media-session.ts`로.
  */
 export function speakQueue(items: SpeakQueueItem[], handlers: SpeakQueueHandlers = {}): () => void {
-  const list = (items ?? []).map((it) => ({ text: (it?.text ?? "").trim(), lang: it?.lang || TTS_LANG }));
+  // 입력을 다시 만든다 — 쉼 칸(pauseAfterMs)도 **함께 옮긴다**. 빠뜨리면 쉼이 조용히 사라지고 다른 검증은 모두 통과한다
+  // (toeic.md §12-5-2 검토 개선 3 — eval:speech "칸 보존"이 잠근다).
+  const list: SpeakQueueItem[] = (items ?? []).map((it) => ({
+    text: (it?.text ?? "").trim(),
+    lang: it?.lang || TTS_LANG,
+    pauseAfterMs: it?.pauseAfterMs,
+  }));
   const call = (fn: () => void) => {
     try {
       fn();
@@ -1558,6 +1775,8 @@ export function speakQueue(items: SpeakQueueItem[], handlers: SpeakQueueHandlers
         if (!alive()) return;
 
         let sounded = false;
+        /** 이 조각의 실제 말 속도 배율 — 조각 뒤 쉼을 나눈다(클라우드로 났으면 그 speed, 아니면 기기 배율). */
+        let factor = 1;
         if (isCloud(it)) {
           const speed = cloudSpeed();
           const key = keyOf(it.text, it.lang, speed);
@@ -1587,6 +1806,7 @@ export function speakQueue(items: SpeakQueueItem[], handlers: SpeakQueueHandlers
               await replayFresh(it.text, it.lang, speed, token, healTrace, ac.signal, cap, onStart);
             }
             sounded = true;
+            factor = speed;
           } catch (e) {
             timedOut = e === WAIT_TIMEOUT;
             noteError(e); // 합성·재생 실패·대기 타임아웃 → 아래에서 그 조각만 기기 음성(한 방향 폴백)
@@ -1611,12 +1831,24 @@ export function speakQueue(items: SpeakQueueItem[], handlers: SpeakQueueHandlers
         }
         if (!sounded) {
           void lookAhead(i + 1);
+          factor = deviceSpeedFactor(); // 발화가 쓰는 rate(getTtsRate)와 같은 순간에 읽는다
           sounded = await speakDeviceAwait(it.text, it.lang, token);
           if (!alive()) return;
         }
         if (sounded) soundedCount += 1;
         silentRun = sounded ? 0 : silentRun + 1;
         if (silentRun >= QUEUE_SILENT_STOP) return; // 소리를 낼 수 없다 → stopped
+
+        // 조각 뒤 쉼(toeic.md §12-5-2) — 칸이 없거나 0 이하·유한수가 아니면 이 블록을 **아예 타지 않는다**(await 0 —
+        // 기존 호출부의 동작·마이크로태스크 순서 불변). 소리를 못 낸 조각 뒤에도 쉼은 지킨다(마지막 조각 뒤도 — 그다음 "done").
+        const pauseAfterMs = it.pauseAfterMs;
+        if (typeof pauseAfterMs === "number" && Number.isFinite(pauseAfterMs) && pauseAfterMs > 0) {
+          const ms = queuePauseMs(pauseAfterMs, factor);
+          call(() => handlers.onPause?.(i, ms));
+          if (!alive()) return;
+          await playQueuePause(ms, token);
+          if (!alive()) return; // 쉼 도중 멈춤·새 재생·외부 pause — onEnd("stopped")는 cancelPlayback이 이미 동기로 냈다
+        }
       }
       completed = true;
     } finally {

@@ -8,6 +8,9 @@
  * 범위 규칙(lib/toeic-attempt-rules decideAttemptScope — 화면 링크 toeicTakeHref와 같은 규칙):
  * - full: parts = 다섯 파트 전부(순서 무관, 형식표 순서로 저장) + 모의고사가 완전해야 한다(빠진 파트가 있으면 409 incomplete_mock)
  * - part: 파트 하나 + 그 파트가 있어야 한다(없으면 409 part_missing)
+ * - 한 문제 연습(문서의 drillPart — docs/harness/toeic.md §12-7-4): scope "part" + parts [drillPart]만(아니면 400 invalid_input
+ *   "공략 연습은 그 유형 하나로만 응시해요."). 응시 범위 문항(`questions`)은 **서버가 연습 단위표에서** 정한다(사진 묘사는 [3]) —
+ *   요청 본문은 그대로이고 클라이언트가 문항 부분집합을 고를 길은 없다. 응시 기록에 questions를 적는다(끝내기·채점 범위의 원천).
  *
  * 응답 shape (단일 정의처 `lib/toeic-attempt-contract.ts` ToeicAttemptCreateResponse):
  * - 200 { ok:true, attemptId, scope, parts, questions, startedAt }
@@ -21,7 +24,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getStore } from "@/lib/store";
 import type { ToeicAttemptCreateRequest, ToeicAttemptCreateResponse } from "@/lib/toeic-attempt-contract";
-import { decideAttemptScope, toeicAttemptQuestions } from "@/lib/toeic-attempt-rules";
+import { decideAttemptScope } from "@/lib/toeic-attempt-rules";
 import { TOEIC_MOCK_PARTS } from "@/lib/toeic-mock";
 import { isRenderableToeicMock } from "@/lib/toeic-record";
 import { toToeicIssues, toeicZodErrorKo } from "@/lib/toeic-zod-ko";
@@ -64,14 +67,20 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return json({ ok: false, error: "mock_not_found", messageKo: "없거나 열 수 없는 모의고사예요." }, 404);
   }
 
-  const scope = decideAttemptScope(parsed.data.scope, parsed.data.parts, mock.parts);
+  const scope = decideAttemptScope(parsed.data.scope, parsed.data.parts, mock.parts, mock.drillPart);
   if (!scope.ok) {
     if (scope.reason === "scope_parts_mismatch") {
       return json(
         {
           ok: false,
           error: "invalid_input",
-          messageKo: parsed.data.scope === "full" ? "실전 응시는 다섯 파트를 모두 보내야 해요." : "유형 연습은 파트 하나만 보내야 해요(중복 없이).",
+          // 연습에는 "실전 응시는 다섯 파트를…" 문구를 내지 않는다(§12-7-4)
+          messageKo:
+            mock.drillPart !== null
+              ? "공략 연습은 그 유형 하나로만 응시해요."
+              : parsed.data.scope === "full"
+                ? "실전 응시는 다섯 파트를 모두 보내야 해요."
+                : "유형 연습은 파트 하나만 보내야 해요(중복 없이).",
         },
         400,
       );
@@ -90,6 +99,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       mockId: id,
       scope: parsed.data.scope,
       parts: scope.parts,
+      questions: scope.questions,
       startedAt,
       finishedAt: null,
       answers: [],
@@ -99,7 +109,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       attemptId: record.id,
       scope: record.scope,
       parts: record.parts,
-      questions: toeicAttemptQuestions(record.parts),
+      questions: record.questions,
       startedAt: record.startedAt,
     });
   } catch (err) {

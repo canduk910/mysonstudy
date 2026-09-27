@@ -26,6 +26,7 @@ import {
   collapseSpaces,
   containsWordSequence,
   countWords,
+  expressionKey,
   findDuplicateExpressionIndexes,
   hasHangul,
   hasLatin,
@@ -37,9 +38,36 @@ import {
   type ToeicMockPart,
   type ToeicTargetGrade,
 } from "../../toeic-mock";
+import {
+  TOEIC_GUIDE_PARTS,
+  TOEIC_GUIDE_SLOT_NAME_MAX,
+  TOEIC_TEMPLATE_BANK_SLOT,
+  guideLineEn,
+  scanSlots,
+  textOutsideSlots,
+  type ToeicGuidePart,
+  type ToeicSlotProblem,
+} from "../../toeic-guide";
+import {
+  TOEIC_TEMPLATE_ITEM_KEY_RE,
+  TOEIC_TEMPLATE_KEY_RE,
+  TOEIC_TEMPLATE_TEST_MAX,
+  expressionFixedPartsInFrame,
+  fillFrame,
+  frameSlotNames,
+  frameToExpression,
+  leadMatchesFrame,
+  normalizeTemplateWords,
+  parseFrame,
+  toeicGuideAlignmentTargets,
+} from "../../toeic-template";
+import { TOEIC_TEMPLATE_QUIZ_MODES, type ToeicTemplateQuizMode } from "../../toeic-quiz";
+import { TTS_TEXT_MAX_CHARS } from "../../tts-shared";
+import { toToeicIssues } from "../../toeic-zod-ko";
+import { TOEIC_TEMPLATE_SESSION_ID_RE, type ToeicTemplateSessionRequest } from "../../toeic-guide-contract";
 
-export { TOEIC_MOCK_PARTS, TOEIC_TARGET_GRADES };
-export type { ToeicMockPart, ToeicTargetGrade };
+export { TOEIC_MOCK_PARTS, TOEIC_TARGET_GRADES, TOEIC_GUIDE_PARTS };
+export type { ToeicMockPart, ToeicTargetGrade, ToeicGuidePart };
 
 // ---------------------------------------------------------------------------
 // 유니온 상수 (as const 배열) — JSON Schema enum·zod·화면이 같은 상수를 본다 (eval이 enum과 대조)
@@ -1158,8 +1186,13 @@ interface IssueSink {
   addIssue: (issue: { code: "custom"; path: Path; message: string }) => void;
 }
 
+/**
+ * issue 하나를 더한다. **path는 늘 사본으로 넘긴다** — zod v4는 부모 스키마(배열 원소·객체 키)를 거슬러 올라갈 때 issue.path 배열을
+ * 제자리에서 고쳐(앞에 붙여) 쓴다. 같은 배열을 두 issue에 넘기면 접두어가 두 번 붙어 경로가 깨진다(`guides.0.0.…` — 2026-09-27 발견,
+ * 한 칸에 규칙 둘이 걸리는 모든 호출 A~D·가져오기 zod에 해당). 사본이면 issue마다 경로가 따로다.
+ */
 function issue(ctx: IssueSink, path: Path, message: string): void {
-  ctx.addIssue({ code: "custom", path, message });
+  ctx.addIssue({ code: "custom", path: [...path], message });
 }
 
 function checkChars(ctx: IssueSink, path: Path, s: string, min: number, max: number, label: string): void {
@@ -1261,8 +1294,8 @@ function checkUniqueNos(ctx: IssueSink, path: Path, items: readonly { no: number
   });
 }
 
-/** QUIZ 원문 규칙(§2-4) — 호출 A와 가져오기 파일이 같이 쓴다 */
-function checkQuizText(ctx: IssueSink, path: Path, q: ToeicBookQuiz): void {
+/** QUIZ 원문 규칙(§2-4) — 호출 A와 가져오기 파일(표현집 §7-6·공략 speak §12-2-3)이 같이 쓴다 */
+function checkQuizText(ctx: IssueSink, path: Path, q: Pick<ToeicBookQuiz, "no" | "promptKo" | "hint" | "modelAnswer">): void {
   checkNo(ctx, [...path, "no"], q.no, "quiz.no");
   if (q.promptKo.trim() === "") issue(ctx, [...path, "promptKo"], "promptKo가 비었습니다");
   checkKorean(ctx, [...path, "promptKo"], q.promptKo, "promptKo");
@@ -1667,3 +1700,931 @@ export const toeicImportFileSchema: z.ZodType<ToeicImportFile> = z
       seen.add(s.presetKey);
     });
   });
+
+// ===========================================================================
+// 유형별 공략 — 가져오기 `toeic-guides/v2` (docs/harness/toeic.md §12-2) + 틀 은행 (§12-2-7)
+// 기존 가져오기 zod(§7-6)와 **같은 모듈**에 둔다 — 표현·QUIZ 원문 판정(checkEntryText·checkQuizText·checkUniqueNos·
+// findDuplicateExpressionIndexes)을 복사하지 않고 그대로 부르기 위해서다. 가져오기는 저장과 같은 자리라 판독보다 엄격하다 —
+// 어긋나면 버리지 않고 거부한다. 모르는 키는 버린다(zod 기본). **메시지에 값을 넣지 않는다**(경로가 위치를 알려 준다).
+// ===========================================================================
+
+/** 가져오기 파일 형식(§12-2) — v2만 받는다(초안 v1·표현집 형식은 400) */
+export const TOEIC_GUIDE_FORMAT = "toeic-guides/v2";
+/** 배포 전 초안 형식 — 받지 않는다. 오류 문구를 가르는 데만 쓴다 */
+export const TOEIC_GUIDE_FORMAT_V1 = "toeic-guides/v1";
+
+/** 한 파일의 유형 항목 수 상한(유형 넷) */
+export const TOEIC_GUIDE_FILE_GUIDES_MAX = TOEIC_GUIDE_PARTS.length;
+/** titleKo·textKo·captionKo 1~80자 */
+export const TOEIC_GUIDE_TITLE_MAX = 80;
+/** 섹션 groupKo 1~30자 */
+export const TOEIC_GUIDE_GROUP_MAX = 30;
+/** introKo 1~600자 */
+export const TOEIC_GUIDE_INTRO_MAX = 600;
+/** text 블록 bodyKo 1~1200자 */
+export const TOEIC_GUIDE_BODY_MAX = 1200;
+/** 줄·예문 ko 1~300자 — 말하기 promptKo·modelAnswer도 같은 상수 */
+export const TOEIC_GUIDE_LINE_KO_MAX = 300;
+/** label 1~30자 */
+export const TOEIC_GUIDE_LABEL_MAX = 30;
+/** note 1~120자 */
+export const TOEIC_GUIDE_NOTE_MAX = 120;
+/** emphasis·underline 0~6개, 각 1~120자 */
+export const TOEIC_GUIDE_MARKS_MAX = 6;
+export const TOEIC_GUIDE_MARK_CHARS_MAX = 120;
+/** 개수: sections 1~30, 섹션당 blocks 1~60, lines 블록의 lines 1~40(text 블록 0~40) */
+export const TOEIC_GUIDE_SECTIONS_MAX = 30;
+export const TOEIC_GUIDE_BLOCKS_MAX = 60;
+export const TOEIC_GUIDE_LINES_MAX = 40;
+/** 문서 하나(유형 항목 / 틀 은행)의 UTF-8 바이트 상한 — Firestore 문서 1MiB 기준(§12-2-3). 글자 수가 아니라 바이트로 잰다 */
+export const TOEIC_GUIDE_MAX_BYTES = 900_000;
+/** 말하기 문항 0~60(§7-1 quiz 상한 12의 예외) */
+export const TOEIC_GUIDE_SPEAK_MAX = 60;
+/** 400 본문 issues 상한(§12-2-3) */
+export const TOEIC_GUIDE_IMPORT_ISSUES_MAX = 20;
+
+export const TOEIC_GUIDE_LINE_STYLES = ["list", "template", "completions"] as const;
+export type ToeicGuideLineStyle = (typeof TOEIC_GUIDE_LINE_STYLES)[number];
+
+/** 틀 은행 상한(§12-2-7) — 한 번만 정의 */
+export const TOEIC_TEMPLATES_MAX = 300;
+export const TOEIC_TEMPLATE_GROUP_KO_MAX = 30;
+export const TOEIC_TEMPLATE_USE_KO_MAX = 120;
+export const TOEIC_TEMPLATE_FRAME_MAX = 120;
+export const TOEIC_TEMPLATE_SLOTS_MIN = 1;
+export const TOEIC_TEMPLATE_SLOTS_MAX = 4;
+export const TOEIC_TEMPLATE_FILL_MAX = 80;
+export const TOEIC_TEMPLATE_EXAMPLE_KO_MAX = 200;
+export const TOEIC_TEMPLATE_EXAMPLES_MIN = 3;
+export const TOEIC_TEMPLATE_EXAMPLES_MAX = 5;
+export const TOEIC_TEMPLATE_TEST_FILLS_MIN = 1;
+export const TOEIC_TEMPLATE_TEST_FILLS_MAX = 3;
+export const TOEIC_TEMPLATE_GUIDE_REFS_MAX = 4;
+export const TOEIC_TEMPLATE_FLOW_STEPS_MIN = 3;
+export const TOEIC_TEMPLATE_FLOW_STEPS_MAX = 6;
+export const TOEIC_TEMPLATE_STEP_GROUPS_MAX = 8;
+export const TOEIC_TEMPLATE_BANKS_MAX = 16;
+export const TOEIC_TEMPLATE_FLOW_NAME_MAX = 30;
+/** 유형 폴더마다 묶음 하나의 틀 수 상한(따라 말하기 한 묶음이 약 20분을 넘지 않게) */
+export const TOEIC_TEMPLATE_GROUP_MAX = 6;
+export const TOEIC_TEMPLATE_SKIPS_MAX = 100;
+export const TOEIC_TEMPLATE_SKIP_REASON_MAX = 80;
+export const TOEIC_TEMPLATE_SOURCES = ["guide", "new"] as const;
+export const TOEIC_TEMPLATE_REF_KINDS = ["expression", "template", "lead"] as const;
+export type ToeicTemplateRefKind = (typeof TOEIC_TEMPLATE_REF_KINDS)[number];
+
+// ---------------------------------------------------------------------------
+// 타입 (§12-2-2·§12-2-7·§12-3)
+// ---------------------------------------------------------------------------
+
+export interface ToeicGuideExample {
+  en: string;
+  ko: string | null;
+  emphasis: string[];
+}
+
+export interface ToeicGuideLine {
+  /** 작은 머리표 — 화면 표시만, 읽지 않는다 */
+  label: string | null;
+  /** 영어. 자리 표시는 {자리 이름}(한글은 이 괄호 안에서만), 대안은 슬래시, 생략 가능 단어는 띄어 쓴 괄호 */
+  en: string | null;
+  ko: string | null;
+  /** 비고 — 화면 표시만, 읽지 않는다 */
+  note: string | null;
+  /** en 안의 강조 구간(부분 문자열 그대로) — 형광 */
+  emphasis: string[];
+  /** en 안의 밑줄 구간(질문에서 답에 되살려 쓸 말) — 화면 표시만 */
+  underline: string[];
+  /** template 블록에서 "바로 위 줄 대신 이것도" */
+  alt: boolean;
+  /** 종이 교재에 손으로 표시한 줄 */
+  marked: boolean;
+  example: ToeicGuideExample | null;
+}
+
+export type ToeicGuideBlock =
+  | { kind: "heading"; textKo: string }
+  | { kind: "text"; label: string | null; titleKo: string | null; bodyKo: string | null; lines: ToeicGuideLine[] }
+  | { kind: "lines"; style: ToeicGuideLineStyle; captionKo: string | null; lead: ToeicGuideLine | null; lines: ToeicGuideLine[] };
+
+export interface ToeicGuideSection {
+  label: string | null;
+  titleKo: string;
+  introKo: string | null;
+  /** 목차 칩 무리 이름(원본의 파트 띠) — 화면 표시만 */
+  groupKo: string | null;
+  blocks: ToeicGuideBlock[];
+}
+
+/** 공략 표현(→ 세트 entries, points null) */
+export interface ToeicGuideExpression {
+  no: number | null;
+  expression: string;
+  meaningKo: string;
+  example: string | null;
+  exampleKo: string | null;
+}
+
+/** 공략 말하기 문항(→ 세트 quiz, keyExpressions []) — no는 null 금지(항목 키 quiz:{no}) */
+export interface ToeicGuideSpeak {
+  no: number;
+  promptKo: string;
+  hint: string | null;
+  modelAnswer: string;
+}
+
+/** 가져오기 파일의 유형 항목 하나 → ToeicSetRecord 하나(§12-3) */
+export interface ToeicGuideFileEntry {
+  presetKey: string;
+  part: ToeicGuidePart;
+  introKo: string | null;
+  sections: ToeicGuideSection[];
+  expressions: ToeicGuideExpression[];
+  speak: ToeicGuideSpeak[];
+}
+
+export interface ToeicTemplateFlowStep {
+  stepKo: string;
+  groupsKo: string[];
+}
+
+/** 유형마다 하나 — 단계(답변 흐름, 3~6) + 소재 묶음(흐름 밖) */
+export interface ToeicTemplateFlow {
+  part: ToeicGuidePart;
+  steps: ToeicTemplateFlowStep[];
+  banksKo: string[];
+}
+
+export interface ToeicTemplateExample {
+  /** = fillFrame(frameEn, fills) — 글자까지 같다 */
+  en: string;
+  ko: string;
+  fills: string[];
+}
+
+export type ToeicTemplateGuideRef =
+  | { kind: "expression"; part: ToeicGuidePart; expression: string }
+  | { kind: "template"; part: ToeicGuidePart; step: string }
+  | { kind: "lead"; part: ToeicGuidePart; leadEn: string };
+
+export interface ToeicTemplate {
+  /** 숙련도 키 tpl:{key}. 교정할 때 바꾸지 않는다 */
+  key: string;
+  groupKo: string;
+  /** 고정 부분 + {자리 이름} */
+  frameEn: string;
+  /** 같은 자리 이름을 한국어 어순대로 */
+  frameKo: string;
+  useKo: string;
+  parts: ToeicGuidePart[];
+  source: (typeof TOEIC_TEMPLATE_SOURCES)[number];
+  guideRefs: ToeicTemplateGuideRef[];
+  examples: ToeicTemplateExample[];
+  /** 틀 바꿔 말하기 전용 채움(자리 순서) — 대본·카드에 나오지 않는다 */
+  testFills: string[][];
+}
+
+export interface ToeicTemplateAlignmentSkip {
+  part: ToeicGuidePart;
+  kind: ToeicTemplateRefKind;
+  ref: string;
+  reasonKo: string;
+  coveredBy: string | null;
+}
+
+/** 가져오기 파일 최상위 templates → 틀 은행 문서 하나(id guide-templates) */
+export interface ToeicTemplateBankFile {
+  presetKey: string;
+  flows: ToeicTemplateFlow[];
+  items: ToeicTemplate[];
+  /** 가져오기 검사용 — 문서에 저장하지 않고 내용 지문에도 넣지 않는다(§12-2-5) */
+  alignmentSkips: ToeicTemplateAlignmentSkip[];
+}
+
+export interface ToeicGuideFile {
+  format: typeof TOEIC_GUIDE_FORMAT;
+  /** 0~4 — templates가 null이면 1~4 */
+  guides: ToeicGuideFileEntry[];
+  /** null이면 저장된 틀 은행을 건드리지 않는다 */
+  templates: ToeicTemplateBankFile | null;
+}
+
+/** ToeicSetRecord.guide — 유형 공략(§12-3) */
+export interface ToeicGuidePartDoc {
+  kind: "part";
+  part: ToeicGuidePart;
+  introKo: string | null;
+  sections: ToeicGuideSection[];
+  contentHash: string;
+  /** 내용이 마지막으로 바뀐 시각(생성 포함) */
+  updatedAt: string;
+}
+
+/** ToeicSetRecord.guide — 틀 은행(§12-3). 정렬 건너뜀은 저장하지 않는다 */
+export interface ToeicTemplateBankDoc {
+  kind: "templates";
+  flows: ToeicTemplateFlow[];
+  items: ToeicTemplate[];
+  contentHash: string;
+  updatedAt: string;
+}
+
+/**
+ * 공략 계열 문서 표시(§12-3) — null이면 표현집. 정규화(lib/toeic-normalize.ts)는 깨진 guide도 null로 떨어뜨리지 않고 옮긴다 —
+ * 그래서 타입과 다른 값(모르는 kind·part, 배열이 아닌 sections·items)이 올 수 있고, 화면은 lib/toeic-record.ts 렌더 판정을 먼저 본다.
+ */
+export type ToeicGuideDoc = ToeicGuidePartDoc | ToeicTemplateBankDoc;
+
+/** 멱등 판정의 "유형 자리" — 유형 넷 + 틀 은행 */
+export type ToeicGuideSlot = ToeicGuidePart | typeof TOEIC_TEMPLATE_BANK_SLOT;
+
+export type { ToeicTemplateQuizMode };
+
+// ---------------------------------------------------------------------------
+// 공략 zod 공통 판정
+// ---------------------------------------------------------------------------
+
+/** UTF-8 바이트 수 — 한글은 한 글자가 3바이트라 글자 수로 재면 세 배를 놓친다(자유대화 keepalive P2-A와 같은 함정) */
+export function utf8ByteLength(s: string): number {
+  return new TextEncoder().encode(s).length;
+}
+
+/** 유형 항목의 내용(지문·바이트 상한이 재는 것) — part·introKo·sections·expressions·speak(presetKey 제외, 이 키 순서) */
+export function toeicGuideEntryContent(g: ToeicGuideFileEntry): Pick<ToeicGuideFileEntry, "part" | "introKo" | "sections" | "expressions" | "speak"> {
+  return { part: g.part, introKo: g.introKo, sections: g.sections, expressions: g.expressions, speak: g.speak };
+}
+
+/** 틀 은행의 내용(지문·바이트 상한이 재는 것) — flows·items(alignmentSkips·presetKey 제외) */
+export function toeicTemplateBankContent(b: Pick<ToeicTemplateBankFile, "flows" | "items">): Pick<ToeicTemplateBankFile, "flows" | "items"> {
+  return { flows: b.flows, items: b.items };
+}
+
+const SLOT_PROBLEM_KO: Record<ToeicSlotProblem, string> = {
+  unbalanced: "자리 { }의 짝이 맞지 않아요(자리 밖에는 { }를 쓸 수 없어요)",
+  nested: "자리 { } 안에 다시 { }를 쓸 수 없어요",
+  empty: "빈 자리 { }는 쓸 수 없어요",
+  too_long: `자리 이름은 1~${TOEIC_GUIDE_SLOT_NAME_MAX}자예요`,
+};
+
+const GUIDE_EXPR_SYMBOL_KO = "공략 표현에는 { } / [ ]를 쓸 수 없어요 — 자리는 ~, 대안은 항목을 나눠요";
+const TILDES = /[~～〜]/;
+
+function hasBrace(s: string): boolean {
+  return /[{}]/.test(s);
+}
+
+/** 한국어 칸 — 1~max자 + 한글 포함 */
+function checkKoText(ctx: IssueSink, path: Path, s: string, max: number, label: string): void {
+  checkChars(ctx, path, s, 1, max, label);
+  checkKorean(ctx, path, s, label);
+}
+function checkOptKoText(ctx: IssueSink, path: Path, s: string | null, max: number, label: string): void {
+  if (s !== null) checkKoText(ctx, path, s, max, label);
+}
+function checkOptChars(ctx: IssueSink, path: Path, s: string | null, max: number, label: string): void {
+  if (s !== null) checkChars(ctx, path, s, 1, max, label);
+}
+
+/** 자리 문법 — 문제가 없으면 true */
+function checkSlotSyntax(ctx: IssueSink, path: Path, s: string, label: string): boolean {
+  const { problems } = scanSlots(s);
+  for (const p of problems) issue(ctx, path, `${label}: ${SLOT_PROBLEM_KO[p]}`);
+  return problems.length === 0;
+}
+
+/** 공략 영어 줄·예문(§12-2-3) — 1~300자·라틴 포함·한글은 자리 안에서만·자리 문법·대괄호 거부 */
+function checkGuideEn(ctx: IssueSink, path: Path, s: string, label: string): void {
+  checkChars(ctx, path, s, 1, TTS_TEXT_MAX_CHARS, label);
+  if (!hasLatin(s)) issue(ctx, path, `${label}에는 영어(라틴 문자)가 있어야 합니다`);
+  checkSlotSyntax(ctx, path, s, label);
+  if (hasHangul(textOutsideSlots(s))) issue(ctx, path, `${label}: 한글은 자리 {…} 안에서만 쓸 수 있어요`);
+  if (/[[\]]/.test(s)) issue(ctx, path, `${label}: 대괄호 [ ]는 쓸 수 없어요 — 영어 대안은 슬래시로 적어요`);
+}
+
+/** 강조·밑줄 — 0~6개, 1~120자, 그 영어의 부분 문자열(대소문자 그대로), 배열 안 중복 금지, { } 금지. 영어가 없으면 빈 배열 */
+function checkMarks(ctx: IssueSink, path: Path, marks: readonly string[], en: string | null, label: string): void {
+  if (en === null) {
+    if (marks.length > 0) issue(ctx, path, `en이 없으면 ${label}도 비어야 합니다`);
+    return;
+  }
+  checkCount(ctx, path, marks, 0, TOEIC_GUIDE_MARKS_MAX, label);
+  const seen = new Set<string>();
+  marks.forEach((m, i) => {
+    if (m.length < 1 || m.length > TOEIC_GUIDE_MARK_CHARS_MAX) issue(ctx, [...path, i], `${label}는 1~${TOEIC_GUIDE_MARK_CHARS_MAX}자여야 합니다`);
+    else if (!en.includes(m)) issue(ctx, [...path, i], `${label}는 그 영어의 부분 문자열(대소문자까지 그대로)이어야 합니다`);
+    if (hasBrace(m)) issue(ctx, [...path, i], `${label}에 { }를 쓸 수 없어요`);
+    if (seen.has(m)) issue(ctx, [...path, i], `같은 ${label} 중복 금지`);
+    seen.add(m);
+  });
+}
+
+function checkGuideLine(
+  ctx: IssueSink,
+  path: Path,
+  ln: ToeicGuideLine,
+  where: { style: ToeicGuideLineStyle | "text"; isLead: boolean; index: number },
+): void {
+  checkOptChars(ctx, [...path, "label"], ln.label, TOEIC_GUIDE_LABEL_MAX, "label");
+  checkOptChars(ctx, [...path, "note"], ln.note, TOEIC_GUIDE_NOTE_MAX, "note");
+  if (ln.en === null && ln.ko === null) issue(ctx, path, "줄에는 en과 ko 중 하나 이상이 있어야 합니다");
+  if (ln.en !== null) checkGuideEn(ctx, [...path, "en"], ln.en, "en");
+  if (ln.ko !== null) {
+    checkKoText(ctx, [...path, "ko"], ln.ko, TOEIC_GUIDE_LINE_KO_MAX, "ko");
+    if (hasBrace(ln.ko)) issue(ctx, [...path, "ko"], "줄 ko에는 { }를 쓸 수 없어요");
+  }
+  checkMarks(ctx, [...path, "emphasis"], ln.emphasis, ln.en, "emphasis");
+  checkMarks(ctx, [...path, "underline"], ln.underline, ln.en, "underline");
+  if (ln.alt && !(where.style === "template" && !where.isLead && where.index > 0)) {
+    issue(ctx, [...path, "alt"], "alt는 template 블록의 첫 줄이 아닌 줄에서만 쓸 수 있어요");
+  }
+  if (ln.example !== null) {
+    const ex = ln.example;
+    checkGuideEn(ctx, [...path, "example", "en"], ex.en, "example.en");
+    if (ex.ko !== null) {
+      checkKoText(ctx, [...path, "example", "ko"], ex.ko, TOEIC_GUIDE_LINE_KO_MAX, "example.ko");
+      if (hasBrace(ex.ko)) issue(ctx, [...path, "example", "ko"], "예문 ko에는 { }를 쓸 수 없어요");
+    }
+    checkMarks(ctx, [...path, "example", "emphasis"], ex.emphasis, ex.en, "example.emphasis");
+  }
+}
+
+function checkGuideBlock(ctx: IssueSink, path: Path, b: ToeicGuideBlock): void {
+  switch (b.kind) {
+    case "heading":
+      checkKoText(ctx, [...path, "textKo"], b.textKo, TOEIC_GUIDE_TITLE_MAX, "textKo");
+      return;
+    case "text":
+      checkOptChars(ctx, [...path, "label"], b.label, TOEIC_GUIDE_LABEL_MAX, "label");
+      checkOptKoText(ctx, [...path, "titleKo"], b.titleKo, TOEIC_GUIDE_TITLE_MAX, "titleKo");
+      checkOptKoText(ctx, [...path, "bodyKo"], b.bodyKo, TOEIC_GUIDE_BODY_MAX, "bodyKo");
+      checkCount(ctx, [...path, "lines"], b.lines, 0, TOEIC_GUIDE_LINES_MAX, "lines");
+      if (b.titleKo === null && b.bodyKo === null && b.lines.length === 0) issue(ctx, path, "text 블록에는 titleKo·bodyKo·lines 중 하나 이상이 있어야 합니다");
+      b.lines.forEach((ln, i) => checkGuideLine(ctx, [...path, "lines", i], ln, { style: "text", isLead: false, index: i }));
+      return;
+    case "lines": {
+      checkOptKoText(ctx, [...path, "captionKo"], b.captionKo, TOEIC_GUIDE_TITLE_MAX, "captionKo");
+      checkCount(ctx, [...path, "lines"], b.lines, 1, TOEIC_GUIDE_LINES_MAX, "lines");
+      if (b.lead !== null) checkGuideLine(ctx, [...path, "lead"], b.lead, { style: b.style, isLead: true, index: -1 });
+      b.lines.forEach((ln, i) => checkGuideLine(ctx, [...path, "lines", i], ln, { style: b.style, isLead: false, index: i }));
+      if (b.style !== "completions") return;
+      // 머리말 + 이어 말하기(§12-2-3) — 읽는 단위는 머리말 영어 + " " + 줄 영어(guideLineEn)
+      if (b.lead === null) issue(ctx, [...path, "lead"], "completions 블록에는 머리말(lead)이 있어야 합니다");
+      else {
+        if (b.lead.en === null || b.lead.ko === null) issue(ctx, [...path, "lead"], "completions 머리말은 en과 ko가 모두 있어야 합니다");
+        if (b.lead.en !== null && (hasBrace(b.lead.en) || TILDES.test(b.lead.en))) {
+          issue(ctx, [...path, "lead", "en"], "completions 머리말 영어에는 { } ~를 쓸 수 없어요(문장 앞부분이지 틀이 아니에요)");
+        }
+      }
+      b.lines.forEach((ln, i) => {
+        const lp: Path = [...path, "lines", i];
+        if (ln.en === null) issue(ctx, [...lp, "en"], "completions 줄에는 en이 있어야 합니다");
+        if (ln.example !== null) issue(ctx, [...lp, "example"], "completions 줄에는 example을 쓸 수 없어요");
+        const full = guideLineEn(b, ln);
+        if (full !== null && full.trim().length > TTS_TEXT_MAX_CHARS) {
+          issue(ctx, [...lp, "en"], `머리말과 이은 완성 문장은 ${TTS_TEXT_MAX_CHARS}자 이하여야 합니다`);
+        }
+      });
+      return;
+    }
+  }
+}
+
+function checkPresetKey(ctx: IssueSink, path: Path, key: string): void {
+  if (key.length > TOEIC_PRESET_KEY_MAX || !TOEIC_PRESET_KEY_RE.test(key)) {
+    issue(ctx, path, `presetKey는 소문자·숫자·하이픈 조각(최대 ${TOEIC_PRESET_KEY_MAX}자)이어야 합니다`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 공략 zod 모양
+// ---------------------------------------------------------------------------
+
+const guideExampleShape = z.object({ en: z.string(), ko: z.string().nullable(), emphasis: z.array(z.string()) });
+
+const guideLineShape = z.object({
+  label: z.string().nullable(),
+  en: z.string().nullable(),
+  ko: z.string().nullable(),
+  note: z.string().nullable(),
+  emphasis: z.array(z.string()),
+  underline: z.array(z.string()),
+  alt: z.boolean(),
+  marked: z.boolean(),
+  example: guideExampleShape.nullable(),
+});
+
+const guideBlockShape = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("heading"), textKo: z.string() }),
+  z.object({
+    kind: z.literal("text"),
+    label: z.string().nullable(),
+    titleKo: z.string().nullable(),
+    bodyKo: z.string().nullable(),
+    lines: z.array(guideLineShape),
+  }),
+  z.object({
+    kind: z.literal("lines"),
+    style: z.enum(TOEIC_GUIDE_LINE_STYLES),
+    captionKo: z.string().nullable(),
+    lead: guideLineShape.nullable(),
+    lines: z.array(guideLineShape),
+  }),
+]);
+
+const guideSectionShape = z.object({
+  label: z.string().nullable(),
+  titleKo: z.string(),
+  introKo: z.string().nullable(),
+  groupKo: z.string().nullable(),
+  blocks: z.array(guideBlockShape),
+});
+
+const guidePartEnum = z.enum(TOEIC_GUIDE_PARTS, { error: "part는 q3_4·q5_7·q8_10·q11 중 하나예요(Q1–2는 공략 폴더가 없어요)" });
+
+const guideEntrySchema = z
+  .object({
+    presetKey: z.string(),
+    part: guidePartEnum,
+    introKo: z.string().nullable(),
+    sections: z.array(guideSectionShape),
+    expressions: z.array(
+      z.object({
+        no: z.number().int().nullable(),
+        expression: z.string(),
+        meaningKo: z.string(),
+        example: z.string().nullable(),
+        exampleKo: z.string().nullable(),
+      }),
+    ),
+    speak: z.array(
+      z.object({
+        no: z.number({ error: "speak.no는 1~999 정수예요(null 금지 — 항목 키 quiz:{no})" }).int("speak.no는 정수여야 합니다"),
+        promptKo: z.string(),
+        hint: z.string().nullable(),
+        modelAnswer: z.string(),
+      }),
+    ),
+  })
+  .superRefine((g, ctx) => {
+    checkPresetKey(ctx, ["presetKey"], g.presetKey);
+    checkOptKoText(ctx, ["introKo"], g.introKo, TOEIC_GUIDE_INTRO_MAX, "introKo");
+    checkCount(ctx, ["sections"], g.sections, 1, TOEIC_GUIDE_SECTIONS_MAX, "sections");
+    g.sections.forEach((sec, s) => {
+      const sp: Path = ["sections", s];
+      checkOptChars(ctx, [...sp, "label"], sec.label, TOEIC_GUIDE_LABEL_MAX, "label");
+      checkKoText(ctx, [...sp, "titleKo"], sec.titleKo, TOEIC_GUIDE_TITLE_MAX, "titleKo");
+      checkOptKoText(ctx, [...sp, "introKo"], sec.introKo, TOEIC_GUIDE_INTRO_MAX, "introKo");
+      checkOptKoText(ctx, [...sp, "groupKo"], sec.groupKo, TOEIC_GUIDE_GROUP_MAX, "groupKo");
+      checkCount(ctx, [...sp, "blocks"], sec.blocks, 1, TOEIC_GUIDE_BLOCKS_MAX, "blocks");
+      sec.blocks.forEach((b, bi) => checkGuideBlock(ctx, [...sp, "blocks", bi], b));
+    });
+
+    // 표현(§12-2-3) — checkEntryText를 그대로 부르고, 공략 쪽 기호 규칙만 더한다(표현집 판독·가져오기 동작은 그대로)
+    checkCount(ctx, ["expressions"], g.expressions, TOEIC_SET_ENTRIES_MIN, TOEIC_SET_ENTRIES_MAX, "expressions");
+    g.expressions.forEach((e, i) => {
+      checkEntryText(ctx, ["expressions", i], e, { allowBlankMeaning: false });
+      if (/[{}/[\]]/.test(e.expression)) issue(ctx, ["expressions", i, "expression"], GUIDE_EXPR_SYMBOL_KO);
+      if (e.example !== null && /[{}/[\]]/.test(e.example)) issue(ctx, ["expressions", i, "example"], GUIDE_EXPR_SYMBOL_KO);
+    });
+    checkUniqueNos(ctx, ["expressions"], g.expressions, "expressions");
+    for (const i of findDuplicateExpressionIndexes(g.expressions)) issue(ctx, ["expressions", i, "expression"], TOEIC_DUPLICATE_EXPRESSION_MESSAGE_KO);
+
+    // 말하기(§12-2-3) — checkQuizText + 길이·완성 문장 기호
+    checkCount(ctx, ["speak"], g.speak, 0, TOEIC_GUIDE_SPEAK_MAX, "speak");
+    g.speak.forEach((q, i) => {
+      checkQuizText(ctx, ["speak", i], q);
+      checkChars(ctx, ["speak", i, "promptKo"], q.promptKo, 1, TOEIC_GUIDE_LINE_KO_MAX, "promptKo");
+      checkChars(ctx, ["speak", i, "modelAnswer"], q.modelAnswer, 1, TOEIC_GUIDE_LINE_KO_MAX, "modelAnswer");
+      if (TILDES.test(q.modelAnswer) || /[{}/[\]]/.test(q.modelAnswer)) {
+        issue(ctx, ["speak", i, "modelAnswer"], "말하기 modelAnswer는 완성 문장이에요 — ~ { } / [ ]를 쓸 수 없어요");
+      }
+    });
+    checkUniqueNos(ctx, ["speak"], g.speak, "speak");
+
+    if (utf8ByteLength(JSON.stringify(toeicGuideEntryContent(g))) > TOEIC_GUIDE_MAX_BYTES) {
+      issue(ctx, [], `이 유형 항목이 너무 커요(UTF-8 최대 ${TOEIC_GUIDE_MAX_BYTES}바이트)`);
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// 틀 은행 zod (§12-2-7)
+// ---------------------------------------------------------------------------
+
+/** 틀 전용 규칙을 통과했는가(교재 고정 부분 대조·예문 대조를 돌릴 만한 틀인가) — 자리 문법만 본다 */
+function isFrameSyntaxOk(frameEn: string): boolean {
+  const n = frameSlotNames(frameEn).length;
+  return scanSlots(frameEn).problems.length === 0 && n >= TOEIC_TEMPLATE_SLOTS_MIN && n <= TOEIC_TEMPLATE_SLOTS_MAX;
+}
+
+const OPEN_QUOTES = "\"'“‘";
+const SLOT_FOLLOWERS = ".,?!;:";
+
+/** 채움(예문·테스트 전용) — 1~80자, 라틴 또는 숫자 포함(가격·시각·연도 — 검토 B1), 한글·{ } ~ / [ ] 거부, 앞뒤 공백 없음 */
+function checkFill(ctx: IssueSink, path: Path, f: string): void {
+  if (f.length < 1 || f.length > TOEIC_TEMPLATE_FILL_MAX) issue(ctx, path, `채움은 1~${TOEIC_TEMPLATE_FILL_MAX}자예요`);
+  if (!(hasLatin(f) || /\d/.test(f))) issue(ctx, path, "채움에는 영어(라틴 문자)나 숫자가 있어야 해요");
+  if (hasHangul(f)) issue(ctx, path, "채움에 한글을 쓸 수 없어요");
+  if (hasBrace(f) || TILDES.test(f) || /[/[\]]/.test(f)) issue(ctx, path, "채움에 { } ~ / [ ]를 쓸 수 없어요");
+  if (f !== f.trim()) issue(ctx, path, "채움 앞뒤에 공백을 둘 수 없어요");
+}
+
+function fillsKey(fills: readonly string[]): string {
+  return fills.map((x) => x.toLowerCase()).join("\u0000");
+}
+
+/** guideRefs 한 줄의 대상 키(같은 연결 판정·연결 표 공용) */
+function refTargetKey(kind: ToeicTemplateRefKind, target: string): string {
+  if (kind === "expression") return expressionKey(target);
+  if (kind === "lead") return collapseSpaces(target);
+  return target.trim();
+}
+function refTarget(r: ToeicTemplateGuideRef): string {
+  return r.kind === "expression" ? r.expression : r.kind === "template" ? r.step : r.leadEn;
+}
+
+const templateRefShape = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("expression"), part: guidePartEnum, expression: z.string() }),
+  z.object({ kind: z.literal("template"), part: guidePartEnum, step: z.string() }),
+  z.object({ kind: z.literal("lead"), part: guidePartEnum, leadEn: z.string() }),
+]);
+
+const templateSchema = z
+  .object({
+    key: z.string(),
+    groupKo: z.string(),
+    frameEn: z.string(),
+    frameKo: z.string(),
+    useKo: z.string(),
+    parts: z.array(guidePartEnum),
+    source: z.enum(TOEIC_TEMPLATE_SOURCES),
+    guideRefs: z.array(templateRefShape),
+    examples: z.array(z.object({ en: z.string(), ko: z.string(), fills: z.array(z.string()) })),
+    testFills: z.array(z.array(z.string())),
+  })
+  .superRefine((t, ctx) => {
+    if (!TOEIC_TEMPLATE_KEY_RE.test(t.key)) issue(ctx, ["key"], "key는 소문자·숫자·하이픈(첫 글자는 소문자·숫자, 최대 40자)이어야 합니다");
+    checkKoText(ctx, ["groupKo"], t.groupKo, TOEIC_TEMPLATE_GROUP_KO_MAX, "groupKo");
+    checkKoText(ctx, ["useKo"], t.useKo, TOEIC_TEMPLATE_USE_KO_MAX, "useKo");
+    checkCount(ctx, ["parts"], t.parts, 1, TOEIC_GUIDE_PARTS.length, "parts");
+    if (new Set(t.parts).size !== t.parts.length) issue(ctx, ["parts"], "parts 중복 금지");
+
+    // 영어 틀
+    checkChars(ctx, ["frameEn"], t.frameEn, 1, TOEIC_TEMPLATE_FRAME_MAX, "frameEn");
+    if (!hasLatin(t.frameEn)) issue(ctx, ["frameEn"], "frameEn에는 영어(라틴 문자)가 있어야 합니다");
+    const slotsOk = checkSlotSyntax(ctx, ["frameEn"], t.frameEn, "frameEn");
+    if (hasHangul(textOutsideSlots(t.frameEn))) issue(ctx, ["frameEn"], "frameEn: 한글은 자리 {…} 안에서만 쓸 수 있어요");
+    const { slots } = scanSlots(t.frameEn);
+    const names = slots.map((x) => x.name);
+    if (names.length < TOEIC_TEMPLATE_SLOTS_MIN || names.length > TOEIC_TEMPLATE_SLOTS_MAX) {
+      issue(ctx, ["frameEn"], `틀의 자리는 ${TOEIC_TEMPLATE_SLOTS_MIN}~${TOEIC_TEMPLATE_SLOTS_MAX}개예요`);
+    }
+    if (new Set(names).size !== names.length) issue(ctx, ["frameEn"], "틀 안 자리 이름 중복 금지");
+    for (const sl of slots) {
+      const before = sl.start === 0 ? "" : t.frameEn[sl.start - 1];
+      const after = sl.end >= t.frameEn.length ? "" : t.frameEn[sl.end];
+      const okBefore = before === "" || /\s/.test(before) || OPEN_QUOTES.includes(before);
+      const okAfter = after === "" || /\s/.test(after) || SLOT_FOLLOWERS.includes(after);
+      if (!okBefore || !okAfter) {
+        issue(ctx, ["frameEn"], "자리는 낱말 하나처럼 서야 해요 — 자리 앞뒤에 글자를 붙여 쓸 수 없어요(-ing·'s 등은 자리 안에)");
+        break;
+      }
+    }
+    const outside = textOutsideSlots(t.frameEn);
+    if (TILDES.test(outside) || /[/[\]]/.test(outside)) issue(ctx, ["frameEn"], "틀의 자리 밖에는 ~ / [ ]를 쓸 수 없어요 — 자리는 { }, 대안은 틀을 나눠요");
+    const fixedWords = parseFrame(t.frameEn)
+      .filter((p) => p.kind === "fixed")
+      .flatMap((p) => (p.kind === "fixed" ? normalizeTemplateWords(p.text) : []));
+    if (fixedWords.length === 0) issue(ctx, ["frameEn"], "틀에는 고정 부분 낱말이 1개 이상 있어야 해요");
+    const frameOk = slotsOk && isFrameSyntaxOk(t.frameEn);
+    const slotCount = names.length;
+
+    // 한국어 틀 — 같은 슬롯 규칙, 자리 이름의 모임이 영어와 같다, ~ 금지
+    checkChars(ctx, ["frameKo"], t.frameKo, 1, TOEIC_TEMPLATE_FRAME_MAX, "frameKo");
+    // 한글 포함 — 자리 이름 밖에서 센다(자리 이름만 한글인 "So {결론}."은 한국어 틀이 아니다)
+    if (!hasHangul(textOutsideSlots(t.frameKo))) issue(ctx, ["frameKo"], "frameKo에는 자리 밖에 한글이 있어야 합니다");
+    const koOk = checkSlotSyntax(ctx, ["frameKo"], t.frameKo, "frameKo");
+    if (TILDES.test(t.frameKo)) issue(ctx, ["frameKo"], "한국어 틀도 이름 있는 자리 {…}로 적어요(~ 금지)");
+    if (frameOk && koOk) {
+      const ko = new Set(frameSlotNames(t.frameKo));
+      const en = new Set(names);
+      if (ko.size !== en.size || [...en].some((n) => !ko.has(n))) issue(ctx, ["frameKo"], "한국어 틀의 자리 이름 모임이 영어 틀과 같아야 해요");
+    }
+
+    // 예문
+    checkCount(ctx, ["examples"], t.examples, TOEIC_TEMPLATE_EXAMPLES_MIN, TOEIC_TEMPLATE_EXAMPLES_MAX, "examples");
+    const exSeen = new Set<string>();
+    const fillSeen = new Set<string>();
+    t.examples.forEach((ex, j) => {
+      const p: Path = ["examples", j];
+      if (frameOk && ex.fills.length !== slotCount) issue(ctx, [...p, "fills"], "채움 수는 틀의 자리 수와 같아야 해요");
+      ex.fills.forEach((f, k) => checkFill(ctx, [...p, "fills", k], f));
+      checkChars(ctx, [...p, "en"], ex.en, 1, TTS_TEXT_MAX_CHARS, "examples.en");
+      if (frameOk && ex.fills.length === slotCount && ex.en !== fillFrame(t.frameEn, ex.fills)) {
+        issue(ctx, [...p, "en"], "예문 en은 틀에 채움을 넣은 결과와 글자까지(대소문자·문장부호·공백) 같아야 해요");
+      }
+      checkKoText(ctx, [...p, "ko"], ex.ko, TOEIC_TEMPLATE_EXAMPLE_KO_MAX, "examples.ko");
+      if (hasBrace(ex.ko) || TILDES.test(ex.ko)) issue(ctx, [...p, "ko"], "예문 ko에는 { } ~를 쓸 수 없어요");
+      const ek = matchKey(ex.en);
+      if (exSeen.has(ek)) issue(ctx, [...p, "en"], "한 틀 안 예문 중복 금지(대소문자·공백 무시)");
+      exSeen.add(ek);
+      const fk = fillsKey(ex.fills);
+      if (fillSeen.has(fk)) issue(ctx, [...p, "fills"], "한 틀 안 채움 묶음 중복 금지(대소문자 무시)");
+      fillSeen.add(fk);
+    });
+
+    // 테스트 전용 채움
+    checkCount(ctx, ["testFills"], t.testFills, TOEIC_TEMPLATE_TEST_FILLS_MIN, TOEIC_TEMPLATE_TEST_FILLS_MAX, "testFills");
+    const tfSeen = new Set<string>();
+    t.testFills.forEach((tf, j) => {
+      const p: Path = ["testFills", j];
+      if (frameOk && tf.length !== slotCount) issue(ctx, p, "채움 수는 틀의 자리 수와 같아야 해요");
+      tf.forEach((f, k) => checkFill(ctx, [...p, k], f));
+      const k = fillsKey(tf);
+      if (fillSeen.has(k)) issue(ctx, p, "테스트 전용 채움은 예문의 채움과 달라야 해요(대소문자 무시)");
+      if (tfSeen.has(k)) issue(ctx, p, "테스트 전용 채움 묶음 중복 금지");
+      tfSeen.add(k);
+      if (frameOk && tf.length === slotCount && fillFrame(t.frameEn, tf).trim().length > TTS_TEXT_MAX_CHARS) {
+        issue(ctx, p, `채운 문장은 ${TTS_TEXT_MAX_CHARS}자 이하여야 해요`);
+      }
+    });
+
+    // 출처·연결(대상 존재·교재 고정 부분은 파일 전체를 보는 최상위 검사가 본다)
+    checkCount(ctx, ["guideRefs"], t.guideRefs, 0, TOEIC_TEMPLATE_GUIDE_REFS_MAX, "guideRefs");
+    if (t.source === "guide" && t.guideRefs.length === 0) issue(ctx, ["guideRefs"], "교재 틀(source guide)은 guideRefs가 1개 이상이어야 해요");
+    const refSeen = new Set<string>();
+    t.guideRefs.forEach((r, j) => {
+      if (t.source === "new" && r.kind !== "template") {
+        issue(ctx, ["guideRefs", j, "kind"], "새 틀(source new)은 kind template 연결만 쓸 수 있어요 — 교재 표현·머리말을 가리키면 교재 틀(guide)이에요");
+      }
+      if (!t.parts.includes(r.part)) issue(ctx, ["guideRefs", j, "part"], "연결의 part는 이 틀의 parts 안에 있어야 해요");
+      const k = `${r.kind}\u0000${r.part}\u0000${refTargetKey(r.kind, refTarget(r))}`;
+      if (refSeen.has(k)) issue(ctx, ["guideRefs", j], "같은 연결 두 번 금지");
+      refSeen.add(k);
+    });
+  });
+
+const templateBankSchema = z
+  .object({
+    presetKey: z.string(),
+    flows: z.array(
+      z.object({
+        part: guidePartEnum,
+        steps: z.array(z.object({ stepKo: z.string(), groupsKo: z.array(z.string()) })),
+        banksKo: z.array(z.string()),
+      }),
+    ),
+    items: z.array(templateSchema),
+    alignmentSkips: z.array(
+      z.object({
+        part: guidePartEnum,
+        kind: z.enum(TOEIC_TEMPLATE_REF_KINDS),
+        ref: z.string(),
+        reasonKo: z.string(),
+        coveredBy: z.string().nullable(),
+      }),
+    ),
+  })
+  .superRefine((b, ctx) => {
+    checkPresetKey(ctx, ["presetKey"], b.presetKey);
+    checkCount(ctx, ["items"], b.items, 1, TOEIC_TEMPLATES_MAX, "items");
+    const keys = new Set<string>();
+    const forms = new Set<string>();
+    b.items.forEach((t, i) => {
+      if (keys.has(t.key)) issue(ctx, ["items", i, "key"], "틀 key 중복 금지");
+      keys.add(t.key);
+      const form = matchKey(frameToExpression(t.frameEn));
+      if (form !== "" && forms.has(form)) issue(ctx, ["items", i, "frameEn"], "~ 형태(자리를 ~로 바꾼 글자)가 같은 틀이 은행에 이미 있어요 — 자리 이름만 다른 틀은 둘 수 없어요");
+      forms.add(form);
+    });
+
+    // 흐름(§12-2-7) — 단계(3~6) + 소재 묶음, 한 유형 안 묶음 이름은 한 번, 틀 묶음 모임 = 흐름 묶음 모임, 묶음당 틀 ≤ 6
+    const partsUsed = new Set<ToeicGuidePart>(b.items.flatMap((t) => t.parts));
+    const flowParts = new Set<ToeicGuidePart>();
+    b.flows.forEach((f, fi) => {
+      const fp: Path = ["flows", fi];
+      if (flowParts.has(f.part)) issue(ctx, [...fp, "part"], "유형마다 흐름은 하나예요(part 중복)");
+      flowParts.add(f.part);
+      if (!partsUsed.has(f.part)) issue(ctx, [...fp, "part"], "이 유형을 쓰는 틀이 없어요 — 흐름을 빼 주세요");
+      checkCount(ctx, [...fp, "steps"], f.steps, TOEIC_TEMPLATE_FLOW_STEPS_MIN, TOEIC_TEMPLATE_FLOW_STEPS_MAX, "steps");
+      checkCount(ctx, [...fp, "banksKo"], f.banksKo, 0, TOEIC_TEMPLATE_BANKS_MAX, "banksKo");
+      const stepNames = new Set<string>();
+      const groupSeen = new Set<string>();
+      const locs = new Map<string, Path>();
+      const seeGroup = (name: string, path: Path) => {
+        checkChars(ctx, path, name, 1, TOEIC_TEMPLATE_FLOW_NAME_MAX, "묶음 이름");
+        if (groupSeen.has(name)) issue(ctx, path, "한 유형 흐름 안에서 묶음 이름은 한 번만 나와요(단계·소재 통틀어)");
+        groupSeen.add(name);
+        if (!locs.has(name)) locs.set(name, path);
+      };
+      f.steps.forEach((st, si) => {
+        const sp: Path = [...fp, "steps", si];
+        checkKoText(ctx, [...sp, "stepKo"], st.stepKo, TOEIC_TEMPLATE_FLOW_NAME_MAX, "stepKo");
+        if (stepNames.has(st.stepKo)) issue(ctx, [...sp, "stepKo"], "한 유형 안 단계 이름 중복 금지");
+        stepNames.add(st.stepKo);
+        checkCount(ctx, [...sp, "groupsKo"], st.groupsKo, 1, TOEIC_TEMPLATE_STEP_GROUPS_MAX, "groupsKo");
+        st.groupsKo.forEach((g, gi) => seeGroup(g, [...sp, "groupsKo", gi]));
+      });
+      f.banksKo.forEach((g, gi) => seeGroup(g, [...fp, "banksKo", gi]));
+      // 그 유형 틀들의 묶음 모임 = 흐름의 묶음 모임, 묶음당 틀 ≤ 6(유형마다 센다 — 공통 틀 포함)
+      const count = new Map<string, number>();
+      b.items.forEach((t, i) => {
+        if (!t.parts.includes(f.part)) return;
+        count.set(t.groupKo, (count.get(t.groupKo) ?? 0) + 1);
+        if (!groupSeen.has(t.groupKo)) issue(ctx, ["items", i, "groupKo"], `이 틀의 묶음이 ${f.part} 흐름에 없어요`);
+      });
+      for (const [name, path] of locs) {
+        const n = count.get(name) ?? 0;
+        if (n === 0) issue(ctx, path, `이 묶음에 ${f.part} 유형 틀이 없어요`);
+        if (n > TOEIC_TEMPLATE_GROUP_MAX) issue(ctx, path, `묶음 하나의 틀은 ${TOEIC_TEMPLATE_GROUP_MAX}개까지예요(${f.part}) — 원본에서 묶음을 나눠 주세요`);
+      }
+    });
+    for (const p of TOEIC_GUIDE_PARTS) {
+      if (partsUsed.has(p) && !flowParts.has(p)) issue(ctx, ["flows"], `틀이 쓰는 유형(${p})의 흐름이 없어요`);
+    }
+
+    // 정렬 건너뜀 — 모양·중복·coveredBy(대상 존재·연결 충돌은 최상위 검사)
+    checkCount(ctx, ["alignmentSkips"], b.alignmentSkips, 0, TOEIC_TEMPLATE_SKIPS_MAX, "alignmentSkips");
+    const skipSeen = new Set<string>();
+    b.alignmentSkips.forEach((sk, k) => {
+      const p: Path = ["alignmentSkips", k];
+      checkKoText(ctx, [...p, "reasonKo"], sk.reasonKo, TOEIC_TEMPLATE_SKIP_REASON_MAX, "reasonKo");
+      if (sk.coveredBy !== null && !b.items.some((t) => t.key === sk.coveredBy && t.parts.includes(sk.part))) {
+        issue(ctx, [...p, "coveredBy"], "coveredBy는 이 유형을 parts에 가진 틀의 key여야 해요");
+      }
+      const key = `${sk.part}\u0000${sk.kind}\u0000${refTargetKey(sk.kind, sk.ref)}`;
+      if (skipSeen.has(key)) issue(ctx, p, "같은 대상을 두 번 건너뛸 수 없어요");
+      skipSeen.add(key);
+    });
+
+    if (utf8ByteLength(JSON.stringify(toeicTemplateBankContent(b))) > TOEIC_GUIDE_MAX_BYTES) {
+      issue(ctx, [], `틀 은행이 너무 커요(UTF-8 최대 ${TOEIC_GUIDE_MAX_BYTES}바이트)`);
+    }
+  });
+
+/** 한 유형 공략 항목에서 틀이 가리킬 수 있는 대상(모두 — 정렬 대상보다 넓다: 자리 없는 표현도 된다) */
+function guideTargetSets(g: ToeicGuideFileEntry): Record<ToeicTemplateRefKind, Set<string>> {
+  const out: Record<ToeicTemplateRefKind, Set<string>> = { expression: new Set(), template: new Set(), lead: new Set() };
+  for (const e of g.expressions) out.expression.add(refTargetKey("expression", e.expression));
+  for (const sec of g.sections) {
+    for (const b of sec.blocks) {
+      if (b.kind !== "lines") continue;
+      if (b.style === "template") for (const ln of b.lines) if (ln.label !== null && ln.label.trim() !== "") out.template.add(refTargetKey("template", ln.label));
+      if (b.style === "completions" && b.lead?.en) out.lead.add(refTargetKey("lead", b.lead.en));
+    }
+  }
+  return out;
+}
+
+const REF_TARGET_FIELD: Record<ToeicTemplateRefKind, string> = { expression: "expression", template: "step", lead: "leadEn" };
+
+/**
+ * 가져오기 파일 zod(§12-2-3·§12-2-7) — 400 본문은 toeicGuideImportInvalidBody가 만든다. 파일 전체를 봐야 하는 교차 검사
+ * (파일 안 part·presetKey 중복, guideRefs 대상·교재 고정 부분, alignmentSkips 대상·연결 충돌, **정렬 빠짐 0**)는 최상위 superRefine에서.
+ * 라우트는 `safeParse(raw, { error: toeicZodErrorKo })`로 부른다(기본 오류 문구 한국어화).
+ */
+export const toeicGuideFileSchema: z.ZodType<ToeicGuideFile> = z
+  .object({
+    format: z.literal(TOEIC_GUIDE_FORMAT, {
+      error: (iss) =>
+        iss.input === TOEIC_GUIDE_FORMAT_V1
+          ? "형식이 바뀌었어요(toeic-guides/v1 → v2) — 파일을 다시 만들어 주세요"
+          : iss.input === TOEIC_IMPORT_FORMAT
+            ? "표현집 가져오기 파일이에요 — 표현집 화면의 \"파일로 가져오기\"로 넣어 주세요"
+            : `format은 "${TOEIC_GUIDE_FORMAT}"여야 해요`,
+    }),
+    guides: z.array(guideEntrySchema),
+    templates: templateBankSchema.nullable(),
+  })
+  .superRefine((f, ctx) => {
+    checkCount(ctx, ["guides"], f.guides, f.templates === null ? 1 : 0, TOEIC_GUIDE_FILE_GUIDES_MAX, "guides");
+    const partSeen = new Set<string>();
+    const keySeen = new Set<string>();
+    f.guides.forEach((g, i) => {
+      if (partSeen.has(g.part)) issue(ctx, ["guides", i, "part"], "한 파일에 같은 유형(part)은 하나만 넣어요");
+      partSeen.add(g.part);
+      if (keySeen.has(g.presetKey)) issue(ctx, ["guides", i, "presetKey"], "presetKey 중복 금지");
+      keySeen.add(g.presetKey);
+    });
+    const bank = f.templates;
+    if (bank === null) return;
+    if (keySeen.has(bank.presetKey)) issue(ctx, ["templates", "presetKey"], "틀 은행 presetKey는 공략 키와 달라야 해요");
+
+    const byPart = new Map<ToeicGuidePart, ToeicGuideFileEntry>(f.guides.map((g) => [g.part, g] as const));
+    const targets = new Map<ToeicGuidePart, Record<ToeicTemplateRefKind, Set<string>>>();
+    for (const g of f.guides) targets.set(g.part, guideTargetSets(g));
+    /** 유형 → 종류 → 연결된 대상 키 */
+    const linked = new Map<string, Set<string>>();
+    const linkKey = (part: string, kind: string) => `${part}\u0000${kind}`;
+
+    bank.items.forEach((t, i) => {
+      const frameOk = isFrameSyntaxOk(t.frameEn);
+      t.guideRefs.forEach((r, j) => {
+        const rp: Path = ["templates", "items", i, "guideRefs", j];
+        const target = refTarget(r);
+        const tk = refTargetKey(r.kind, target);
+        const lk = linkKey(r.part, r.kind);
+        if (!linked.has(lk)) linked.set(lk, new Set());
+        linked.get(lk)!.add(tk);
+        const tg = targets.get(r.part);
+        if (!tg) {
+          issue(ctx, [...rp, "part"], "가리키는 유형의 공략이 같은 파일에 없어요");
+          return;
+        }
+        if (!tg[r.kind].has(tk)) {
+          issue(ctx, [...rp, REF_TARGET_FIELD[r.kind]], "가리키는 교재 대상이 같은 파일의 그 유형 공략에 없어요");
+          return;
+        }
+        if (!frameOk) return;
+        if (r.kind === "expression" && !expressionFixedPartsInFrame(r.expression, t.frameEn)) {
+          issue(ctx, rp, "교재 표현의 고정 부분이 틀에 온전히(이어서, 순서대로) 들어 있지 않아요 — 교재 틀의 고정 부분을 글자 그대로 써 주세요");
+        }
+        if (r.kind === "lead" && !leadMatchesFrame(r.leadEn, t.frameEn)) {
+          issue(ctx, rp, "이어 말하기 머리말이 틀에 이어지지 않아요 — 틀의 한 고정 구간에 들어 있거나(포함), 틀 머리의 자리를 채운 사례(고정 낱말 2개 이상)여야 해요");
+        }
+      });
+    });
+
+    const skipped = new Map<string, Set<string>>();
+    bank.alignmentSkips.forEach((sk, k) => {
+      const p: Path = ["templates", "alignmentSkips", k];
+      const tk = refTargetKey(sk.kind, sk.ref);
+      const lk = linkKey(sk.part, sk.kind);
+      if (!skipped.has(lk)) skipped.set(lk, new Set());
+      skipped.get(lk)!.add(tk);
+      const tg = targets.get(sk.part);
+      if (!tg) {
+        issue(ctx, [...p, "part"], "건너뛸 대상의 유형 공략이 같은 파일에 없어요");
+        return;
+      }
+      if (!tg[sk.kind].has(tk)) issue(ctx, [...p, "ref"], "건너뛸 교재 대상이 같은 파일의 그 유형 공략에 없어요");
+      if (linked.get(lk)?.has(tk)) issue(ctx, p, "어떤 틀이 연결한 대상은 건너뛸 수 없어요");
+    });
+
+    // 정렬 빠짐 0(§12-2-7 — 사용자 지시 "기존 템플릿에 최대한 맞춰"). 경로는 위치만, 대상 글자는 싣지 않는다.
+    for (const g of f.guides) {
+      const tg = toeicGuideAlignmentTargets(g);
+      for (const kind of TOEIC_TEMPLATE_REF_KINDS) {
+        const lk = linkKey(g.part, kind);
+        tg[kind].forEach((target, idx) => {
+          const tk = refTargetKey(kind, target);
+          if (linked.get(lk)?.has(tk) || skipped.get(lk)?.has(tk)) return;
+          issue(ctx, ["templates", "alignment", g.part, kind, idx], "교재 정렬 대상이 어떤 틀에도 연결되지 않았고 건너뜀 목록(alignmentSkips)에도 없어요");
+        });
+      }
+    }
+  });
+
+/**
+ * 가져오기 400 본문(§12-2-3) — 라우트는 이 함수를 그대로 쓰고, eval도 같은 함수로 값 누출을 검사한다. issues는 경로 + 규칙 문구만
+ * (toToeicIssues — 값 없음, 최대 20개). 형식 오류면 그 문구를 messageKo로 올린다.
+ */
+export function toeicGuideImportInvalidBody(issues: readonly z.core.$ZodIssue[]): {
+  ok: false;
+  error: "invalid_input";
+  messageKo: string;
+  issues: { path: string; message: string }[];
+} {
+  const formatIssue = issues.find((i) => i.path.length === 1 && i.path[0] === "format");
+  return {
+    ok: false,
+    error: "invalid_input",
+    messageKo: formatIssue?.message ?? "공략 파일을 가져올 수 없어요 — 표시된 위치를 고쳐 파일을 다시 만들어 주세요",
+    issues: toToeicIssues(issues, TOEIC_GUIDE_IMPORT_ISSUES_MAX),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 템플릿 테스트 기록 라우트 본문 zod (§12-5-6) — 요청 타입은 lib/toeic-guide-contract.ts(라우트가 양방향으로 묶는다)
+// ---------------------------------------------------------------------------
+
+export const toeicTemplateSessionBodySchema = z
+  .object({
+    clientSessionId: z.string().regex(TOEIC_TEMPLATE_SESSION_ID_RE, "clientSessionId는 소문자 UUID여야 해요"),
+    mode: z.enum(TOEIC_TEMPLATE_QUIZ_MODES),
+    startedAt: z.string().datetime({ message: "startedAt이 올바른 시각이 아니에요" }),
+    finishedAt: z.string().datetime({ message: "finishedAt이 올바른 시각이 아니에요" }).nullable(),
+    items: z
+      .array(
+        z.object({
+          word: z.string().regex(TOEIC_TEMPLATE_ITEM_KEY_RE, "항목 키는 tpl:{틀 key} 모양이어야 해요"),
+          correct: z.boolean(),
+          answered: z.boolean().nullable(),
+        }),
+      )
+      .min(1, "저장할 문항이 없어요")
+      .max(TOEIC_TEMPLATE_TEST_MAX, `한 판은 ${TOEIC_TEMPLATE_TEST_MAX}문항까지예요`),
+  })
+  .superRefine((b, ctx) => {
+    const seen = new Set<string>();
+    b.items.forEach((it, i) => {
+      if (seen.has(it.word)) issue(ctx, ["items", i, "word"], "한 판에 같은 틀은 한 번만 나와요");
+      seen.add(it.word);
+    });
+  });
+
+/** 요청 계약(lib/toeic-guide-contract.ts)과 본문 zod 입력을 양방향으로 묶는다 — 한쪽 필드만 바꾸면 tsc가 잡는다 */
+type ToeicTemplateSessionBodyInput = z.input<typeof toeicTemplateSessionBodySchema>;
+const templateSessionRequestMatchesSchema: [ToeicTemplateSessionRequest, ToeicTemplateSessionBodyInput] extends [ToeicTemplateSessionBodyInput, ToeicTemplateSessionRequest]
+  ? true
+  : never = true;
+void templateSessionRequestMatchesSchema;

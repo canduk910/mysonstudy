@@ -21,7 +21,16 @@ export interface ToeicWrongModeGroup {
   mastered: { key: string; title: string; sub: string | null }[];
 }
 
-export default function ToeicQuizWrongView({ id, groups }: { id: string; groups: ToeicWrongModeGroup[] }) {
+export default function ToeicQuizWrongView({
+  id,
+  groups,
+  modeLabelsKo = TOEIC_QUIZ_MODE_LABELS_KO,
+}: {
+  id: string;
+  groups: ToeicWrongModeGroup[];
+  /** 모드 이름 — 유형별 공략 세트는 말하기를 "교재 문장 말하기"로(§12-6) */
+  modeLabelsKo?: Record<ToeicQuizMode, string>;
+}) {
   const firstWithWrong = groups.find((g) => g.wrong.length > 0) ?? groups.find((g) => g.attempted > 0) ?? groups[0];
   const [active, setActive] = useState<ToeicQuizMode>(firstWithWrong.mode);
   const group = groups.find((g) => g.mode === active) ?? groups[0];
@@ -38,7 +47,7 @@ export default function ToeicQuizWrongView({ id, groups }: { id: string; groups:
             onClick={() => setActive(g.mode)}
             className={`${s.tab} ${g.mode === active ? s.tabOn : ""}`}
           >
-            {TOEIC_QUIZ_MODE_LABELS_KO[g.mode]}
+            {modeLabelsKo[g.mode]}
             {g.wrong.length > 0 && <span className={s.tabCount}>{g.wrong.length}</span>}
           </button>
         ))}
@@ -46,7 +55,7 @@ export default function ToeicQuizWrongView({ id, groups }: { id: string; groups:
 
       <section className={s.panel} aria-live="polite">
         <p className="t-caption">
-          {TOEIC_QUIZ_MODE_LABELS_KO[group.mode]} — 시도 {group.attempted}개 · 졸업 {group.mastered.length}개 · 남은 오답 {group.wrong.length}개
+          {modeLabelsKo[group.mode]} — 시도 {group.attempted}개 · 졸업 {group.mastered.length}개 · 남은 오답 {group.wrong.length}개
         </p>
 
         {group.wrong.length === 0 ? (

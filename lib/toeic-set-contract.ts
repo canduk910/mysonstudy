@@ -260,7 +260,8 @@ export type ToeicPointsResponse =
     }
   | {
       ok: false;
-      error: "invalid_input" | "set_not_found" | "no_api_key" | "points_failed" | "save_failed";
+      /** is_guide: 공략 계열(유형 공략·틀 은행) 세트 — 발화 포인트는 공략에 만들지 않는다(409, docs/harness/toeic.md §12-3·§12-6) */
+      error: "invalid_input" | "set_not_found" | "is_guide" | "no_api_key" | "points_failed" | "save_failed";
       messageKo: string;
       issues?: Issue[];
     };
@@ -271,7 +272,8 @@ export type ToeicPointsResponse =
 
 export type ToeicSetRenameResponse =
   | { ok: true; id: string; titleKo: string }
-  | { ok: false; error: "invalid_input" | "set_not_found" | "save_failed"; messageKo: string; issues?: Issue[] };
+  /** is_guide: 공략 계열(유형 공략·틀 은행) 세트 — 이름은 고정(409, docs/harness/toeic.md §12-3) */
+  | { ok: false; error: "invalid_input" | "set_not_found" | "is_guide" | "save_failed"; messageKo: string; issues?: Issue[] };
 
 export type ToeicSetDeleteResponse =
   | { ok: true }

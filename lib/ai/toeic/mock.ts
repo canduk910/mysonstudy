@@ -14,6 +14,8 @@ import { TOEIC_MOCK_PART_NAME_KO, toeicQuestionFormat, type ToeicMockPart } from
 import { aggregateToeicStatsByMode, TOEIC_QUIZ_MODES, type ToeicQuizSessionLike } from "../../toeic-quiz";
 import { isStatMastered } from "../../vocab-mastery";
 import type { Rng } from "../../vocab-quiz";
+import { TOEIC_DRILL_TEMPLATES_MAX, frameToExpression, pickTemplatesForDrill } from "../../toeic-template";
+import type { ToeicGuidePart } from "../../toeic-guide";
 import {
   TOEIC_FEEDBACK_LIMITS,
   TOEIC_MOCK_EXPRESSIONS_MAX,
@@ -23,6 +25,8 @@ import {
   type ToeicMockParts,
   type ToeicPicturePart,
   type ToeicPictureGeneration,
+  type ToeicTemplate,
+  type ToeicTemplateFlow,
   type ToeicUsedExpression,
 } from "./schemas";
 
@@ -285,4 +289,54 @@ export function pickExpressionsForMock(
   });
   scored.sort((a, b) => a.rank - b.rank || b.wrong - a.wrong || a.order - b.order);
   return scored.slice(0, max).map((s) => s.expr);
+}
+
+// ---------------------------------------------------------------------------
+// 한 문제 연습의 활용할 표현 (docs/harness/toeic.md §12-7-2·§12-7-9) — 서버 전용(pickExpressionsForMock이 여기 산다)
+// ---------------------------------------------------------------------------
+
+export interface ToeicDrillExpressionSources {
+  /**
+   * 그 유형 틀(틀 은행에서 parts로 고른 것 — 없으면 빈 배열)과 틀 테스트 세션(setId guide-templates, startedAt 오름차순).
+   * flows는 단계마다 하나를 먼저 고르는 데 쓴다.
+   */
+  templates: { part: ToeicGuidePart; flows: readonly ToeicTemplateFlow[]; items: readonly ToeicTemplate[]; sessions: readonly ToeicQuizSessionLike[] };
+  /** 그 유형 공략 세트(없으면 null)와 **그 세트의** 시험 세션 */
+  guide: { set: { entries: readonly { expression: string }[] } | null; sessions: readonly ToeicQuizSessionLike[] };
+  /** 표현집 세트들과 **setId ∈ 표현집 세트인** 시험 세션 — 통계 키가 표현 문자열이라 섞으면 서로의 순위가 움직인다 */
+  book: { sets: readonly { entries: readonly { expression: string }[] }[]; sessions: readonly ToeicQuizSessionLike[] };
+}
+
+/**
+ * 한 문제 연습에 넘길 활용할 표현(§12-7-2) — **틀을 맨 앞에**(pickTemplatesForDrill: 단계마다 가장 약한 틀 하나 → 단계·소재를 통틀어
+ * 약한 순, 최대 10개, 각 틀은 frameToExpression의 `~` 형태), 그다음 **pickExpressionsForMock을 두 번** — 공략 세트 하나(그 유형 공략
+ * 표현, 숙련도 낮은 것 우선), 표현집 세트들(나머지 칸). 틀 → 공략 → 표현집 순으로 대소문자 무시 중복을 접어 최대 24개.
+ * 라우트는 이 목록을 normalizeMockExpressions로 정리해 호출 C에 넘기고 **같은 목록을** expressionsUsed로 저장한다(보낸 목록 = 저장 목록).
+ * 틀 은행·공략이 없으면 rng를 더 쓰지 않아, 결과가 pickExpressionsForMock(표현집)과 같다.
+ */
+export function pickExpressionsForDrill(
+  src: ToeicDrillExpressionSources,
+  opts: { max?: number; templatesMax?: number; rng?: Rng } = {},
+): string[] {
+  const max = opts.max ?? TOEIC_MOCK_EXPRESSIONS_MAX;
+  const rng = opts.rng ?? Math.random;
+  const templates = pickTemplatesForDrill(src.templates.items, src.templates.sessions, {
+    part: src.templates.part,
+    flows: src.templates.flows,
+    max: opts.templatesMax ?? TOEIC_DRILL_TEMPLATES_MAX,
+    rng,
+  }).map((t) => frameToExpression(t.frameEn));
+  const guide = src.guide.set ? pickExpressionsForMock([src.guide.set], src.guide.sessions, { rng }) : [];
+  const book = pickExpressionsForMock(src.book.sets, src.book.sessions, { rng });
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const e of [...templates, ...guide, ...book]) {
+    const v = collapseSpaces(e);
+    const k = matchKey(v);
+    if (k === "" || seen.has(k)) continue;
+    seen.add(k);
+    out.push(v);
+    if (out.length >= max) break;
+  }
+  return out;
 }

@@ -26,7 +26,7 @@ model: opus
 | 영어 | `docs/harness/english.md` — 호출 A·A′·B·C·D·F·G·H·I + 자유대화 관문 R 지시문·세션 설정(E는 비어 있다) | `lib/ai/english/` + `lib/talk-*.ts` 순수 모듈 | `scripts/eval-english.ts` | `references/english-routes.md` |
 | 수학 | `docs/harness/math.md` | `lib/ai/math/` | `scripts/eval-math.ts` | SKILL.md 본문(검산·플레이어는 담당 에이전트 스킬) |
 | 일본어 | `docs/harness/japanese.md` — 호출 A·B·C·D | `lib/ai/japanese/` | `scripts/eval-japanese.ts` | `references/japanese.md` |
-| 토익 | `docs/harness/toeic.md` — 호출 A·B·C1~C5·D | `lib/ai/toeic/` + `lib/toeic-{quiz,mock,score,listen,text}.ts` | `scripts/eval-toeic.ts` | `references/toeic.md` |
+| 토익 | `docs/harness/toeic.md` — 호출 A·B·C1~C5·D (+ 유형별 공략 §12 — 새 호출 없음) | `lib/ai/toeic/` + `lib/toeic-{quiz,mock,score,listen,text}.ts` + 유형별 공략 순수 층 `lib/toeic-{guide,template,drill}.ts` | `scripts/eval-toeic.ts`(+ `eval-toeic-guides*.ts`) | `references/toeic.md`(14절) |
 
 `lib/ai/client.ts`를 만질 때는 과목 공통 규약 `docs/HARNESS.md`를 먼저 읽는다.
 

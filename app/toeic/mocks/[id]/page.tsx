@@ -6,17 +6,21 @@
  *
  * `?new=1&failed=<part,…>` — 막 만든 모의고사(목록의 만들기 흐름이 붙인다). 화면이 "만들었어요 · N개 파트는 못 만들었어요"를
  * 알리는 데만 쓴다(사진 자동 요청은 쿼리와 무관하게 pending 칸이면 한다).
+ *
+ * 유형별 공략의 **한 문제 연습**(drillPart)이면 **무조건** 그 유형 폴더(`/toeic/guides/{유형}?tab=drill`)로 보낸다 — 응시 전에 모범답변이
+ * 보이면 안 되고, 다른 파트 "자료 없음"·다시 만들기(409)가 섞여 보이지 않게(§12-3 표·§12-7-5). 응시 뒤 복습 자료는 결과 화면이 보인다.
  */
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import ToeicMockDetailView, { type ToeicMockAttemptSummary } from "@/components/toeic-mock-detail-view";
 import { formatKstDate } from "@/lib/kst";
 import { getStore } from "@/lib/store";
 import { TOEIC_MOCK_TITLE_MAX } from "@/lib/toeic-mock-contract";
 import { TOEIC_MOCK_PARTS, type ToeicMockPart } from "@/lib/toeic-mock";
 import { isToeicAttemptClosed, recordedToeicCount, scoredToeicCount } from "@/lib/toeic-attempt-rules";
+import { toeicDrillFolderHref } from "@/lib/toeic-drill-view";
 import { isRenderableToeicMock } from "@/lib/toeic-record";
 import { estimateToeicTotal } from "@/lib/toeic-score";
 
@@ -50,6 +54,8 @@ export default async function ToeicMockDetailPage({ params, searchParams }: Deta
   const store = getStore();
   const record = await store.getToeicMock(id);
   if (!record || !isRenderableToeicMock(record)) notFound();
+  // 한 문제 연습은 학습 보기를 쓰지 않는다 — 무조건 유형 폴더 ④ 탭으로(응시 전 모범답변 노출 방지, §12-3)
+  if (record.drillPart !== null) redirect(toeicDrillFolderHref(record.drillPart));
 
   const attempts = await store.listToeicAttemptsByMock(id);
   const attemptSummaries: ToeicMockAttemptSummary[] = attempts

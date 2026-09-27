@@ -10,11 +10,12 @@
  * (녹음 안 된 문항은 recorded:false). 그래서 닫힘 = `finishedAt !== null || answers.length > 0`.
  * 채점(score)은 닫힌 응시의 녹음된 문항에만 쓰므로 answers를 늘리는 다른 경로가 없다.
  *
- * ⚠️ 클라이언트 번들 안전: 런타임 import는 순수 모듈(lib/toeic-mock)뿐, lib/ai는 `import type`만.
+ * ⚠️ 클라이언트 번들 안전: 런타임 import는 순수 모듈(lib/toeic-mock·lib/toeic-drill)뿐, lib/ai는 `import type`만.
  */
 
 import type { ToeicAttemptScope } from "./ai/toeic/schemas";
 import { TOEIC_MOCK_PARTS, toeicQuestionFormat, toeicQuestionsForParts, type ToeicMockPart } from "./toeic-mock";
+import { toeicDrillUnitForMockPart } from "./toeic-drill";
 
 /** 응시 범위의 파트를 형식표 순서로(중복 제거). 모르는 값은 버린다. */
 export function orderToeicParts(parts: readonly string[]): ToeicMockPart[] {
@@ -28,24 +29,37 @@ export function toeicAttemptQuestions(parts: readonly ToeicMockPart[]): number[]
 }
 
 /**
- * 응시 범위 판정 — 시작 라우트가 쓴다. 실전(full)은 다섯 파트 전부 + 모의고사가 완전해야 하고, 유형 연습(part)은 파트 하나 +
- * 그 파트가 있어야 한다. 반환 parts는 형식표 순서.
+ * 응시 범위 판정 — 시작 라우트와 응시 페이지가 쓴다. 실전(full)은 다섯 파트 전부 + 모의고사가 완전해야 하고, 유형 연습(part)은 파트
+ * 하나 + 그 파트가 있어야 한다. 반환 parts는 형식표 순서, questions는 응시 범위의 문항 번호(오름차순).
+ *
+ * 한 문제 연습(docs/harness/toeic.md §12-7-4 — `drillPart`가 null이 아닌 문서): scope는 "part", parts는 [drillPart]여야 하고(아니면
+ * scope_parts_mismatch — 연습에 full·다른 파트 거부), questions는 **연습 단위표**(lib/toeic-drill)에서 온다(사진 묘사는 [3]).
+ * `drillPart`를 넘기지 않으면(기존 호출) 지금과 같은 판정이다.
  */
 export function decideAttemptScope(
   scope: ToeicAttemptScope,
   parts: readonly ToeicMockPart[],
   mockParts: Record<ToeicMockPart, unknown | null>,
-): { ok: true; parts: ToeicMockPart[] } | { ok: false; reason: "scope_parts_mismatch" | "incomplete_mock" | "part_missing" } {
+  drillPart: ToeicMockPart | null = null,
+):
+  | { ok: true; parts: ToeicMockPart[]; questions: number[] }
+  | { ok: false; reason: "scope_parts_mismatch" | "incomplete_mock" | "part_missing" } {
   const ordered = orderToeicParts(parts);
   if (ordered.length !== parts.length) return { ok: false, reason: "scope_parts_mismatch" }; // 중복·모르는 파트
+  if (drillPart !== null) {
+    const unit = toeicDrillUnitForMockPart(drillPart);
+    if (unit === null || scope !== "part" || ordered.length !== 1 || ordered[0] !== drillPart) return { ok: false, reason: "scope_parts_mismatch" };
+    if (mockParts[drillPart] === null || mockParts[drillPart] === undefined) return { ok: false, reason: "part_missing" };
+    return { ok: true, parts: ordered, questions: [...unit.questions] };
+  }
   if (scope === "full") {
     if (ordered.length !== TOEIC_MOCK_PARTS.length) return { ok: false, reason: "scope_parts_mismatch" };
     if (TOEIC_MOCK_PARTS.some((p) => mockParts[p] === null || mockParts[p] === undefined)) return { ok: false, reason: "incomplete_mock" };
-    return { ok: true, parts: ordered };
+    return { ok: true, parts: ordered, questions: toeicQuestionsForParts(ordered) };
   }
   if (ordered.length !== 1) return { ok: false, reason: "scope_parts_mismatch" };
   if (mockParts[ordered[0]] === null || mockParts[ordered[0]] === undefined) return { ok: false, reason: "part_missing" };
-  return { ok: true, parts: ordered };
+  return { ok: true, parts: ordered, questions: toeicQuestionsForParts(ordered) };
 }
 
 /** 닫힌 응시인가(끝났거나 그만둠 — 위 머리 주석의 규칙) */

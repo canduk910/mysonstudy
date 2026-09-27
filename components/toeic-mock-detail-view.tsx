@@ -430,7 +430,7 @@ export default function ToeicMockDetailView({
           <p className={s.usedList}>
             <span className={s.usedLabel}>활용한 표현</span>
             {exprs.map((e) => (
-              <span key={e} className="u-chip u-chip-accent" lang="en">
+              <span key={e} className={`u-chip u-chip-accent ${s.exprChip}`} lang="en">
                 {e}
               </span>
             ))}
@@ -838,7 +838,7 @@ export default function ToeicMockDetailView({
           <p className={s.caption}>표현집에서 골라 모범답변에 녹이도록 넘긴 표현이에요. 실제로 쓴 곳은 모범답변에 밑줄로 보여요.</p>
           <p className="mt-2 flex flex-wrap gap-1.5">
             {mock.expressionsUsed.map((e) => (
-              <span key={e} className="u-chip" lang="en">
+              <span key={e} className={`u-chip ${s.exprChip}`} lang="en">
                 {e}
               </span>
             ))}

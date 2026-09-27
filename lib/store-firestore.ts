@@ -24,6 +24,7 @@ import {
   Timestamp,
   type CollectionReference,
   type DocumentData,
+  type DocumentReference,
   type Firestore,
 } from "firebase-admin/firestore";
 import { normalizeJaVocabEntry } from "./ai/japanese/vocab";
@@ -82,6 +83,8 @@ import {
   type WorkoutMutationResult,
   applyAttemptAnswer,
   applyAttemptFinish,
+  decideToeicQuizWithId,
+  type AddToeicQuizWithIdResult,
   type DeleteToeicResult,
   type FinishToeicAttemptInput,
   type FinishToeicAttemptResult,
@@ -128,6 +131,15 @@ import type { ToeicMockPart } from "./toeic-mock";
 import { applyFillPart, applyPictureImage, decideFillPart, decidePictureImage } from "./toeic-mock-apply";
 // 응시 끝/그만두기는 한 번만 — 파일 백엔드와 같은 판정(lib/toeic-attempt-rules.ts)
 import { decideAttemptFinish } from "./toeic-attempt-rules";
+// 유형별 공략 가져오기(§12-2-5) — 파일 백엔드와 같은 판정(원자 단위 안, 모두 읽은 뒤). 틀 은행의 배열 속 배열(testFills)은
+// Firestore가 받지 못해 본문에서만 감싸 쓰고 읽을 때 푼다(lib/toeic-firestore-codec.ts).
+import {
+  TOEIC_GUIDE_UPDATE_FIELDS,
+  decideGuideUpsert,
+  type ToeicGuideImportItem,
+  type ToeicGuideUpsertDecision,
+} from "./ai/toeic/guide-import";
+import { decodeToeicGuideFromFirestore, encodeToeicGuideForFirestore } from "./toeic-firestore-codec";
 // 아빠의 운동(§19-4) — 판정·정규화는 파일 백엔드(store.ts)와 **같은 순수 함수**라 두 백엔드가 안 갈린다(런타임 의존성 ./kst뿐).
 import { decideLog, decideStart, decideUndo, normalizeWorkoutCycle, type WorkoutCycleRecord } from "./workout";
 // 단어장 보강(V3) 저장이 받는 완성형 entry 타입 — store는 VocabEntry를 재수출하지 않는다.
@@ -370,12 +382,14 @@ function workoutCycleData(record: WorkoutCycleRecord): Omit<WorkoutCycleRecord, 
 // 읽기: 손으로 넣은 Timestamp 문서도 읽히게 시각을 toIso로 먼저 바꾼다. 쓰기: normalize를 한 번 더 태워 undefined를 없애고
 // (Firestore 거부), 문서 ID가 곧 id라 본문에서 뺀다(workoutCycleData 관용구).
 
+// 공략 계열 문서(guide ≠ null — §12-3)의 틀 은행은 testFills가 배열 속 배열이라 Firestore 본문에서만 감싼다(쓰기) / 푼다(읽기).
+// 표현집·유형 공략 문서에서는 두 함수가 아무것도 바꾸지 않는다(lib/toeic-firestore-codec.ts).
 function toToeicSet(id: string, d: DocumentData): ToeicSetRecord {
-  return normalizeToeicSetRecord({ ...d, id, createdAt: toIso(d.createdAt) });
+  return normalizeToeicSetRecord({ ...d, id, createdAt: toIso(d.createdAt), guide: decodeToeicGuideFromFirestore(d.guide ?? null) });
 }
 function toeicSetData(r: ToeicSetRecord): Omit<ToeicSetRecord, "id"> {
   const { id: _id, ...data } = normalizeToeicSetRecord(r);
-  return data;
+  return { ...data, guide: encodeToeicGuideForFirestore(data.guide) as ToeicSetRecord["guide"] };
 }
 /** 모르는 mode면 null — 호출측이 버린다(모드별 숙련도 무오염, §6-2). */
 function toToeicQuiz(id: string, d: DocumentData): ToeicQuizRecord | null {
@@ -1430,12 +1444,71 @@ export class FirestoreStore implements StudyStore {
     });
   }
 
+  /**
+   * 유형별 공략 가져오기(§12-2-5) — 트랜잭션 안에서 **모두 읽은 뒤** 판정·쓰기. 결정적 id(`guide-{part}`·`guide-templates`)라
+   * "유형 하나에 문서 하나"를 쿼리 잠금이 아니라 문서 하나로 보장한다: 새 문서는 `tx.create`(그사이 누가 만들었으면 커밋이 실패 —
+   * 읽기 잠금 경합이면 트랜잭션이 재시도되어 다시 읽은 문서로 part_taken·unchanged를 판정한다). 문서 id·시각은 밖에서 정해져 재시도에도 같다.
+   * updated는 TOEIC_GUIDE_UPDATE_FIELDS만 부분 갱신한다(id·createdAt·sortIndex·presetKey 그대로). 시험 기록은 건드리지 않는다.
+   */
+  async upsertToeicGuides(items: readonly ToeicGuideImportItem[], nowIso: string): Promise<ToeicGuideUpsertDecision> {
+    const col = this.toeicSets();
+    const ids = [...new Set(items.map((it) => it.docId))];
+    const keys = [...new Set(items.map((it) => it.presetKey))];
+    return getDb().runTransaction(async (tx): Promise<ToeicGuideUpsertDecision> => {
+      const existing: ToeicSetRecord[] = [];
+      for (const id of ids) {
+        const snap = await tx.get(col.doc(id));
+        if (snap.exists) existing.push(toToeicSet(snap.id, snap.data()!));
+      }
+      // `in`은 한 번에 30개까지 — 나눠 읽는다(importToeicSets와 같은 관용구). id로 읽은 문서와 겹쳐도 판정이 id로 접는다.
+      for (let i = 0; i < keys.length; i += 30) {
+        const snap = await tx.get(col.where("presetKey", "in", keys.slice(i, i + 30)));
+        for (const d of snap.docs) existing.push(toToeicSet(d.id, d.data()));
+      }
+      const decision = decideGuideUpsert(items, existing, nowIso);
+      if (!decision.ok) return decision; // 충돌 — 아무것도 쓰지 않는다
+      for (const w of decision.writes) {
+        const ref = col.doc(w.record.id);
+        const data = toeicSetData(w.record);
+        if (w.outcome === "created") {
+          tx.create(ref, data);
+        } else {
+          const patch: Record<string, unknown> = {};
+          for (const f of TOEIC_GUIDE_UPDATE_FIELDS) patch[f] = data[f];
+          tx.update(ref, patch);
+        }
+      }
+      return decision;
+    });
+  }
+
   async addToeicQuiz(input: NewToeicQuiz): Promise<ToeicQuizRecord> {
     const ref = this.toeicQuizzes().doc();
     const record: ToeicQuizRecord = { ...input, items: input.items.map(normalizeToeicQuizItem), id: ref.id };
     const { id: _id, ...data } = record;
     await ref.set(data);
     return record;
+  }
+
+  async addToeicQuizWithId(id: string, input: NewToeicQuiz): Promise<AddToeicQuizWithIdResult> {
+    // 멱등(§12-5-6): 문서 id = 멱등 키, 쓰기는 `create` — 이미 있으면 ALREADY_EXISTS로 거부되어(원자적) 아무것도 써지지 않는다.
+    // 그때 그 문서를 읽어 같은 판(mode·startedAt)이면 돌려주고, 다른 판이거나 읽을 수 없는 문서면 덮지 않고 자동 id로 새로 쓴다.
+    // 판정은 파일 백엔드와 같은 순수 함수(decideToeicQuizWithId). append 전용이라 prod-guard 없음.
+    const write = async (ref: DocumentReference): Promise<ToeicQuizRecord> => {
+      const record: ToeicQuizRecord = { ...input, items: input.items.map(normalizeToeicQuizItem), id: ref.id };
+      const { id: _id, ...data } = record;
+      await ref.create(data);
+      return record;
+    };
+    try {
+      return { record: await write(this.toeicQuizzes().doc(id)), reused: false };
+    } catch (err) {
+      if ((err as { code?: unknown } | null)?.code !== GRPC_ALREADY_EXISTS) throw err;
+      const snap = await this.toeicQuizzes().doc(id).get();
+      const existing = snap.exists ? toToeicQuiz(snap.id, snap.data()!) : null;
+      if (existing && decideToeicQuizWithId(existing, input) === "reuse") return { record: existing, reused: true };
+      return { record: await write(this.toeicQuizzes().doc()), reused: false };
+    }
   }
 
   /** 모르는 mode 문서는 버리고 경고한다(파일 백엔드 normalizeToeicQuizList와 같은 규약). */
@@ -1478,6 +1551,12 @@ export class FirestoreStore implements StudyStore {
     const base = this.toeicMocks().orderBy("createdAt", "desc");
     const snap = await (limit == null ? base : base.limit(limit)).get();
     return snap.docs.map((d) => toToeicMock(d.id, d.data()));
+  }
+
+  async listToeicDrills(mockPart: ToeicMockPart): Promise<ToeicMockRecord[]> {
+    // 등호 하나만(§12-8) — orderBy를 섞으면 복합 색인이 필요하다. 정렬은 메모리에서(최신순). 필드가 없는 옛 문서는 빠진다(연습이 아니다).
+    const snap = await this.toeicMocks().where("drillPart", "==", mockPart).get();
+    return snap.docs.map((d) => toToeicMock(d.id, d.data())).sort(byCreatedAtDesc);
   }
 
   async deleteToeicMock(id: string): Promise<DeleteToeicResult> {

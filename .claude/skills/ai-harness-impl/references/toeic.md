@@ -1,11 +1,11 @@
 # 토익(아빠의 영어 · 토익스피킹) — 구현 규칙
 
 > `ai-harness-impl` 스킬에서 토익 작업 시 읽는다. 은우 영어는 `english-routes.md`, 일본어는 `japanese.md`, 발음·스트릭·순서변경 같은 공통 기능은 `app-patterns.md`.
-> 원문 스펙: `docs/harness/toeic.md` — 호출 A(§2)·B(§3)·C1~C5(§4)·관문 P(§4-10)·D + 관문 T(§5), 시험·형식표 §6, 저장 §7, 화면·경로 §8, eval §9, 재사용 경계 §10, 로드맵 §11.
+> 원문 스펙: `docs/harness/toeic.md` — 호출 A(§2)·B(§3)·C1~C5(§4)·관문 P(§4-10)·D + 관문 T(§5), 시험·형식표 §6, 저장 §7, 화면·경로 §8, eval §9, 재사용 경계 §10, 로드맵 §11, **유형별 공략 §12**(2026-09-27 — 이 문서 14절).
 > 프롬프트·JSON Schema 원문은 여기 옮기지 않는다. 스펙이 단일 정의처이고 `scripts/eval-toeic.ts`의 spec-sync가 대조한다.
-> 이 문서의 값은 2026-09-26에 코드를 열어 확인한 것이다. 작업할 때는 다시 열어 대조하라.
+> 이 문서의 값은 2026-09-26에 코드를 열어 확인한 것이다(유형별 공략 14절과 그에 맞춘 7·8·10·11절의 줄은 2026-09-28). 작업할 때는 다시 열어 대조하라.
 
-목차: 1. 먼저 알 것 · 2. 호출 → 진입 함수(`calls.ts`) · 3. 하네스 밖 관문 P·T · 4. 파일 역할 · 5. 60초 상한 — 한 요청은 한 단위 · 6. 부분 성공·best-effort 관용구 · 7. 라우트 목록 · 8. 계약 파일과 번들 경계 · 9. 재사용 경계 · 10. 저장 레코드 · 11. eval-toeic.ts와 spec-sync 대상 · 12. 새 export 목록 · 13. 알려진 틈
+목차: 1. 먼저 알 것 · 2. 호출 → 진입 함수(`calls.ts`) · 3. 하네스 밖 관문 P·T · 4. 파일 역할 · 5. 60초 상한 — 한 요청은 한 단위 · 6. 부분 성공·best-effort 관용구 · 7. 라우트 목록 · 8. 계약 파일과 번들 경계 · 9. 재사용 경계 · 10. 저장 레코드 · 11. eval-toeic.ts와 spec-sync 대상 · 12. 새 export 목록 · 13. 알려진 틈 · 14. 유형별 공략 — 템플릿 훈련·한 문제 연습(2026-09-27)
 
 ## 1. 먼저 알 것
 
@@ -56,7 +56,10 @@ TTS(`lib/tts.ts`)와 같은 부류다. Structured Outputs가 아니라 이미지
 | `lib/toeic-quiz.ts` · `lib/toeic-mock.ts` · `lib/toeic-score.ts` · `lib/toeic-listen.ts` · `lib/toeic-text.ts` · `lib/tts-split.ts` | 시험 출제·보기·집계 / 형식표·단계 전이·지시문 / Q1–2 대조·추정 총점 / 전체 듣기 대본 / 텍스트 판정·표현 키·단어열 대조 / TTS 쪼개기 | **클라이언트 안전**(lib/ai 밖, 런타임 import에 lib/ai·store·openai·zod 없음 — eval "번들 경계"가 잠근다) | 화면·서버 페이지·zod·eval |
 | `lib/toeic-image.ts` · `lib/toeic-transcribe.ts` | 관문 P·T | 서버 전용 | 사진·채점 라우트 |
 | `lib/mic-session.ts` · `lib/toeic-rec-store.ts` · `lib/toeic-audio-cue.ts` | 녹음 단일 관문 / 녹음 IndexedDB(`eunwoo-toeic-rec`, 최근 5회분) / AudioContext 싱글턴·비프 | 클라이언트 전용(모듈 최상위에서 window·navigator를 읽지 않는다 — SSR·eval import 안전) | 응시·결과 화면 |
-| `lib/toeic-*-contract.ts` 4개 · `lib/toeic-record.ts` · `lib/toeic-normalize.ts` · `lib/toeic-mock-apply.ts` · `lib/toeic-attempt-rules.ts` · `lib/toeic-streak.ts` · `lib/toeic-read-marks.ts` · `lib/toeic-zod-ko.ts` | 경계 타입 / 렌더 판정 / 정규화 단일 정의 / 사진·파트 판정 / 응시 범위·닫힘 판정 / 영어 트랙 입력 / Q1–2 지문 표시 / 토익 라우트 한국어 zod 오류 맵 | 대부분 순수 | app-builder 영역 |
+| `lib/ai/toeic/guide-import.ts` | 유형별 공략 가져오기 계획·내용 지문(SHA-256)·제자리 갱신 판정 `decideGuideUpsert` | **서버 전용**(`node:crypto`) | 가져오기 라우트·스토어 `upsertToeicGuides`·eval |
+| `lib/toeic-guide.ts` · `lib/toeic-template.ts` · `lib/toeic-drill.ts` | 공략 읽기 대본·TTS 정리·강조 분할·쉼 / 틀 채우기·따라 말하기 대본·전사 비교·틀 숙련도·연습 틀 고르기·전사문 속 틀 찾기 / 연습 단위표·연습 파트 후처리·제목·주제 풀 | **클라이언트 안전**(번들 경계 목록 — 14절) | 화면·서버 페이지·라우트·eval |
+| `lib/toeic-guide-view.ts` · `lib/toeic-template-test-view.ts` · `lib/toeic-drill-view.ts` · `lib/toeic-firestore-codec.ts` | 공략 폴더·읽기·템플릿 탭 / 틀 테스트 / 연습 탭·"뒤로"·틀 점검 자료의 화면 판단 / Firestore 본문 `testFills` 감싸기 | 클라이언트 안전 / 순수(import 0) | app-builder 영역 |
+| `lib/toeic-*-contract.ts` 5개 · `lib/toeic-record.ts` · `lib/toeic-normalize.ts` · `lib/toeic-mock-apply.ts` · `lib/toeic-attempt-rules.ts` · `lib/toeic-streak.ts` · `lib/toeic-read-marks.ts` · `lib/toeic-zod-ko.ts` | 경계 타입 / 렌더 판정 / 정규화 단일 정의 / 사진·파트 판정 / 응시 범위·닫힘 판정 / 영어 트랙 입력 / Q1–2 지문 표시 / 토익 라우트 한국어 zod 오류 맵 | 대부분 순수 | app-builder 영역 |
 
 ai-engineer가 만든 것은 `lib/ai/toeic/**`·위 클라이언트 안전 순수 모듈 6개·`scripts/eval-toeic.ts`까지다. 저장소·라우트·화면·관문 P/T·녹음·스트릭 트랙은 app-builder 영역이다(`_workspace/build_ai-engineer_toeic-ai_report.md` 범위 절). 순수 함수 파일은 **값을 만드는 유일한 곳**이다 — 라우트·화면·스토어가 같은 판정을 한 벌 더 가지면 반드시 어긋난다. 그리고 순수라서 eval이 픽스처로 전부 잠근다. 후처리 규칙을 바꾸면 eval 점검도 함께 바꿔야 오프라인이 통과한다.
 
@@ -103,14 +106,19 @@ ai-engineer가 만든 것은 `lib/ai/toeic/**`·위 클라이언트 안전 순�
 | `GET /images/[id]` | 생성 사진 바이트(`cache-control: private`) | 없음 | 200 image/jpeg · 404 · 500 `image_unreadable` | 〃 |
 | `POST /mocks/[id]/attempts` | 응시 시작(범위 판정 `decideAttemptScope`) | 없음 | 200 `{attemptId, scope, parts, questions, startedAt}` · 400 · 404 · 409 `incomplete_mock`·`part_missing` · 500 | `toeic-attempt-contract.ts` |
 | `POST /attempts/[id]/finish` | 끝/그만두기 — **한 번만** | 없음 | 200 `{finishedAt, recordedCount, answers}` · 400 · 404 · 409 `already_finished`(+`recordedCount`) · 500 | 〃 |
-| `POST /attempts/[id]/score` | 문항 하나 채점(multipart `q`·`audio`) | 관문 T + D | 200 `{q, answer, reused, transcriptSource, noResponse}` · 400 · 413 `audio_too_large`(`TOEIC_SCORE_AUDIO_MAX_BYTES` 4MB) · 404 · 409 `not_finished`·`not_recorded` · 501 · 499 `client_closed` · 500 `transcribe_failed`·`ai_failed`(+answer)·`save_failed` | 〃 |
+| `POST /attempts/[id]/score` | 문항 하나 채점(multipart `q`·`audio`) | 관문 T + D | 200 `{q, answer, reused, transcriptSource, noResponse}` · 400 · 413 `audio_too_large`(`TOEIC_SCORE_AUDIO_MAX_BYTES` 4MB) · 404(`question_not_found` — 범위는 `attempt.questions`) · 409 `not_finished`·`not_recorded` · 501 · 499 `client_closed` · 500 `transcribe_failed`·`ai_failed`(+answer)·`save_failed` | 〃 |
+| `POST /guides/import` | 유형별 공략 + 틀 은행 가져오기(`toeic-guides/v2`) — 제자리 갱신·멱등 | 없음 | 200 `{created, updated, unchanged}` · 400 `invalid_input`(`toeicGuideImportInvalidBody` 그대로) · 409 `guide_conflict`(+`conflicts`) · 500 | `toeic-guide-contract.ts` |
+| `POST /guides/templates/transcribe` | 틀 테스트 녹음 → 글자(저장 없음) | 관문 T | 200 `{text, words}` · 400 · 413 `audio_too_large`(1 MiB — `content-length` 선검사가 본문 읽기 전) · 501(**맨 먼저**) · 499 · 500 `transcribe_failed`(retriable) | 〃 |
+| `POST /guides/templates/sessions` | 틀 테스트 기록(`toeicQuizzes`, `setId` 고정 `guide-templates`, 문서 id `tpl-{clientSessionId}`) | 없음 | 200 `{id, reused}` · 400 · 404 `bank_not_found` · 500 | 〃 |
+| `POST /guides/[part]/drills` | 한 문제 연습 만들기(호출 C 파트 하나 → `toeicMocks` 연습 문서) | C | 200 `{id, titleKo, mockPart, expressionsCount}` · 400 · 404 `part_not_found` · 501(**맨 먼저**) · 500 `ai_failed`(retriable, 저장 안 함)·`save_failed` | 〃 |
 
+- 유형별 공략이 기존 라우트에 더한 갈래(2026-09-27): `…/regenerate` 연습 문서면 409 `is_drill`(키·AI보다 먼저), `…/sets/[id]/rename`·`…/points` 공략 계열(유형 공략·틀 은행)이면 409 `is_guide`, 사진 `…/image {slot:1}`은 연습 문서에서 기존 404 `picture_not_found`(키 검사·관문 P보다 먼저 — 계약 변경 없음), 끝내기에 범위 밖 문항(Q4)이 있으면 400 `invalid_input`(`answers.{i}.q`), `POST /mocks`의 활용할 표현은 **표현집 세트와 그 세트의 표현 시험 세션만**(`bookSetIds.has(q.setId)` + `isToeicQuizModeSession`). 모의고사 목록·제목 번호는 연습을 먼저 뺀다.
 - 응시 화면은 `pagehide`에서 `navigator.sendBeacon`으로 finish를 보낸다. 그래서 끝/그만두기가 두 번 오는 것이 정상 경로이고, 409 `already_finished`는 화면이 **성공으로 본다**(`recordedCount`를 함께 받는다).
 - 화면 경로는 스펙 §8 목록 그대로다(`/toeic` 허브 → `/toeic/sets`·`/toeic/mocks` …, 응시는 `/toeic/mocks/[id]/take` 전면 오버레이, 결과는 `/toeic/attempts/[id]`). store를 읽는 토익 페이지는 전부 `force-dynamic`이다.
 
 ## 8. 계약 파일과 번들 경계
 
-- **계약 파일 4개**: `lib/toeic-set-contract.ts`(판독·저장·가져오기·포인트·삭제·rename + 400 issues 한국어 위치 `toeicIssueLineKo`), `lib/toeic-quiz-contract.ts`(시험 저장·항목 키 라벨), `lib/toeic-mock-contract.ts`(생성·재생성·사진·GET + `toeicImageUrl`·표시 도우미), `lib/toeic-attempt-contract.ts`(응시 시작·finish·score + 업로드 형식·상한·동시 채점 수·`TOEIC_DEBUG_TIMESCALE_KEY`). `lib/ai/toeic/*`와 `lib/store`는 `import type`으로만 참조하고, 값은 클라이언트 안전 순수 모듈(`lib/toeic-mock.ts` 등)에서만 가져온다.
+- **계약 파일 5개**(2026-09-27에 `lib/toeic-guide-contract.ts` — 공략 라우트 넷의 요청·응답 타입·업로드 상한 `TOEIC_TEMPLATE_AUDIO_MAX_BYTES`·`TOEIC_TEMPLATE_SESSION_ID_RE`·`toeicTemplateSessionDocId`, 클라이언트용 타입 재수출 — 이 더해졌다): `lib/toeic-set-contract.ts`(판독·저장·가져오기·포인트·삭제·rename + 400 issues 한국어 위치 `toeicIssueLineKo`), `lib/toeic-quiz-contract.ts`(시험 저장·항목 키 라벨), `lib/toeic-mock-contract.ts`(생성·재생성·사진·GET + `toeicImageUrl`·표시 도우미), `lib/toeic-attempt-contract.ts`(응시 시작·finish·score + 업로드 형식·상한·동시 채점 수·`TOEIC_DEBUG_TIMESCALE_KEY`). `lib/ai/toeic/*`와 `lib/store`는 `import type`으로만 참조하고, 값은 클라이언트 안전 순수 모듈(`lib/toeic-mock.ts` 등)에서만 가져온다.
 - 2026-09-26 현재 `"use client"` 컴포넌트 중 `@/lib/ai/toeic`를 import하는 곳은 없다. 확인: `grep -arl '"use client"' components app | xargs grep -an 'from "@/lib/ai/toeic'` — 결과가 0이어야 한다(`-a`는 SKILL.md "grep 함정").
 - 화면이 lib/ai의 **값**(`TOEIC_SET_TITLE_MAX`·`TOEIC_MOCK_EXPRESSIONS_MAX`·편집 상한)을 필요로 하면 서버 페이지(`app/toeic/**/page.tsx`)가 import해 props로 내린다(일본어 관용구). 시험 문항 조립(`lib/toeic-quiz.ts`)·형식표(`lib/toeic-mock.ts`)처럼 클라이언트가 직접 계산해야 하는 것은 처음부터 lib/ai 밖에 둔다.
 - 클라이언트 안전 모듈은 **정규식 lookbehind를 쓰지 않는다**(구형 iOS Safari에서 문법 오류로 던진다 — `lib/toeic-score.ts`·`lib/toeic-quiz.ts` `maskCloze` 주석). eval이 `lib/mic-session.ts`·`toeic-rec-store`·`toeic-audio-cue`·`toeic-read-marks`·`toeic-attempt-rules`·`toeic-attempt-contract`에 대해 "값 import 없음 + lookbehind 없음"을 잠근다.
@@ -138,13 +146,13 @@ ai-engineer가 만든 것은 `lib/ai/toeic/**`·위 클라이언트 안전 순�
 | `ToeicAttemptRecord` | `toeicAttempts` | 시작에 만든다(IndexedDB 키로 id가 필요). `answers`는 시작 때 빈 배열이고 끝/그만두기가 응시 범위의 **모든 문항**을 채운다. "닫힌 응시" = `finishedAt !== null \|\| answers.length > 0`(`isToeicAttemptClosed`) |
 
 - 새 컬렉션 12항목 체크리스트(`app-patterns.md` §4)를 전부 밟았다 — `DbShape` 필수 필드 5개, `emptyDb`, `readDb`의 `(parsed.x ?? []).map(normalize*)`, `mergeDbForSeed`의 `mergeById`, `scripts/seed.ts`의 빈 배열(교재 내용을 시드에 넣지 않는다), Firestore 컬렉션 접근자·`to*`. 정규화는 `lib/toeic-normalize.ts` 한 곳이고 두 백엔드가 같이 쓴다.
-- **원자 단위가 필요한 변경은 7개다.** 파일은 `mutate`, Firestore는 `runTransaction` — `importToeicSets`(확인+생성, 멱등), `mergeToeicSetPoints`(최신 entries 위 병합), `fillToeicMockPart`(빈 파트만), `saveToeicPictureImage`·`markToeicPictureImageFailed`(먼저 준비된 사진이 이긴다), `finishToeicAttempt`(한 번만), `updateToeicAttemptAnswer`(**그 문항만** — 동시 채점 2개가 서로 덮지 않게). 판정은 순수 함수(`decideFillPart`·`decidePictureImage`·`decideAttemptFinish`·`applyAttemptAnswer`)를 원자 단위 **안에서** 부른다(`app-patterns.md` §5 관용구).
+- **원자 단위가 필요한 변경은 7개였고, 유형별 공략이 둘을 더했다**(2026-09-27): `upsertToeicGuides`(가져오기 — 결정적 id 문서와 presetKey 30개씩 `in`을 **모두 읽은 뒤** `decideGuideUpsert`, 충돌이면 쓰기 0, created는 Firestore `tx.create`·updated는 `TOEIC_GUIDE_UPDATE_FIELDS`만), `addToeicQuizWithId`(틀 테스트 기록 멱등 — 판정 `decideToeicQuizWithId`, 파일은 `mutate`, Firestore는 트랜잭션이 아니라 단일 문서 `ref.create()`에 `ALREADY_EXISTS`면 읽어서 판정). 아래는 원래 7개: 파일은 `mutate`, Firestore는 `runTransaction` — `importToeicSets`(확인+생성, 멱등), `mergeToeicSetPoints`(최신 entries 위 병합), `fillToeicMockPart`(빈 파트만), `saveToeicPictureImage`·`markToeicPictureImageFailed`(먼저 준비된 사진이 이긴다), `finishToeicAttempt`(한 번만), `updateToeicAttemptAnswer`(**그 문항만** — 동시 채점 2개가 서로 덮지 않게). 판정은 순수 함수(`decideFillPart`·`decidePictureImage`·`decideAttemptFinish`·`applyAttemptAnswer`)를 원자 단위 **안에서** 부른다(`app-patterns.md` §5 관용구).
 - **삭제 가드.** Firestore 구현의 `deleteToeicSet`·`deleteToeicMock`이 첫 줄에서 `assertDestructiveAllowed("deleteToeicSet" | "deleteToeicMock")`을 부른다. 딸린 문서(시험 세션 / 사진·응시)를 먼저, 본 문서를 마지막에 지운다. 파일 백엔드는 한 `mutate`에서 함께 지운다.
 - **migrate-to-firestore에 넣지 않는다.** 교재 데이터는 사용자가 프로덕션 앱에서 파일을 골라 넣는 것이고, 로컬 데이터를 프로덕션으로 옮기는 경로를 만들지 않는다(§7-6, CLAUDE.md 서문).
 
 ## 11. eval-toeic.ts와 spec-sync 대상
 
-- 명령: `OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npm run eval:toeic`. 2026-09-26 기준 **20개 영역 357항목**이다(`data/private/toeic-preset-hackers-core.json`이 있는 로컬 기준. 없으면 교재 파일 3항목이 SKIP 1건으로 바뀐다 — 공개 저장소·CI 기준은 SKIP). 스크립트가 `.env`를 스스로 읽으므로(`process.loadEnvFile`) 접두어가 유일한 차단선이다. `EVAL_OFFLINE_ONLY=1`은 모듈 최상단에서 `globalThis.fetch`를 막는다.
+- 명령: `OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npm run eval:toeic`. **2026-09-28 기준 985항목**(유형별 공략 628 — 14절, 공략 가져오기 파일 `data/private/toeic-strategy/toeic-guides.json`이 없으면 그 25항목이 SKIP 1건). 아래는 2026-09-26 기준 **20개 영역 357항목**의 설명이다(`data/private/toeic-preset-hackers-core.json`이 있는 로컬 기준. 없으면 교재 파일 3항목이 SKIP 1건으로 바뀐다 — 공개 저장소·CI 기준은 SKIP). 스크립트가 `.env`를 스스로 읽으므로(`process.loadEnvFile`) 접두어가 유일한 차단선이다. `EVAL_OFFLINE_ONLY=1`은 모듈 최상단에서 `globalThis.fetch`를 막는다.
 - eval-toeic은 공통 eval 3종과 달리 **`lib/store`를 import한다**(순수 함수 `applyAttemptAnswer`·`applyAttemptFinish`). 스토어 인스턴스를 만들지는 않지만, 이 import에 부수 효과가 생기면 어느 DB를 향할지 모르는 스크립트가 된다 — store 모듈 최상위에 I/O를 넣지 마라.
 - **spec-sync 대상**(`SPEC_SYNC_TARGETS`, 바이트 대조 14개): `TOEIC_EXTRACT_SYSTEM_PROMPT`(§2-1)·`TOEIC_EXTRACT_USER_TEXT`(§2-2)·`TOEIC_POINTS_SYSTEM_PROMPT`(§3-1)·`TOEIC_POINTS_USER_TEMPLATE`(§3-2)·`TOEIC_MOCK_COMMON`(§4-1)·`TOEIC_MOCK_{READ,PICTURE,RESPOND,INFO,OPINION}_TASK`(§4-2~§4-6)·`TOEIC_MOCK_USER_TEMPLATE`(§4-7)·`TOEIC_IMAGE_PROMPT_SUFFIX`(§4-10)·`TOEIC_FEEDBACK_SYSTEM_PROMPT`(§5-1)·`TOEIC_FEEDBACK_USER_TEMPLATE`(§5-2).
 - **JSON Schema 의미 동치 8개**(`runJsonSchemaSyncChecks`): 스펙 코드블록을 `JSON.parse`해 `name`으로 찾아 deepEqual — `toeic_expr_extraction`(§2-3)·`toeic_speaking_points`(§3-3)·`toeic_mock_{read,picture,respond,info,opinion}`(§4-8)·`toeic_answer_feedback`(§5-3). 스펙의 `toeic_*` JSON 블록 수가 정확히 8이어야 한다.
@@ -170,6 +178,8 @@ ai-engineer가 만든 것은 `lib/ai/toeic/**`·위 클라이언트 안전 순�
 | `lib/toeic-score.ts` | `alignReadAloud` · `readProxyScore` · `estimateToeicTotal` · `isNoResponseTranscript`·`noResponseFeedback` · 안내 문구 상수 | 채점 라우트, 결과·학습 보기 화면 |
 | `lib/toeic-listen.ts` · `lib/tts-split.ts` | `buildToeicListenScript(set, mode)`(3모드) · `splitForTts` | 표현 카드 전체 듣기, 모범답변 🔊 |
 
+유형별 공략(2026-09-27)이 더한 export는 14절에 있다 — 이름·시그니처의 단일 정의처는 스펙 `docs/harness/toeic.md` §12-5-9 표와 코드다.
+
 ## 13. 알려진 틈 (2026-09-26 코드 기준)
 
 고치라는 목록이 아니라, 이 근처를 작업할 때 모르고 밟지 않게 적어 둔 사실이다. 회차마다 아직 남았는지 다시 확인한다.
@@ -179,3 +189,27 @@ ai-engineer가 만든 것은 `lib/ai/toeic/**`·위 클라이언트 안전 순�
 - **같은 문항을 두 탭에서 동시에 채점하면 전사·D가 두 번 든다**(QA m2_1 관찰 O1). 한 탭 안은 `runningRef`로 막히고, 저장은 나중 쓰기가 이긴다. 사진 라우트의 `IN_FLIGHT` 같은 서버 합류는 채점 라우트에 없다.
 - **호출 D zod는 일부 필드의 언어를 보지 않는다.** `summaryKo`는 한글 포함, `improvedAnswer`는 라틴 포함·한글 금지를 보지만, `strengths`·`fixes[].whyKo`·`fixes[].better`는 빈 값만, `missingKo`는 개수만 본다(`buildFeedbackZod`). 스펙 §5-3이 요구한 범위와는 맞다 — 더 조이려면 스펙부터 바꾼다.
 - **호출 C zod 폭은 목표 등급과 무관하다.** `TOEIC_MOCK_ZOD_BANDS`는 IM3·IH·AL에 같은 폭을 건다(예: Q11 모범답변 80~180단어). 등급별 길이를 프롬프트로 벌리려면 폭 안에서 움직인다(`prompt-eval/references/toeic-dials.md`).
+
+## 14. 유형별 공략 — 템플릿 훈련·한 문제 연습 (2026-09-27, 스펙 §12)
+
+> 원문 스펙은 `docs/harness/toeic.md` §12(가져오기 형식·zod·저장·틀 훈련·연습·eval의 단일 정의처)와 SPEC §20-10. 선례 리포트: `_workspace/build_ai-engineer_toeic-guides-foundation_report.md`(순수 층·zod·eval) → `build_convert_toeic-guides-v2_report.md`(변환 — git 밖 데이터만) → `build_app-builder_common-speech-pause*_report.md`(공용 큐 쉼) → `build_app-builder_toeic-guides-{s1,s2,s2-fix1,s3,final-fix1,final-fix2}_report.md`(앱 층), QA `qa_report_toeic_guides-*`·`qa_report_common_speech-pause_*`.
+
+**새 AI 호출·새 프롬프트·새 컬렉션이 없다.** 이 제약이 설계의 뼈대다 — 어기면 spec-sync·zod·eval·스트릭 배선이 두 벌이 된다.
+
+- **가져오기(AI 0)**: 공략 전사와 틀 은행은 Claude가 `data/private/toeic-strategy/`(git 밖)에 두고 앱의 "📂 파일로 가져오기"로만 넣는다. 형식 `toeic-guides/v2`(v1·`toeic-sets/v1`은 400). zod `toeicGuideFileSchema`(`lib/ai/toeic/schemas.ts` — 표현집 판정 `checkEntryText`·`checkQuizText`를 **복사하지 않고** 부른다, 틀 은행 교차 검사·**정렬 빠짐 0**까지). 400 본문은 `toeicGuideImportInvalidBody(issues)` 그대로(경로·규칙만, 값 0 — eval이 같은 함수로 누출을 본다). 가져오기 파일은 손으로 고치지 않는다 — 원본(`parts/*`·`core/templates.json`)을 고치고 변환한다(변환 스크립트는 저장소에 두지 않는다 — 규칙만 스펙 §12-2-1·§12-2-7).
+- **저장**: 공략 = `toeicSets` 문서의 `guide`(유형마다 결정적 id `guide-{part}`, 틀 은행 id `guide-templates` — 유형 하나에 하나를 문서 하나로 보장), 틀 테스트 기록 = `toeicQuizzes`(모드 `tpl-recall`·`tpl-swap`, `setId` = `guide-templates`, 항목 키 `tpl:{key}`), 연습 = `toeicMocks.drillPart`(옛 문서 null) + `toeicAttempts.questions`(옛 문서 = 파트 문항). 새 필드는 필수 nullable이고 정규화(`lib/toeic-normalize.ts`)가 옮긴다 — `normalizeToeicSetRecord`는 모르는 키를 버리므로 `guide`를 명시적으로 옮기고, 깨진 `guide`도 **null로 떨어뜨리지 않는다**(떨어뜨리면 깨진 공략이 표현집 목록에 섞인다).
+- **Firestore는 배열 속 배열을 못 쓴다.** 틀 은행 `items[].testFills: string[][]`만 그 모양이라 Firestore 쓰기 헬퍼가 `{fills}[]`로 감싸고 읽기가 푼다(`lib/toeic-firestore-codec.ts`). 파일 백엔드는 받으므로 로컬·eval에서는 드러나지 않는다 — **새 필드·컬렉션에 배열 속 배열이 생기면 같은 자리에서 감싼다**(`app-patterns.md` §4).
+- **목록에서 먼저 뺀다.** 표현집 목록·모의고사 목록·제목 번호·주제 칩·`POST /mocks` 활용할 표현은 공략 계열(`isToeicGuideSet`)·연습(`isToeicDrill`)을 **먼저** 빼고 `skippedCount`를 센다(순서가 반대면 공략 4개·틀 은행·연습 전부가 "열지 못한 n개"로 보고된다). 세트 단위 화면(표현 시험·오답·기록)과 모의고사 라우트는 세션을 `isToeicQuizModeSession`으로 걸러 넘긴다(레코드 `mode`가 틀 모드까지 넓어졌다). 모의고사 목록은 `where` 없이 메모리에서 거른다(필드 없는 옛 문서가 빠지지 않게). 연습 목록 `listToeicDrills(mockPart)`는 `where("drillPart","==")` 등호 하나(복합 색인 불필요).
+- **한 문제 연습 = 호출 C 파트 하나 그대로**(`generateMockPart`). 입력만 바뀐다 — 활용할 표현 맨 앞에 그 유형 틀의 `~` 형태(`pickExpressionsForDrill` — **서버 전용 `lib/ai/toeic/mock.ts`**, 단계마다 하나 → 약한 순, 최대 10), 그다음 공략 표현, 표현집 표현(최대 24). 세션은 `setId`로 갈라 넘긴다(통계 키가 표현 문자열이라 섞으면 서로의 순위가 움직인다). 보낸 목록 = 저장 목록(`expressionsUsed`). Q3–4는 C2가 낸 두 장면 중 하나만 무작위로 남긴다(`toDrillRecordPart` — C2 프롬프트 "정확히 2개"는 spec-sync 대상이라 바꾸지 않는다). 사진은 같은 버튼 흐름 안의 `POST /mocks/[id]/image {slot:0}` 한 번 — 다시 연 pending은 **자동으로 부르지 않는다**.
+- **응시 범위의 원천은 `attempt.questions`다.** 시작 라우트·응시 페이지·결과 페이지·끝내기·채점이 `decideAttemptScope(scope, parts, mockParts, drillPart)`의 `questions`를 쓴다. 상태코드·오류 이름은 기존 계약 그대로(끝내기 범위 밖 400, 채점 범위 밖 404 `question_not_found`, 사진 slot 1 404 `picture_not_found`). 지시문은 `toeicPartDirections(part, count)` 하나로 — 응시 화면 **세 곳**(읽기·프리페치·글)이 같은 글자여야 캐시가 맞는다(`TOEIC_PART_DIRECTIONS[` 직접 참조 0을 eval이 소스로 잠근다). 녹음 보관은 풀마다 5회분(`pool: "mock" | "drill"`, `pickAttemptsToEvictByPool`) — 연습이 채점 전 실전 녹음을 밀어내지 않게.
+- **템플릿 테스트의 전사 라우트**(`/guides/templates/transcribe`): 키 먼저 501 → `content-length` 413(본문 읽기 전) → 400 → 1 MiB 413 → `transcribeAnswer(…, req.signal)`. **정답·틀을 받지 않고 prompt도 없다**(기대 문장 쪽으로 끌려가지 않게). 타입이 비었거나 `application/octet-stream`이면 파일 이름에서 채운다. 스토어 import 0. 비용 상한(한 번에 하나·문항당 2·판당 20·0.6초 미만 안 보냄·45초 화면 타임아웃)은 화면이 `canTranscribeAgain` 하나로 지킨다 — 라우트에는 세션 상태가 없다.
+- **틀 비교는 순수 함수**(`lib/toeic-template.ts` `compareTemplateAnswer`): 축약형 풀기(두 뜻은 대안 낱말 `is|has`·`would|had` — `'d`는 모든 낱말) → `normalizeReadWords` → `alignWordSeq(…, sameTemplateWord, { substitutionCost: 2 })`. `alignWordSeq`는 `lib/toeic-score.ts`에서 뽑은 코어라 **`alignReadAloud`는 옵션 없이 불러 결과가 글자까지 같아야 한다**(eval 무작위 400쌍). 약함 순위·세션 어댑터는 표현 시험의 것을 공개해 한 벌로 쓴다(`weaknessRank`·`toeicSessionsToVocabRecords` — 복사 금지, eval이 소스로 본다).
+- **공용 발음 큐를 건드렸다**(`app-patterns.md` §8): `speakQueue`의 조각 뒤 쉼(`pauseAfterMs`·`onPause` — 무음 WAV 조각), `prepareSpeech`, `getSpeechSpeedFactor`, `makeSilentWav(ms)`, 잠금 화면 관문 `lib/media-session.ts`. 칸이 없으면 기존 경로 그대로여야 한다 — 이 근처를 고치면 `eval:speech`(168)와 네 과목 오프라인(`eval:toeic`·`eval:japanese`·`eval:english`·`eval:workout`)을 함께 돌린다.
+
+**번들 경계**(eval "번들 경계"·"공략 번들 경계"가 잠근다): `lib/toeic-guide.ts`(런타임 import `tts-shared`·`tts-split`·`ja-coaching-script`·`toeic-text`뿐)·`lib/toeic-template.ts`(위에 더해 `toeic-guide`·`toeic-score`·`toeic-quiz`·`vocab-mastery`·`kst`)·`lib/toeic-drill.ts`(`toeic-mock`)·`lib/toeic-attempt-rules.ts`(`toeic-mock`·`toeic-drill`)·화면 판단 모듈 셋(`toeic-guide-view`·`toeic-template-test-view`·`toeic-drill-view`) — `/ai/`·`/store`·`openai`·`zod` 값 import 금지, lookbehind 금지. **순환 금지**: `lib/toeic-guide`와 `lib/toeic-quiz`는 `lib/toeic-template`을 import하지 않는다(그래서 `TOEIC_SHADOW_PAUSE_LEVELS`의 정의는 `lib/toeic-guide.ts`에 있고 `lib/toeic-template.ts`는 재수출한다). 서버 전용: `lib/ai/toeic/guide-import.ts`(`node:crypto`)·`pickExpressionsForDrill`(`lib/ai/toeic/mock.ts`). 빌드 뒤 `.next/static/chunks`에 `toeicGuideFileSchema`·`toeicTemplateSessionBodySchema`·`pickExpressionsForDrill`·`node:crypto` 0건을 본다.
+
+**화면이 서버 페이지에서 받는 것**: 틀 테스트 문항은 서버 페이지가 한 번 조립해 **문항 칸만** 내린다(틀 객체·다른 예문·다른 `testFills` 없음), ② 탭 페이로드에도 `testFills`가 없고, 틀 점검 자료(`toeicDrillCheckData`)는 예문·`testFills`를 뺀다 — 틀 바꿔 말하기의 정답 채움이 다른 화면 소스로 새지 않게.
+
+**eval**: 유형별 공략 628항목은 `scripts/eval-toeic-guides.ts`(`runToeicGuideChecks` — 순수 층, `checkRealGuideData(raw)`는 변환 단계가 파일을 쓰기 전 메모리에서도 쓴다)·`eval-toeic-guides-app.ts`·`-s2.ts`·`-s3.ts`에 있고 `eval-toeic.ts`가 부른다. 파일 백엔드를 실제로 도는 항목은 **임시 폴더를 cwd로 둔 자식 프로세스**에서 `getStore()`를 만든다(eval 프로세스는 이미 저장소 `data/db.json`을 가리킨다 — 전후 sha 검사). 새 app 파일을 소스 대조로 잠글 때는 파일이 생긴 뒤에 더한다(없는 파일을 대조하면 FAIL이거나 영원히 SKIP).
+
+**알려진 틈(2026-09-28 — QA 이월 P3, 배포를 막지 않는다)**: ④ "🧩 이 유형 답변 흐름" 접기는 결정적 동률 깨기(`drillStepPicks`)인데 연습 입력은 무작위라 보인 틀과 넣은 틀이 다를 수 있다 · 테스트 시작 화면의 범위 줄(`묶음 · {이름}`)은 라틴 가림을 지나지 않는다 · 저장 중 전체 이동·탭 닫기의 짧은 창은 이탈 저장을 건너뛸 수 있다 · 길이 선언 없는 전사 본문은 다 읽은 뒤 1 MiB 검사 · 깨진 공략·틀 은행 문서는 같은 파일 다시 가져오기로 고쳐지지 않는다(지문이 같으면 unchanged) · `?goto=`·`?expr=` 주소에 교재 조각이 실려 dev 로그에 남는다(검증 뒤 로그를 지운다). 실제 Firestore(`tx.create`·코덱·`where("drillPart")`)와 iPhone(잠금 화면 연속 재생·Media Session·녹음·전사 지연)은 미검증이다.

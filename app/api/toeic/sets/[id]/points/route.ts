@@ -14,6 +14,7 @@
  * - 200 { ok:true, filled, remaining, enriched, failedChunks, totalChunks, nothingToFill }
  * - 400 { ok:false, error:"invalid_input", messageKo, issues }
  * - 404 { ok:false, error:"set_not_found", messageKo }
+ * - 409 { ok:false, error:"is_guide", messageKo }   ← 공략 계열(유형 공략·틀 은행) — 발화 포인트를 만들지 않는다(§12-6, AI·키 검사 전)
  * - 501 { ok:false, error:"no_api_key", messageKo }
  * - 500 { ok:false, error:"points_failed", messageKo }   ← 모든 묶음 실패
  * - 500 { ok:false, error:"save_failed", messageKo }     ← 병합 저장 실패
@@ -25,7 +26,7 @@ import { generatePointsChunk } from "@/lib/ai/toeic/calls";
 import { planPointsChunks } from "@/lib/ai/toeic/points";
 import type { ToeicPointsItem } from "@/lib/ai/toeic/schemas";
 import { getStore } from "@/lib/store";
-import { isRenderableToeicSet } from "@/lib/toeic-record";
+import { isRenderableToeicSet, isToeicGuideSet } from "@/lib/toeic-record";
 import type { ToeicPointsRequest, ToeicPointsResponse } from "@/lib/toeic-set-contract";
 import { toToeicIssues, toeicZodErrorKo } from "@/lib/toeic-zod-ko";
 
@@ -66,6 +67,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const force = parsed.data.force;
 
   const set = await store.getToeicSet(id);
+  // 공략 계열은 발화 포인트를 만들지 않는다(§12-6 — 공략 표현은 `~` 자리 틀이라 호출 B의 "예문 속 구간" 규칙에 맞지 않는다).
+  // AI·키 검사보다 먼저 — 비용 0으로 막는다.
+  if (set && isToeicGuideSet(set)) {
+    return json({ ok: false, error: "is_guide", messageKo: "유형별 공략 자료에는 발화 포인트를 만들지 않아요." }, 409);
+  }
   if (!set || !isRenderableToeicSet(set)) {
     return json({ ok: false, error: "set_not_found", messageKo: "없거나 열 수 없는 표현집이에요." }, 404);
   }

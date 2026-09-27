@@ -66,6 +66,7 @@ export async function POST(req: Request) {
     photoCount: 0,
     enriched: false, // 저장 계층이 entries에서 다시 계산한다
     model: null,
+    guide: null, // 표현집(공략 계열이 아니다 — docs/harness/toeic.md §12-3)
   }));
 
   try {

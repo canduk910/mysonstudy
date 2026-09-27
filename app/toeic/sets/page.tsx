@@ -4,13 +4,16 @@
  * `getStore()`를 직접 읽어(조회용 API 라우트 없음 — 영어·일본어 규약) 목록 줄에 필요한 것만 줄여 넘긴다(entries 전문은
  * 무겁다). 렌더 판정은 상세와 **같은 함수**(lib/toeic-record). 관리모드 삭제·순서변경, "사진으로 추가", "파일로 가져오기"는
  * 클라이언트 뷰가 한다.
+ *
+ * 유형별 공략 계열 문서(유형 공략 `guide-{part}`·틀 은행 `guide-templates` — 같은 toeicSets 컬렉션, §12-3)는 **먼저 빼고** 그다음
+ * "열지 못한 n개"를 센다(순서가 반대면 공략 4개·틀 은행이 깨진 표현집으로 보고된다). 판정은 isToeicGuideSet 하나.
  */
 
 import type { Metadata } from "next";
 import Link from "next/link";
 import ToeicSetLibraryView, { type ToeicSetLibraryItem } from "@/components/toeic-set-library-view";
 import { getStore } from "@/lib/store";
-import { isRenderableToeicSet } from "@/lib/toeic-record";
+import { isRenderableToeicSet, isToeicGuideSet } from "@/lib/toeic-record";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +26,8 @@ export const metadata: Metadata = {
 const LIST_LIMIT = 500;
 
 export default async function ToeicSetLibraryPage() {
-  const stored = await getStore().listToeicSets(LIST_LIMIT);
+  // 공략 계열(유형 공략·틀 은행)을 먼저 빼고, 남은 표현집만으로 "열지 못한 n개"를 센다(§12-3 — 순서가 반대면 공략이 깨진 문서로 보고된다)
+  const stored = (await getStore().listToeicSets()).filter((s) => !isToeicGuideSet(s)).slice(0, LIST_LIMIT);
   const records = stored.filter(isRenderableToeicSet);
   const skippedCount = stored.length - records.length;
 

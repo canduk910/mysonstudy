@@ -107,17 +107,47 @@ export function normalizeReadWords(text: string): string[] {
   return out;
 }
 
+/** 정렬 결과 — 기대 낱말 하나(§12-5-5) */
+export interface AlignedWord {
+  /** 기대 낱말 */
+  word: string;
+  /** ok = 같은 낱말을 들음, wrong = 그 자리에 다른 낱말(치환), missing = 빠짐(삭제) */
+  status: "ok" | "wrong" | "missing";
+  /** 그 자리에 들은 낱말(missing이면 null) */
+  heard: string | null;
+  /** 들은 낱말열 안 위치(missing이면 null) */
+  heardIndex: number | null;
+}
+
+export interface WordSeqAlignment {
+  expected: AlignedWord[];
+  /** 더한 낱말(삽입) — 들은 위치 오름차순 */
+  extra: { word: string; index: number }[];
+}
+
+export interface AlignWordSeqOptions {
+  /**
+   * 치환 비용(기본 1 — Q1–2 지문 대조 `alignReadAloud`의 값, 결과 불변). 2로 주면 치환 = 삭제 + 삽입과 같은 값이 되어
+   * **맞은 낱말 수를 최대화**하는 정렬이 된다(틀 비교 — 고정 낱말 둘의 어순이 바뀌면 "다름 2"가 아니라 "빠짐 1 + 더함 1",
+   * docs/harness/toeic.md §12-5-5 표 3행). 같은 비용이면 일치·치환 → 삭제 → 삽입 순은 그대로다.
+   */
+  substitutionCost?: number;
+}
+
 /**
- * 지문(text)과 전사문(transcript)을 단어 단위 편집거리로 정렬한다(§5-4).
- * - missing: 지문에 있는데 전사문에 없는 단어(삭제)
- * - extra: 전사문에만 있는 단어(삽입)
- * - substituted: 지문 단어 자리에 다른 단어(치환)
- * - accuracy = 1 − (빠짐 + 치환) / 지문 단어 수 (0 미만은 0, 지문이 비면 0)
- * 같은 비용의 경로가 여럿이면 일치·치환 → 삭제 → 삽입 순으로 고른다(결정적).
+ * 단어열 정렬 코어(§12-5-5) — `alignReadAloud` 안에 있던 편집거리·되짚기를 그대로 뽑아낸 순수 함수.
+ * `eq`는 낱말 같음 판정(기본 `===`) — 틀 비교는 축약형 두 뜻 대안을 아는 sameTemplateWord를 넘긴다.
+ * 같은 비용의 경로가 여럿이면 일치·치환 → 삭제 → 삽입 순으로 고른다(결정적). alignReadAloud는 eq·옵션 없이 부르고 결과가 글자까지 같다.
  */
-export function alignReadAloud(text: string, transcript: string): ToeicReadDiff {
-  const a = normalizeReadWords(text);
-  const b = normalizeReadWords(transcript);
+export function alignWordSeq(
+  expected: readonly string[],
+  heard: readonly string[],
+  eq: (a: string, b: string) => boolean = (a, b) => a === b,
+  options: AlignWordSeqOptions = {},
+): WordSeqAlignment {
+  const a = expected;
+  const b = heard;
+  const subCost = options.substitutionCost ?? 1;
   const n = a.length;
   const m = b.length;
   const d: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
@@ -125,34 +155,55 @@ export function alignReadAloud(text: string, transcript: string): ToeicReadDiff 
   for (let j = 0; j <= m; j++) d[0][j] = j;
   for (let i = 1; i <= n; i++) {
     for (let j = 1; j <= m; j++) {
-      const sub = d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1);
+      const sub = d[i - 1][j - 1] + (eq(a[i - 1], b[j - 1]) ? 0 : subCost);
       d[i][j] = Math.min(sub, d[i - 1][j] + 1, d[i][j - 1] + 1);
     }
   }
-  const missing: string[] = [];
-  const extra: string[] = [];
-  const substituted: { expected: string; heard: string }[] = [];
+  const out: AlignedWord[] = new Array(n);
+  const extra: { word: string; index: number }[] = [];
   let i = n;
   let j = m;
   while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && a[i - 1] === b[j - 1] && d[i][j] === d[i - 1][j - 1]) {
+    if (i > 0 && j > 0 && eq(a[i - 1], b[j - 1]) && d[i][j] === d[i - 1][j - 1]) {
+      out[i - 1] = { word: a[i - 1], status: "ok", heard: b[j - 1], heardIndex: j - 1 };
       i -= 1;
       j -= 1;
-    } else if (i > 0 && j > 0 && d[i][j] === d[i - 1][j - 1] + 1) {
-      substituted.push({ expected: a[i - 1], heard: b[j - 1] });
+    } else if (i > 0 && j > 0 && d[i][j] === d[i - 1][j - 1] + subCost) {
+      out[i - 1] = { word: a[i - 1], status: "wrong", heard: b[j - 1], heardIndex: j - 1 };
       i -= 1;
       j -= 1;
     } else if (i > 0 && d[i][j] === d[i - 1][j] + 1) {
-      missing.push(a[i - 1]);
+      out[i - 1] = { word: a[i - 1], status: "missing", heard: null, heardIndex: null };
       i -= 1;
     } else {
-      extra.push(b[j - 1]);
+      extra.push({ word: b[j - 1], index: j - 1 });
       j -= 1;
     }
   }
-  missing.reverse();
   extra.reverse();
-  substituted.reverse();
+  return { expected: out, extra };
+}
+
+/**
+ * 지문(text)과 전사문(transcript)을 단어 단위 편집거리로 정렬한다(§5-4).
+ * - missing: 지문에 있는데 전사문에 없는 단어(삭제)
+ * - extra: 전사문에만 있는 단어(삽입)
+ * - substituted: 지문 단어 자리에 다른 단어(치환)
+ * - accuracy = 1 − (빠짐 + 치환) / 지문 단어 수 (0 미만은 0, 지문이 비면 0)
+ * 같은 비용의 경로가 여럿이면 일치·치환 → 삭제 → 삽입 순으로 고른다(결정적). 정렬은 코어 alignWordSeq(§12-5-5 추출 — 결과 불변).
+ */
+export function alignReadAloud(text: string, transcript: string): ToeicReadDiff {
+  const a = normalizeReadWords(text);
+  const b = normalizeReadWords(transcript);
+  const r = alignWordSeq(a, b);
+  const missing: string[] = [];
+  const substituted: { expected: string; heard: string }[] = [];
+  for (const w of r.expected) {
+    if (w.status === "missing") missing.push(w.word);
+    else if (w.status === "wrong") substituted.push({ expected: w.word, heard: w.heard ?? "" });
+  }
+  const extra = r.extra.map((x) => x.word);
+  const n = a.length;
   const accuracy = n === 0 ? 0 : Math.max(0, 1 - (missing.length + substituted.length) / n);
   return { accuracy, missing, extra, substituted };
 }

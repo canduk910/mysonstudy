@@ -429,6 +429,16 @@
   gap: 6px;
   margin: 0;
 }
+/* "넣었으면 좋았을 표현" 칩 — 공략 연습(T11·T12)에서는 틀의 `~` 형태(56·58자)가 온다. 전역 .u-chip(nowrap)이면 flex 항목의
+   min-width: auto가 한 줄 글 폭이라 폰 폭을 넘는다(QA final P2-2). 칩 안에서 줄바꿈한다 — 짧은 칩은 모양이 같다.
+   모듈 CSS는 레이어 밖이라 @layer components의 .u-chip을 이긴다. */
+.tryChip {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  max-width: 100%;
+  text-align: left;
+}
 .used {
   background: var(--accent-soft);
   color: var(--accent-ink);
@@ -466,4 +476,85 @@
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--accent-ink);
+}
+
+/* 모범답변 접기 — 답변 뼈대(번호 목록) */
+.olist {
+  margin: 0;
+  padding-left: 22px;
+  list-style: decimal;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.6;
+  word-break: keep-all;
+}
+
+/* 🧩 틀 점검(한 문제 연습 — docs/harness/toeic.md §12-7-9). 기존 토큰만(새 색조 없음) */
+.tplCheck {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+}
+.tplCheckTitle {
+  margin: 0;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: var(--fw-bold);
+}
+.tplList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.tplItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+.tplMeta {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: var(--fw-bold);
+  word-break: keep-all;
+}
+.tplEn {
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.tplKo {
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.tplSteps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+}
+.tplLink {
+  align-self: flex-start;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent-ink);
+  font-size: 14px;
+  font-weight: var(--fw-medium);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }

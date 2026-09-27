@@ -5,6 +5,10 @@
  * 문항별 화면 자료(buildToeicQuestionViews — 형식표 숫자 + 파트 자료)를 클라이언트 응시 화면에 넘긴다. 타이머·질문 음성·
  * 녹음·IndexedDB·시작/끝 라우트 호출은 클라이언트(ToeicTakeView)가 한다.
  * 범위가 맞지 않으면(빠진 파트·모르는 파트) 이유와 돌아갈 링크만 보인다. 없는 모의고사는 404.
+ *
+ * 유형별 공략의 **한 문제 연습**(문서의 drillPart — docs/harness/toeic.md §12-7-4): 판정에 drillPart를 넘겨 응시 범위 문항을 연습
+ * 단위표에서 받는다(사진 묘사는 Q3 하나). 범위 라벨은 toeicDrillScopeLabelKo("공략 연습 · …"), "뒤로"는 그 유형 폴더(④ 탭),
+ * 녹음 보관 풀은 "drill"(연습이 실전 녹음을 밀어내지 않게 — §12-7-6).
  */
 
 import type { Metadata } from "next";
@@ -12,8 +16,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import ToeicTakeView from "@/components/toeic-take-view";
 import { getStore } from "@/lib/store";
-import { buildToeicQuestionViews, toeicScopeLabelKo } from "@/lib/toeic-attempt-contract";
-import { decideAttemptScope, toeicAttemptQuestions } from "@/lib/toeic-attempt-rules";
+import { buildToeicQuestionViews, toeicDrillScopeLabelKo, toeicScopeLabelKo } from "@/lib/toeic-attempt-contract";
+import { decideAttemptScope } from "@/lib/toeic-attempt-rules";
+import { toeicMockBackLink } from "@/lib/toeic-drill-view";
 import { toeicMockPartLabelKo } from "@/lib/toeic-mock-contract";
 import { TOEIC_MOCK_PARTS, type ToeicMockPart } from "@/lib/toeic-mock";
 import { isRenderableToeicMock } from "@/lib/toeic-record";
@@ -50,20 +55,23 @@ export default async function ToeicTakePage({ params, searchParams }: TakePagePr
       : (TOEIC_MOCK_PARTS as readonly string[]).includes(partParam ?? "")
         ? [partParam as ToeicMockPart]
         : [];
-  const decided = requested.length > 0 ? decideAttemptScope(scope, requested, mock.parts) : null;
+  const decided = requested.length > 0 ? decideAttemptScope(scope, requested, mock.parts, mock.drillPart) : null;
+  const back = toeicMockBackLink(mock);
 
   if (!decided || !decided.ok) {
     const reason =
       !decided || decided.reason === "scope_parts_mismatch"
-        ? "응시 범위(파트)가 올바르지 않아요."
+        ? mock.drillPart !== null
+          ? "공략 연습은 그 유형 하나로만 응시해요."
+          : "응시 범위(파트)가 올바르지 않아요."
         : decided.reason === "incomplete_mock"
           ? "빠진 파트가 있어 실전 응시를 할 수 없어요. 학습 보기에서 파트를 먼저 만들거나, 있는 파트로 유형 연습을 해 주세요."
           : `이 모의고사에는 ${partParam ? toeicMockPartLabelKo(partParam as ToeicMockPart) : "그"} 파트가 아직 없어요.`;
     return (
       <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
         <header className="mb-4">
-          <Link href={`/toeic/mocks/${encodeURIComponent(id)}`} className="u-navbtn">
-            ← 학습 보기
+          <Link href={back.href} className="u-navbtn">
+            {back.labelKo}
           </Link>
         </header>
         <div className="u-box" role="alert">
@@ -73,15 +81,18 @@ export default async function ToeicTakePage({ params, searchParams }: TakePagePr
     );
   }
 
-  const qs = toeicAttemptQuestions(decided.parts);
+  // 응시 범위 문항은 판정이 돌려준 questions(연습의 사진 묘사는 [3] — 시작 라우트와 같은 함수)
+  const qs = decided.questions;
   return (
     <ToeicTakeView
       mockId={mock.id}
       titleKo={mock.titleKo}
       scope={scope}
       parts={decided.parts}
-      scopeLabelKo={toeicScopeLabelKo(scope, decided.parts)}
+      scopeLabelKo={mock.drillPart !== null ? toeicDrillScopeLabelKo(mock.drillPart, qs) : toeicScopeLabelKo(scope, decided.parts)}
       questions={buildToeicQuestionViews(mock.parts, qs)}
+      back={back}
+      recPool={mock.drillPart !== null ? "drill" : "mock"}
     />
   );
 }

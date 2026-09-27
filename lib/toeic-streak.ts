@@ -44,3 +44,59 @@ export function toeicStreakSessions(
 export function isCountedToeicAttempt(a: ToeicAttemptStreakLike): boolean {
   return a.answers.some((x) => x.recorded === true);
 }
+
+/** 헤드라인 라벨을 만들 때 쓰는 세트 최소 모양(ToeicSetRecord가 만족) — guide는 모양을 믿지 않는다 */
+export interface ToeicQuizLabelSetLike {
+  titleKo: string;
+  guide: unknown;
+}
+
+/** 라벨 이름표 — 호출측(라우트·eval)이 lib/toeic-quiz·lib/toeic-mock-contract의 단일 정의처에서 넘긴다(이 모듈은 런타임 import 0) */
+export interface ToeicQuizLabelNames {
+  /** 틀 모드 이름("예문 말하기"·"틀 바꿔 말하기") — 틀 모드가 아니면 null */
+  templateModeKo: (mode: string) => string | null;
+  /** 공략 유형 이름(긴 이름 — "Q3–4 사진 묘사") — 네 유형 밖이면 null */
+  guidePartKo: (part: string) => string | null;
+}
+
+/**
+ * 오늘 라벨 — 영어 트랙의 표현 시험 세션 하나(가장 늦게 시작한 것)와 그 세트 → 헤드라인 라벨(docs/harness/toeic.md §12-9, SPEC §17-8).
+ * - 틀 모드 세션(틀 은행의 템플릿 테스트) → `템플릿 훈련 · {모드 이름}` — 틀은 여러 유형에 걸치므로 유형 이름을 붙이지 않는다.
+ * - 유형 공략 세트(guide.kind "part" — kind가 없으면 "part"로 읽는다)의 시험 → `공략 표현 · {유형 이름}`.
+ * - 그 밖(표현집) → `표현집 · {세트 이름}`(세트를 못 읽으면 "표현집") — 기존 라벨 그대로.
+ * 계산식은 바꾸지 않는다(라벨만 가른다 — 무엇을 세는지는 toeicStreakSessions 그대로).
+ */
+export function toeicQuizStreakLabel(quiz: { mode: string }, set: ToeicQuizLabelSetLike | null, names: ToeicQuizLabelNames): string {
+  const tplMode = names.templateModeKo(quiz.mode);
+  if (tplMode !== null) return `템플릿 훈련 · ${tplMode}`;
+  const g = set?.guide;
+  if (g !== null && typeof g === "object") {
+    const kind = (g as { kind?: unknown }).kind;
+    const part = (g as { part?: unknown }).part;
+    if ((kind === undefined || kind === "part") && typeof part === "string") {
+      const name = names.guidePartKo(part);
+      if (name !== null) return `공략 표현 · ${name}`;
+    }
+  }
+  return set ? `표현집 · ${set.titleKo}` : "표현집";
+}
+
+/** 응시 라벨을 만들 때 쓰는 모의고사 최소 모양(ToeicMockRecord가 만족) — drillPart는 모양을 믿지 않는다 */
+export interface ToeicAttemptLabelMockLike {
+  titleKo: string;
+  drillPart: unknown;
+}
+
+/**
+ * 오늘 라벨 — 영어 트랙의 응시 하나(가장 늦게 시작한 것)와 그 모의고사 → 헤드라인 라벨(docs/harness/toeic.md §12-9, SPEC §17-8).
+ * - 한 문제 연습(drillPart가 다섯 파트 중 하나) → `공략 연습 · {유형 이름}`(유형 이름 = 긴 이름 "Q3–4 사진 묘사" — 호출측이 단일 정의처
+ *   lib/toeic-mock-contract toeicMockPartLabelKo로 넘긴다. 이 모듈은 런타임 import 0).
+ * - 그 밖 → `모의고사 · {제목}`(문서를 못 읽으면 "모의고사") — 기존 라벨 그대로. 계산식은 바꾸지 않는다(라벨만 가른다).
+ */
+export function toeicAttemptStreakLabel(mock: ToeicAttemptLabelMockLike | null, drillPartKo: (part: string) => string | null): string {
+  if (mock && typeof mock.drillPart === "string") {
+    const name = drillPartKo(mock.drillPart);
+    if (name !== null) return `공략 연습 · ${name}`;
+  }
+  return mock ? `모의고사 · ${mock.titleKo}` : "모의고사";
+}

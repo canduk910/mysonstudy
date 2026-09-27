@@ -43,7 +43,7 @@ import {
   toeicAudioTypeFromName,
   type ToeicScoreResponse,
 } from "@/lib/toeic-attempt-contract";
-import { isToeicAttemptClosed, toeicAttemptQuestions } from "@/lib/toeic-attempt-rules";
+import { isToeicAttemptClosed } from "@/lib/toeic-attempt-rules";
 import { TOEIC_QUESTION_COUNT, toeicQuestionFormat } from "@/lib/toeic-mock";
 import { isRenderableToeicMock } from "@/lib/toeic-record";
 import { alignReadAloud, isNoResponseTranscript, noResponseFeedback, readProxyScore } from "@/lib/toeic-score";
@@ -89,7 +89,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const store = getStore();
   const attempt = await store.getToeicAttempt(id);
   if (!attempt) return json({ ok: false, error: "attempt_not_found", messageKo: "응시 기록을 찾을 수 없어요." }, 404);
-  if (!toeicAttemptQuestions(attempt.parts).includes(q)) {
+  // 범위는 레코드의 questions(§12-7-4 — 연습의 사진 묘사는 [3]이라 Q4 채점은 404 question_not_found, 기존 계약 그대로)
+  if (!attempt.questions.includes(q)) {
     return json({ ok: false, error: "question_not_found", messageKo: `이 응시에는 Q${q}가 없어요.` }, 404);
   }
   if (!isToeicAttemptClosed(attempt)) {

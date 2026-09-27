@@ -13,6 +13,11 @@
  * - **진단 캡션**: 마지막 녹음의 mimeType·길이·크기·정규화 여부·전사 상태(SPEC §16-5 관용구 — 서버 로그를 못 보는 폰에서 판정).
  * - 🔊는 탭 안에서 동기로 speakQueue(en-US 명시), 정지는 큐가 돌려준 stop만.
  * - 닫히지 않은 응시(끝/그만두기 저장이 실패한 채 떠남)는 이 기기 녹음으로 "녹음 기록 저장하기"를 제안한다.
+ * - 모범답변 접기 안에 Q3–4 **묘사 포인트**(keyPointsKo)·Q11 **답변 뼈대**(outlineKo)도 보인다 — 규칙은 "비어 있지 않으면 보인다" 하나라
+ *   실전 모의고사 결과에도 같다(docs/harness/toeic.md §12-7-5 — 연습은 학습 보기를 쓰지 않으므로 결과 화면이 복습 자리다).
+ * - 유형별 공략 **한 문제 연습**(`drill` — 서버 페이지가 문서의 drillPart로 넘긴다, §12-7-5·§12-7-9): 끝 버튼 줄은 "같은 문제 다시"·
+ *   "새 문제"(유형 폴더의 만들기로)이고 **"학습 보기로"는 숨긴다**(학습 보기는 연습을 폴더로 보낸다). 문항마다 "🧩 틀 점검"(AI 없음 —
+ *   채점 때 만든 전사문과 저장된 C·D 출력만: 쓴 틀·빠진 단계(Q3–4·Q11)·쓸 수 있었던 틀 — lib/toeic-drill-view drillTemplateCheck).
  */
 
 import Link from "next/link";
@@ -38,7 +43,16 @@ import {
   type ToeicScoreResponse,
 } from "@/lib/toeic-attempt-contract";
 import { isScorableToeicAnswer } from "@/lib/toeic-attempt-rules";
+import { FrameLine } from "@/components/toeic-template-lines";
+import {
+  TOEIC_DRILL_SUGGESTION_SOURCE_KO,
+  drillTemplateCheck,
+  type ToeicDrillCheckData,
+  type ToeicDrillCheckTemplate,
+} from "@/lib/toeic-drill-view";
+import { slotToneMap, toeicGuideFolderHref } from "@/lib/toeic-guide-view";
 import { segmentUsedExpressions, toeicImageUrl, toeicTakeHref, type ToeicUsedExpression } from "@/lib/toeic-mock-contract";
+import { frameSlotNames } from "@/lib/toeic-template";
 import { markReadAloud } from "@/lib/toeic-read-marks";
 import { listToeicRecordings, type ToeicRecording } from "@/lib/toeic-rec-store";
 import { TOEIC_NO_RESPONSE_KO, TOEIC_READ_NOTICE_KO, estimateToeicTotal, isNoResponseTranscript } from "@/lib/toeic-score";
@@ -86,6 +100,31 @@ function secs(ms: number | null): string {
   return ms === null ? "–" : `${(ms / 1000).toFixed(1)}초`;
 }
 
+/** 한 문제 연습의 결과 화면 자료(서버 페이지가 문서의 drillPart로 만든다 — 모의고사면 null) */
+export interface ToeicAttemptDrillInfo {
+  /** "같은 문제 다시" — 같은 연습 응시 */
+  retakeHref: string;
+  /** "새 문제" — 유형 폴더 ④ 탭(만들기) */
+  newHref: string;
+  /** 🧩 틀 점검 자료(틀 은행에 그 유형 틀이 없으면 null — 틀 점검 없이 결과만) */
+  check: ToeicDrillCheckData | null;
+}
+
+/** 틀 한 줄(영어 틀 — 자리 칩) + 한국어 틀(작은 글씨) */
+function TemplateMini({ t }: { t: ToeicDrillCheckTemplate }) {
+  const tones = slotToneMap(frameSlotNames(t.frameEn));
+  return (
+    <>
+      <span className={s.tplEn} lang="en">
+        <FrameLine frame={t.frameEn} tones={tones} lang="en" />
+      </span>
+      <span className={s.tplKo}>
+        <FrameLine frame={t.frameKo} tones={tones} lang="ko" />
+      </span>
+    </>
+  );
+}
+
 function highlightUsed(text: string, used: readonly ToeicUsedExpression[], markClass: string): ReactNode {
   return segmentUsedExpressions(text, used).map((seg, i) =>
     seg.mark ? (
@@ -105,6 +144,7 @@ export default function ToeicAttemptView({
   scopeLabelKo,
   closed,
   questions,
+  drill = null,
 }: {
   attempt: ToeicAttemptRecord;
   mockId: string;
@@ -112,9 +152,13 @@ export default function ToeicAttemptView({
   scopeLabelKo: string;
   closed: boolean;
   questions: ToeicQuestionView[];
+  /** 한 문제 연습이면 끝 버튼 줄·틀 점검 자료(모의고사면 null) */
+  drill?: ToeicAttemptDrillInfo | null;
 }) {
   const router = useRouter();
   const id = attempt.id;
+  const check = drill?.check ?? null;
+  const checkTplByKey = useMemo(() => new Map((check?.templates ?? []).map((t) => [t.key, t] as const)), [check]);
 
   // ── 문항별 답(서버 값 위에 이 화면의 채점 결과를 얹는다 — 새로 읽으면 서버 값으로 맞춘다) ──
   const toMap = (list: readonly ToeicAnswer[]) => Object.fromEntries(list.map((a) => [a.q, a] as const)) as Record<number, ToeicAnswer>;
@@ -682,8 +726,9 @@ export default function ToeicAttemptView({
                 {a.feedback.tryExpressions.length > 0 && (
                   <p className={s.tryList}>
                     <span className={s.label}>📒 넣었으면 좋았을 표현</span>
+                    {/* tryChip: 공략 틀의 `~` 형태(50자 넘음)가 오면 전역 .u-chip의 nowrap이 폰 폭을 넘긴다 — 칩 안에서 줄바꿈(QA final P2-2) */}
                     {a.feedback.tryExpressions.map((e) => (
-                      <span key={e} className="u-chip u-chip-accent" lang="en">
+                      <span key={e} className={`u-chip u-chip-accent ${s.tryChip}`} lang="en">
                         {e}
                       </span>
                     ))}
@@ -704,8 +749,109 @@ export default function ToeicAttemptView({
                   {highlightUsed(v.sampleAnswer, v.usedExpressions, s.used)}
                 </p>
                 {v.tipKo && <p className={s.caption}>💡 {v.tipKo}</p>}
+                {/* 응시 뒤 복습 자료(§12-7-5) — 비어 있지 않으면 보인다(실전 결과에도 같다) */}
+                {v.keyPointsKo.length > 0 && (
+                  <>
+                    <p className={s.label}>📌 묘사 포인트</p>
+                    <ul className={s.list}>
+                      {v.keyPointsKo.map((t, k) => (
+                        <li key={k}>{t}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {v.outlineKo.length > 0 && (
+                  <>
+                    <p className={s.label}>🗂 답변 뼈대</p>
+                    <ol className={s.olist}>
+                      {v.outlineKo.map((t, k) => (
+                        <li key={k}>{t}</li>
+                      ))}
+                    </ol>
+                  </>
+                )}
               </details>
             )}
+
+            {/* 🧩 틀 점검(한 문제 연습만 — AI 없음, §12-7-9) */}
+            {check &&
+              (() => {
+                const result = drillTemplateCheck(check, {
+                  transcript: a?.transcript ?? null,
+                  sampleUsedExpressions: v.usedExpressions.map((u) => u.expression),
+                  tryExpressions: a?.feedback?.tryExpressions ?? [],
+                });
+                const tplHref = (key: string) => toeicGuideFolderHref(check.part, { tab: "templates", tpl: key });
+                return (
+                  <section className={s.tplCheck} aria-label={`Q${v.q} 틀 점검`} data-testid={`tpl-check-${v.q}`}>
+                    <p className={s.tplCheckTitle}>🧩 틀 점검</p>
+                    {result.scored && (
+                      <div className={s.block}>
+                        <p className={s.label}>내 답에서 쓴 틀</p>
+                        {result.used.length > 0 ? (
+                          <ul className={s.tplList}>
+                            {result.used.map((u) => {
+                              const t = checkTplByKey.get(u.key);
+                              if (!t) return null;
+                              return (
+                                <li key={u.key} className={s.tplItem}>
+                                  <span className={s.tplMeta}>{u.stepKo ? `${u.stepKo} · ${u.groupKo}` : u.groupKo}</span>
+                                  <TemplateMini t={t} />
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        ) : (
+                          <p className={s.caption}>받아쓰기에서 찾은 틀이 없어요.</p>
+                        )}
+                      </div>
+                    )}
+                    {result.scored && result.flowChecked && (
+                      <div className={s.block}>
+                        <p className={s.label}>빠진 단계</p>
+                        {result.missingSteps.length > 0 ? (
+                          <p className={s.tplSteps}>
+                            {result.missingSteps.map((st) => (
+                              <span key={st} className="u-chip">
+                                {st}
+                              </span>
+                            ))}
+                          </p>
+                        ) : (
+                          <p className={s.caption}>답변 흐름의 단계를 모두 지났어요 ✓</p>
+                        )}
+                      </div>
+                    )}
+                    <div className={s.block}>
+                      <p className={s.label}>{result.scored ? "쓸 수 있었던 틀" : "모범답변이 쓴 틀"}</p>
+                      {result.suggestions.length > 0 ? (
+                        <ul className={s.tplList}>
+                          {result.suggestions.map((sg) => {
+                            const t = checkTplByKey.get(sg.key);
+                            if (!t) return null;
+                            return (
+                              <li key={sg.key} className={s.tplItem}>
+                                <span className={s.tplMeta}>{TOEIC_DRILL_SUGGESTION_SOURCE_KO[sg.source]}</span>
+                                <TemplateMini t={t} />
+                                <Link href={tplHref(sg.key)} className={s.tplLink}>
+                                  이 틀 연습하기 →
+                                </Link>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      ) : (
+                        <p className={s.caption}>{result.scored ? "더 권할 틀이 없어요." : "모범답변에서 되짚히는 틀이 없어요."}</p>
+                      )}
+                    </div>
+                    <p className={s.caption}>
+                      {result.scored
+                        ? "받아쓰기에서 틀의 고정 부분을 찾은 참고예요(점수가 아니에요) — 발음 때문에 다르게 적히면 쓴 틀도 못 찾을 수 있어요."
+                        : "AI 채점을 받으면 내 답에서 쓴 틀과 쓸 수 있었던 틀이 더 보여요."}
+                    </p>
+                  </section>
+                );
+              })()}
 
             {diag && (
               <p className={s.diagLine}>
@@ -738,14 +884,26 @@ export default function ToeicAttemptView({
             : "이 기기에 없음"}
       </p>
 
-      <div className={s.row}>
-        <Link href={toeicTakeHref(mockId, attempt.scope, partOnly ? firstPart : undefined)} className="u-btn u-btn-secondary">
-          ↻ 다시 응시
-        </Link>
-        <Link href={`/toeic/mocks/${encodeURIComponent(mockId)}`} className="u-btn u-btn-secondary">
-          학습 보기로
-        </Link>
-      </div>
+      {drill ? (
+        // 한 문제 연습(§12-7-5) — "같은 문제 다시"·"새 문제". "학습 보기로"는 숨긴다(학습 보기는 연습을 유형 폴더로 보낸다)
+        <div className={s.row}>
+          <Link href={drill.retakeHref} className="u-btn u-btn-secondary">
+            ↻ 같은 문제 다시
+          </Link>
+          <Link href={drill.newHref} className="u-btn u-btn-secondary">
+            ✨ 새 문제
+          </Link>
+        </div>
+      ) : (
+        <div className={s.row}>
+          <Link href={toeicTakeHref(mockId, attempt.scope, partOnly ? firstPart : undefined)} className="u-btn u-btn-secondary">
+            ↻ 다시 응시
+          </Link>
+          <Link href={`/toeic/mocks/${encodeURIComponent(mockId)}`} className="u-btn u-btn-secondary">
+            학습 보기로
+          </Link>
+        </div>
+      )}
     </div>
   );
 }

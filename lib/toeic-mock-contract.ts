@@ -254,8 +254,11 @@ export type ToeicMockRegenerateResponse =
   | { ok: true; id: string; part: ToeicMockPart }
   | {
       ok: false;
-      /** part_exists: 이미 있는 파트(덮지 않는다 — 화면이 새로 읽는다) */
-      error: "invalid_input" | "mock_not_found" | "part_exists" | "no_api_key" | "ai_failed" | "save_failed";
+      /**
+       * part_exists: 이미 있는 파트(덮지 않는다 — 화면이 새로 읽는다) · is_drill: 유형별 공략 한 문제 연습 문서(연습에 다른 파트가 생기지
+       * 않게 — docs/harness/toeic.md §12-3, 키 검사·AI보다 먼저)
+       */
+      error: "invalid_input" | "mock_not_found" | "part_exists" | "is_drill" | "no_api_key" | "ai_failed" | "save_failed";
       messageKo: string;
       retriable?: boolean;
     };

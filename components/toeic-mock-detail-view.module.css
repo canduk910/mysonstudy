@@ -362,6 +362,15 @@
   font-size: var(--fs-meta-chip);
   font-weight: 700;
 }
+/* 표현 칩(활용한 표현·넘긴 활용할 표현) — 지금은 표현집 표현(짧다)만 오지만, 긴 표현이 오면 전역 .u-chip(nowrap)이 폰 폭을
+   넘긴다(결과 화면 .tryChip과 같은 예방 — QA final P2-2). 칩 안에서 줄바꿈한다. */
+.exprChip {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  max-width: 100%;
+  text-align: left;
+}
 
 /* Q3–4 사진 */
 .photo {

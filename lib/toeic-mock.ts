@@ -177,6 +177,25 @@ function buildDirections(): Record<ToeicMockPart, { en: string; ko: string }> {
 /** 파트 지시문(§6-4) — 파트마다 한 번만 정의. en은 읽기용(TOEIC_DIRECTIONS_LANG), ko는 화면 보조 문구 */
 export const TOEIC_PART_DIRECTIONS: Record<ToeicMockPart, { en: string; ko: string }> = buildDirections();
 
+/**
+ * 응시 문항 수에 맞춘 지시문(docs/harness/toeic.md §12-7-4) — `count`가 그 파트 문항 수와 같으면 TOEIC_PART_DIRECTIONS[part]를
+ * **그대로**(같은 객체) 돌려준다. 사진 묘사를 1장만 푸는 연습(`picture`, count 1)은 한 장짜리 문장(숫자는 형식표에서 계산 — 이 앱의
+ * 문장, ETS 원문 아님). 그 밖의 부분 개수는 파트 지시문 그대로다(쓰는 곳이 없다). 응시 화면의 지시문 읽기·프리페치·화면 글
+ * 세 곳이 모두 이 함수를 써야 캐시 글자가 맞는다.
+ */
+export function toeicPartDirections(part: ToeicMockPart, count: number): { en: string; ko: string } {
+  const formats = partFormats(part);
+  if (count === formats.length) return TOEIC_PART_DIRECTIONS[part];
+  if (part === "picture" && count === 1) {
+    const f = formats[0];
+    return {
+      en: `Describing a picture. ${COUNT_EN[1]} photo will appear. Study it for ${f.prepSec} seconds, then talk about it for ${f.answerSec} seconds.`,
+      ko: `사진 묘사. 사진 1장이 나와요. ${f.prepSec}초 동안 살펴본 뒤, ${f.answerSec}초 동안 묘사하세요.`,
+    };
+  }
+  return TOEIC_PART_DIRECTIONS[part];
+}
+
 // ---------------------------------------------------------------------------
 // 단계 전이 (§6-4) — directions(파트 첫 문항만) → reading(Q8 앞만) → question(음성 × 재생 횟수) → prep → beep → answer
 // ---------------------------------------------------------------------------

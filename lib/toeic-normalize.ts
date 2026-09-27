@@ -33,15 +33,19 @@ import {
   type ToeicBookQuiz,
   type ToeicExprEntry,
   type ToeicFeedback,
+  type ToeicGuideDoc,
+  type ToeicGuidePartDoc,
   type ToeicMockParts,
   type ToeicPart,
   type ToeicPictureImage,
   type ToeicReadDiff,
   type ToeicSpeakingPoints,
+  type ToeicTemplateBankDoc,
 } from "./ai/toeic/schemas";
 import { isToeicSetEnriched } from "./ai/toeic/points";
-import { isToeicQuizMode } from "./toeic-quiz";
-import { TOEIC_DEFAULT_TARGET_GRADE, TOEIC_MOCK_PARTS, TOEIC_TARGET_GRADES, type ToeicMockPart } from "./toeic-mock";
+import { isToeicQuizMode, isToeicTemplateQuizMode } from "./toeic-quiz";
+import { TOEIC_DEFAULT_TARGET_GRADE, TOEIC_MOCK_PARTS, TOEIC_QUESTION_COUNT, TOEIC_TARGET_GRADES, type ToeicMockPart } from "./toeic-mock";
+import { toeicAttemptQuestions } from "./toeic-attempt-rules";
 
 // ---------------------------------------------------------------------------
 // 작은 방어 헬퍼
@@ -139,7 +143,48 @@ export function normalizeToeicBookQuiz(v: unknown): ToeicBookQuiz {
   };
 }
 
-/** 표현집 세트 레코드(§7-1) — enriched는 entries에서 다시 계산한다. */
+/**
+ * 공략 계열 문서 표시(docs/harness/toeic.md §12-3 "정규화 깊이") — normalizeToeicSetRecord가 모르는 키를 버리므로 **명시적으로 옮긴다**
+ * (빠뜨리면 생성·이름 바꾸기·병합 경로에서 공략이 조용히 표현집으로 둔갑한다).
+ * - 키가 없거나 null → null(옛 문서 = 표현집).
+ * - 객체 → kind를 보고 옮긴다. "templates"면 flows·items를 배열이면 통째로, "part"(또는 kind 없음 — 방어)면 part·introKo·contentHash·
+ *   updatedAt은 형식을 보고 옮기고 sections는 배열이면 통째로(안쪽 모양은 렌더 판정이 본다).
+ * - kind가 두 값 밖이거나 part가 네 값 밖이거나 sections·items가 배열이 아니어도 **null로 떨어뜨리지 않는다** — 떨어뜨리면 깨진
+ *   공략이 표현집 목록에 섞인다. 받은 값을 그대로 두고(없으면 null — Firestore undefined 거부), 렌더 판정(lib/toeic-record.ts)이
+ *   막는다. 그래서 이 반환값은 타입과 다른 값을 담을 수 있다 — 화면은 늘 렌더 판정을 먼저 본다.
+ * - 객체가 아닌 값(문자열·숫자·배열 등)도 깨진 유형 공략으로 둔다(isToeicGuideSet true, 렌더 false).
+ */
+export function normalizeToeicGuideDoc(v: unknown): ToeicGuideDoc | null {
+  if (v === undefined || v === null) return null;
+  const g = obj(v);
+  const keep = (x: unknown): unknown => (x === undefined ? null : x);
+  if (!g) {
+    const broken = { kind: "part", part: "", introKo: null, sections: null, contentHash: "", updatedAt: EPOCH };
+    return broken as unknown as ToeicGuidePartDoc;
+  }
+  if (g.kind === "templates") {
+    const bank = {
+      kind: "templates" as const,
+      flows: Array.isArray(g.flows) ? g.flows : keep(g.flows),
+      items: Array.isArray(g.items) ? g.items : keep(g.items),
+      contentHash: str(g.contentHash),
+      updatedAt: isoOr(g.updatedAt, EPOCH),
+    };
+    return bank as unknown as ToeicTemplateBankDoc;
+  }
+  const part = {
+    // kind 없음 → "part"로 읽는다. 모르는 kind는 그대로 둔다(렌더 판정에서 떨어진다)
+    kind: g.kind === undefined || g.kind === null ? "part" : keep(g.kind),
+    part: typeof g.part === "string" ? g.part : keep(g.part),
+    introKo: strOrNull(g.introKo),
+    sections: Array.isArray(g.sections) ? g.sections : keep(g.sections),
+    contentHash: str(g.contentHash),
+    updatedAt: isoOr(g.updatedAt, EPOCH),
+  };
+  return part as unknown as ToeicGuidePartDoc;
+}
+
+/** 표현집 세트 레코드(§7-1) — enriched는 entries에서 다시 계산한다(entries가 비면 false — 틀 은행). guide는 §12-3 정규화. */
 export function normalizeToeicSetRecord(v: unknown): ToeicSetRecord {
   const r = obj(v) ?? {};
   const entries = Array.isArray(r.entries) ? r.entries.map(normalizeToeicExprEntry) : [];
@@ -157,6 +202,7 @@ export function normalizeToeicSetRecord(v: unknown): ToeicSetRecord {
     model: strOrNull(r.model),
     createdAt: isoOr(r.createdAt, EPOCH),
     sortIndex: numOrNull(r.sortIndex),
+    guide: normalizeToeicGuideDoc(r.guide),
   };
 }
 
@@ -177,10 +223,11 @@ export function normalizeToeicQuizItem(v: unknown): ToeicQuizItem {
 /**
  * 시험 세션 레코드. **모르는 mode면 null**(호출측이 버린다) — 모드별 숙련도(§6-2)가 이 축에 매달려 있어, 모르는 값을
  * 아무 모드로 떨어뜨리면 그 모드의 "안다" 판정이 오염된다. 저장 라우트 zod가 막으므로 정상 경로에서는 오지 않는다.
+ * 받는 mode는 표현 시험 네 모드 + 템플릿 테스트 두 모드(§12-3)다.
  */
 export function normalizeToeicQuizRecord(v: unknown): ToeicQuizRecord | null {
   const r = obj(v) ?? {};
-  if (!isToeicQuizMode(r.mode)) return null;
+  if (!isToeicQuizMode(r.mode) && !isToeicTemplateQuizMode(r.mode)) return null;
   return {
     id: str(r.id),
     setId: str(r.setId),
@@ -231,6 +278,8 @@ export function normalizeToeicMockRecord(v: unknown): ToeicMockRecord {
     // T3에서 더한 필드 — 이전 문서는 빈 배열(파트 다시 만들기가 "주제 힌트 없음"으로 부른다)
     topicHints: strArr(r.topicHints),
     parts: normalizeMockParts(r.parts),
+    // 유형별 공략 한 문제 연습(§12-3) — 필드가 없거나 다섯 파트 밖이면 null(= 모의고사). 옛 문서는 모두 모의고사다.
+    drillPart: typeof r.drillPart === "string" && MOCK_PART_SET.has(r.drillPart) ? (r.drillPart as ToeicMockPart) : null,
     model: str(r.model),
     createdAt: isoOr(r.createdAt, EPOCH),
     sortIndex: numOrNull(r.sortIndex),
@@ -299,13 +348,25 @@ export function normalizeToeicAnswer(v: unknown): ToeicAnswer {
   };
 }
 
+/**
+ * 응시 범위 문항(§12-3 `questions`) — 1..11 정수만 중복 없이 오름차순. 필드가 없는 옛 문서·비었거나 깨진 값은 파트의 문항
+ * (`toeicAttemptQuestions(parts)`)으로 읽는다 — 범위가 비면 끝내기가 아무 문항도 채우지 못해 "닫힘"이 서지 않는다.
+ */
+function normalizeAttemptQuestions(v: unknown, parts: readonly ToeicMockPart[]): number[] {
+  const list = Array.isArray(v) ? v.filter((q): q is number => typeof q === "number" && Number.isInteger(q) && q >= 1 && q <= TOEIC_QUESTION_COUNT) : [];
+  const uniq = [...new Set(list)].sort((a, b) => a - b);
+  return uniq.length > 0 ? uniq : toeicAttemptQuestions(parts);
+}
+
 export function normalizeToeicAttemptRecord(v: unknown): ToeicAttemptRecord {
   const r = obj(v) ?? {};
+  const parts = strArr(r.parts).filter((p): p is ToeicMockPart => MOCK_PART_SET.has(p));
   return {
     id: str(r.id),
     mockId: str(r.mockId),
     scope: r.scope === "part" ? "part" : "full",
-    parts: strArr(r.parts).filter((p): p is ToeicMockPart => MOCK_PART_SET.has(p)),
+    parts,
+    questions: normalizeAttemptQuestions(r.questions, parts),
     startedAt: isoOr(r.startedAt, EPOCH),
     finishedAt: strOrNull(r.finishedAt),
     answers: Array.isArray(r.answers) ? r.answers.map(normalizeToeicAnswer) : [],

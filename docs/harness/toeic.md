@@ -64,6 +64,7 @@
 
 - **시험(표현집)은 AI를 부르지 않는다**(§6). Q1–2(지문 읽기)의 채점도 AI가 아니라 **전사문 ↔ 지문 대조 순수 함수**다(§5-4) — 전사문으로는 발음·억양을 알 수 없으니 LLM에게 점수를 지어내게 하지 않는다.
 - **요청 하나가 60초를 넘지 않게 쪼갠다.** 프로덕션은 Firebase Hosting → Cloud Run 리라이트라 요청 시간 상한이 있다. 그래서 호출 A는 사진마다, B는 7개씩, C는 파트마다(5개 병렬), P는 사진마다, 채점(T+D)은 문항마다 **별개 호출**이다. 한 묶음이 실패해도 나머지는 산다(부분 성공).
+- **유형별 공략(§12, 2026-09-27)은 새 AI 호출이 없다.** 한 문제 연습은 호출 C 파트 하나(Q3–4는 관문 P 1장)를 입력만 바꿔 부르고(§12-7-7), 템플릿 테스트는 관문 T만 쓴다(문항마다 녹음만 보낸다 — 기대 문장은 보내지 않는다, §12-5-4). 공략·틀 은행 가져오기는 AI 0이다.
 
 ### 1-2. 파일 배치
 
@@ -74,9 +75,18 @@ lib/ai/toeic/
   schemas.ts                      ← JSON Schema(strict) + zod + 타입 + 상한 상수(단일 정의)
   extract-merge.ts                ← 판독 결과 DAY별 묶기·번호 병합 순수 함수
   points.ts                       ← 발화 포인트 병합("빈 자리만" / 강제 다시 만들기) 순수 함수
+  guide-import.ts                 ← 유형별 공략 가져오기 계획·내용 지문·제자리 갱신 판정(서버 전용 — §12-2-5)
 lib/toeic-quiz.ts                 ← 표현 시험 출제·보기·빈칸(순수, lib/ai 밖 — 클라이언트 import 가능)
 lib/toeic-mock.ts                 ← 모의고사 형식표·단계 전이·지시문(순수)
 lib/toeic-score.ts                ← Q1–2 대조·추정 점수·등급(순수)
+lib/toeic-guide.ts                ← 유형별 공략 읽기 대본·TTS 정리·강조 분할(순수, 클라이언트 import 가능 — §12)
+lib/toeic-drill.ts                ← 한 문제 연습 단위표·연습 파트 후처리·지시문 변형·연습 제목(순수 — §12)
+lib/toeic-template.ts             ← 틀 채우기·표시 분할·따라 말하기 대본·전사 비교·틀 숙련도·연습 틀 고르기(순수, 클라이언트 import 가능 — §12-5)
+lib/toeic-guide-view.ts           ← 공략 폴더·읽기·템플릿 탭 화면 판단(순수 — §12-4·§12-5-1·§12-5-2)
+lib/toeic-template-test-view.ts   ← 🧩 틀 테스트 화면 판단(순수 — §12-5-3)
+lib/toeic-drill-view.ts           ← 한 문제 연습 탭·응시/결과 "뒤로"·🧩 틀 점검 자료(순수 — §12-7)
+lib/toeic-firestore-codec.ts      ← 틀 은행 testFills(배열 속 배열)를 Firestore 본문에서 감싸고 푼다(import 0 — §12-3)
+lib/media-session.ts              ← 잠금 화면 조작 관문(클라이언트, import 0 — 따라 말하기 플레이어만, §12-5-2)
 lib/toeic-image.ts                ← 관문 P (서버 전용)
 lib/toeic-transcribe.ts           ← 관문 T (서버 전용)
 lib/toeic-*-contract.ts           ← 라우트↔화면 경계 타입(클라이언트 import 안전)
@@ -86,6 +96,7 @@ lib/toeic-rec-store.ts            ← 녹음 IndexedDB 보관(클라이언트 �
 app/toeic/**                      ← 화면
 app/api/toeic/**                  ← 라우트
 scripts/eval-toeic.ts             ← 오프라인 검증 + spec-sync + (게이트) 실호출 점검
+scripts/eval-toeic-guides*.ts     ← 유형별 공략 eval 조각 넷(순수 층·앱 층·S2·S3 — eval-toeic.ts가 불러 한 번에 돈다, §12-10)
 ```
 
 ---
@@ -957,6 +968,8 @@ interface ToeicSetRecord {
 ```
 
 - 상한(`schemas.ts` 단일 정의): 세트당 entries 1~60, quiz 0~12, `titleKo` 1~120자.
+  - **공략 세트는 예외**(2026-09-27, §12-3): `guide` ≠ null인 세트는 quiz 0~`TOEIC_GUIDE_SPEAK_MAX`(60)이다. 공략 가져오기 zod(`toeicGuideFileSchema`, §12-2-3)가 이 상한을 건다. `TOEIC_SET_QUIZ_MAX`(12)는 **표현집 경로**의 상한이다. 사진 판독 저장 라우트(`POST /api/toeic/sets`)와 표현집 가져오기 zod(`toeicImportFileSchema`)가 이 값을 쓴다. 공략 세트는 이 두 경로를 지나지 않는다(이름 바꾸기·발화 포인트도 409 — §12-3).
+  - 읽기 쪽(`normalizeToeicSetRecord`·`isRenderableToeicSet`·시험 출제)에는 **개수 상한을 걸지 않는다**. 걸면 공략 세트가 열리지 않는다.
 - **세트 안 표현은 서로 달라야 한다**(대소문자·연속 공백 무시 — `lib/toeic-text.ts` `expressionKey`). 항목 키가 곧 표현이라(§6-1) 같은 표현이 두 항목이면 두 항목이 숙련도 통계를 나눠 쓴다. 그러면 한 세션에서 두 문항을 맞힌 것이 "연속 2회 정답"이 되고, 오답노트는 뒤 항목의 뜻만 보여 준다. 판정은 `findDuplicateExpressionIndexes`(첫 등장은 빼고 두 번째부터의 위치) 하나를 저장 라우트·가져오기 zod(§7-6)·검토 화면이 같이 쓴다. 오류는 두 번째 항목의 `expression` 경로에 건다. 판독 zod는 거부하지 않는다(§2-4).
 - 저장되는 `meaningKo`는 언제나 비지 않는다 — 판독 초안의 빈 뜻(잘린 항목, §2-4)은 사람이 채워야 저장된다.
 
@@ -1081,12 +1094,14 @@ interface ToeicAttemptRecord {
 /toeic/mocks/[id]               모의고사 학습 보기(자료·모범답변·🔊) + 응시(실전 11문항 / 유형 연습) + 응시 기록
 /toeic/mocks/[id]/take          응시 화면(전면 오버레이 — 타이머·질문 음성·녹음)
 /toeic/attempts/[id]            응시 결과(내 녹음 ▶ · 전사 · 점수 · 피드백 · 모범답변 · AI 채점 받기 · 추정 등급)
+/toeic/guides                   유형별 공략 — 유형 폴더 4개 + 📂 파일로 가져오기(2026-09-27 — 폴더 탭·틀 테스트는 §12-8)
 
 /api/toeic/sets/extract         호출 A (사진별 병렬, 저장 없음)
 /api/toeic/sets                 POST 저장 · import · reorder · [id] DELETE/rename · [id]/points(호출 B) · [id]/quiz
 /api/toeic/mocks                POST 생성(호출 C 파트별 병렬) · reorder · [id] DELETE/rename · [id]/regenerate?part= · [id]/image(관문 P) · [id]/attempts
 /api/toeic/images/[id]          GET 생성 사진
 /api/toeic/attempts/[id]        finish · score(관문 T + 호출 D / Q1–2 대조)
+/api/toeic/guides               import · templates/transcribe(관문 T) · templates/sessions · [part]/drills(호출 C) — §12-8
 ```
 
 - 셸은 일본어 방식이다 — 공통 레이아웃 없이 페이지마다 `u-navbtn` "← 상위" 헤더(`/toeic`은 "← 과목 선택"). `EnglishNav`(은우 셸)를 쓰지 않는다.
@@ -1108,6 +1123,7 @@ interface ToeicAttemptRecord {
 - **오프라인(기본, 무비용)**: zod 반례(exampleSpan이 예문 밖·index 누락/중복·useIn part 중복·frames에 `___` 없음·chunks 불일치·stressWords가 지문에 없음·feedback `said`가 전사문 밖·순서 바꿈·사이 단어 뺌·단어 조각(쉼표 하나 빠진 인용은 통과)·점수 범위·잘린 항목의 빈 뜻은 판독만 통과·세트 안 표현 중복은 가져오기에서 거부), 후처리(keyExpressions 정리·DAY 묶기·번호 병합·usedExpressions 정리·빈 자리만 채우기), 시험 출제(모드별 조건·보기 5개 상이·정답 포함·뜻이 같은 표현과 대소문자만 다른 보기 제외·보기 2개 미만이면 출제 불가·`cloze` 가림·`speak` 항목 키), **모드별 숙련도 분리**(반례로 잠금), 형식표·단계 전이(Q10 2회 재생·Q8 앞 표 읽기 45초·파트 첫 문항만 지시문), Q1–2 대조(숫자 표기 통일·약어 마침표 p.m. = PM·빠짐/치환 계산), 추정 총점(raw 0~35 전 구간 리터럴 표·정수 아닌 문항 번호 방어)·등급 구간, 스트릭 트랙 분리(은우·일본어·운동·영어가 서로 섞이지 않음), **가져오기 파일 검증**(`data/private/toeic-preset-hackers-core.json`이 있으면 zod 통과·10세트·140표현·20 QUIZ, 없으면 SKIP — 공개 저장소에 없으므로 CI 기준은 SKIP).
 - **spec-sync**: 호출 A·B·C(머리말 + 파트 5)·D의 시스템 프롬프트·사용자 메시지 형식·사진 프롬프트 접미사를 이 문서와 **바이트 대조**, JSON Schema 8개는 **의미 동치**(JSON.parse → deepEqual, 일본어 관용구).
 - **실호출 점검(게이트)**: `EVAL_TOEIC=1`일 때만 — 호출 A(사진 1장)·B(7개)·C(파트 1개)·D(픽스처 전사문 1개). 비용이 드는 검증은 **사용자 동의 후 오케스트레이터가 실행**한다.
+- **유형별 공략(§12-10)** 항목은 `scripts/eval-toeic-guides.ts`(순수 층 — `runToeicGuideChecks`)·`eval-toeic-guides-app.ts`(S1 앱 층)·`eval-toeic-guides-s2.ts`(틀 테스트·표현 시험)·`eval-toeic-guides-s3.ts`(한 문제 연습)에 있고 `eval-toeic.ts`가 불러 한 번에 돈다. 2026-09-28 기준 오프라인 **985항목**(표현집·모의고사 357 + 유형별 공략 628)이다 — 두 가져오기 파일(`data/private/toeic-preset-hackers-core.json`·`data/private/toeic-strategy/toeic-guides.json`)이 있는 로컬 기준이고, 없으면 각 묶음이 SKIP 1건으로 바뀐다(공개 저장소·CI 기준). 게이트는 새로 두지 않았다(§12-10 끝).
 
 ---
 
@@ -1135,3 +1151,1348 @@ interface ToeicAttemptRecord {
 | **T5** | AI 채점 — 관문 T + 호출 D + Q1–2 대조 + 추정 등급 + 결과 화면 | T·D | 버튼을 눌러야 비용 발생 |
 
 T1·T2(표현집)와 T3~T5(모의고사)는 서로 독립이다(§0-4). 실제 의존은 T0 → 나머지, T3 → T4 → T5뿐이다. 각 단계는 오프라인 eval을 먼저 통과하고, 실호출 검증은 동의 후 1회로 묶는다.
+
+---
+
+## 12. 유형별 공략 (2026-09-27)
+
+> 제품 수준의 흐름·경계·비용·실기기 확인은 SPEC §20-10. 이 절은 **가져오기 형식·zod·저장·템플릿(틀) 훈련·연습 단위·읽기 대본·eval**의 단일 정의처다. 이 절의 예시 문장은 전부 지어낸 것이다 — 교재 문장도, 참고한 강의 자막의 문장도 옮기지 않는다(§0-2 "교재 내용의 저장소 반입", SPEC §20-6).
+>
+> 2026-09-27 검토 반영: 코드 대조 리뷰와 내용·경험 리뷰가 있었다. 괄호·자리 표시의 뜻, 머리말 + 이어 말하기 표(`completions`), 표현 목록 규칙, 사진 연습 상태코드, `pickExpressionsForDrill`의 자리, 공략 세트의 quiz 상한(§7-1 예외), 연습 결과 화면을 고쳤다.
+>
+> 2026-09-27 업그레이드 — **템플릿(틀) 훈련**(§12-5)을 폴더의 중심 기능으로 더했다. 참고 자료(토익스피킹 강의 "만능 문장" 자막 — `design/toeicspeaking/drill.md`, 작업 폴더에는 있지만 `.gitignore`의 `design/toeicspeaking/`로 git 밖이다(2026-09-28 코드 기준 정정 — 옛 문장 "저장소에는 있지만"). 문장은 이 스펙에 옮기지 않는다)에서 가져온 것은 **방법과 분류**뿐이다 — 한국어 1번 → 영어 4번 따라 말하기, 한국어만 보고 말한 뒤 정답과 비교하고 틀린 것을 표시해 다시, 외운 틀을 처음 보는 문제에 꺼내 쓰기. 학습 단위는 문장이 아니라 **틀**(바꿔 끼울 자리가 있는 문장 뼈대)이고, 틀마다 주제가 다른 예문을 돌려 같은 틀을 되풀이한다. 틀은 **교재 틀에 맞춘다** — 같은 기능의 틀이 교재에 있으면 교재 틀의 고정 부분을 글자 그대로 쓴다(§12-2-7). 절 번호는 학습 흐름(① 읽기 → ② 템플릿 훈련 → ③ 표현 시험 → ④ 한 문제 연습)으로 다시 매겼다 — 옛 §12-5(연습)는 §12-7, 옛 §12-7~§12-11은 §12-8~§12-12다.
+>
+> 2026-09-27 업그레이드 검토 반영 — 코드 대조 리뷰와 학습 경험 리뷰가 한 번 더 있었다. 고친 것은 열 가지다. ① 틀 채움 규칙이 숫자·가격을 받는다. ② 흐름을 **단계**(교재 답변 순서, 3~6개)와 **소재 묶음**(흐름 밖) 두 층으로 나눴고, 묶음은 폴더마다 틀 6개 이하다. ③ 교재 연결을 `guideRefs` 배열로 바꿨다. 교재의 자리 표현·답변 틀 단계·이어 말하기 머리말은 하나하나 **연결되거나 이유와 함께 건너뛰어야** 가져오기가 통과한다(빠짐 0). ④ 틀 원본을 `core/templates.json` 한 파일(`toeic-core-raw/v3`)로 정했다. ⑤ 틀 바꿔 말하기는 영어 글자를 가리고 **대본에 없는 채움**(`testFills`)으로 새 문장을 만들게 했다. ⑥ ○/✕는 **정답을 보기 전 첫 유효 시도**로 정한다. ⑦ 따라 말하기의 쉼을 **무음 소리 조각**으로 재생해 잠금 화면·주머니에서도 이어지게 했다. ⑧ 기록 라우트는 멱등 키 형식과 시각을 검사한다. ⑨ 표현 시험 모듈의 약함 순위와 세션 어댑터를 공개해 한 벌로 쓴다. ⑩ 제안 판정을 다듬었다(축약형 두 뜻·관사만 들린 자리·같은 뜻 교재 틀). 개선 제안의 반영 여부와 근거는 `_workspace/spec_toeic_strategy_upgrade_report.md` "검토 반영" 절에 있다.
+>
+> 2026-09-28 구현 동기화 — T6~T12와 공용 `speakQueue` 쉼이 구현되고 통합 QA(`qa_report_toeic_guides-final_3.md` — P1·P2 0)를 지났다. 구현이 스펙과 달라진 곳·스펙이 비워 둔 곳을 **코드 기준으로** 이 절 안에 맞췄다(절 번호는 그대로). 주요한 것: "영어만" 틈 기본값은 **끔**(§12-12 8의 옛 "기본 켬"을 고쳤다), 틀 비교의 치환 비용 2(§12-5-5), 두 뜻 축약형 범위(`'d`는 모든 낱말), 첫 유효 시도의 정의(`!noSpeech` 포함)·전사 라우트의 `application/octet-stream`·"녹음 없이 하기"·테스트 화면의 라틴 가림·화면 이탈 저장(§12-5-3·§12-5-4·§12-5-6), Firestore 본문의 `testFills` 감싸기(§12-3), 잠금 화면 ⏸ 뒤 바인딩 유지·Wake Lock 범위·긴 범위 이어서 준비(§12-5-2), 연습 비용 캡션·다시 연 pending의 "사진 없이 시작"(§12-7-2·§12-7-3), 새 파일·함수 이름(§12-5-9), eval 항목 수(§12-10).
+
+### 12-0. 배경과 결정
+
+사용자 요구(2026-09-27): 토익스피킹 교재의 **질문 유형별 공략 쪽**(사진 30장 — Q3–4 · Q5–7 · Q8–10 · Q11, Q1–2는 단순 읽기라 없음)으로 "유형별로 나눠 공부할 수 있게", 특정 유형만 **한 문제씩 모의 연습**, 교재 내용을 **읽어 주는** 기능. 같은 날 추가 요구: "문장을 새로 만들 거면 최대한 다양하게 활용 가능한 템플릿으로 문장들을 만들어서 템플릿에 익숙해지게", "템플릿을 반복 사용하는 게 핵심", "강의 자료의 템플릿과 우리 기존 템플릿이 다르면 우리 기존 템플릿에 최대한 맞춰". 아래 표에서 "사용자 확정"은 오케스트레이터가 사용자에게 확인한 것, "기본값"은 이 스펙이 정한 것이다(바꾸면 이 표부터 고친다 — 사용자에게 올릴 것은 §12-12).
+
+| 항목 | 결정 | 출처 | 근거 |
+|---|---|---|---|
+| 자리 | 허브 **"🎙️ 아빠의 영어"(`/toeic`)는 그대로**, 그 안에 세 번째 기능 **"토익스피킹 유형별 공략"**(`/toeic/guides`)과 유형 폴더 4개 | 사용자 확정 | 표현집·모의고사와 나란히 선 독립 기능(§0-4와 같은 관계) |
+| 폴더 안 기능 | 폴더마다 넷 — ① **공략 읽기 + 🔊** ② **템플릿 훈련**(따라 말하기 · 테스트) ③ **표현 말하기 시험** ④ **한 문제 연습**. 순서는 학습 흐름(읽고 → 틀을 입에 붙이고 → 표현을 확인하고 → 실전에 조합)이고, 폴더를 열면 틀이 있는 유형은 ② 탭이 먼저 열린다(§12-8) | 사용자 확정(①③④) + 업그레이드(②, 순서) | ②가 "템플릿 반복이 핵심"의 자리다. ①③④는 원래 셋 |
+| 학습 단위 | **틀**(바꿔 끼울 `{자리}`가 있는 문장 뼈대). 틀마다 **주제가 다른 예문 3~5개** — 예문 = 틀에 채움(`fills`)을 넣은 결과와 글자까지 같다(zod). 숙련도·"틀린 것만 다시"도 **틀 단위**로 센다(§12-5-6) | 사용자 요구 | 문장 하나를 외우면 그 문장만 나온다. 같은 뼈대를 주제만 바꿔 여러 번 말해야 새 질문에 뼈대가 먼저 나온다 |
+| 틀의 출처와 정렬 | 같은 기능의 틀이 교재(표현 목록의 `~` 틀 · 템플릿 블록의 단계 · 이어 말하기 머리말)에 있으면 **교재 틀의 고정 부분을 글자 그대로** 쓰고 `~`만 `{자리 이름}`으로 바꾼다(`source:"guide"` + `guideRefs`, zod가 고정 부분 포함을 확인). 교재에 없는 기능만 새 틀(`source:"new"`)로 채우고 교재 문체를 따른다. **교재 쪽 정렬 대상(자리 표현·답변 틀 단계·이어 말하기 머리말)은 하나하나 틀에 연결되거나, 건너뜀 목록에 이유와 함께 올라야 한다** — 빠짐이 하나라도 있으면 가져오기가 400이다(§12-2-7). 표시 순서는 교재가 가르치는 **답변 흐름의 단계**와 그 밖의 **소재 묶음**(§12-2-7 `flows`) | 사용자 확정 + 검토 반영(빠짐 0) | 강의 틀과 교재 틀이 다르면 교재에 맞춘다(사용자). "교재에서 배운 틀 = 앱에서 훈련하는 틀"이 화면에 보여야 한다 — 연결을 알림 eval로만 세면 빠진 채로 들어간다(검토: 연결 0인 머리말이 있었다). 교재에서 옮기는 것은 짧은 틀 부분뿐이고 예문은 새로 쓴다 — 교재 예문·모범답변·해석은 옮기지 않는다 |
+| 틀 저장 | 여러 유형에 걸친 틀은 **한 벌만** — 틀 은행 문서 하나(`toeicSets` id `guide-templates`, `guide.kind:"templates"`)에 모두 두고, 각 유형 폴더는 틀의 `parts`로 골라 보인다. 숙련도도 한 벌이다(§12-3) | 기본값 | 유형마다 복사하면 같은 틀의 숙련도가 폴더마다 따로 쌓이고, 교정이 한쪽에만 들어간다 |
+| 따라 말하기 | 예문마다 **한국어 1번 → 영어 N번**(기본 4, 1~4) + 영어마다 **따라 말할 틈**(문장 길이에 비례). 틀 하나의 예문을 이어서 — 같은 틀이 주제만 바뀌며 되풀이된다. 공용 `speakQueue`에 조각 뒤 쉼(`pauseAfterMs`)을 더한다(§12-5-2) | 사용자 요구(참고 자료의 방법) | §12-12 8(옛 번호 §12-11 8) "쉼을 두지 않는다"를 뒤집는다 — 이 기능은 쉼 없이는 성립하지 않는다 |
+| 잠금 화면·주머니 재생 | 따라 말하기는 **화면을 끄거나 잠가도 이어지는 것을 목표로 한다**. 쉼은 JS 타이머가 아니라 **같은 큐 오디오 요소로 트는 무음 조각**이다. ▶ 전에 고른 범위의 조각을 미리 받아 두고(`prepareSpeech` — "준비 n/m"), 잠금 화면 ⏯·⏭·⏮는 이 플레이어에서만 Media Session으로 받는다(§12-5-2) | 검토 반영 — 선택지 (가) | 폴더 하나가 2~3시간이고 가장 자연스러운 쓰임은 이어폰을 낀 출퇴근이다. iOS는 화면이 잠기면 JS 타이머를 멈춘다(SPEC §18-2). 무음 조각이면 오디오 세션이 끊기지 않고 `ended` 사슬로 이어진다. 기기 음성 폴백 조각에서는 멈출 수 있다(알려진 한계). 실기기에서 (가)가 성립하지 않으면 (나) "화면 켠 채 + 주머니 모드"로 간다(§12-12 23) |
+| 테스트 | 두 종류 — (가) **예문 말하기**(한국어 뜻만 보고 외운 예문을) (나) **틀 바꿔 말하기**(영어 글자 없이 — 다른 예문을 소리로만 듣고, 한국어 틀 + **대본에 없던 영어 채움**으로 새 문장을). 말하기 → 녹음(기기) → **받아쓰기**(관문 T) → 정답과 **단어 단위 자동 비교**(틀 고정 부분과 자리를 따로) → **최종 ○/✕는 아빠가 정한다**. 판정은 **정답을 보기 전의 첫 유효 시도**로 한다. 문장당 전사 1회(전사가 실패·빈 전사일 때만 다시 말하기 1회까지) | 사용자 확정 + 검토 반영((나)·첫 시도) | 자기 채점만으로는 "대충 비슷하게 말했다"를 맞았다고 넘기기 쉽다. 전사는 발음이 서툴면 다른 단어로 적히므로 자동 판정을 최종으로 두지 않는다. 틀을 보여 주거나 정답을 들려준 뒤의 말하기는 테스트가 아니라 읽기·따라 말하기다 — 그 결과로 졸업하면 "익힘" 숫자가 거꾸로 선다 |
+| 실전 적용 | 한 문제 연습(④)의 **기존 입력 경로**로 틀을 넘긴다 — `pickExpressionsForDrill`이 그 유형 틀을 `~` 형태로 바꿔 "활용할 표현" 앞쪽에 둔다(호출 C·D 프롬프트 변경 0). 결과 화면에 "내 답에서 쓴 틀 / 쓸 수 있었던 틀"(AI 없음 — 전사문에서 틀 고정 부분을 찾는 순수 함수) | 사용자 요구 + 기본값(방법) | 외운 틀을 처음 보는 문제에 꺼내 쓰는 연습. 호출 C의 "활용할 표현을 자연스러우면 모범답변에 녹인다"와 호출 D의 `tryExpressions`가 이미 있다(§4-1·§5-1) |
+| 교재 반입 | Claude가 사진을 전사해 `data/private/`(git 밖)에 두고 **앱의 "파일로 가져오기"**로만 넣는다. 앱에서 사진을 올려 AI가 판독하는 경로는 **만들지 않는다** | 사용자 확정 | OpenAI 비용 0, 공개 저장소 원칙(§7-6과 같은 방식). 공략 쪽은 표·틀·팁이 섞인 자유 구조라 호출 A(표현 암기장 판독)로 읽을 수 없다 |
+| 연습 문제 | **AI가 매번 새로 만든다.** 교재 예시 문제를 쓰지 않는다 | 사용자 확정 | 같은 문제를 반복하면 답을 외운다. 기출 저작권(§0-2) |
+| 연습 생성기 | **호출 C 파트 생성기를 그대로** 부른다(프롬프트·스키마 변경 0) | 기본값 | C는 이미 파트 하나 = 호출 하나다(§4-0). 새 프롬프트를 만들면 spec-sync·zod·eval이 두 벌이 된다 |
+| 연습 단위 | Q3–4 **사진 1장**, Q5–7 **세 문항 한 묶음**, Q8–10 **표 + 세 문항**, Q11 **한 문항**(§12-7-1) | 사용자 확정 + 기본값(근거) | "한 문제씩"을 따르되, 앞 문항의 상황·표를 뒤 문항이 이어받는 유형은 실전 묶음을 쪼개지 않는다 |
+| 저장 | **새 컬렉션 없음.** 공략 = `toeicSets` 문서(필드 `guide`), 틀 은행 = `toeicSets` 문서 하나(같은 필드 `guide`의 다른 종류), 템플릿 테스트 기록 = `toeicQuizzes`(틀 모드 둘), 연습 = `toeicMocks` 문서(필드 `drillPart`) | 기본값 | 표현 시험·응시·채점·스트릭 코드가 이 컬렉션들에 매달려 있다 — 재사용하면 채점 라우트·스트릭 계산식 변경이 0이다(§12-3) |
+| 공략 표현 시험 | 파일이 **표현 목록(`expressions`)과 말하기 문항(`speak`)을 명시적으로** 준다. 읽기 본문에서 자동으로 뽑지 않는다. 표현은 답변에 꺼내 쓸 **틀**(`~` 자리)이고, 머리말 + 이어 말하기 조각은 합성한 완성 문장으로 **말하기**에 간다(§12-2-1) | 기본값(검토 반영) | 공략 줄에는 슬래시 대안·`~` 자리·긴 예문이 섞여 있어 5지선다 보기나 80자 표현 규칙(§2-4)에 그대로 맞지 않는다. 그래서 사람이 고른 목록만 시험에 쓴다. 표현 문자열이 숙련도 키라 **첫 가져오기 전에** 정한다 |
+| 연습 뒤 복습 | 연습 결과 화면이 묘사 포인트(Q3–4 `keyPointsKo`)·답변 뼈대(Q11 `outlineKo`)를 모범답변 접기 안에 보인다. 연습에서는 "학습 보기로" 버튼을 숨긴다. 학습 보기 리다이렉트는 무조건 그대로다(§12-7-5) | 기본값(검토 반영 — 선택지 (나)) | 리다이렉트를 "응시 전"으로 좁히면(선택지 가) 연습 문서가 모의고사 학습 보기에 열린다. 그러면 다른 파트 "자료 없음"·다시 만들기 버튼(409)이 섞여 보인다. 두 필드는 이미 결과 화면 자료(`ToeicQuestionView`)에 실려 있어 새 데이터 경로가 없다 |
+
+### 12-1. 구성 한눈에
+
+| 기능 | 무엇을 쓰는가 | AI | 새로 두는 것 |
+|---|---|---|---|
+| 가져오기 | 새 형식 `toeic-guides/v2`(유형 공략 + 틀 은행) → 새 라우트 `POST /api/toeic/guides/import` | 0 | zod(`lib/ai/toeic/schemas.ts` 안 — 틀 zod 포함), 스토어 메서드 `upsertToeicGuides`(틀 은행도 같은 원자 단위), 멱등·교정 판정 순수 함수(`lib/ai/toeic/guide-import.ts` — `planToeicGuideImport`·`decideGuideUpsert`), Firestore 본문 코덱 `lib/toeic-firestore-codec.ts`(§12-3) |
+| ① 공략 읽기 + 🔊 | `speakQueue`·`speak`·`prefetchSpeech`·`splitForTts`·`normalizeKoForTts`(SPEC §18 관용구) | 0 (발음만) | `lib/toeic-guide.ts`(클라이언트 안전): 대본 순수 함수 `buildToeicGuideScript`, 줄의 읽을 영어 `guideLineEn`(이어 말하기 합성), TTS 정리 함수 둘, 강조·밑줄 분할 함수. "영어만"의 따라 말할 틈(§12-4)과 틀로 가는 🧩 칩 |
+| ② 템플릿 훈련 | 틀 은행(§12-3) · `speakQueue`(쉼 추가) · `prefetchSpeech` · 녹음 `lib/mic-session.ts` · WAV 변환 `toWav16kMono` · 관문 T `transcribeAnswer` · 숙련도 `aggregateWordStats`(표현 시험의 약함 순위·세션 어댑터를 공개해 그대로 — `lib/toeic-quiz.ts`) · Wake Lock `useToeicWakeLock` | 전사만(테스트 문항당 1회, 버튼 흐름 안) — 호출 A~D 0 | `lib/toeic-template.ts`(클라이언트 안전 — 틀 채우기·`~` 형태·따라 말하기 대본·쉼 계산·예상 시간·테스트 문항 고르기·전사 비교·전사문 속 틀 찾기·단계 커버리지·숙련도 어댑터), 라우트 둘(`…/templates/transcribe` 전사만 · `…/templates/sessions` 기록 저장), 테스트 페이지, 공용 `lib/speech.ts`에 넷(`speakQueue`의 `pauseAfterMs`·`onPause` — 무음 조각으로 재생, 범위 미리 받기 `prepareSpeech`, 무음 WAV 생성기 `makeSilentWav(ms)` — 옛 0.1초 생성기에 길이 인자, 실제 말 속도 배율 `getSpeechSpeedFactor` — 예상 시간과 큐가 같은 배율을 쓴다), 단어 정렬 코어 `alignWordSeq`(`lib/toeic-score.ts`에서 뽑는다 — `alignReadAloud` 결과 불변, 틀 비교만 선택 인자 `substitutionCost` 2 — §12-5-5), 잠금 화면 조작 관문 `lib/media-session.ts`(따라 말하기 플레이어에서만), 화면 판단 순수 모듈 `lib/toeic-guide-view.ts`·`lib/toeic-template-test-view.ts` |
+| ③ 표현 말하기 시험 | 시험 러너·오답노트·기록 화면, `toeicQuizzes` | 0 | 말하기 세션의 문항 순서 옵션(`quizOrder`), 5지선다 한 판 상한 옵션(`max`), 틀로 가는 🧩 칩 |
+| ④ 한 문제 연습 | 호출 C(파트 하나) · 관문 P(사진 1장) · 응시 화면 · 녹음 · 관문 T · 호출 D · 결과 화면 | C·P(만들기), T·D(채점 버튼) | 라우트 `POST /api/toeic/guides/[part]/drills`. 응시 기록 필드 `questions`. 새 함수는 세 곳에 나뉜다(§12-7-1) — `lib/toeic-drill.ts`(클라이언트 안전: 단위표·`toDrillRecordPart`·`nextToeicDrillTitle`·주제 풀), `lib/toeic-mock.ts`(지시문 변형 `toeicPartDirections`), `lib/ai/toeic/mock.ts`(**서버 전용**: `pickExpressionsForDrill` — 틀을 앞에 둔다, §12-7-9). 결과 화면의 "🧩 틀 점검"(§12-7-9). 연습 탭·"뒤로"·틀 점검 자료의 화면 판단은 `lib/toeic-drill-view.ts`(클라이언트 안전) |
+
+### 12-2. 교재 반입 — "파일로 가져오기" (`toeic-guides/v2`)
+
+> 형식 이름: 초안의 `toeic-guides/v1`(배포 전 — 받는 코드가 없었다)에 최상위 `templates`(틀 은행, §12-2-7)를 더한 것이 **`toeic-guides/v2`**다. 가져오기 라우트는 v2만 받는다(v1 파일은 400 — "형식이 바뀌었어요, 파일을 다시 만들어 주세요"). `data/private`의 v1 파일은 변환 때 v2로 다시 만든다(유형 공략 부분은 그대로, `format`만 바꾸고 `templates`를 더한다).
+
+#### 12-2-1. 파일이 사는 곳과 만드는 법
+
+- 전사 원본: `data/private/toeic-strategy/raw/{q3-4,q5-7,q8-10,q11}.json`(형식 `toeic-strategy-raw/v1` — Claude가 사진을 직접 판독, OpenAI 0). 유형별 정리본: `data/private/toeic-strategy/parts/{…}.json`(원본을 아래 규칙으로 옮긴 유형 하나씩 — 가져오기 항목 모양). **틀 원본**: `data/private/toeic-strategy/core/templates.json` **한 파일**(형식 `toeic-core-raw/v3` — Claude가 새로 쓴 틀·예문·흐름·정렬 건너뜀, §12-2-7). 같은 폴더의 `core/{q3-4,q5-7,q8-10,q11}.json`(옛 형식 `toeic-core-raw/v2`)은 처음 틀을 쓸 때의 **작업 파일**이다 — 변환 입력이 아니고, 고치지도 읽지도 않는다. 가져오기 파일: `data/private/toeic-strategy/toeic-guides.json`(아래 형식 — 유형 4개와 틀 은행을 한 파일에). **모두 git 밖**이다(`data/`는 gitignore, `.gcloudignore`도 제외). `public/`에 두지 않는다(정적 확장자는 PIN 게이트 예외).
+- 원본 → 가져오기 파일 변환은 Claude가 한다(스크립트를 저장소에 두지 않는다 — 변환 규칙만 여기 적는다).
+- 원본의 모양(2026-09-27 실측 — 개수만, 검토 두 건의 재집계 반영). 이 숫자는 eval에 리터럴로 잠그지 않는다(전사를 고치면 바뀐다).
+
+| 항목 | 개수 |
+|---|---|
+| 쪽·사진 | 29쪽 · 사진 30장 |
+| 블록 | `section` 14 · `subheading` 35 · `table` 52 · `other` 14 · `steps` 8 · `template` 3 · `tip` 5 · `question` 11 · `sample` 3 · `translation` 1 |
+| 표 형식 | 틀+예문 12표(머리말에 `~`) · **머리말+이어 말하기 20표·93행**(Q3–4 12표·65행 — 원본에 `form`이 있다, Q5–7 8표·28행 — `form`이 없다. 머리말과 이으면 69자 이하) · 문장 목록. 표 행은 모두 185개 |
+| 영어 줄 길이 | 최장 168자 · 80자 초과 5줄(행·머리말 기준, 예문까지 11줄) · 300자 초과 0 |
+| 자리 표시 | 영어 `~` 34줄(행·머리말 — Q3–4 13 · Q5–7 9 · Q11 12) · 한국어 `~` 62줄(56줄은 바로 뒤에 조사) · en dash `–` 목적어 자리 영어 4줄·한국어 4줄(Q3–4) · 공식 표기 `+` 영어 2줄·한국어 1줄(Q5–7) |
+| 영어 줄 안의 한국어 | 18줄 — **괄호 없는 맨몸 자리 이름 16줄**(Q8–10 5 · Q11 11) · 괄호 속 자리 이름 1줄 · 괄호 속 한국어 메모 1줄(Q8–10). 그 밖에 Q11 예시 답변의 열 머리 1개 |
+| 괄호 속 영어 | **대안** 10줄(Q3–4 단어에 붙은 소괄호 8 · Q11 대괄호 2) · **생략 가능 단어** 12줄(Q8–10 숫자·날짜 읽기, 띄어 쓴 소괄호) |
+| 슬래시 대안 | 18줄. 뜻이 같은 문법 변형, 조건에 따라 갈리는 변형, 어휘 대안이 섞여 있다 |
+| 강조 | `signals` 138 · 질문 밑줄 `underline` 8 · 템플릿 단수 `signal` 11(전부 그 줄 영어의 부분 문자열) |
+| 손 표시 | Q3–4만. 줄 단위 82(표 행 65 · 머리말 12 · 템플릿 행 4 · steps 행 1) · 블록 단위 5(steps 항목 4 · 섹션 1) |
+
+- 변환 규칙 — 블록:
+
+| 원본 | 가져오기 파일 |
+|---|---|
+| `section`(번호·제목·소개) | 섹션 `{label, titleKo, introKo, groupKo}` |
+| 파트 띠(`section`의 `level: "banner"` — Q3–4 2개, 이름만 있다) | 섹션을 만들지 않는다. 띠 이름은 그 띠 뒤 섹션들의 `groupKo`가 된다(목차 칩을 무리로 나눈다). 둘째 띠 바로 뒤의 라벨 달린 `other`는 다음 섹션의 첫 블록으로 옮긴다 |
+| 유형 제목 `other`(Q5–7·Q8–10·Q11의 첫 블록 — 폴더 이름과 같다) | 버린다. 파일의 유형 소개 `introKo`는 원본에 유형 전체를 소개하는 문장이 있을 때만 쓰고, 없으면 null |
+| `subheading` | `heading` 블록(한글이 없는 영어 제목이면 줄 하나짜리 `lines` 블록) |
+| `table` — 틀+예문(`form: "pattern+examples"`, 머리말에 `~`) | `lines` 블록 `style: "list"` — 캡션 → `captionKo`, 머리말 → `lead`, 행 → 줄, 행에 딸린 예문 → 줄의 `example` |
+| `table` — 머리말+이어 말하기(`form: "lead+completions"`, 또는 `form`이 없고 아래 판정에 맞는 표) | `lines` 블록 **`style: "completions"`** — 머리말 → `lead`(en·ko 둘 다), 행 → 조각 줄(en·ko). 조각을 머리말 뒤에 붙인 **완성 문장**이 읽기·🔊·따라 말하기의 단위다(§12-4) |
+| `table` — 문장 목록 | `lines` 블록 `style: "list"`(`lead` 없음) |
+| 이어지는 표(`continued: true`) | 앞 쪽의 같은 표 블록에 줄을 이어 붙인다(블록 하나) |
+| `template` | `lines` 블록 `style: "template"`. 행 라벨 → `label`. 단수 `signal` → `emphasis: [signal]`. 자리 이름(`slot`) → 그 줄 `en` 끝의 `{slot}` — 영어에 이미 자리가 보이면 넣지 않고, `note`에 같은 글을 다시 적지 않는다. 비고·조건(`note`·`condition`) → `note`(" · "로 잇는다). "또는"(`or: true`)과 같은 `no`의 두 번째 행 → `alt: true`. 열 머리(`columns` — Q11 예시 답변의 메모 열·답변 열)는 옮기지 않는다. 메모 열 글이 있는 줄은 `note` 앞에 "메모: "를 붙인다 |
+| `tip`·`other`·`steps`의 항목 | `text` 블록 — 라벨 → `label`, 항목 제목 → `titleKo`, 한국어 설명 → `bodyKo`, 딸린 행 → `lines`. 공식 두 줄 `other`(Q5–7, `+` 표기)는 `bodyKo` 한 칸에 줄바꿈을 지켜 넣는다(화면은 `white-space: pre-line`) |
+| `translation`(Q11 예시 답변 해석 한 덩어리) | 문장 대응이 분명하면 예시 답변 줄들의 `ko`로 나눈다(줄마다 영어 → 한국어로 이어 읽힌다). 분명하지 않으면 `text` 블록 `bodyKo`로 둔다 |
+| `question`·`sample`(교재 예시 문항) | `lines` 블록의 줄(`label`에 문항 표시) — 의문사 강조(`signals`) → `emphasis`, 되받아 쓸 구간(`underline`) → 줄의 **`underline`**. **읽기 자료로만** 쓴다 — 한 문제 연습에는 쓰지 않는다(§12-0) |
+| 강조 `signals` | 줄·예문의 `emphasis`(부분 문자열 그대로) |
+| 손으로 표시한 줄(행·머리말·템플릿 행·steps 행의 `handMarked`) | 줄(머리말이면 `lead`)의 `marked: true`. 글자는 옮기지 않는다 — 손글씨 메모는 교재 원문도 아니고 전사하지 않는다. **블록·섹션 단위 표시**(steps 항목 4 · 섹션 1)는 버린다. ✎는 줄 머리 표시라 담을 칸이 없고, 시험·대본에도 영향이 없다 |
+| MP3 트랙 번호·쪽 번호·사진 출처·행의 `line`(쪽 위 줄 번호) | 버린다(앱은 교재 음원을 쓰지 않는다) |
+| 판독 불확실(`uncertain`)·앞이 잘린 글(`truncatedStart`) | 사진을 다시 보고 확정한 것만 넣는다. 확정하지 못한 **칸만** 뺀다. 섹션·블록을 통째로 빼지 않는다 — 섹션 머리가 불확실하다고 섹션을 빼면 뒤따르는 표가 전부 사라진다. 필수 칸(섹션 `titleKo`)이 끝내 불확실하면 지어낸 일반 제목(예 "공략 2")으로 둔다. 내용이 잘린 안내 `other`는 뺀다. 가져오기 형식에는 불확실 표시가 없다(앱에 사람이 고칠 검토 화면이 없다) |
+
+- **머리말+이어 말하기 판정**(원본에 `form`이 없을 때 — Q5–7). 다음을 모두 만족하면 `completions`, 아니면 `list`다.
+  - 머리말이 있다.
+  - 머리말 영어에 `~`·자리 이름이 없다.
+  - 머리말 영어가 문장부호로 끝나지 않는다.
+  - 모든 행 영어가 소문자로 시작한다.
+
+  원본 20표가 모두 이 판정으로 갈린다(2026-09-27 확인). 틀+예문 12표는 머리말에 `~`가 있고 행이 대문자로 시작한다.
+- 변환 규칙 — **읽기 본문** 영어 줄(`en`) 안의 괄호·자리 표시(표현·예문·말하기는 아래 별도 규칙):
+
+| 원본 표기(지어낸 예) | 뜻 | 가져오기 파일 | 소리(§12-4) |
+|---|---|---|---|
+| 단어에 붙은 소괄호 `upper(lower) shelf` · 대괄호 `I support[oppose] ~` | (a) **영어 대안** | 슬래시 대안 `upper/lower shelf` · `I support/oppose ~`. 대괄호는 남기지 않는다(zod가 거부) | "upper, lower shelf" — 나열 |
+| 띄어 쓴 소괄호 `two thousand (and) five` | (b) **생략 가능 단어** | 그대로 둔다 | 괄호를 떼고 안의 말을 읽는다 |
+| 괄호 속 한국어 설명(자리 이름이 아닌 것 — "또는 …" 같은 메모) | (c) **한국어 메모** | `en`에서 빼서 그 줄 `note`로 | 읽지 않는다(`note`) |
+| 괄호 속 한국어 자리 이름 | 자리 | `{자리 이름}`(괄호를 뗀다) | "…" 쉼 |
+| 괄호 없이 영어 줄에 섞인 한국어 자리 이름 `The tour starts from 출발 장소` — 대부분이 이 모양이다 | 자리 | `The tour starts from {출발 장소}` | "…" 쉼 |
+| en dash `–` 목적어 자리 `put – on the rack` | 자리 | 영어 줄은 `put {대상} on the rack`(들어갈 것이 분명하면 그 이름 — 예 `{물건}`), 한국어 줄은 `~` | "…" 쉼 |
+| 공식 표기 `+` — `What + do you ~?` | 짜임 공식 | 영어 줄(`en`)에 두지 않는다. 공식 블록은 `text` 블록 `bodyKo`로 옮긴다(위 표) | 한국어 정리가 `+`를 쉼표로 읽는다("플러스"로 읽지 않게) |
+| 슬래시 `/`(읽기 본문) | 대안 | 그대로 | 나열 |
+
+- **표현 목록(`expressions`)은 사람이 고른다 — 답변에 꺼내 쓸 "틀"이다.** 표현 문자열이 숙련도 키라서(§6-1) 교정하면 기록이 새로 시작한다(§12-2-5). 그래서 아래 규칙은 **첫 가져오기 전에** 정한다.
+  - **고르는 곳**: 틀+예문 표의 머리말(`~` 자리 틀), 템플릿 줄, 틀로 쓸 수 있는 목록 줄. **머리말+이어 말하기 조각은 표현에 넣지 않는다.** 조각만 넣으면 5지선다가 장소·동작 단어 뜻 맞히기로 떨어지고, 머리말만 넣으면 너무 넓다(주어 + be동사). 조각은 합성 문장으로 말하기에 간다(아래). 그러면 연습의 "활용할 표현"(§12-7-2)도 새 장면에 쓸 수 있는 틀 목록이 된다. 호출 C의 모범답변과 호출 D의 `tryExpressions`가 장면과 무관한 교재 문장을 권하지 않는다.
+  - **자리 표시는 `~` 하나로 적는다.** 표현·예문에는 `{…}` 슬롯·en dash를 남기지 않는다. 한글 자리 이름이 남으면 `checkEntryText`의 한글 금지(§2-4)에 걸려 **파일 전체가 400**이다. 영어 슬롯(`{place}`)은 한글 검사는 통과한다. 하지만 5지선다 보기와 🔊와 호출 C 입력에 중괄호가 그대로 나가므로 zod가 거부한다(§12-2-3).
+  - **대안(슬래시·괄호 대안)은 뜻으로 가르고, 표현·예문에는 `/`·`[`·`]`를 쓰지 않는다.** 이유는 셋이다.
+    - 호출 C·D 사용자 메시지가 표현 목록을 `" / "`로 잇는다(§4-7·§5-2, `buildMockUserMessage`). 표현 안의 `/`는 목록 경계를 흐린다.
+    - 모델이 반쪽만 되돌려 주면 `cleanUsedExpressions`·`postprocessFeedback`이 그것을 목록 밖으로 보고 버린다.
+    - 5지선다 보기와 🔊에도 기호가 그대로 나온다.
+
+    대안은 세 가지로 가른다.
+
+    | 대안의 종류(지어낸 예) | 표현 항목 |
+    |---|---|
+    | 뜻이 같은 문법 변형 — 단수/복수 동사 `A box is/are placed ~` | 항목 **하나**, 대표형 하나로 적는다(교재가 먼저 적은 쪽). 변형은 읽기 본문에 남는다 |
+    | 조건에 따라 뜻이 갈리는 변형 — 왼쪽/오른쪽, 정보 종류마다 다른 전치사 `at ~`(시각) / `on ~`(요일) | 항목을 나누고 `meaningKo`에 그 차이를 적는다. 서로 오답 보기로 나와도 맞다 — 고르는 것이 요점이다 |
+    | 바꿔 써도 되는 어휘 대안 — `wrap up ~` / `finish ~` | 항목을 나누고, 서로의 `meaningKo`를 **글자까지 같게** 적는다. 출제가 같은 뜻(`matchKey`)을 오답 보기에서 빼므로(`buildOne`: 뜻 → 표현은 같은 뜻 항목의 표현을, 표현 → 뜻은 같은 뜻을 뺀다) 맞게 고른 답이 틀린 것으로 채점되지 않는다 |
+  - 표현은 80자 이하이고 한국어 뜻을 붙인다. 예문이 딸린 줄이면 `example`/`exampleKo`를 함께 쓴다. 예문도 대안 없이 한 가지로, `{…}`·`/` 없이 적는다.
+  - **60개(`TOEIC_SET_ENTRIES_MAX`)를 넘으면** 템플릿·틀 → 손 표시(`marked`) 줄 → 나머지(문서 순서) 순서로 고른다.
+- **말하기 문항(`speak`)도 사람이 고른다.** 출처는 셋이다.
+  1. 교재의 "영어 문장 + 한국어 해석" 짝(틀+예문 표의 예문 줄, 문장 목록, 예시 답변 줄): 해석이 문장을 그대로 옮긴 것만 쓴다. `promptKo`(해석) → `modelAnswer`(영어 문장).
+  2. **머리말+이어 말하기(`completions`)의 줄**:
+     - `modelAnswer` = 머리말 영어 + " " + 조각 영어. §12-4 `guideLineEn`과 같은 합성이다.
+     - `promptKo` = 머리말 한국어 + " " + 조각 한국어. 기계적으로 이어 **자연스러운 한국어 문장이 될 때만** 넣는다(지어낸 예: "요리사 두 명이" + "빵을 자르고 있다." → "요리사 두 명이 빵을 자르고 있다."). "그대로 옮긴 해석만" 규칙은 이 경우에만 완화한다. 어순이 맞지 않으면 넣지 않는다 — 해석을 새로 짓지 않는다.
+  3. (선택) **Q8–10 숫자·날짜·시각 읽기**:
+     - `promptKo` = 표기 + 무엇인지(지어낸 예: "오후 4:15 (시각) 읽기").
+     - `modelAnswer` = 읽는 법 한 가지. 괄호 속 생략 가능 단어는 넣지 않는다(지어낸 예: "four fifteen p.m.").
+     - 숫자 읽기는 이 유형의 핵심이다. 그런데 연습할 것이 뜻이 아니라 소리라서 5지선다(뜻 ↔ 표현)로는 연습이 되지 않는다. 그래서 말하기로 연습한다. zod 변경은 없다 — `promptKo`에 한글이 있고 `modelAnswer`가 라틴 문자뿐이면 지금 규칙을 통과한다.
+  - `modelAnswer`는 완성 문장이다. `~`·`{`·`}`·`/`·`[`·`]`를 쓰지 않는다(zod — §12-2-3).
+  - 60개(`TOEIC_GUIDE_SPEAK_MAX`)를 넘으면 손 표시 줄 → 나머지(문서 순서) 순서로 고른다.
+  - `no`는 1부터 매기고, **교정할 때 번호를 다시 매기지 않는다**(말하기 숙련도의 항목 키가 `quiz:{no}`다 — §12-6).
+
+#### 12-2-2. 파일 모양
+
+```ts
+type ToeicGuidePart = "q3_4" | "q5_7" | "q8_10" | "q11";        // ToeicPart에서 q1_2를 뺀 것
+
+interface ToeicGuideLine {
+  label: string | null;          // 작은 머리표(예: "예", "①", "장소") — 화면 표시만, 읽지 않는다
+  en: string | null;             // 영어. 자리 표시는 {자리 이름}(한글은 이 괄호 안에서만), 대안은 슬래시, 생략 가능 단어는 띄어 쓴 괄호(§12-2-1)
+  ko: string | null;             // 한국어(해석·설명)
+  note: string | null;           // 비고(조건·자리 설명·메모 등) — 화면 표시만, 읽지 않는다
+  emphasis: string[];            // en 안의 강조 구간(부분 문자열 그대로) — 형광
+  underline: string[];           // en 안의 밑줄 구간(질문에서 답에 되살려 쓸 말 — 부분 문자열 그대로). 화면 표시만, 대본 영향 없음
+  alt: boolean;                  // 템플릿에서 "바로 위 줄 대신 이것도" (style "template"에서만)
+  marked: boolean;               // 종이 교재에 손으로 표시한 줄
+  example: { en: string; ko: string | null; emphasis: string[] } | null;   // 딸린 예문
+}
+
+type ToeicGuideBlock =
+  | { kind: "heading"; textKo: string }
+  | { kind: "text"; label: string | null; titleKo: string | null; bodyKo: string | null; lines: ToeicGuideLine[] }
+  | { kind: "lines"; style: "list" | "template" | "completions"; captionKo: string | null; lead: ToeicGuideLine | null; lines: ToeicGuideLine[] };
+  // completions: 줄은 lead 뒤에 붙는 조각이다 — 읽는 단위는 lead.en + " " + 줄 en(§12-4 guideLineEn)
+
+interface ToeicGuideSection {
+  label: string | null;          // 예: "공략 1", "STEP 2"
+  titleKo: string;
+  introKo: string | null;
+  groupKo: string | null;        // 목차 칩 무리 이름(원본의 파트 띠) — 화면 표시만
+  blocks: ToeicGuideBlock[];
+}
+
+interface ToeicGuideFileEntry {  // → ToeicSetRecord 하나(§12-3)
+  presetKey: string;             // 멱등 키(§12-2-5)
+  part: ToeicGuidePart;
+  introKo: string | null;
+  sections: ToeicGuideSection[];
+  expressions: { no: number | null; expression: string; meaningKo: string; example: string | null; exampleKo: string | null }[];
+  speak: { no: number; promptKo: string; hint: string | null; modelAnswer: string }[];
+}
+
+interface ToeicGuideFile {
+  format: "toeic-guides/v2";
+  guides: ToeicGuideFileEntry[];            // 0~4 — templates가 null이면 1~4
+  templates: ToeicTemplateBankFile | null;  // 틀 은행(§12-2-7). null이면 저장된 틀 은행을 건드리지 않는다
+}
+```
+
+예시(지어낸 문장 — 모양만 보인다. 틀 은행 `templates`의 예시는 §12-2-7):
+
+```json
+{
+  "format": "toeic-guides/v2",
+  "guides": [
+    {
+      "presetKey": "vendor-guide-q3-4",
+      "part": "q3_4",
+      "introKo": null,
+      "sections": [
+        {
+          "label": "공략 1",
+          "titleKo": "첫 문장은 장소",
+          "introKo": null,
+          "groupKo": "기본",
+          "blocks": [
+            { "kind": "heading", "textKo": "장소를 여는 틀" },
+            {
+              "kind": "lines", "style": "list", "captionKo": null,
+              "lead": { "label": null, "en": "The scene is set {장소}.", "ko": "장면의 배경은 ~이다.", "note": null, "emphasis": [], "underline": [], "alt": false, "marked": false, "example": null },
+              "lines": [
+                { "label": "예", "en": "The scene is set on a crowded ferry deck.", "ko": "장면의 배경은 붐비는 여객선 갑판이다.", "note": null, "emphasis": ["on a crowded ferry deck"], "underline": [], "alt": false, "marked": true, "example": null }
+              ]
+            },
+            {
+              "kind": "lines", "style": "completions", "captionKo": "동작 이어 말하기",
+              "lead": { "label": null, "en": "Two cooks are", "ko": "요리사 두 명이", "note": null, "emphasis": [], "underline": [], "alt": false, "marked": false, "example": null },
+              "lines": [
+                { "label": null, "en": "slicing bread.", "ko": "빵을 자르고 있다.", "note": null, "emphasis": ["slicing"], "underline": [], "alt": false, "marked": false, "example": null },
+                { "label": null, "en": "wiping the counter.", "ko": "조리대를 닦고 있다.", "note": null, "emphasis": [], "underline": [], "alt": false, "marked": true, "example": null }
+              ]
+            },
+            { "kind": "text", "label": "TIP", "titleKo": null, "bodyKo": "색이 여러 가지면 colorful 한 단어로 묶어 말해도 돼요.", "lines": [] },
+            {
+              "kind": "lines", "style": "template", "captionKo": "인물 묘사 틀", "lead": null,
+              "lines": [
+                { "label": "인물", "en": "A man is {동작} on the left.", "ko": "왼쪽의 남자가 ~하고 있다.", "note": null, "emphasis": [], "underline": [], "alt": false, "marked": false, "example": null },
+                { "label": "인물", "en": "On the left, a woman is {동작}.", "ko": "왼쪽에서 여자가 ~하고 있다.", "note": "주어를 바꿔 말할 때", "emphasis": [], "underline": [], "alt": true, "marked": false, "example": null }
+              ]
+            }
+          ]
+        }
+      ],
+      "expressions": [
+        { "no": 1, "expression": "The scene is set on ~", "meaningKo": "장면의 배경은 ~이다", "example": "The scene is set on a crowded ferry deck.", "exampleKo": "장면의 배경은 붐비는 여객선 갑판이다." }
+      ],
+      "speak": [
+        { "no": 1, "promptKo": "장면의 배경은 조용한 온실이다.", "hint": null, "modelAnswer": "The scene is set in a quiet greenhouse." },
+        { "no": 2, "promptKo": "요리사 두 명이 빵을 자르고 있다.", "hint": null, "modelAnswer": "Two cooks are slicing bread." }
+      ]
+    }
+  ]
+}
+```
+
+#### 12-2-3. zod 규칙 (`toeicGuideFileSchema` — `lib/ai/toeic/schemas.ts`)
+
+기존 가져오기 zod(§7-6)와 **같은 모듈**에 둔다 — 표현·QUIZ 원문 판정(`checkEntryText`·`checkQuizText`·`checkUniqueNos`·`findDuplicateExpressionIndexes`)을 복사하지 않고 그대로 부르기 위해서다(규칙이 두 벌이면 어긋난다). 상한은 `TOEIC_GUIDE_*` 상수로 한 번만 정의한다. 가져오기는 저장과 같은 자리라 **판독보다 엄격하다** — 어긋나면 버리지 않고 거부한다. 모르는 키는 버린다(최상위·안쪽 모두 — zod 기본 동작).
+
+- 최상위: `format`은 문자열 `"toeic-guides/v2"` 그대로(`toeic-sets/v1` 파일을 이 라우트에 넣으면 400, 반대도 400, 초안 형식 `toeic-guides/v1`도 400). `guides` 0~4개 — `templates`가 null이면 1~4개(빈 파일 금지). 파일 안에서 `part` 중복 금지, `presetKey` 형식·길이는 §7-6과 같은 상수(`TOEIC_PRESET_KEY_RE`·`TOEIC_PRESET_KEY_MAX`)이고 파일 안에서 중복 금지(틀 은행의 `presetKey`까지 한 집합으로 센다). `templates`의 규칙은 §12-2-7.
+- `part`: `q3_4`·`q5_7`·`q8_10`·`q11`만(`q1_2`는 거부 — 이 기능에 Q1–2 폴더가 없다).
+- 한국어 칸(`introKo`·`titleKo`·`textKo`·`captionKo`·`bodyKo`·`groupKo`, 줄의 `ko`, 예문의 `ko`): 비어 있지 않고 **한글 포함**(영어 단어가 섞여도 된다 — 팁 문장). 길이: `titleKo`·`textKo`·`captionKo` 1~80자, `groupKo` 1~30자 또는 null, `introKo` 1~600자, `bodyKo` 1~1200자, 줄·예문의 `ko` 1~300자. 줄의 `ko`에는 `{`·`}`를 쓰지 않는다.
+- 영어 칸(줄의 `en`, 예문의 `en`)
+  - 1~`TTS_TEXT_MAX_CHARS`자(`lib/tts-shared.ts`의 **같은 상수**를 import한다 — 숫자를 다시 적지 않는다. 줄 하나의 🔊가 한 조각이 되게 한다). **라틴 문자 포함**.
+  - **한글은 `{…}` 슬롯 안에서만** 쓸 수 있다. 슬롯은 짝이 맞고 겹치지 않으며(`{a{b}}` 거부), 안이 1~20자다. 슬롯 밖의 `{`·`}`는 거부한다.
+  - **대괄호 `[`·`]` 거부** — 영어 대안은 슬래시로 적는다(§12-2-1 괄호 표).
+- `label`(섹션·`text`·줄) 1~30자 또는 null, `note` 1~120자 또는 null — 언어는 정하지 않는다(화면 표시만).
+- 줄
+  - `en`과 `ko` 중 하나 이상이 있어야 한다.
+  - `emphasis`·`underline`: 각각 0~6개, 1~120자, **그 줄 `en`의 부분 문자열**(대소문자까지 그대로), 같은 배열 안 중복 금지, `{`·`}`를 포함하지 않는다. 두 배열이 겹치는 것은 된다(형광과 밑줄은 다른 표시다). `en`이 null이면 둘 다 빈 배열이다.
+  - `alt: true`는 `style: "template"` 블록의 **첫 줄이 아닌** 줄에서만.
+  - 예문(`example`)의 `en`은 줄 `en`과 같은 규칙이고, `emphasis`는 예문 `en`의 부분 문자열이다.
+- **`style: "completions"` 블록**
+  - `lead`가 있고 `lead.en`·`lead.ko`가 모두 있어야 한다.
+  - `lead.en`에는 `{`·`}`·`~`가 없다(문장 앞부분이지 틀이 아니다).
+  - 줄마다 `en`이 있어야 하고, `example`은 null, `alt`는 false다.
+  - 합성 문장 `guideLineEn`(머리말 영어 + " " + 줄 영어, §12-4)이 `TTS_TEXT_MAX_CHARS` 이하다.
+  - `list`·`template` 블록의 `lead`는 지금처럼 선택이다.
+- 개수: `sections` 1~30, 섹션당 `blocks` 1~60, `lines` 블록의 `lines` 1~40, `text` 블록의 `lines` 0~40. `text` 블록은 `titleKo`·`bodyKo`·`lines` 중 하나 이상이 있어야 한다.
+- 크기(**바이트**): 한 유형 항목 전체(파싱 결과 — `part`·`introKo`·`sections`·`expressions`·`speak`)를 `JSON.stringify`한 뒤의 **UTF-8 바이트 수**(`new TextEncoder().encode(…).length`)가 **900,000 이하**(`TOEIC_GUIDE_MAX_BYTES`)여야 한다.
+  - 기준은 Firestore 문서 1MiB다. 이 한도는 글자 수가 아니라 UTF-8 바이트로 잰다. 한글은 한 글자가 3바이트라 글자 수로 재면 세 배를 놓친다(자유대화 keepalive P2-A와 같은 함정).
+  - `sections`만이 아니라 `entries`·`quiz`가 될 두 목록까지 잰다. 원본 한 유형이 14~24KB라 여유는 충분하다.
+  - 틀 은행은 **따로** 잰다(문서가 따로다 — §12-2-7). 파일 전체 크기를 한 번에 재지 않는다.
+- `expressions` 1~60개(`TOEIC_SET_ENTRIES_MIN`·`MAX` — 세트 불변식과 같은 값)
+  - 항목마다 `checkEntryText(…, {allowBlankMeaning: false})`를 **그대로** 부른다(표현 1~80자·라틴 포함·한글 금지, 뜻 1~80자·한글 포함, 예문 3~300자·라틴 포함·한글 금지, 예문이 null이면 해석도 null). `no`는 1~999 또는 null이고 중복 금지다. **세트 안 표현 중복은 거부한다**(`findDuplicateExpressionIndexes`).
+  - 공략 쪽 superRefine만 더 건다: **`expression`·`example`에 `{`·`}`·`/`·`[`·`]` 거부**. 자리는 `~`, 대안은 항목으로 가른다(§12-2-1). `checkEntryText` 자체는 바꾸지 않는다 — 표현집 판독·가져오기 동작이 그대로다. 문구는 값 없이 "공략 표현에는 { } / [ ]를 쓸 수 없어요 — 자리는 ~, 대안은 항목을 나눠요" 같은 규칙만 쓴다.
+- `speak` 0~60개(`TOEIC_GUIDE_SPEAK_MAX`)
+  - `checkQuizText`(`promptKo` 한글 포함, `modelAnswer` 라틴 포함·한글 금지, `hint` 1~60자 또는 null)를 부른다.
+  - 추가 규칙: **`no`는 null 금지**(1~999 정수)·중복 금지. `promptKo` 1~300자(줄 `ko`와 같은 상수). `modelAnswer` 1~300자, **`~`·`{`·`}`·`/`·`[`·`]` 거부**(완성 문장이다).
+  - 파일에는 `keyExpressions`가 없고, 저장할 때 빈 배열로 둔다(§12-6).
+  - 하한은 0 그대로다. 말하기 후보가 없는 유형도 가져올 수 있어야 한다 — 빈 상태 문구는 §12-6.
+- **메시지에 값을 넣지 않는다**(§7-6·`schemas.ts` "zod 공통 판정" 규약 — 경로가 위치를 알려 준다). 400 본문은 순수 함수 `toeicGuideImportInvalidBody(issues)`(`lib/ai/toeic/schemas.ts`)가 만든다: `{ok:false, error:"invalid_input", messageKo, issues: toToeicIssues(issues, 20)}`(경로 + 규칙 문구만). 라우트는 이 함수를 그대로 쓰고, eval도 같은 함수로 누출을 검사한다(eval은 라우트 핸들러를 부르지 않는다).
+
+#### 12-2-4. 표현 시험 목록을 가르는 법
+
+읽기 본문(`sections`)과 시험 자료(`expressions`·`speak`)는 **파일에서 따로 적는다.** 시험은 `expressions`·`speak`만 보고, 본문의 어떤 줄도 시험에 자동으로 들어가지 않는다. 같은 글이 양쪽에 있어도 된다(본문 줄 하나와 표현 항목 하나). 이유는 §12-0 — 본문 줄은 보기로 쓰기에 길거나 대안이 묶여 있다. 그리고 자동 추출 규칙은 교재가 바뀌면 조용히 틀린다. 무엇을 어느 쪽에 적는지는 §12-2-1의 두 규칙(표현 = 틀, 말하기 = 완성 문장 — 이어 말하기 합성 포함)을 따른다.
+
+#### 12-2-5. 멱등 키와 다시 가져오기(내용 교정)
+
+전사는 나중에 틀린 곳이 발견된다. 교정하려고 지웠다 다시 넣으면 그 세트의 시험 기록이 연쇄 삭제되고(§7-3) 스트릭 과거가 사라진다. 그래서 공략은 표현집(§7-6 "있으면 건너뛴다")과 달리 **제자리 갱신**한다.
+
+- 키는 `presetKey`다. `toeicSets` 전체가 한 네임스페이스이므로 표현집 키와 겹치지 않는 접두어를 쓴다(예 `vendor-guide-q3-4`). 유형 하나에 공략 세트는 **하나**다.
+- **공략 세트의 문서 id는 결정적이다** — `guide-{part}`(예 `guide-q3_4`, 점 없음 — §12-8). "유형 하나에 하나"를 쿼리 잠금이 아니라 **문서 하나**로 보장한다. 같은 유형을 다른 `presetKey`로 동시에 가져와도, 문서 읽기 잠금과 생성 충돌(파일 `mutate`의 직렬화 / Firestore `tx.create` 실패 → 트랜잭션 재시도)이 한쪽을 `part_taken`으로 만든다. 쿼리 후 쓰기 관용구는 아직 없는 새 문서(phantom)를 막지 못할 수 있다. 표현집 세트 id는 지금처럼 무작위라 이 모양과 겹치지 않는다.
+- 내용 지문 `contentHash` = 파싱된 항목(`part`·`introKo`·`sections`·`expressions`·`speak`)의 `JSON.stringify`(zod 출력 — 키 순서가 스키마 순서로 고정된다)에 대한 SHA-256(16진). 라우트가 계산하고, 판정은 순수 함수 `decideGuideUpsert`가 원자 단위 **안에서** 한다.
+
+| 저장소 상태 | 결과 |
+|---|---|
+| 같은 `presetKey`가 없고, 그 `part`를 가진 공략 세트도 없다 | **created** — 새 세트 |
+| 같은 `presetKey`의 공략 세트가 같은 `part`이고 `contentHash`가 같다 | **unchanged** — 쓰지 않는다(두 번 눌러도 한 번) |
+| 같은 `presetKey`의 공략 세트가 같은 `part`이고 `contentHash`가 다르다 | **updated** — `guide`·`entries`·`quiz`·`titleKo`와 파생값 `enriched`(공략은 늘 false)를 함께 쓴다. `enriched`를 빼면 Firestore 부분 갱신에서 파생값이 저장값과 어긋날 수 있다(발화 포인트 병합 `mergeToeicSetPoints`와 같은 관용구). `id`·`createdAt`·`sortIndex`·`presetKey`는 그대로 두고, 시험 기록(`toeicQuizzes`)은 건드리지 않는다 |
+| 같은 `presetKey`가 **표현집** 세트다 | 충돌 `preset_key_is_book` |
+| 같은 `presetKey`의 공략 세트가 **다른 `part`**다 | 충돌 `part_mismatch` |
+| 다른 `presetKey`의 공략 세트가 이미 그 `part`를 가졌다 | 충돌 `part_taken` |
+
+- **틀 은행도 같은 표로 판정한다** — 틀 은행을 "유형 자리 하나"(`part` 자리의 값 `"templates"`, 문서 id `guide-templates`)로 보고 위 여섯 갈래를 그대로 쓴다. 같은 `presetKey`가 유형 공략 문서면 `part_mismatch`, 다른 `presetKey`가 이미 틀 은행이면 `part_taken`이다. 내용 지문은 파싱된 `flows`·`items`의 `JSON.stringify`에 대한 SHA-256이다. `alignmentSkips`(정렬 건너뜀 — §12-2-7)는 가져오기 검사에만 쓰므로 문서에 저장하지 않고 지문에도 넣지 않는다(건너뜀 이유만 고친 파일은 unchanged다). updated는 `guide`(틀 은행 전체)와 파생값만 쓰고, 틀 테스트 기록(`toeicQuizzes`의 틀 모드)은 건드리지 않는다. `templates`가 null이면 틀 은행 자리는 판정하지도 쓰지도 않는다.
+- **충돌이 하나라도 있으면 파일 전체를 쓰지 않는다**(409). 일부만 들어간 공략은 사람이 알아채기 어렵다.
+- 교정의 대가: 표현 문자열을 고치면 그 표현의 숙련도는 새로 시작한다(항목 키 = 표현, §6-1 — 옛 기록은 남지만 가리키는 항목이 없다). 말하기 문항은 키가 `quiz:{no}`라 문장을 고쳐도 기록이 이어진다(그래서 번호를 다시 매기지 않는다 — §12-2-1). 틀은 키가 `tpl:{key}`라 틀·예문 글을 고쳐도 기록이 이어진다 — **틀 `key`를 바꾸지 않는다**(§12-2-7). 틀을 파일에서 빼면 그 기록은 남지만 가리키는 틀이 없다(화면에 나오지 않는다).
+- 확인과 쓰기는 한 원자 단위다(파일 `mutate` / Firestore `runTransaction`). 트랜잭션 안에서 **모두 읽은 뒤** 쓴다.
+  - 파일에 든 유형들의 `guide-{part}` 문서와(틀 은행이 있으면) `guide-templates` 문서를 id로 읽는다 → `part_taken`·updated·unchanged 판정.
+  - `presetKey`를 30개씩 `in`으로 읽는다 → `preset_key_is_book`·`part_mismatch` 판정.
+  - 새 문서는 `tx.create`로 만든다(이미 있으면 실패 → 재시도 때 읽기가 그 문서를 본다).
+  - 결정적 id라서 "문서 id를 트랜잭션 밖에서 미리 정한다"(§7-6 관용구)는 저절로 지켜진다.
+- 지우는 경로를 새로 두지 않는다(교정은 다시 가져오기로 한다). 기존 `DELETE /api/toeic/sets/[id]`는 공략 세트에도 그대로 돈다(연쇄·prod-guard) — 화면에는 두지 않는다.
+
+#### 12-2-6. 라우트와 원문 누출 방지
+
+`POST /api/toeic/guides/import` — 본문 = 파일 JSON 그대로(화면의 `file.text()` → fetch 관용구, `components/toeic-set-library-view.tsx`와 같다). AI·키 검사·prod-guard 없음(생성·수정이다). 응답 shape 단일 정의처는 새 계약 파일 `lib/toeic-guide-contract.ts`.
+
+- 200 `{ ok:true, created, updated, unchanged }` — 각각 `presetKey` 배열(파일 순서)
+- 400 `{ ok:false, error:"invalid_input", messageKo, issues }` — `issues`는 경로 + 규칙 문구만(값 없음). 본문은 `toeicGuideImportInvalidBody`가 만든다(§12-2-3)
+- 409 `{ ok:false, error:"guide_conflict", messageKo, conflicts: {presetKey, part, reason}[] }` — 키와 유형만 싣는다(교재 글이 아니다). 틀 은행 충돌이면 `part`가 `"templates"`다
+- 500 `{ ok:false, error:"save_failed", messageKo }`
+
+교재 원문이 새지 않게: 라우트는 본문·파싱 결과를 로그에 찍지 않는다(개수와 오류 이름만). 응답에는 키·유형·개수만 싣는다. eval은 가져오기 파일이 있으면 **개수만** 찍는다. 공략 글이 저장소 밖으로 나가는 곳은 세 군데뿐이다 — 🔊 합성(`/api/tts` → OpenAI, 기존 표현 카드와 같은 경로), 연습을 만들 때 "활용할 표현"으로 넘기는 **공략 표현 문자열**(`expressions[].expression` — 표현집 표현과 같은 선례, §4-0), 그리고 같은 자리로 넘기는 **틀의 `~` 형태**(`frameToExpression` — 교재 틀이면 고정 부분이 교재 글이다. 길이는 표현 한 줄과 같다, §12-7-9). **공략 본문(`sections`)과 틀 예문·테스트 전용 채움은 호출 C·D 입력에 넣지 않는다**(넣으려면 사용자 메시지 템플릿 §4-7·§5-2를 바꿔야 하고, 교재 문장이 출제·채점 요청마다 나간다). 템플릿 테스트의 전사 요청(관문 T)에는 **녹음만** 보낸다 — 정답 예문을 `prompt`로 넣지 않는다(§12-5-4).
+
+#### 12-2-7. 틀 은행 — `templates` (틀 원본 `core/templates.json` · `toeic-core-raw/v3` → 가져오기)
+
+틀과 예문은 **Claude가 새로 쓴다.** 교재에서 가져오는 것은 같은 기능의 교재 틀이 있을 때 그 **고정 부분**(짧은 뼈대)뿐이고, 예문과 테스트 전용 채움은 전부 새로 쓴다. 틀 원본은 `data/private/toeic-strategy/core/templates.json` **한 파일**(형식 `toeic-core-raw/v3`, git 밖)이다. 파일이 하나라 같은 틀이 두 번 나올 수 없고, 여러 유형에 걸친 틀을 어느 파일에 둘지 정할 일도 없다. 변환은 이 파일을 가져오기 파일의 최상위 `templates`로 옮긴다(아래 표). 옛 유형별 네 파일(`core/{q3-4,q5-7,q8-10,q11}.json`, `toeic-core-raw/v2`)은 처음 틀을 쓸 때의 작업 파일이고 변환 입력이 아니다(검토 반영 — 두 원본이 갈라져 있었고, 네 파일로 변환하면 합친 뒤에 고친 것이 되돌아갔다).
+
+```ts
+interface ToeicTemplateBankFile {         // 가져오기 파일 최상위 templates → 틀 은행 문서 하나(§12-3, id guide-templates)
+  presetKey: string;                      // 멱등 키(§12-2-5) — 공략 키와 같은 접두어 + "-templates"
+  flows: ToeicTemplateFlow[];             // 유형마다 하나 — 단계(답변 흐름) + 소재 묶음
+  items: ToeicTemplate[];                 // 파일 순서 = 같은 묶음 안의 표시 순서
+  alignmentSkips: ToeicTemplateAlignmentSkip[];  // 틀에 잇지 않는 교재 정렬 대상과 그 이유 — 가져오기 검사용(문서에 저장하지 않는다)
+}
+
+interface ToeicTemplateFlow {
+  part: ToeicGuidePart;
+  steps: { stepKo: string; groupsKo: string[] }[];  // 3~6 — 교재가 가르치는 답변 순서. 단계마다 그 단계의 묶음들(흐름 순서)
+  banksKo: string[];                                // 0~16 — 흐름 밖 소재 묶음(주제별 틀·정보 종류). 표시는 단계 뒤
+}
+
+interface ToeicTemplate {
+  key: string;                            // 숙련도 키 tpl:{key}(§12-5-6). 교정할 때 바꾸지 않는다
+  groupKo: string;                        // 묶음 — 한 기능의 틀 모음(예 "빈도 말하기"). 어느 단계·소재 자리인지는 유형마다 flows가 정한다
+  frameEn: string;                        // 고정 부분 + {자리 이름}
+  frameKo: string;                        // 같은 자리 이름을 한국어 어순대로
+  useKo: string;                          // 언제 꺼내 쓰나
+  parts: ToeicGuidePart[];                // 이 틀을 보이는 유형 폴더(1~4) — 여러 유형에 걸쳐도 틀은 하나
+  source: "guide" | "new";                // 교재 틀을 옮겼나 / 교재에 없는 기능을 새로 썼나
+  guideRefs: ToeicTemplateGuideRef[];     // 0~4 — 교재 틀과의 연결(한 틀이 교재 표현·머리말·단계에 함께 걸릴 수 있다)
+  examples: { en: string; ko: string; fills: string[] }[];   // 3~5 — en = fillFrame(frameEn, fills). 따라 말하기·카드·예문 말하기 테스트
+  testFills: string[][];                  // 1~3 — 틀 바꿔 말하기 전용 채움(자리 순서의 배열). 대본·카드에 나오지 않는다(§12-5-3)
+}
+
+type ToeicTemplateGuideRef =
+  | { kind: "expression"; part: ToeicGuidePart; expression: string } // 그 유형 expressions[].expression(표현 틀)
+  | { kind: "template"; part: ToeicGuidePart; step: string }         // 그 유형 style "template" 블록 줄의 label(답변 틀 단계)
+  | { kind: "lead"; part: ToeicGuidePart; leadEn: string };          // 그 유형 style "completions" 블록의 lead.en(이어 말하기 머리말)
+
+interface ToeicTemplateAlignmentSkip {
+  part: ToeicGuidePart;
+  kind: "expression" | "template" | "lead";   // 가리키는 방법은 ToeicTemplateGuideRef와 같다
+  ref: string;                                 // 그 표현·단계 label·머리말 글자
+  reasonKo: string;                            // 1~80자, 한글 포함 — 왜 틀로 잇지 않는가(정렬 규칙 5)
+  coveredBy: string | null;                    // 그 기능을 대신 되풀이하는 틀 key(없으면 null)
+}
+```
+
+예시(지어낸 문장 — **발췌**다. 흐름에 적힌 묶음마다 그 유형 틀이 있어야 zod를 통과하므로 이 발췌 그대로는 통과하지 않는다. 통과하는 최소 픽스처는 eval이 만든다 — §12-10. `guideRefs`가 가리키는 표현·머리말은 §12-2-2 예시의 지어낸 것이고, 건너뜀이 가리키는 표현은 그 예시의 `expressions`에 한 줄 더 있다고 친 것이다):
+
+```json
+{
+  "presetKey": "vendor-guide-templates",
+  "flows": [
+    {
+      "part": "q3_4",
+      "steps": [
+        { "stepKo": "장면 열기", "groupsKo": ["장소 말하기"] },
+        { "stepKo": "눈에 띄는 것", "groupsKo": ["인물 동작", "사물 상태"] },
+        { "stepKo": "주변", "groupsKo": ["위치 말하기"] },
+        { "stepKo": "인상", "groupsKo": ["느낌 말하기"] }
+      ],
+      "banksKo": []
+    },
+    {
+      "part": "q11",
+      "steps": [
+        { "stepKo": "입장", "groupsKo": ["입장 밝히기"] },
+        { "stepKo": "이유", "groupsKo": ["이유 붙이기"] },
+        { "stepKo": "정리", "groupsKo": ["마무리"] }
+      ],
+      "banksKo": ["여가 소재", "직장 소재"]
+    }
+  ],
+  "items": [
+    {
+      "key": "scene-set-on",
+      "groupKo": "장소 말하기",
+      "frameEn": "The scene is set on {장소}.",
+      "frameKo": "장면의 배경은 {장소}이다.",
+      "useKo": "사진 묘사 첫 문장 — 장소부터 말할 때",
+      "parts": ["q3_4"],
+      "source": "guide",
+      "guideRefs": [{ "kind": "expression", "part": "q3_4", "expression": "The scene is set on ~" }],
+      "examples": [
+        { "en": "The scene is set on a rooftop garden.", "ko": "장면의 배경은 옥상 정원이다.", "fills": ["a rooftop garden"] },
+        { "en": "The scene is set on a busy train platform.", "ko": "장면의 배경은 붐비는 기차 승강장이다.", "fills": ["a busy train platform"] },
+        { "en": "The scene is set on a quiet riverside path.", "ko": "장면의 배경은 조용한 강변 산책로이다.", "fills": ["a quiet riverside path"] }
+      ],
+      "testFills": [["a snowy mountain trail"], ["a small fishing boat"]]
+    },
+    {
+      "key": "two-cooks-are",
+      "groupKo": "인물 동작",
+      "frameEn": "Two cooks are {동작}.",
+      "frameKo": "요리사 두 명이 {동작} 있다.",
+      "useKo": "두 사람이 함께 일하는 장면을 말할 때",
+      "parts": ["q3_4"],
+      "source": "guide",
+      "guideRefs": [{ "kind": "lead", "part": "q3_4", "leadEn": "Two cooks are" }],
+      "examples": [
+        { "en": "Two cooks are rolling out dough on a long table.", "ko": "요리사 두 명이 긴 탁자에서 반죽을 밀고 있다.", "fills": ["rolling out dough on a long table"] },
+        { "en": "Two cooks are tasting a sauce from the same pot.", "ko": "요리사 두 명이 같은 냄비의 소스를 맛보고 있다.", "fills": ["tasting a sauce from the same pot"] },
+        { "en": "Two cooks are washing lettuce at the sink.", "ko": "요리사 두 명이 개수대에서 상추를 씻고 있다.", "fills": ["washing lettuce at the sink"] }
+      ],
+      "testFills": [["plating desserts for a party"], ["cleaning the grill after lunch"]]
+    },
+    {
+      "key": "helps-me",
+      "groupKo": "이유 붙이기",
+      "frameEn": "{활동} helps me {효과}.",
+      "frameKo": "{활동}은 제가 {효과} 데 도움이 돼요.",
+      "useKo": "좋아하는 이유·장점을 한 문장으로 붙일 때",
+      "parts": ["q5_7", "q11"],
+      "source": "new",
+      "guideRefs": [],
+      "examples": [
+        { "en": "Gardening on weekends helps me clear my head.", "ko": "주말에 텃밭을 가꾸는 것은 제가 머리를 맑게 하는 데 도움이 돼요.", "fills": ["Gardening on weekends", "clear my head"] },
+        { "en": "Online banking helps me save time.", "ko": "인터넷 뱅킹은 제가 시간을 아끼는 데 도움이 돼요.", "fills": ["Online banking", "save time"] },
+        { "en": "A short nap helps me focus in the afternoon.", "ko": "짧은 낮잠은 제가 오후에 집중하는 데 도움이 돼요.", "fills": ["A short nap", "focus in the afternoon"] }
+      ],
+      "testFills": [["Keeping a diary", "sleep better"], ["A standing desk", "stay alert at work"]]
+    }
+  ],
+  "alignmentSkips": [
+    { "part": "q3_4", "kind": "expression", "ref": "The scene is set in ~", "reasonKo": "뜻이 같은 어휘 대안 — 대표 틀 하나로 연습한다", "coveredBy": "scene-set-on" }
+  ]
+}
+```
+
+**만드는 법 — 교재 틀에 맞춘다(정렬 규칙, 사용자 확정 2026-09-27 · 검토 반영)**
+
+1. **정렬 대상 목록을 먼저 만든다** — 그 유형 공략 항목의 (a) **자리 있는 표현 틀**: `expressions` 중 `~`나 첫 낱말이 아닌 대문자 `A`·`B` 자리가 있는 것, (b) **답변 틀 단계**: `style:"template"` 블록 줄의 `label`(같은 이름은 하나로), (c) **이어 말하기 머리말**: `style:"completions"` 블록의 `lead.en`(같은 글자는 하나로). 자리 없는 연결어·낱말 표현(지어낸 예 "In short")은 대상이 아니다 — 쓰는 틀이 있으면 이어도 된다.
+2. 쓰려는 틀과 **같은 기능의 교재 틀이 있으면 교재 틀의 고정 부분을 글자 그대로** 쓴다. 바꾸는 것은 자리 표시(`~`, 교재가 자리로 쓴 대문자 `A`·`B`) → `{자리 이름}` 하나뿐이다. `source:"guide"`로 적고 `guideRefs`로 그 교재 틀을 가리킨다 — zod가 고정 부분이 온전히 들어 있는지 본다(아래).
+   - 교재 틀의 슬래시 대안이 뜻이 같으면 교재가 먼저 적은 쪽 하나로 쓴다(§12-2-1 "대표형"과 같다). **뜻이 갈리는 변형**(왼쪽/오른쪽, 찬성/반대, 장점/단점 같은 것)은 **틀을 나눈다** — 자리로 두지 않는다. 자리로 두면 교재의 고정 낱말이 자리 안으로 들어가 연결 검사를 통과하지 못하고, 뜻을 고르는 연습이 채우기로 바뀐다.
+   - 참고한 강의 자료의 틀과 교재 틀이 같은 기능인데 모양이 다르면 **교재 쪽**을 쓴다.
+3. **머리말은 두 방법으로 잇는다.** (a) **포함** — 머리말 낱말이 틀의 한 고정 구간 안에 이어서 있다(지어낸 예: 머리말 `Two cooks are` ↔ 틀 `Two cooks are {동작}.`). (b) **머리 사례** — 머리말이 틀 머리의 자리를 채운 한 사례다. 틀의 고정 낱말은 글자 그대로 맞고 자리는 머리말 낱말 1개 이상을 받으며, 맞춘 고정 낱말이 2개 이상이다(지어낸 예: 머리말 `I water the plants` ↔ 틀 `I water {무엇} {얼마나 자주}.`). 교재 머리말이 한 소재에 묶여 있으면(특정 물건을 사는 문장 같은 것) (b)로 소재 낱말만 자리로 넓혀 여러 질문에 쓰이게 한다 — 교재의 고정 낱말은 그대로 남는다.
+4. 교재에 **없는 기능만** 새 틀(`source:"new"`)로 채운다. 문체는 교재 틀을 따른다 — 1인칭·현재형 위주, 고정 부분 12낱말 이하, 쉬운 낱말, 교재가 쓰는 연결어. 강의 자료에만 있는 기능이면 방법만 빌리고 문장은 우리가 새로 쓴다. 교재 표현·머리말을 가리키게 된 틀은 교재 틀이다(`"guide"`로 적는다).
+5. **정렬 대상은 빠짐이 없어야 한다.** 대상마다 어떤 틀의 `guideRefs`가 가리키거나, `alignmentSkips`에 이유와 함께 올린다. 건너뛰는 이유는 셋 중 하나로 쓴다.
+   - ① **어휘 대안** — 같은 뜻의 다른 동사·같은 전치사(`coveredBy`에 대표 틀).
+   - ② **문법 변형·생략형** — 연결어 생략, 동명사/부정사 같은 것(대표 틀).
+   - ③ **틀로 쓰지 않는 표현** — 뜻 고르기 전용, 숫자 읽기(`coveredBy` null).
+
+   같은 대상을 잇고 건너뛰기를 함께 하지 않는다. 변환과 zod가 빠짐을 거부한다(아래) — 알림 eval이 아니다. 어휘 대안이라도 교재가 뜻이 갈리는 짝으로 가르치면(시각 at · 날짜 on · 장소 in 같은 전치사) 짝마다 대표 틀을 하나씩 둔다.
+6. 틀 하나가 여러 유형에 쓰이면(예: 이유 붙이기가 Q5–7과 Q11) **한 번만** 두고 `parts`에 유형을 모두 적는다. 두 유형 공략에 같은 교재 틀이 있으면 `guideRefs`로 둘 다 가리킨다.
+7. **흐름은 두 층이다.**
+   - **단계**(`steps`, 유형마다 3~6개): 교재가 가르치는 답변 순서다. 교재에 답변 틀 블록이 있으면 그 단계 이름을 그대로 쓴다. 단계는 그 단계의 묶음들을 흐름 순서로 담는다.
+   - **소재 묶음**(`banksKo`): 흐름 밖의 주제별 틀·정보 종류(지어낸 예 "여행 소재", "비용 정보")다. 단계 뒤에 보인다. "빠진 단계"·연습 틀 고르기의 단계 몫에 들지 않는다(§12-5-5·§12-7-9).
+   - **묶음**(`groupKo`)은 한 기능의 틀 모음이다. **유형 폴더마다 틀 6개 이하**(`TOEIC_TEMPLATE_GROUP_MAX`) — 넘으면 원본에서 묶음을 나눈다(따라 말하기 한 묶음이 약 20분을 넘지 않게).
+   - 여러 유형에 걸친 틀의 묶음은 유형마다 그 유형 흐름이 원하는 자리(단계 또는 소재)에 넣는다. 틀에 박힌 묶음 이름 하나가 두 유형의 단계를 정하지 않는다. 그래서 묶음 이름은 두 유형 모두에서 뜻이 통하는 기능 이름으로 짓는다.
+8. **예문은 틀마다 3~5개, 주제가 서로 다르게** — 일상·직장·여가·쇼핑·교통·건강·기술·교육처럼 토익스피킹에 자주 나오는 주제에서 고르고, 한 틀 안에서 주제가 겹치지 않게 한다. 채움은 **여러 질문에 두루 쓰이는 말**(시간을 아낀다, 머리를 식힌다, 돈이 덜 든다 같은 것)을 먼저 고른다 — 한 번 익힌 채움이 다른 질문에서도 그대로 나오게. 문장 길이는 IM3~IH 눈높이(15낱말 안팎)다. 규칙 3 (b)로 넓힌 틀은 소재가 좁을 수 있지만, 그래도 채움은 서로 다른 상황으로 쓴다.
+9. **테스트 전용 채움 `testFills`는 틀마다 1~3묶음**(원본은 2묶음을 쓴다). 예문 채움과 다른 채움으로, 틀 바꿔 말하기 문항이 대본에 없던 새 문장이 되게 한다(§12-5-3). 한 묶음 안의 자리끼리 뜻이 맞아야 한다(시작 시각 < 끝 시각, 예전 모습 ↔ 요즘 모습 같은 짝). 그래서 예문 채움을 엇갈려 섞지 않고 새로 쓴다.
+10. 예문과 테스트 전용 채움은 새로 쓴다 — 교재 예문·모범답변·해석과 강의 문장을 옮기지 않는다(흔한 틀이라 우연히 같은 문장이 되는 것은 괜찮다).
+11. 문장 첫 자리(두 번째 문장의 첫 자리 포함)의 채움은 대문자로 시작하게 적는다 — 예문은 틀에 채움을 넣은 결과와 **글자까지** 같아야 한다(`fillFrame`은 대소문자를 고치지 않는다).
+12. **한국어 틀은 교재 뜻풀이를 따른다.** 틀 전체가 교재 표현 하나인 틀(`frameToExpression` 글자가 그 교재 표현과 같은 모양)이면 `frameKo`는 그 표현의 교재 뜻풀이(`meaningKo`)에서 `~`를 자리 이름으로 바꿔 만들고, 자리 앞뒤 조사·어미만 자리에 맞춘다. 교재 표현보다 긴 틀(동사 연어를 넣은 문장 틀)은 뜻풀이를 참고해 새로 쓴다. ③ 표현 시험에서 보는 뜻과 ② 틀 카드·테스트 단서의 뜻이 어긋나지 않게 하려는 것이다.
+
+**변환 규칙 — `toeic-core-raw/v3` → `templates`**
+
+| 원본(`core/templates.json`) | 가져오기 | 규칙 |
+|---|---|---|
+| 최상위 `format`·`flows`·`skips`·`templates` | `templates` 객체 하나 | `format`이 `toeic-core-raw/v3`가 아니면 변환 실패 |
+| `templates[]`의 `key`·`groupKo`·`frameEn`·`frameKo`·`useKo`·`source`·`examples`·`testFills` | `items[]`의 같은 이름 | 그대로(파일 순서 유지, `examples[].fills`·`testFills[]`는 자리 순서의 배열). 같은 `key`가 두 번이면 변환 실패 |
+| `parts`(`"q3-4"` 표기) | `parts`(`"q3_4"` 표기) | 표기만 바꾼다 |
+| `guideRefs[]` — `{part, expression}` · `{part, templateStep}` · `{part, lead}` | `{kind:"expression", part, expression}` · `{kind:"template", part, step}` · `{kind:"lead", part, leadEn}` | `part` 표기만 바꾸고 순서를 지킨다 |
+| `flows[]` — `{part, steps, banksKo}` | `flows[]` 같은 모양 | `part` 표기만 바꾼다 |
+| `skips[]` — `{part, kind, ref, reasonKo, coveredBy}` | `alignmentSkips[]` 같은 모양 | `part` 표기만 바꾼다 |
+| — | `presetKey` | 공략 키 접두어 + `-templates` |
+
+- 변환은 파일을 쓰기 전에 가져오기 zod(아래)를 오프라인으로 돌리고, 통과한 것만 둔다. 특히 **정렬 빠짐 0**이 여기서 걸린다(eval의 "실제 가져오기 파일" 검사 — §12-10). 고칠 곳이 나오면 **원본을 고친다** — 가져오기 파일을 손으로 고치면 다음 변환이 되돌린다.
+- 원본 실측(2026-09-27 검토 반영 뒤, 개수만 — eval에 리터럴로 잠그지 않는다)
+
+  | 항목 | 개수 |
+  |---|---|
+  | 틀 · 예문 · 테스트 전용 채움 | 152 · 650 · 304묶음(틀마다 2) |
+  | 폴더별 틀(`parts` 기준) | Q3–4 37 · Q5–7 51 · Q8–10 38 · Q11 60. 두 유형에 쓰이는 틀 34(모두 Q5–7 + Q11) |
+  | `source` | guide 99 · new 53 |
+  | 흐름 — 단계 / 단계 안 묶음 / 소재 묶음 | Q3–4 4/11/0 · Q5–7 4/11/8 · Q8–10 4/9/6 · Q11 5/9/12. 묶음당 틀 최대 6 |
+  | 정렬 — 연결/건너뜀/빠짐 | Q3–4 표현 25/0/0 · 단계 4/0/0 · 머리말 11/0/0 — Q5–7 표현 11/0/0 · 머리말 8/0/0 — Q8–10 표현 15/3/0 — Q11 표현 18/5/0 · 단계 5/0/0. 머리말 연결은 포함 10 · 머리 사례 9 |
+  | 따라 말하기 예상 시간(반복 4·틈 보통·속도 보통 — `estimateShadowMs`) | 폴더 전체 약 2~3.2시간, 묶음 하나 약 3~20분, 틀 하나 중앙 약 3.2분 |
+  | 알릴 것(zod는 통과) | 고정 낱말이 한 개뿐인 틀 1, 두 낱말 이상 이어진 고정 구간이 없는 틀 4(전사문 매칭 제외 — §12-5-5), 고정 낱말 7개 미만 106(한 낱말만 어긋나도 제안 ✕ — §12-5-5), 같은 유형 안 한국어 틀이 글자까지 같은 쌍 2(어휘 대안 — §12-5-5 대안 대조) |
+  | 한국어 틀 ↔ 교재 뜻풀이(규칙 12 대상 23틀) | 글자까지 같음 16 · 자리 조사·어미만 다름 7. eval의 알림(§12-10 틀 점검)은 "같은 모양"을 `frameToExpression` 글자가 그 유형 공략 표현과 대소문자·공백 무시로 같은 틀로 세어 대상이 36틀이고, 그중 조사·어미 밖에서 다른 것을 근사로 알린다(실패가 아니다) |
+
+**zod 규칙**(`toeicGuideFileSchema`의 한 부분 — `lib/ai/toeic/schemas.ts`. `guideRefs`·`alignmentSkips` 대조와 정렬 빠짐 검사가 같은 파일의 `guides`를 봐야 해서 최상위 superRefine에서 교차 검사한다. 상한은 `TOEIC_TEMPLATE_*` 상수로 한 번만):
+
+- `presetKey`: §12-2-3 최상위 규칙과 같다(파일 안 공략 키와도 달라야 한다).
+- `items` 1~300개(`TOEIC_TEMPLATES_MAX`). `key`는 `^[a-z0-9][a-z0-9-]{0,39}$`이고 파일 안에서 유일하다.
+- `groupKo` 1~30자·한글 포함, `useKo` 1~120자·한글 포함. `parts` 1~4개, 네 값 중(`q1_2` 거부), 중복 금지.
+- `frameEn`: 1~120자, 라틴 포함. 슬롯 규칙은 공략 영어 줄(§12-2-3)과 같다 — 한글은 `{…}` 안에서만, 짝·중첩·빈 슬롯 금지, 안은 1~20자. 틀 전용 규칙을 더한다.
+  - 자리 1~4개, 자리 이름 중복 금지.
+  - 자리는 **낱말 하나처럼** 선다 — `{` 앞은 문장 처음·공백·여는 따옴표, `}` 뒤는 문장 끝·공백·`.`·`,`·`?`·`!`·`;`·`:`. `{동작}ing`·`{사람}'s` 같은 것은 거부한다(전사 비교가 자리 경계에서 낱말을 자르지 않게 — §12-5-5).
+  - 자리 밖에 `~`·`/`·`[`·`]` 거부(자리는 `{}`, 대안은 틀을 나눈다).
+  - 고정 부분 낱말(`normalizeTemplateWords` 기준 — §12-5-5)이 1개 이상이다.
+  - **`matchKey(frameToExpression(frameEn))`가 은행 안에서 유일하다**(검토 개선 9 — 되짚는 표 `templateByExpression`이 Map 하나라 겹치면 한 틀이 조용히 가려진다).
+- `frameKo`: 1~120자, 한글 포함(**자리 `{…}` 밖에서** 센다 — 지어낸 예 `{다음 일}.`처럼 자리 이름에만 한글이 있는 한국어 틀은 거부), 같은 슬롯 규칙. **자리 이름의 모임이 `frameEn`과 같다**(순서는 한국어 어순대로 달라도 된다). `~` 거부 — 한국어 틀도 이름 있는 자리로 적는다(화면이 영어·한국어의 같은 자리를 같은 색으로 잇는다 — §12-5-1).
+- `examples` 3~5개(`TOEIC_TEMPLATE_EXAMPLES_MIN`·`MAX`)
+  - `fills` 길이 = 자리 수. 채움마다 1~80자, **라틴 문자 또는 숫자 포함**(`hasLatin(x) || /\d/.test(x)` — 가격·시각·연도 채움이 된다. 검토 B1: 라틴만 요구하면 숫자·가격 채움 14개 때문에 가져오기 파일 전체가 400이었다), 한글·`{`·`}`·`~`·`/`·`[`·`]` 거부, 앞뒤 공백 없음.
+  - **`en` === `fillFrame(frameEn, fills)`** — 글자까지(대소문자·문장부호·공백) 같다. `fillFrame`은 i번째 `{…}`를 `fills[i]`로 바꿀 뿐이다.
+  - `en` 1~`TTS_TEXT_MAX_CHARS`자(같은 상수). `ko` 1~200자, 한글 포함, `{`·`}`·`~` 거부.
+  - 한 틀 안에서 예문 `en`(대소문자·연속 공백 무시)과 `fills` 묶음(대소문자 무시)이 서로 달라야 한다.
+- `testFills` 1~3묶음(`TOEIC_TEMPLATE_TEST_FILLS_MIN`·`MAX`): 묶음마다 길이 = 자리 수, 채움 규칙은 예문 채움과 같다. 예문의 채움 묶음과도, 다른 `testFills` 묶음과도 달라야 한다(대소문자 무시). `fillFrame(frameEn, 묶음)`이 `TTS_TEXT_MAX_CHARS` 이하.
+- `source`·`guideRefs`
+  - `guideRefs` 0~4개(`TOEIC_TEMPLATE_GUIDE_REFS_MAX`), 같은 연결 두 번 금지. `source:"guide"`면 1개 이상. `source:"new"`면 `kind:"template"`만 — 새 틀이 교재 답변 틀의 어느 단계를 채우는지는 적을 수 있지만, 교재 표현·머리말을 가리키면 그것은 교재 틀이다("guide"로 적는다).
+  - 연결마다 `part` ∈ 그 틀의 `parts`.
+  - **대상이 같은 가져오기 파일 안에 실제로 있어야 한다.** 파일의 `guides`에 그 유형 항목이 있고, `expression`은 그 유형 `expressions[]` 중 `expressionKey`가 같은 항목, `template`은 그 유형 `style:"template"` 블록 줄 중 `label`이 `step`과 같은 줄, `lead`는 그 유형 `style:"completions"` 블록 중 `lead.en`이 `leadEn`과 같은(공백 정리 후 글자 그대로) 블록이다.
+  - **교재 틀의 고정 부분이 온전히 들어 있어야 한다.**
+    - `expression`: 교재 틀을 `~`와 **첫 낱말이 아닌** 대문자 한 글자 `A`·`B`에서 끊은 조각마다, 그 조각의 낱말이 틀의 한 고정 구간 안에 **이어서, 순서대로** 있어야 한다(`normalizeTemplateWords` 기준 — 대소문자·문장부호·축약형 차이는 같게 본다). 교재 표현이 **소문자로 시작하는 동사 연어**면(지어낸 예 `pay rent`) 첫 조각의 첫 낱말은 `-s`·`-es`·`-ed`·`-d` 꼴도 같게 본다 — 틀 문장에서 동사가 활용된다.
+    - `lead`: 정렬 규칙 3의 (a) 포함 또는 (b) 머리 사례(맞춘 고정 낱말 2개 이상). 판정은 순수 함수 `leadMatchesFrame(leadEn, frameEn)`(`lib/toeic-template.ts` — 같은 정규화)가 한다. 머리말 안의 `a/b` 낱말 대안은 둘 중 하나와 맞으면 된다.
+    - `template`: 대상이 있는지만 본다 — 템플릿 줄에는 여러 낱말에 걸친 슬래시 대안이 섞여 있어 기계 대조가 믿을 만하지 않다(실제 파일 eval이 첫 고정 조각이 틀에 없는 수를 알린다).
+- `flows`
+  - 유형 중복 금지. 어떤 틀의 `parts`에 든 유형이면 그 유형의 흐름이 있어야 하고, 틀이 없는 유형의 흐름은 거부한다.
+  - `steps` 3~6개(`TOEIC_TEMPLATE_FLOW_STEPS_MIN`·`MAX`). `stepKo` 1~30자·한글 포함·그 유형 안에서 유일. 단계마다 `groupsKo` 1~8개. `banksKo` 0~16개. 이름마다 1~30자.
+  - 한 유형 안에서 묶음 이름은 단계·소재를 통틀어 **한 번만** 나온다. 그 유형 틀들의 `groupKo` 모임 = 그 흐름에 적힌 묶음 모임이다(흐름에 빠진 묶음도, 틀이 없는 묶음도 거부).
+  - 유형마다 묶음 하나의 틀 수 ≤ 6(`TOEIC_TEMPLATE_GROUP_MAX`).
+- `alignmentSkips` 0~100개
+  - 대상이 같은 파일의 그 유형 공략 항목에 있어야 한다(가리키는 방법은 `guideRefs`와 같다 — 표현은 자리 없는 것도 된다). `reasonKo` 1~80자·한글 포함. `coveredBy`는 null이거나 그 유형을 `parts`에 가진 틀의 `key`.
+  - 같은 대상 두 번 금지. **어떤 틀이 연결한 대상을 건너뛰기에 올리면 거부**한다.
+- **정렬 빠짐 0**(검토 반영 — 사용자 지시 "기존 템플릿에 최대한 맞춰"): 파일의 `guides`에 있는 유형마다, 정렬 대상(규칙 1 — 자리 표현·답변 틀 단계·머리말) 하나하나가 어떤 틀의 `guideRefs`로 연결되거나 `alignmentSkips`에 있어야 한다. 빠짐이 있으면 400이다. 경로는 `templates.alignment.{유형}.{kind}.{대상 순번}`이고 문구는 규칙만 적는다 — 대상 글자는 싣지 않는다. `guides`에 없는 유형은 보지 않는다(`templates: null`이면 이 검사도 없다).
+- 크기: 파싱된 `flows`·`items`를 `JSON.stringify`한 UTF-8 바이트가 `TOEIC_GUIDE_MAX_BYTES`(900,000 — 같은 상수) 이하. 문서가 따로라 유형 공략과 따로 잰다. 원본 152틀이 약 218KB다(2026-09-27 변환 실측 217,740바이트).
+- 메시지에 값을 넣지 않는다 — 400 본문은 §12-2-3의 `toeicGuideImportInvalidBody` 그대로다(경로가 `templates.items.{i}.examples.{j}.en`처럼 위치를 알려 준다).
+
+### 12-3. 저장 모델 — 새 컬렉션 없이 필드 셋
+
+| 레코드 | 새 필드(필수, nullable) | 옛 문서 정규화 | 뜻 |
+|---|---|---|---|
+| `ToeicSetRecord`(`toeicSets`) | `guide: ToeicGuideDoc \| null` | `null`(표현집) | null이 아니면 **공략 계열 문서**다 — 종류가 둘이다(`guide.kind`). **유형 공략**(`"part"`)은 이렇게 채운다. `id` = `guide-{part}`(§12-2-5). `entries` = 파일 `expressions`(`points: null`·`confidence:"high"`·`partial:false`). `quiz` = 파일 `speak`(`keyExpressions: []` — 0~60개, §7-1 예외). `titleKo` = 유형 이름(`toeicMockPartLabelKo` — 예 "Q3–4 사진 묘사"). `source:"import"`, `photoCount 0`, `enriched false`, `model null`, `dayNo·topicKo null`. **틀 은행**(`"templates"`)은 문서 하나다 — `id` = `guide-templates`, `entries: []`·`quiz: []`(§7-1 상한의 두 번째 예외 — 표현이 0개인 세트 문서는 틀 은행뿐이다), `titleKo` "템플릿 훈련", `enriched`는 파생값 그대로 — `entries`가 비어 있으면 **false**다(`lib/toeic-normalize.ts`의 파생식이 `entries.length > 0 && …` — 검토 개선 2. 쓰는 곳은 없다), 나머지는 유형 공략과 같다 |
+| `ToeicQuizRecord`(`toeicQuizzes`) | 필드 추가 없음 — `mode`의 값 둘을 더한다: `"tpl-recall"`(예문 말하기)·`"tpl-swap"`(틀 바꿔 말하기) | 그대로(`normalizeToeicQuizRecord`가 두 목록 중 하나면 받는다) | 템플릿 테스트 세션(§12-5-6). `setId` = `guide-templates`, 항목 키 = `tpl:{key}`. **§7-3의 `ToeicQuizMode`(네 값)는 바꾸지 않는다** — 새 타입 `ToeicTemplateQuizMode`를 두고 레코드의 `mode`만 `ToeicQuizMode \| ToeicTemplateQuizMode`로 넓힌다(표현 시험 화면·통계·오답 탭이 도는 `TOEIC_QUIZ_MODES`에 틀 모드가 섞이지 않게). 타입이 넓어지면서 따라 바뀌는 곳은 아래 "모드 타입 넓히기" |
+| `ToeicMockRecord`(`toeicMocks`) | `drillPart: ToeicMockPart \| null` | `null`(모의고사) | null이 아니면 한 문제 연습. 그 파트만 non-null |
+| `ToeicAttemptRecord`(`toeicAttempts`) | `questions: number[]` | `toeicAttemptQuestions(parts)` | 응시 범위의 문항 번호(오름차순). 연습의 사진 묘사는 `[3]`(§12-7-4) |
+
+```ts
+type ToeicGuideDoc = ToeicGuidePartDoc | ToeicTemplateBankDoc;
+
+interface ToeicGuidePartDoc {
+  kind: "part";
+  part: ToeicGuidePart;
+  introKo: string | null;
+  sections: ToeicGuideSection[];     // §12-2-2 그대로
+  contentHash: string;               // §12-2-5
+  updatedAt: string;                 // 내용이 마지막으로 바뀐 시각(생성 포함)
+}
+
+interface ToeicTemplateBankDoc {
+  kind: "templates";
+  flows: ToeicTemplateFlow[];        // §12-2-7 그대로(단계 + 소재 묶음)
+  items: ToeicTemplate[];            // §12-2-7 그대로(한 벌 — 유형 폴더는 parts로 고른다)
+  contentHash: string;               // §12-2-5(flows·items)
+  updatedAt: string;
+}
+
+type ToeicTemplateQuizMode = "tpl-recall" | "tpl-swap";
+```
+
+- **틀 은행을 문서 하나로 두는 이유** — 틀이 여러 유형에 걸친다(원본 152틀 중 34개가 Q5–7과 Q11 둘 다). 유형 공략 문서에 나눠 담으면 걸친 틀이 두 벌이 되거나 "본적 유형"을 정해야 하고, 테스트 기록이 `setId`로 갈라져 한 틀의 숙련도가 폴더마다 따로 쌓인다. 문서 하나면 세션의 `setId`가 하나(`guide-templates`)라 **틀 하나 = 숙련도 하나**가 저절로 성립한다. 크기는 원본 기준 약 218KB로 1MiB의 4분의 1이 안 된다(§12-2-7 바이트 상한 900,000). 정렬 건너뜀(`alignmentSkips`)은 저장하지 않는다(§12-2-5).
+- **Firestore 본문에서는 `testFills`를 감싼다**(구현 반영 2026-09-27). Firestore는 배열의 원소가 곧 배열인 값을 쓰지 못한다(INVALID_ARGUMENT — 파일 백엔드는 받으므로 로컬·eval에서는 드러나지 않고 프로덕션 가져오기만 500이 된다). 틀마다 있는 `testFills: string[][]`가 그 모양이라, Firestore 쓰기 헬퍼가 `{ fills: string[] }[]`로 감싸 쓰고 읽기 변환이 다시 푼다 — 순수 함수 `encodeToeicGuideForFirestore`·`decodeToeicGuideFromFirestore`(`lib/toeic-firestore-codec.ts`, import 0). 읽기는 두 모양(감싼 것·배열)을 모두 받는다. 앱 레코드 타입·파일 백엔드·정규화·내용 지문(zod 출력에서 계산한 문자열)은 그대로다. eval "공략 Firestore 본문"이 실제 가져오기 파일의 쓸 문서 전부에서 "인코딩 뒤 배열 속 배열 0 · 왕복 불변"을 잠근다. 새 필드에 배열 속 배열이 생기면 같은 자리에서 감싼다.
+- **`guide`의 한 종류로 두는 이유** — 기존 목록에서 가리는 판정 `isToeicGuideSet`(`guide !== null`)이 틀 은행도 그대로 뺀다. 가리는 자리를 하나도 더하지 않는다(아래 표). 필드를 따로 두면(`templates: … | null`) 목록마다 판정이 둘이 된다.
+- **테스트 기록을 `toeicQuizzes`에 두는 이유** — 스트릭이 이 컬렉션을 모드와 상관없이 센다(`toeicStreakSessions` — 답한 문항 ≥ 1). 새 컬렉션이면 스트릭 배선(`eval:streak` ⑥이 정규식으로 잠갔다)과 §7 체크리스트를 다시 밟는다. 표현 시험과 섞이지 않는 것은 `setId`(틀 은행 하나)와 모드(틀 모드 둘)가 가른다 — 표현 시험의 숙련도 함수(`aggregateToeicStatsByMode`)는 `TOEIC_QUIZ_MODES`만 돌므로 틀 세션이 들어와도 읽지 않는다.
+- **모드 타입 넓히기 — 따라 바뀌는 곳**(검토 B3). 레코드 `mode`만 넓히면 `ToeicQuizSessionLike.mode: ToeicQuizMode`(`lib/toeic-quiz.ts`)에 레코드를 넘기는 곳(`app/api/toeic/mocks/route.ts`, 표현 시험·오답·기록 페이지)과 `TOEIC_QUIZ_MODE_LABELS_KO[mode]` 색인 세 곳(기록·오답·모드 고르기 화면)이 tsc에서 깨진다. 그래서 이렇게 한다.
+  - 틀 모드의 타입·목록·판정·라벨은 **`lib/toeic-quiz.ts`에 둔다** — `ToeicTemplateQuizMode`·`TOEIC_TEMPLATE_QUIZ_MODES`·`isToeicTemplateQuizMode`·`TOEIC_TEMPLATE_QUIZ_MODE_LABELS_KO`. 모드 목록이 한 모듈에 모이고, `lib/toeic-template.ts`가 이 모듈을 import한다(반대 방향 import 없음 — 순환 없음).
+  - `ToeicQuizSessionLike.mode`를 `ToeicQuizMode | ToeicTemplateQuizMode`로 넓힌다. 런타임 집계는 이미 모드 등호로 거른다(`aggregateToeicStatsByMode`가 `TOEIC_QUIZ_MODES`를 돌며 `s.mode === mode`) — 결과는 그대로다.
+  - **세트 단위 화면**(표현 시험·오답노트·기록 페이지)과 모의고사 라우트의 활용할 표현 고르기는 세션을 `isToeicQuizMode(s.mode)`로 걸러 넘긴다. 라벨 색인은 거른 뒤에만 한다. 틀 은행 id는 이 페이지들에 오지 않지만(리다이렉트·404 — 아래 표), 타입이 이 경계를 강제하게 한다.
+
+- **왜 새 컬렉션이 아닌가** — 기존 코드가 두 컬렉션에 매달려 있다.
+  - 채점 라우트는 `attempt.mockId → getToeicMock`으로 문항 자료를 읽는다(§5-2 `buildFeedbackInput`).
+  - 시험 저장·오답노트·기록은 `toeicSets`의 `setId`에 매달린다.
+  - 스트릭은 `toeicQuizzes`·`toeicAttempts` 두 컬렉션을 센다(`eval:streak` ⑥이 그 배선을 정규식으로 잠갔다).
+
+  연습·공략을 새 컬렉션에 두면 이 전부를 고쳐야 하고, §7 머리의 새 컬렉션 체크리스트 12항목(+ `DestructiveOp`·시드 병합)을 밟는다. 필드 추가는 그보다 훨씬 좁다. 밟는 순서: 레코드 타입 → `New*`(필수 필드라 tsc가 생성부 전부를 잡는다) → `lib/toeic-normalize.ts` 기본값 → Firestore `to*`/쓰기 헬퍼(같은 normalize를 탄다) → 렌더 판정(`lib/toeic-record.ts`, 아래) → 생성부 전부 명시 → eval "옛 문서 = 기본값".
+- 공략 본문을 세트 문서 안에 두는 이유 — 공략 읽기와 공략 표현 시험이 한 가져오기로 함께 생기고 함께 교정된다. 두 문서(공략 문서 + 세트)로 나누면 두 컬렉션을 한 원자 단위로 쓰는 메서드가 필요하고, 둘 중 하나만 교정된 상태가 생길 수 있다. 문서 크기는 유형당 수십 KB다.
+- **정규화 깊이**: `normalizeToeicSetRecord`는 모르는 키를 **버린다**(`lib/toeic-normalize.ts`). 그래서 `guide`를 명시적으로 옮겨야 한다 — 빠뜨리면 생성·이름 바꾸기·병합 경로에서 공략이 조용히 표현집으로 둔갑한다.
+  - `guide` 키가 없거나 null → null(옛 문서 = 표현집).
+  - 객체 → `kind`를 보고 옮긴다. `"part"`면 `part`·`introKo`·`contentHash`·`updatedAt`은 형식을 보고 옮기고, `sections`는 배열이면 **통째로** 옮긴다(모의고사 파트와 같은 판단 — 안쪽 모양은 렌더 판정이 본다). `"templates"`면 `flows`·`items`를 배열이면 통째로, 나머지는 형식을 보고 옮긴다. `kind`가 없으면 `"part"`로 읽는다(방어 — 배포된 옛 문서는 없다).
+  - `kind`가 두 값 밖이거나, `part`가 네 값 밖이거나, `sections`·`items`가 배열이 아니어도 `guide`를 **null로 떨어뜨리지 않는다**. 떨어뜨리면 깨진 공략이 표현집 목록에 섞인다. 이런 문서는 렌더 판정에서 떨어져 폴더에도 표현집에도 나오지 않고, 목록의 "열지 못한 n개"로 센다.
+- **렌더 판정**
+  - `isRenderableToeicSet`은 그대로 쓴다(유형 공략도 표현이 1개 이상이다 — zod가 보장한다). quiz 개수는 보지 않는다(§7-1). **틀 은행은 이 판정을 통과하지 못한다**(`entries` 0) — 그래서 틀 은행을 여는 곳은 전부 아래 전용 판정을 쓴다.
+  - 유형 공략이면 `isRenderableToeicGuide`(kind "part"·part·섹션·블록·줄 배열과 문자열 자리)를 더 본다. 이 판정은 **📖 읽기 탭과 폴더 카드의 "가져옴" 표시만** 막는다. 시험 페이지(`/toeic/sets/[id]/quiz|wrong|history`)는 `isRenderableToeicSet`만 본다 — 시험은 `entries`·`quiz`만 쓰므로 본문이 깨져도 시험은 된다.
+  - 틀 은행이면 `isRenderableToeicTemplateBank`(kind "templates"·`flows`·`items` 배열, 흐름마다 `steps` 배열·`banksKo` 배열, 틀마다 `key`·`frameEn`·`frameKo`·`groupKo`·`parts`·`guideRefs`·`testFills` 문자열·배열, `examples` 배열의 `en`·`ko`·`fills`)를 본다. 판정은 **틀 하나 단위로도** 한다(`isRenderableToeicTemplate`) — 모양이 깨진 틀은 그 틀만 빠지고 나머지는 보인다(② 탭 머리의 "열지 못한 틀 n개" — §12-5-1).
+  - 연습 문서는 `isRenderableToeicMock` 그대로다. 파트 배열의 길이는 보지 않으므로 사진 1장짜리 파트도 통과한다.
+- 형식표·지시문·채점 규칙은 새로 두지 않는다. 바뀌는 순수 규칙은 §12-7의 연습 단위표와 지시문 변형 하나다.
+
+**기존 목록에서 가리는 곳** — 판정 함수 `isToeicGuideSet(s) = s.guide !== null`(유형 공략과 틀 은행 둘 다), `isToeicDrill(m) = m.drillPart !== null` 하나만 쓴다. 종류를 가를 때만 `isToeicGuidePartSet`·`isToeicTemplateBankSet`(`guide.kind`)을 쓴다. **두 목록 모두 공략 계열·연습을 먼저 빼고 그다음에 `skippedCount`("형식이 맞지 않아 열지 못한 n개")를 센다.** 지금은 `stored.length − 렌더 가능 수`로 센다(`app/toeic/sets/page.tsx`·`app/toeic/mocks/page.tsx`). 순서가 반대면 공략 세트 4개·틀 은행·연습 전부가 "깨진 문서"로 보고된다.
+
+| 자리 | 지금 | 바꾸는 것 |
+|---|---|---|
+| 표현집 목록 `/toeic/sets` | 전체 세트 | 공략 세트를 뺀다(먼저 빼고 `skippedCount`) |
+| 모의고사 만들기 — 주제 칩·표현 수(`/toeic/mocks`), 활용할 표현(`POST /api/toeic/mocks`) | 전체 세트 · 전체 시험 세션 | 공략 세트를 뺀다. **숙련도를 매기는 시험 세션도 표현집 세트(`setId ∈ 표현집 세트`)의 것만** 넘긴다. 통계 키가 표현 문자열이라(`pickExpressionsForMock`), 공략 시험 세션을 섞으면 같은 글자의 표현집 표현 순위가 바뀐다. 실전 모의고사의 입력은 지금과 같게 둔다(§12-12 1) |
+| 모의고사 목록·제목 번호(`nextToeicMockTitle`) | 전체 모의고사 | 연습을 뺀다(먼저 빼고 `skippedCount`). 목록은 개수 상한 없이 읽어 메모리에서 거른다. 상한 500으로 자른 뒤 거르면 연습이 많아질 때 오래된 모의고사가 빠진다. Firestore `where`로 거르면 필드가 없는 옛 문서가 빠지고, `orderBy`와 섞으면 복합 색인이 필요하다 |
+| 모의고사 학습 보기 `/toeic/mocks/[id]` | 모든 문서 | 연습이면 **무조건** 그 유형 폴더(`/toeic/guides/{part}?tab=drill`)로 보낸다(응시 전 모범답변 노출 방지). 응시 뒤의 복습 자료는 결과 화면이 보인다(§12-7-5) |
+| 파트 다시 만들기 `…/regenerate?part=` | 빈 파트를 채움 | 연습이면 409 `is_drill`(연습에 다른 파트가 생기지 않게 — 계약 유니온에 추가) |
+| 사진 `POST …/[id]/image {slot}` | slot 0\|1 | **변경 없음** — 문서의 `picture.items[slot]`이 없으면 기존 **404 `picture_not_found`**가 AI 호출 전에 막는다. 연습 사진 묘사는 칸이 하나라 slot 1이 비용 0으로 거절된다(eval로 잠근다 — 계약을 바꾸지 않는다) |
+| 표현집 상세 `/toeic/sets/[id]` | 모든 세트 | 유형 공략이면 그 유형 폴더(`?tab=quiz`)로, **틀 은행이면 `/toeic/guides`**(폴더 목록)로 보낸다 |
+| 표현 시험 페이지 `/toeic/sets/[id]/quiz\|wrong\|history`, 저장 `POST /api/toeic/sets/[id]/quiz` | 렌더 가능한 세트 | 틀 은행이면 페이지는 `/toeic/guides`로 보내고, 저장 라우트는 지금처럼 404 `set_not_found`다(`isRenderableToeicSet`이 막는다 — 틀 모드는 이 라우트의 `mode` enum에도 없다). 틀 테스트는 전용 라우트로만 저장한다(§12-5-6) |
+| 세트 이름 바꾸기·발화 포인트(`…/rename`·`…/points`) | 모든 세트 | 공략 계열(유형 공략·틀 은행)이면 409 `is_guide`(이름은 고정, 발화 포인트는 이번 범위 밖 — §12-6) |
+| "뒤로"·이동 링크 | `/toeic/sets/[id]`·`/toeic/mocks/[id]` 하드코딩(문구 "표현집으로"·"학습 보기") | 서버 페이지가 `guide`·`drillPart`를 보고 "뒤로"를 내려준다(공략 폴더로 — 구현은 순수 함수 `toeicSetBackLink`(`lib/toeic-guide-view.ts` — 그 유형 폴더 ③ 탭)·`toeicMockBackLink`(`lib/toeic-drill-view.ts` — ④ 탭)이고, 문구는 헤더 "← Q3–4 공략", 끝 화면·빈 카드 버튼 "🧭 Q3–4 공략으로"처럼 유형 짧은 표기를 붙인다. 폴더 헤더의 "← 유형별 공략"은 폴더 목록으로 가므로 목적지가 다른 같은 문구를 피했다. 표현집·모의고사는 기존 문구 그대로). 바꿀 곳 전부: 시험 페이지 `app/toeic/sets/[id]/quiz/page.tsx`(헤더 링크·말하기 0문항 카드의 "📒 표현집으로"), 오답노트 `…/wrong/page.tsx`, 기록 `…/history/page.tsx`(두 곳), 시험 러너 `components/toeic-quiz-runner.tsx`(끝 화면 링크 — 페이지가 넘긴 `backHref`를 쓴다), 응시 페이지 `app/toeic/mocks/[id]/take/page.tsx`(오류 분기의 링크), 응시 화면 `components/toeic-take-view.tsx`(세 곳), 결과 페이지 `app/toeic/attempts/[id]/page.tsx`, 결과 화면 `components/toeic-attempt-view.tsx`(끝 버튼 줄 — §12-7-5). 학습 보기·표현집 상세 리다이렉트가 받쳐 주긴 하지만, 한 번 더 튀고 문구가 틀린다 |
+| 스트릭 라벨(`/api/streak`) | `표현집 · …` / `모의고사 · …` | §12-9 |
+
+### 12-4. ① 공략 읽기 + 🔊
+
+**대본 — 순수 함수** `buildToeicGuideScript(guide, mode, { pause?, pauseLevel? })` → `{ text, lang, section, block, line, pauseAfterMs }[]` (`lib/toeic-guide.ts` — `pauseAfterMs`는 "영어만" + `pause: true`일 때 영어 조각에만 싣고, 그 밖에는 0이다. 조각이 나뉘면 마지막 조각에만, 클라이언트 번들 안전 — 런타임 import는 `tts-shared`·`tts-split`·`ja-coaching-script`의 `normalizeKoForTts`·`toeic-text`의 `countWords`(쉼 계산 `shadowPauseMs` — 검토 개선 6)뿐, 정규식 lookbehind 금지). `block`이 null이면 섹션 제목·소개 조각, `line`이 null이면 블록 단위 조각(제목·본문·캡션), `line: "lead"`는 머리말 줄이다. 화면은 판단하지 않고 소비만 한다(§6-3·§18-1 관용구).
+
+| 자리 | 모드 `all`(기본, 화면 "전부") | 모드 `english-only`(화면 "영어만") |
+|---|---|---|
+| 섹션 | `titleKo`(ko) → `introKo`(ko) → 블록들 | 블록들 |
+| `heading` | `textKo`(ko) | — |
+| `text` | `titleKo`(ko) → `bodyKo`(ko) → 줄들 | 줄들 |
+| `lines`(`list`·`template`) | `captionKo`(ko) → `lead` → 줄들 | `lead` → 줄들 |
+| `lines`(`completions`) | `captionKo`(ko) → `lead.ko`(ko) → 줄들. **`lead.en`은 따로 읽지 않는다** — 줄마다 들어 있다 | 줄들 |
+| 줄 | `guideLineEn`(en-US) → `ko`(ko-KR) → `example.en`(en-US) → `example.ko`(ko-KR) | `guideLineEn` → `example.en` |
+
+- **줄의 읽을 영어** `guideLineEn(block, line)`(순수, 같은 파일): `completions` 블록이면 `` `${lead.en.trimEnd()} ${line.en.trimStart()}` ``(머리말 + 조각 = 완성 문장), 그 밖에는 `line.en`. 대본·줄 🔊·프리페치·말하기 문항 합성 규칙(§12-2-1)이 모두 이 함수 하나를 거친다. 그래서 "영어만"에서 따라 할 완성 문장이 나오고, 셋의 글자가 같아 캐시가 맞는다. 지어낸 예: 머리말 `Two cooks are` + 줄 `slicing bread.` → `Two cooks are slicing bread.`
+
+- `label`·`note`·`marked`는 읽지 않는다(화면 표시만). 유형 소개(`introKo`)는 화면 맨 위에만 있고 대본에 넣지 않는다.
+- **영어 정리** `cleanGuideEnForTts`: `{…}` 슬롯과 `~`·`～`·`〜`는 말줄임표 `…`로(말줄임표 바로 뒤의 쉼표·마침표는 뗀다), `/`는 `, `로(대안을 나열해 읽는다), 소괄호 `()`는 떼고 안의 글은 남긴다(생략 가능 단어 — §12-2-1 괄호 표의 (b). 영어 대안 (a)는 가져오기 파일에서 이미 슬래시로 바뀌었고 대괄호는 zod가 막는다), 문장부호 앞 공백 제거·연속 공백 접기·trim. 라틴 문자가 남지 않으면 조각을 만들지 않는다. 예(지어낸 것): `My pick is {선택}, mainly since {이유}.` → `My pick is … mainly since …`, `It looks busy/crowded.` → `It looks busy, crowded.`
+- **한국어 정리** `cleanGuideKoForTts`: **먼저** 자리 표시 `~`·`～`·`〜`·en dash `–`와 **이름 있는 자리 `{…}`**(한국어 틀 `frameKo` — §12-5-2의 틀 소개가 이 함수를 쓴다, 검토 개선 1)를 말줄임표 `…`(쉼)로 바꾸고(자리 이름은 읽지 않는다 — "{활동}은"은 "…은". 영어 틀의 자리 "…"와 같은 소리다), 공식 표기 `+`와 `/`를 `, `로 바꾼 뒤, `normalizeKoForTts`(화살표·이모지 — SPEC §18-1)를 부르고 공백을 접는다. 순서가 중요하다 — `normalizeKoForTts`는 전각 물결을 **지운다**. 공략의 `~`는 문장 가운데에 있고 바로 뒤에 조사가 붙는다(원본 한국어 `~` 62줄 중 56줄). 그래서 지우면 조사만 남는다(지어낸 예: "그 행사는 ~에서 열려요" → 지우면 "그 행사는 에서 열려요", 바꾸면 "그 행사는 …에서 열려요"). 표현집 전체 듣기(`cleanKoForListen`)는 `~`를 지운다. 거기서는 `~`가 뜻 머리에 있어 문제가 작았다 — 그 함수는 바꾸지 않는다. 지시문(`lib/tts.ts`의 ko-KR)을 고치지 않는다 — 한국어 문장 속 영어 단어(팁)는 ko-KR 클라우드 음성이 그대로 읽는다. 지시문을 고치면 `TTS_INSTRUCTIONS_VERSION`이 올라 **전 언어 영속 캐시가 비워진다**(§10 알려진 한계, SPEC §18-3).
+- 모든 조각은 정리 **뒤** `splitForTts(…, TTS_TEXT_MAX_CHARS)`를 거친다(영어 줄은 300자 이하지만 `/` → `, `가 글자를 늘릴 수 있다). 불변식(eval): trim·비어 있지 않음·≤300·lang 명시·조각 순서가 위 표와 같음.
+- **줄의 🔊와 섹션 재생과 프리페치는 같은 함수(`guideLineEn` → 정리 함수)를 거친 같은 글자**다 — 캐시 키(`${lang}:${speed}:${text}`)가 글자까지 같아야 맞는다(`lib/toeic-listen.ts` 머리 주석과 같은 규칙).
+
+**화면**(`components/toeic-guide-read-view.tsx` — SPEC §18-4 관용구 그대로):
+
+- 줄 렌더링: `label` 칩 · `en` · 🔊 / 그 아래 `ko` · `note`(작은 글씨) · `example`(들여 쓴 "예" + 🔊) · `marked`면 줄 머리에 작은 ✎ 표시. 모든 글은 텍스트로만 넣는다(HTML 해석 없음).
+  - `en` 분할은 순수 함수 `splitGuideEnForDisplay(en, emphasis, underline)`가 한다. 슬롯 `{…}`는 자리 이름 칩, `emphasis`는 형광, `underline`은 밑줄로 보인다. 글자마다 표시(슬롯·형광·밑줄)를 매긴 뒤 같은 표시가 이어지는 구간으로 묶는다. 조각을 이어 붙이면 원문과 같다. 구간 위치는 그 글자의 첫 등장이고, 같은 배열 안에서는 긴 것 먼저(같은 길이면 글에서 앞에 나오는 것 → 배열 순서)로 잡으며, 겹치면 뒤의 것을 건너뛴다. 형광과 밑줄은 서로 겹쳐도 둘 다 보인다.
+- 블록 모양
+  - `style: "template"`은 라벨 열 + 문장 열 카드로 보이고, `alt` 줄은 앞 줄과 "또는"으로 잇는다.
+  - **`style: "completions"`**는 머리말(`lead` — en·ko)을 블록 머리에 한 번 보인다. 줄마다 머리말 영어를 흐린 글씨로 앞에 붙이고 조각을 이어 보인다(완성 문장이 눈에 보이게). 강조는 조각 쪽에만 있다. 머리말 줄에는 🔊를 두지 않는다 — 줄 🔊가 이미 완성 문장을 읽는다.
+  - `text` 블록의 `bodyKo`는 줄바꿈을 지켜 보인다(`white-space: pre-line` — 공식 두 줄 등).
+- 섹션은 접을 수 있다(`<details>`, 첫 섹션만 열림). 맨 위에 섹션 목차 칩 — `groupKo`가 있으면 칩을 그 이름으로 무리 지어 보인다(대본에는 넣지 않는다).
+  - **`?goto=`로 열리면**(§12-5-7) 첫 렌더부터 첫 섹션과 목표 섹션을 연다(`guideReadInitialOpen(sections, goto)` — 서버 HTML부터 `<details open>`). 스크롤은 **열림이 커밋된 뒤에만** 한다 — 목표 블록의 `<details>`가 아직 닫혀 있으면 목표를 남겨 두고, `useLayoutEffect`가 커밋마다 남은 목표를 다시 본다(`requestAnimationFrame`으로 스크롤하지 않는다). 닫힌 `<details>` 안의 블록은 상자가 없어 `scrollIntoView`가 헛돈다 — 앱 안 이동·새로 불러오기·다른 폴더가 모두 뷰를 새로 마운트하는 경로라 엔진마다 갈리던 경합이었다(QA final P2-1). 같은 목표면 `router.refresh`로 데이터가 새로 와도 다시 끌어내리지 않는다(효과 키가 블록 주소 문자열).
+  - **목차 칩**은 그 섹션의 `<summary>`로 스크롤한다(`summary[data-addr="s:{i}"]`). `scroll-margin-top`(스트릭 + 듣기 바 + 8px)이 summary에만 있어, `<details>`로 스크롤하면 섹션 머리가 sticky 헤드라인·듣기 바 밑에 가린다.
+  - `?goto=` 값은 `t:{템플릿 줄 label}`·`l:{머리말 영어}`(`guideRefHref`)라 주소에 교재 조각이 실린다 — dev 서버 로그에 남으므로 검증 뒤 그 로그를 지운다(번호 주소로 바꿀지는 열린 문제 — QA 판단 요청).
+- **🔊 세 층**: 줄 🔊 = 그 줄의 조각(현재 모드), `text` 블록 🔊 = 그 블록의 조각, 섹션 ▶ = 그 섹션 첫 조각부터 끝까지 이어 듣기(절대 인덱스 오프셋, §18-4). 전부 `speakQueue`를 **탭 핸들러 안에서 동기로** 부른다. 멈출 때는 큐가 돌려준 stop을 쓴다(`stopSpeaking` 금지). 재생이 접힌 섹션에 닿으면 그 섹션을 연다.
+- **듣기 바**(sticky, `top: var(--streak-h, 0)`): "▶ 처음부터"·`■ 멈추기` + 진행 `{i+1} / {n}`(조각 기준, `aria-live="polite"`), 모드 전환("전부 / 영어만" — 바꾸면 재생을 멈춘다: 대본 내용 키가 바뀐다), **"영어만"일 때 "따라 말할 틈" 토글**(기본 **끔** — 검토 반영: 읽기 탭은 듣기가 목적인 경우가 많고, 켜면 길이가 두 배가 된다. 켜면 영어 조각마다 `pauseAfterMs = shadowPauseMs(text, level)`를 싣는다. 쉼 규칙·계산·틈 길이 세 단계는 템플릿 따라 말하기와 **같은 함수·같은 기기 설정**이다 — §12-5-2. 토글과 단계도 대본 내용 키에 든다. 토글 자체는 기기에 기억하지 않는다 — 탭을 열 때마다 끔이다. 단계만 따라 말하기 설정 `toeic-shadow-settings:v1`을 함께 쓴다), `<details>` "⚙️ 소리 설정" 안에 `TtsSpeedControl`·`TtsEngineControl lang="en-US"`·`TtsEngineControl lang="ko-KR"`(속도·엔진은 전역 설정 공유 — SPEC §15-2·§16-5). 지금 읽는 줄(없으면 블록, 섹션 제목) 강조·`scrollIntoView({block:"nearest"})`·`scroll-margin-top`은 §18-4 그대로.
+- 정지 조건: 언마운트, 대본 내용 키(`lang|text` 줄들) 변경, 탭 전환.
+- **프리페치**: 열린 섹션들의 **영어 조각만** 문서 순서로 `prefetchSpeech(texts, "en-US")`(상한 `PREFETCH_MAX_ITEMS` 90은 함수가 자른다), 의존성은 문자열 키. 한국어는 미리 받지 않는다(큐의 look-ahead 2조각에 맡긴다 — 안 들을 수도 있다, §18-5 비용 가드).
+- 비용·캐시: AI 0, 클라우드 TTS만(유형 하나 전부 들으면 영어·한국어 조각 수백 개 — "무시할 만한" 규모, §16-0). 영속 캐시(1000개·50MB LRU)를 전 과목이 함께 쓰므로 네 유형을 모두 들으면 오래된 조각(은우 단어 오디오 포함)이 밀려날 수 있다 — 한국어를 통째로 미리 받지 않는 것으로 줄인다(알려진 한계).
+- **틀로 가는 🧩 칩** — 두 자리에 붙는다(검토 B5 — 블록에만 붙이면 연결된 교재 표현이 목록 줄에 있을 때 칩이 하나도 안 보인다).
+  - **블록 머리**: 틀 은행의 어떤 틀이 `guideRefs`로 가리키는 블록 — `kind:"template"`이면 그 `label`의 템플릿 줄이 든 블록, `kind:"lead"`면 그 머리말의 이어 말하기 블록 — 머리에 "🧩 템플릿 훈련 n" 칩.
+  - **줄 머리**: `list` 블록의 머리말(`lead`)·줄 중, 그 영어(`en`)를 `~` 모양으로 바꾼 글자(`{…}` → `~`, 공백 접기, 끝 마침표 하나 떼기 — `frameToExpression`과 같은 규칙)의 `matchKey`가 어떤 틀이 연결한 **교재 표현**의 `matchKey`와 같은 것 → 그 줄 머리에 "🧩" 칩. 슬래시 대안이 든 줄은 대안을 펼친 글자 중 하나가 맞으면 된다.
+  - 누르면 ② 탭의 그 틀(여럿이면 첫 틀)로 간다(`?tab=templates&tpl={key}`). 판정은 순수 함수 `templateLinksForGuide(bank, part)` → `{ templateLabels: Map<label, key[]>, leads: Map<leadEn, key[]>, expressions: Map<expressionKey, key[]> }` 하나가 한다(`guideRefs` 배열을 모두 본다 — ③ 표현 시험 탭도 같은 함수, §12-6). 줄 머리 판정은 이 함수의 `expressions` 맵을 그대로 쓴다. 가리키는 틀이 없으면 칩도 없다.
+
+### 12-5. ② 템플릿 훈련 — 틀을 되풀이해 입에 붙인다
+
+학습 단위는 **틀**이다(§12-0). 틀 하나에 주제가 다른 예문 3~5개가 있고, 따라 말하기는 그 예문들을 이어서 들려준다 — 귀에는 같은 뼈대가 주제만 바뀌며 되풀이된다. 테스트는 틀을 말로 꺼내게 하고, 받아쓰기로 틀 부분이 맞았는지 먼저 보여 준 뒤 아빠가 ○/✕를 정한다. 틀린 틀만 다시 따라 말하고 다시 테스트하는 것이 한 바퀴다. 외운 틀을 실제 문제에 조합하는 연습은 ④ 한 문제 연습이 받는다(§12-7-9).
+
+#### 12-5-0. 한 바퀴
+
+1. **틀 보기** — 폴더의 ② 탭. 답변 흐름의 **단계** 순서로 묶음이 늘어서고, 그 뒤에 **소재 묶음**이 온다(§12-2-7 `flows`). 틀마다 카드 하나(§12-5-1).
+2. **따라 말하기** — 묶음 하나(기본)를 골라 ▶. 예문마다 한국어 1번 → 영어 N번(기본 4) + 따라 말할 틈(§12-5-2). 화면을 끄거나 잠가도 이어지는 것을 목표로 한다(best-effort — 클라우드 음성일 때).
+3. **테스트("🧩 틀 테스트")** — 같은 묶음으로 (가) 예문 말하기 또는 (나) 틀 바꿔 말하기(§12-5-3). 문항마다 녹음 → 받아쓰기 → 틀 비교 → 아빠 ○/✕. 판정은 정답을 보기 전의 첫 유효 시도로 한다.
+4. **틀린 틀만 다시** — 끝 화면의 "틀린 틀만 따라 말하기" → "틀린 틀만 다시 테스트". ✕ 배지가 남아 있는 동안 되풀이한다.
+5. **졸업** — 한 모드에서 **서로 다른 날** 두 번 잇달아 ○면 🎓(§12-5-6). 다음 묶음으로 간다.
+6. **실전 적용** — ④ 탭에서 한 문제를 풀면, 모범답변이 이 유형 틀을 쓰고 결과 화면이 "내 답에서 쓴 틀 / 빠진 단계 / 쓸 수 있었던 틀"을 보인다(§12-7-9).
+
+화면은 각 단계 끝에 다음 단계로 가는 버튼을 둔다(따라 말하기 끝 → "이 묶음 틀 테스트", 테스트 끝 → "틀린 틀만 따라 말하기"). 따라 말하기와 테스트를 번갈아 하는 것이 참고 자료가 권한 방법이다.
+
+#### 12-5-1. 틀 탭과 틀 카드 (`components/toeic-template-view.tsx`)
+
+- **데이터**: 서버 페이지가 틀 은행 문서(`guide-templates`)와 그 세션(`toeicQuizzes`, `setId = guide-templates`), 그리고 그 유형 공략 세트의 세션(표현 시험 배지용)을 읽는다. 그 유형 틀 = `parts`에 그 유형이 든 틀 중 렌더 가능한 것(§12-3).
+- **흐름 순서** — 한 곳에서 정한다(`templateFlowOrder(bank, part)` — 순수, 목록·대본·테스트 재정렬·연습 틀 고르기가 같이 쓴다): 그 유형 `flows`의 단계 순서 → 단계 안 묶음 순서 → 소재 묶음 순서 → 묶음 안은 파일 순서. 흐름에 없는 묶음의 틀은 맨 뒤 "기타"로 모은다(zod가 막지만 정규화된 옛 문서를 위한 방어).
+- **머리**
+  - **"이어서 하기" 카드**(검토 S10): 흐름 순서로 첫 **미졸업 묶음**(그 묶음 틀 중 틀 바꿔 말하기에서 졸업하지 않은 틀이 있는 첫 묶음)을 골라 한 줄로 보인다 — "{묶음} · ▶ 따라 말하기(약 n분) · 🧩 틀 테스트". 모두 졸업이면 "다 익혔어요 — 🧩 틀 테스트로 복습"(복습 칸이 오래된 졸업 틀을 올린다 — §12-5-3). 첫 방문에 카드 수십 장 앞에서 어디서 시작할지 막막하지 않게.
+  - **단계 칩 줄**(단계마다 "{단계} · 틀 n · 익힘 m" — 익힘은 폴더 카드와 같은 정의(틀 바꿔 말하기 졸업, §12-5-6), 누르면 그 단계로 스크롤)과, 소재 묶음이 있으면 **소재 칩 줄**. 줄마다 가로로 민다(칩 줄 안의 가로 스크롤 — 페이지 가로 스크롤은 없다).
+- **목록**: 단계 제목(단계 이름 · 틀 수) → 묶음 소제목(묶음 이름 · 예상 시간 · "▶ 이 묶음" · "🧩 테스트") → 틀 카드. 소재 묶음은 단계 뒤 "소재별 틀" 제목 아래에 같은 모양으로.
+- **틀 카드**
+  - **틀 줄**: `frameEn`을 순수 함수 `splitFrameForDisplay(frameEn)`로 고정 조각과 자리로 나눈다. 고정 부분은 굵게, 자리는 **자리 칩**(자리 이름 — 자리 순서마다 다른 색, 기존 CSS 변수만)으로 보인다 — 틀이 눈에 보이게. 틀 줄 자체는 소리로 읽지 않는다(예문이 읽는다. 영어 틀 소개를 켜면 대본이 읽는다 — §12-5-2).
+  - **한국어 틀**: `frameKo`를 같은 함수로 나눠 같은 자리 이름을 같은 색 칩으로 보인다 — 영어와 한국어의 어느 자리가 짝인지 보인다.
+  - `useKo`(작은 글씨), 출처 칩(`source:"guide"`면 "📘 교재 틀" — §12-5-7, `"new"`면 "새 틀"), `parts`가 둘 이상이면 "Q5–7 · Q11 공통" 칩.
+  - **예문 목록**: 줄마다 `en` · 🔊(en-US) / 그 아래 `ko`. `en` 안의 채움 구간을 그 자리 색 밑줄로 보인다 — 순수 함수 `splitExampleByFills(frameEn, fills)`가 틀 고정 조각과 채움 i 구간을 돌려준다(예문이 틀 + 채움과 글자까지 같으므로 위치가 결정적이다).
+  - 테스트 전용 채움(`testFills`)은 카드에 보이지 않는다(틀 바꿔 말하기에서 처음 본다 — §12-5-3).
+  - **배지**: 두 테스트 모드마다 상태(§12-5-6), 그리고 `guideRefs`에 공략 표현이 있으면 그 표현의 표현 시험 상태(읽기만 — 따로 센다. 뜻→표현·표현→뜻 두 모드 중 **시도가 있는 모드만** 보인다 — 카드마다 "안 해 봄" 줄이 늘지 않게, 그 유형 공략 세트의 세션만 읽는다).
+  - 카드 ▶: 그 틀의 예문 전부를 지금 따라 말하기 설정으로(§12-5-2 범위 "이 틀").
+- `?tpl={key}`로 열리면 그 카드로 스크롤·강조한다(다른 탭의 🧩 칩이 여기로 온다).
+- **빈 상태**: 틀 은행이 없거나 그 유형 틀이 0개면 "아직 틀이 없어요" + "📂 파일로 가져오기". 모양이 깨진 틀은 빠지고 **② 탭 머리**에 "형식이 맞지 않아 열지 못한 틀이 n개 있어요"를 보인다(그 유형 틀이 모두 깨졌으면 빈 상태 문구에 그 수를 덧붙인다 — `guideTemplatesForPart`가 렌더 가능한 틀과 깨진 수를 함께 돌려준다). 폴더 목록 카드에는 틀 은행 전체가 열리지 않을 때만 안내가 뜬다.
+- 모든 글은 텍스트로만 넣는다(HTML 해석 없음).
+
+#### 12-5-2. 따라 말하기 — 한국어 1번 → 영어 N번 + 틈
+
+**대본 — 순수 함수** `buildTemplateShadowScript(templates, opts)` → `{ text, lang, pauseAfterMs, key, example, rep }[]` (`lib/toeic-template.ts`). 화면은 판단하지 않고 소비만 한다(§12-4와 같은 관용구).
+
+- `opts`
+  - `repeat` 1~4(기본 4 — `TOEIC_SHADOW_REPEAT_DEFAULT`).
+  - `pause`(따라 말할 틈, 기본 켬)와 `pauseLevel`(`"short" | "normal" | "long"`, 기본 `"normal"` — 배율 0.8·1·1.5, `TOEIC_SHADOW_PAUSE_LEVELS`. 검토 S2: 성인 학습자는 원어민의 1.3~1.5배 걸린다 — 켬/끔만 두면 긴 문장에서 다음 반복과 겹친다).
+  - `intro`(한국어 틀 소개, 기본 켬), `introEn`(영어 틀 소개, 기본 끔 — 검토 S16: 소리만 들을 때 뼈대가 따로 들리게).
+- 틀마다: (`intro`면) 한국어 틀 `frameKo`를 한 조각(ko-KR — `cleanGuideKoForTts`가 자리 `{…}`를 "…"로, `example: null`·`rep: 0`) → (`introEn`면) 영어 틀 `frameEn`을 `cleanGuideEnForTts`로(자리 "…") 한 조각(en-US, 쉼 없음, `example: null`·`rep: 0`) → 예문마다 `ko` 한 조각(ko-KR, 쉼 없음, `rep: 0`) → `en`을 `repeat`번(en-US, 조각마다 `pauseAfterMs = pause ? shadowPauseMs(en, pauseLevel) : 0`, `rep` 1..N). 그다음 예문, 그다음 틀.
+- 예문 `en`은 **trim만** 한다 — 카드의 🔊·테스트의 정답 🔊와 캐시 키가 글자까지 같아야 한다. N번 반복하는 영어 조각은 글자가 같아 합성은 한 번이고 나머지는 캐시다. 한국어(`ko`·틀 소개)는 `cleanGuideKoForTts`(§12-4 — 자리 "…" 규칙 포함)를 거친다.
+- 모든 조각은 `splitForTts(…, TTS_TEXT_MAX_CHARS)`를 거친다(zod 상한 안이라 대개 한 조각). 나뉘면 쉼은 마지막 조각에만 싣는다. 불변식(eval): trim·비어 있지 않음·≤300·lang 명시·순서가 위와 같음·반복 조각의 글자가 같음.
+
+**쉼** `shadowPauseMs(text, level = "normal")`(`lib/toeic-guide.ts` — 공략 읽기 "영어만"의 틈도 같은 함수, §12-4): 속도 1 기준 `clamp(700 + 400 × 낱말 수, 1500, 8000) × 단계 배율`ms(`TOEIC_SHADOW_PAUSE = { baseMs: 700, perWordMs: 400, minMs: 1500, maxMs: 8000 }`, 낱말 수는 `countWords`). 지어낸 예: 8낱말 문장이면 보통 3,900ms, 길게 5,850ms. 문장이 길면 따라 말할 시간도 길다. 재생할 때 큐가 실제 말 속도로 나눈다(아래) — 느리게 들으면 틈도 길어진다.
+
+**예상 시간** `estimateShadowMs(script, speedFactor = 1)`(`lib/toeic-template.ts`, 검토 S3): 조각마다 말 길이 추정(영어 낱말 × 380ms, 한국어 글자(공백 뺌) × 180ms, 조각 사이 300ms — `TOEIC_SHADOW_ESTIMATE`) + 쉼을 더하고 `speedFactor`로 나눈다. 범위 옆 "약 n분"과 eval이 **같은 함수**를 쓴다. 원본 기준(반복 4·틈 보통·속도 보통): 폴더 전체 약 2~3.2시간, 묶음 하나 약 3~20분, 틀 하나 중앙 약 3.2분(§12-2-7 실측). 그래서 묶음이 기본 단위다.
+
+**`speakQueue` 쉼 — 공용 모듈 변경(`lib/speech.ts`, 하위 호환 추가)**
+
+- `SpeakQueueItem`에 선택 칸 `pauseAfterMs?: number`, 핸들러에 `onPause?(index, ms)`를 더한다(함수 입력이라 선택 칸을 쓴다 — 저장 레코드의 "선택 키 금지"와 무관하다).
+- 큐는 입력을 `{ text, lang }`으로 **다시 만든다**(`speakQueue` 첫 줄의 `list = items.map(…)`). 여기서 `pauseAfterMs`도 함께 옮긴다 — 빠뜨리면 쉼이 조용히 사라지고 기존 eval은 모두 통과한다(검토 개선 3).
+- 조각 i가 끝난 뒤(소리를 냈든 못 냈든 — 공백이라 건너뛴 조각은 빼고) 큐가 살아 있고 `pauseAfterMs`가 유한한 양수면
+  - `ms = min(pauseAfterMs ÷ speedFactor(그 조각의 lang), queueTiming.pauseMaxMs)`. `speedFactor`는 그 조각의 **실제 말 속도 배율**이다 — 클라우드 엔진이면 `cloudSpeed()`(보통 1 · 천천히 0.85 · 빠르게 1.15), 기기 음성이면 `getTtsRate() ÷ TTS_RATE`(보통 1). 기본 설정에서 쉼은 공식 그대로다(검토 개선 4 — `getTtsRate()`로 바로 나누면 기본값 0.9 때문에 쉼이 11% 길고, 쉼과 소리가 다른 비율로 늘어난다). `pauseMaxMs` 15,000(테스트 훅 `__setQueueTiming`으로 줄인다).
+  - `onPause(i, ms)`를 부르고, **쉼을 무음 조각으로 재생한다**(검토 B1 (가)). 큐 오디오 요소(`queueAudio` — 탭 안에서 풀어 둔 요소 하나)로 `ms` 길이의 무음 WAV를 클라우드 조각과 **같은 재생 경로**(`playBlob` — `ended` 사슬·`currentPlayStop`·재생 안전 타임아웃·외부 pause 판정)로 튼다. 오디오 세션이 끊기지 않으므로 화면이 잠겨도 다음 조각으로 이어질 수 있다. JS 타이머로 기다리면 iOS가 화면 잠금과 함께 멈춘다(SPEC §18-2).
+  - 무음 WAV는 지금의 0.1초 잠금 해제용 생성기에 길이 인자를 더한 `makeSilentWav(ms)`가 만든다 — 8kHz·8bit·mono, 250ms 단위로 올린 길이마다 한 번 만들어 모듈 안에 둔다(15초가 약 120KB, 최대 60개). 0.1초는 예전과 같은 844바이트다.
+  - (구현 반영) `onPause`의 `ms`는 정수다(나눗셈 → 반올림 → 상한, 최소 1). 실제 무음은 250ms로 올린 길이라 `ms`보다 최대 249ms 길고, 엔진이 조각마다 붙이는 여유(헤드리스 실측 Chromium 약 0.07~0.32초 · WebKit 약 0.33~0.46초)도 더해진다 — 화면의 "약 n분"은 과소 추정 쪽이다. 기기 음성으로 난 조각 뒤에도 큐 요소가 있으면 무음 WAV를 튼다(타이머는 아래 경우만). 배율은 그 조각이 **실제로 난 경로**의 것이다 — 클라우드로 났으면 그 조각을 합성한 speed, 기기 음성으로 떨어졌으면 발화 직전의 `getTtsRate() ÷ TTS_RATE`. 설정 기준 배율은 공개 함수 `getSpeechSpeedFactor(lang)`이고, 화면의 예상 시간(`estimateShadowMs(script, getSpeechSpeedFactor("en-US"))`)이 이것을 쓴다.
+  - 무음 조각을 틀 수 없으면(오디오 요소가 없는 환경, `play()`가 AbortError가 아닌 이유로 거부) 타이머로 기다린다. AbortError 거부는 시작 순간의 외부 멈춤이라 타이머로 가지 않고 `"stopped"`로 끝난다(§18-2 외부 pause와 같은 규칙). 이 기다림도 `currentPlayStop`에 등록하고, 끝날 때는 **자기일 때만** 비운다(`if (currentPlayStop === stop) currentPlayStop = null` — `speakDeviceAwait`의 `finish` 관용구. 낡은 stop이 남으면 다음 `stopCloudAudio`가 URL 회수 분기를 건너뛴다 — 검토 개선 3).
+- `cancelPlayback()`·새 큐·`stopSpeaking()`이 쉼을 **즉시** 끊는다(무음 재생이든 타이머든). 옛 큐의 `onEnd("stopped")`는 지금처럼 동기로, 새 큐의 `onItem(0)`보다 먼저 온다.
+- 칸이 없거나 0 이하·유한수가 아니면 **쉼 경로를 아예 타지 않는다**(await가 하나 늘면 마이크로태스크 순서가 바뀐다 — 기존 호출부 전부가 이 경로다).
+- 마지막 조각 뒤의 쉼도 지킨다(마지막 문장도 따라 말할 틈이 있어야 한다) — 그다음 `onEnd("done")`.
+- 쉼은 `sounded`와 무음 연속 판정(`QUEUE_SILENT_STOP`)에 들지 않는다(무음 조각은 "소리를 낸 조각"이 아니다). look-ahead는 조각 재생을 시작할 때 이미 나가므로 쉼 동안 다음 조각이 준비된다.
+- 잠금 화면 ⏸(우리가 일으키지 않은 pause)는 쉼 중에도 지금처럼 **정지**다(§18-2 — 호출부 공통). 이어 듣기는 이 플레이어만 Media Session으로 붙인다(아래).
+- 기기 음성 폴백 조각은 화면이 잠기면 iOS가 멈춘다(speechSynthesis — SPEC §18-2). 그래서 잠금 화면 연속 재생은 **클라우드 음성일 때만** 기대한다. 아래 준비(`prepareSpeech`)가 폴백을 줄인다.
+- **회귀 범위**: `eval:speech` 전체 — 기존 항목이 전부 그대로 통과하고 쉼 항목을 더한다(§12-10). 기존 호출부(표현집 전체 듣기·해설 낭독·응시 질문 음성·자유대화 설명 낭독·운동 안내)는 칸을 쓰지 않으므로 동작이 같아야 한다. 공유 모듈 규칙대로 `eval:toeic`·`eval:japanese`·`eval:english`·`eval:workout` 오프라인도 돌린다.
+- 이것으로 옛 열린 결정 "공략 읽기 '영어만'에 따라 말할 틈을 두지 않는다"(§12-12 8)를 닫는다. 근거: 틈은 따라 말하기 방법의 본체다(틈이 없으면 듣기만 된다). 칸 하나를 더하는 변경이고 칸이 없으면 기존 경로를 그대로 타므로 네 과목 회귀를 오프라인 eval로 잠글 수 있다. 표현집 전체 듣기(§6-3)의 "영어만"에 같은 토글을 붙이는 것은 이번 범위 밖이다(§12-12 13).
+
+**범위 미리 받기** `prepareSpeech(items, { signal, onProgress })`(`lib/speech.ts` 새 export — 검토 B1 (가))
+
+- 조각 목록(`{ text, lang }`)의 고유 글자 중 **지금 클라우드 엔진으로 읽을 것**을 지금 속도로 합성해 캐시에 둔다(이미 캐시에 있으면 건너뛴다). 한 번에 하나씩, `PREFETCH_MAX_ITEMS`(90)에서 자른다. 진행은 `onProgress(done, total)`, 끊기는 `signal`. 반환 `Promise<{ ready, total }>`. 키가 없으면(501) 곧바로 끝낸다(기기 음성).
+- (구현 반영) `total` = 고유(언어 + 글자) · 지금 클라우드 엔진 · `canUseCloud`(화이트리스트·300자) · **메모리 캐시에 없는** 조각을 문서 순서로 세어 90에서 자른 수다(IndexedDB 적중은 total에 들고 합성 없이 끝난다). 처음에 `onProgress(0, total)`, 그 뒤 조각마다 한 칸 — 성공·실패·대기 상한 모두 센다. **조각마다 대기 상한 `fetchMs`(8초)**를 둬 "준비 n/m"이 영영 멈추지 않게 하고, 넘은 요청은 끊지 않아 늦게라도 캐시에 남는다(큐와 같은 규칙). 도중에 그 언어 엔진을 기기로 바꾸면 남은 조각은 받지 않고 센다. 501이면 진행을 total까지 채우지 않고 `{ ready: 0, total }`. `signal`로 끊으면 reject하지 않고 그때까지의 수로 resolve한다(이어서 재생할지는 호출부가 자기 signal로 정한다). 같은 문장이 진행 중이면 그 합성을 함께 기다린다(POST 1회).
+- 기존 `prefetchSpeech`(최근 요청이 이긴다 — 전역 abort)와 따로 둔다. 준비는 플레이어가 **기다리는** 요청이라 다른 화면의 프리페치에 끊기면 안 된다.
+- 플레이어는 ▶ 탭 안에서 `unlockSpeechPlayback()`을 불러 큐 요소를 풀어 두고 "준비 n/m"을 보인다. 준비가 끝나면(또는 "바로 시작" 탭) 큐를 시작한다. 준비 뒤 시작은 탭 밖이지만 큐 요소가 이미 풀려 있다 — 운동 안내가 같은 방식으로 탭 밖 재생을 한다(§19). 백그라운드에서는 합성 요청이 늦어질 수 있어, 범위 조각을 미리 받아 두는 것이 잠금 화면 연속 재생의 전제다.
+- 비용: 어차피 재생할 조각이라 같다. 한국어 조각을 미리 받는 곳은 이 준비뿐이다(▶를 눌렀을 때만).
+
+**잠금 화면 조작 — Media Session**(따라 말하기 플레이어에서만)
+
+- 재생을 시작하면 `navigator.mediaSession.metadata`(제목 "틀 따라 말하기", 부제 = 유형 이름 · 범위 이름)와 동작 핸들러를 건다 — `pause` = 멈추고 이어 듣기 위치 저장, `play` = 이어 듣기, `nexttrack` = 다음 예문 머리, `previoustrack` = 지금 예문 머리. 지원하지 않으면 조용히 넘어간다(best-effort).
+- (구현 반영) 관문은 `lib/speech.ts` 밖의 **`lib/media-session.ts`**(`bindMediaSession({title, artist, actions})` → 풀기 함수, `setMediaSessionPlaybackState`, `isMediaSessionSupported` — 런타임 import 0)다. 풀기 함수는 **자기 바인딩일 때만** 푼다(낡은 정리가 뒤의 바인딩을 지우지 않게), 지원하지 않는 동작은 건너뛰고, 핸들러 예외는 삼킨다. 핸들러는 재생 시작 때 한 번 걸고 최신 상태는 ref로 본다.
+- (구현 반영) **언제 푸는가**: 앱의 ■·화면 이탈(언마운트·탭 전환)·끝까지 들음, 그리고 외부 멈춤(`"stopped"` — 핸들러가 없는 브라우저)이면 푼다. **잠금 화면 ⏸(pause 핸들러)는 풀지 않는다** — 멈추고 위치를 기억한 채 `playbackState = "paused"`로 두어야 잠금 화면 ▶(play)로 이어 들을 수 있다. 외부 멈춤으로 풀린 뒤에는 앱의 "↻ 이어 듣기"로 잇는다.
+- 다른 호출부(표현집 듣기·해설 낭독·응시·운동)는 Media Session을 쓰지 않는다 — 잠금 화면 ⏸ = 정지(§18-2)가 그대로다.
+
+**플레이어** — 틀 탭 아래 sticky 바(`top: var(--streak-h, 0)` — 공략 읽기 듣기 바와 같은 관용구):
+
+- **범위**: "이 묶음"(기본 — 고른 묶음) · "이 단계"(고른 묶음이 소재·기타 묶음이면 "소재 묶음 전체"로 잡고 칩 이름도 그렇게 바뀐다 — 소재 묶음에는 단계가 없다) · "여기부터 끝까지"(고른 묶음부터 흐름 순서로 폴더 끝까지 — 출퇴근 30~60분을 탭 없이 흘려 듣게, 검토 S3) · "이 틀"(카드 ▶) · "틀린 틀만"(두 테스트 모드 중 하나라도 틀렸고 미졸업 — §12-5-6) · "유형 전체". 범위마다 예상 시간(`estimateShadowMs`)을 보인다.
+- **컨트롤**: ▶ 처음부터 · ■ 멈추기 · **이어 듣기** · 반복 1~4 · 틈 끔/짧게/보통/길게 · 한국어 틀 소개 켬/끔 · 영어 틀 소개 켬/끔 · `<details>` "⚙️ 소리 설정"(`TtsSpeedControl`·`TtsEngineControl` en-US·ko-KR — 전역 설정 공유, SPEC §15-2·§16-5). 반복·틈·소개는 기기에 기억한다(`localStorage` `toeic-shadow-settings:v1`, try/catch, 마운트 뒤 읽기 — 없으면 기본값. 공략 읽기의 틈 단계도 이 설정을 쓴다).
+- **바에 지금 틀을 띄운다**(검토 S1): 바 안에 지금 틀 줄(`splitFrameForDisplay` — 고정 부분 굵게·자리 칩)과 지금 예문(`splitExampleByFills` — 채움 밑줄)을 한 줄씩 보인다. 카드가 길어 예문 줄로 스크롤하면 폰에서 틀 줄이 화면 밖으로 나간다 — 틀이 가장 보여야 할 순간에 보이게.
+- **진행**: "틀 3/12 · 예문 2/4 · 영어 3/4" + 지금 틀 카드와 예문 줄 강조·`scrollIntoView({block:"nearest"})`. 쉼 동안(`onPause`) "🗣️ 따라 말해 보세요" 표시가 켜진다.
+- **이어 듣기**: 마지막으로 시작한 조각 번호를 **대본 내용 키**(범위·반복·틈·소개와 조각 글자들 — 구현은 `shadowScriptSignature`: 조각 글자·lang·쉼 ms 전부의 FNV-1a + 조각 수)마다 기기 `localStorage`(`toeic-shadow-resume:v1`, 최근 30개 — `TOEIC_SHADOW_RESUME_MAX`)에 기억한다(try/catch — 없으면 처음부터). `onItem`마다 쓰고, 끝까지 들으면 지운다. 다시 시작은 **그 예문의 머리부터**다(검토 S4 — 멈춘 조각이 "영어 3/4"여도 그 예문의 한국어 조각부터, 틀 소개 중이었으면 그 틀의 첫 조각부터. 순수 함수 `shadowResumeIndex(script, index)`). 대본이 바뀌면(틀 교정·설정 변경) 이어 듣기를 끈다. `speakQueue`는 시작 위치를 받지 않으므로 대본을 그 번호부터 잘라 넘기고 번호에 오프셋을 더한다(§18-4 절대 인덱스 관용구).
+- 전부 `speakQueue`를 **탭 핸들러 안에서 동기로** 부르고(준비를 거친 시작은 위 예외), 멈출 때는 큐가 돌려준 stop을 쓴다(`stopSpeaking` 금지). 정지 조건: 언마운트, 대본 내용 키 변경, 탭 전환, 테스트 시작.
+- **Wake Lock**: 준비·재생 동안만 화면 꺼짐을 막는다(`useToeicWakeLock(phase === "preparing" || phase === "playing")`, best-effort — 틀 탭을 훑어보기만 할 때는 막지 않는다). 잠금·주머니 재생은 위의 무음 쉼·준비·Media Session이 받는다.
+- **긴 범위 이어서 준비**(구현 반영 — 스펙 공백을 채운 선택): ▶ 때 준비는 90조각까지라 "여기부터 끝까지"·"유형 전체"(수백~수천 조각)는 다 받지 못한다. 그래서 재생 위치가 100조각(`ROLL_STEP`)을 지날 때마다 그 앞 조각을 같은 `prepareSpeech`로 이어서 받는다(백그라운드, 실패 무시, 멈추면 끊는다). 어차피 재생할 조각이라 비용이 같고, 잠금 화면에서 합성 요청이 늦어져도 이어지게 하려는 것이다.
+- **프리페치**(준비와 별개): 범위가 정해지면(탭을 열 때의 기본 묶음 포함) 그 범위의 **영어 예문(고유 글자)**을 문서 순서로 `prefetchSpeech(texts, "en-US")`(상한 `PREFETCH_MAX_ITEMS` 90은 함수가 자른다 — 한 묶음은 대개 30개 안팎이다). 한국어·틀 소개는 ▶ 때의 준비가 받는다.
+- 스트릭에 세지 않는다(듣기 — §12-9).
+
+#### 12-5-3. 테스트 "🧩 틀 테스트" — (가) 예문 말하기 · (나) 틀 바꿔 말하기
+
+경로 `/toeic/guides/[part]/templates/test?mode=recall|swap&scope=group|step|wrong|all&group={groupKo}&step={stepKo}` — 전면 화면(`components/toeic-template-test.tsx`), Wake Lock을 켠다. ② 탭 버튼과 이 화면 제목은 "🧩 틀 테스트"다 — ③ 표현 시험의 말하기와 이름으로 가른다(§12-6, 검토 S11).
+
+- (구현 반영) 주소에 `mode`가 없거나 모르는 값이면 (가) 예문 말하기다. 입구 — 이어서 하기 카드·묶음 소제목의 "🧩 테스트"는 (가), "다 익혔어요 — 복습"은 (나)·유형 전체(익힘 = 틀 바꿔 말하기 졸업이라), 모드마다 "틀린 틀만 테스트"(그 모드의 틀린 틀이 있을 때). 시작 화면에 모드 전환 칩 둘이 있다(주소를 바꿔 서버가 다시 조립한다).
+- (구현 반영) 문항은 서버 페이지(`app/toeic/guides/[part]/templates/test/page.tsx`)가 `buildTemplateTestQuestions`로 **한 번 조립**하고, 화면에는 문항 칸만 내린다 — 틀 객체·다른 예문·다른 `testFills`는 내리지 않는다(정답 채움이 페이로드로 새지 않게. ② 탭 페이로드에도 `testFills`가 없다). 화면 판단 순수 함수는 `lib/toeic-template-test-view.ts`다.
+
+**문항 고르기 — 순수 함수** `buildTemplateTestQuestions(templates, sessions, opts)`(`lib/toeic-template.ts`):
+
+- 입력: 범위의 틀(흐름 순서 — §12-5-1 `templateFlowOrder`), 틀 세션, `mode`, `onlyWrong`, `max`(`TOEIC_TEMPLATE_TEST_MAX` 10), `rng`.
+- 후보 = 범위의 틀(`onlyWrong`이면 그 모드의 틀린 틀만 — §12-5-6). 그 모드 통계로 **약함 순위**를 매긴다 — 표현 시험의 `weaknessRank`를 **그대로** 쓴다(`lib/toeic-quiz.ts`에서 공개 — 검토 B3. 틀렸고 미졸업 → 안 해 봄 → 진행 중 → 졸업, 같은 순위는 오답 많은 순 → 무작위).
+- **복습 칸**(검토 S9): `onlyWrong`이 아니면 한 판 10칸 중 최대 2칸(`TOEIC_TEMPLATE_TEST_REVIEW_SLOTS`)을 그 모드에서 **졸업한 틀 중 마지막 시도가 가장 오래된 것**에 먼저 준다(범위에 졸업한 틀이 있을 때만). 약함 순위만으로는 졸업한 틀이 다시 나오지 않는다. 나머지 칸은 약한 순.
+- 고른 뒤 **흐름 순서로 다시 늘어놓는다**(답변을 짜는 순서대로 말해 보게).
+- **한 판에 한 틀 한 문항.** 한 세션에 같은 틀이 두 번 나오면 한 판 안에서 "연속 2회 ○"가 되어 졸업이 거짓이 된다(§7-1 세트 안 중복 표현과 같은 함정).
+- **예문·채움 고르기(결정적)**: 그 모드에서 그 틀의 시도 수 `t`(없으면 0), 예문 수 `n`, 테스트 전용 채움 수 `L`.
+  - (가) 정답 예문 `a = t mod n`.
+  - (나) 먼저 들려줄 예문 `m = t mod n`, 정답 채움 = `testFills[t mod L]`, 정답 문장 = `fillFrame(frameEn, 그 채움)` — 대본·카드에 없던 새 문장이다.
+  - 판마다 다른 예문·채움이 차례로 나온다.
+- 후보가 0개면 빈 상태("이 범위에 틀린 틀이 없어요" / "틀이 없어요").
+
+**시작 탭**(검토 개선 7): 화면이 열리면 "시작" 버튼과 비용 안내 한 줄(아래)이 먼저 있다. 그 탭 안에서 `unlockSpeechPlayback()`·Wake Lock·첫 문항 소리를 시작한다 — 페이지가 열린 직후에는 소리 잠금을 푼 탭이 없어 iOS가 첫 소리를 막는다. 녹음 중 화면이 숨겨졌다 돌아오면 그 문항도 탭("이 문항 다시")으로 연다.
+
+**한 문항의 흐름**(탭마다 한 걸음 — 소리는 그 탭 핸들러 안에서 시작한다):
+
+- **(가) 예문 말하기**: 화면에는 정답 예문의 `ko`와, 그 아래 작은 글씨로 묶음 이름·`useKo` 한 줄이 있다(어느 틀을 묻는지 — 검토 S6). 틀과 영어는 가린다 — **묶음 이름·`useKo`에 든 라틴 글자도 "…"로 가린다**(구현 반영 — `templateTestPromptMeta`·`maskLatinForTestKo`. `useKo`는 zod가 한글 포함만 요구해 틀의 영어 고정 낱말을 담을 수 있다. 가리고 나서 글자가 남지 않으면 그 칸을 숨긴다). 한국어만 보고 외운 예문을 말한다 — 참고 자료의 테스트 방식 그대로다.
+- **(나) 틀 바꿔 말하기**(검토 B2 — 틀 적용을 재게): **영어 글자는 하나도 보이지 않는다**(영어 틀도, 예문 m의 영어도).
+  - 화면의 단서 = 한국어 틀 `frameKo`의 자리마다 이번 문항의 **영어 채움 칩**을 끼운 것(지어낸 예: `{활동}은 제가 {효과} 데 도움이 돼요` + 칩 "Keeping a diary"·"sleep better")과 묶음 이름·`useKo` 한 줄. 칩이 아닌 조각(한국어 틀의 고정 글·못 찾은 자리 이름)과 묶음 이름·`useKo`의 라틴은 "…"로 가린다(`templateSwapClue` — 화면의 영어 글자는 채움 칩뿐이다).
+  - 문항을 여는 탭에서 예문 m의 영어를 **소리로만** 한 번 읽고, 🔊 다시 듣기를 둔다("같은 틀에 이 채움을 넣어 말해 보세요").
+  - 아빠가 스스로 꺼내야 하는 것은 영어 고정 부분뿐이다 — 그래서 틀 정확도가 곧 "틀을 꺼냈나"를 잰다. 틀을 화면에서 읽거나 외운 예문을 되풀이해서는 맞힐 수 없다.
+- **🎤 말하기** 탭 → **큐 멈춤 → `unlockSpeechPlayback()` → `startRecording()`** 순서로 부른다(검토 개선 7 — 0.1초 무음 재생과 캡처 시작이 겹치지 않게. 선례 `components/talk-start-view.tsx`). 녹음 규칙은 응시와 같다(`lib/mic-session.ts` — 재생과 캡처를 겹치지 않는다, 마이크 대기 상한 8초, 그 화면의 첫 녹음은 권한 창에 답할 시간 15초 `MIC_CHECK_GUM_TIMEOUT_MS`).
+- **"다 말했어요"** 탭 또는 20초(`TOEIC_TEMPLATE_REC_MAX_MS`)에 멈춘다 → 오디오 세션을 재생 쪽으로 돌린다(`setAudioSessionPlayback`) → `toWav16kMono`(실패하면 원본) → 전사 라우트(§12-5-4).
+- **유효 시도**: 전사가 돌아왔고 전사문 낱말이 1개 이상(`words ≥ 1`)이며 비교할 낱말이 있으면(`!noSpeech` — `"..."`처럼 정규화 뒤 낱말이 남지 않는 전사는 `words`가 1이어도 무효) 유효하다(구현 반영 — `isValidTemplateAttempt(res, check)`). 유효하지 않으면(전사 실패·시간 초과·빈 전사·0.6초 미만 녹음) **정답을 공개하지 않은 채** "잘 안 들렸어요" + "🎤 다시 말하기"(문항당 전사 2회 상한 안) 또는 "받아쓰기 없이 판정".
+- **결과(첫 유효 시도)**: 정답(원래 글자 — 틀 고정 부분 굵게·채움 색 밑줄), 내가 한 말(전사문), **비교**(§12-5-5 — 틀 고정 낱말은 맞음/빠짐/다름, 자리는 채움/비었음, 더한 말은 흐리게), 제안("틀 맞음 ○" / "틀 다름 ✕"), 🔊 정답(한 번 자동 재생 — 들어 보기), ▶ 내 녹음(이 기기 메모리에만 — 세션이 끝나면 버린다). 화면 배치는 정답 → 내가 한 말 → 제안 → ○/✕ → 비교 칩 → 내 녹음 → 🗣️ 한 번 더 순이고, 정답이 열리면 문제 카드를 줄이고 정답 상자로 스크롤한다(구현 반영 — 폰 390×844에서 ○/✕가 한 화면에 든다).
+- **판정은 첫 유효 시도로 한다**(검토 B4). 정답을 공개한 뒤에는 "다시 말하기"가 없다. 대신 **"🗣️ 한 번 더 따라 말하기"** — 정답을 한 번 더 들려주고 따라 말할 틈을 준다(녹음·전사 없음, 제안·판정을 바꾸지 않는다, 비용 0). 정답을 들은 뒤의 말하기는 테스트가 아니라 따라 말하기다.
+- **최종 ○/✕는 아빠가 정한다** — "○ 맞았어요" / "✕ 다시 연습". 제안과 달라도 된다. ✕면 그 틀에 ✕ 배지가 남고, 끝 화면의 "틀린 틀만 따라 말하기 / 틀린 틀만 다시 테스트"에 들어간다. **이 판정 탭이 다음 문항을 연다**(검토 S5 — 문항을 여는 탭을 따로 두지 않는다. (나)는 그 탭 안에서 다음 문항의 예문 소리를 시작하므로 iOS 탭 안 재생 규칙도 지켜진다). 마지막 문항이면 끝 화면으로 간다.
+- **"받아쓰기 없이 판정"**: 전사를 기다리지 않고 정답을 공개 → 자동 재생 → ○/✕(제안 없음). 받아쓰는 동안에도 "기다리지 않고 판정하기"로 같은 길을 간다(구현 반영).
+- **"녹음 없이 하기(스스로 판정)"**(구현 반영 — 스펙에 없던 선택): 시작 화면에서 고르면 그 세션은 처음부터 자기 판정이다(`getUserMedia` 0·전사 0 — 조용해야 하는 곳, 비용 0). 문항 모양은 아래 "녹음 없이"와 같다.
+- **받아쓰기를 못 쓰면 자기 판정으로 넘어간다**(문항이 막히지 않게):
+  - 마이크 거부·미지원·녹음 실패 → 그 세션은 "녹음 없이" — 말한 뒤 "정답 보기" → 정답 자동 재생 → ○/✕(표현 말하기 시험과 같은 모양).
+  - 키 없음(501) → 그 세션은 전사를 끄고 자기 판정("받아쓰기를 쓸 수 없어 스스로 판정해요").
+  - 상한에 닿음 → 그 뒤 문항은 자기 판정("받아쓰기 한도에 닿아 스스로 판정해요").
+- 녹음 중(마이크 여는 중·녹음 마무리 중 포함) 화면이 숨겨지면 그 녹음은 버리고 그 문항을 처음부터 다시 한다(녹음이 잘렸다 — 응시의 "중단됨"과 같은 판단). 다시 여는 것은 탭("↻ 이 문항 다시")이다(위 시작 탭). 받아쓰기를 기다리는 중의 숨김은 요청을 그대로 둔다.
+- **비용 표시**(검토 S12): 시작 화면과 테스트 머리에 "받아쓰기 n/20 · 이 판 최대 약 1센트"(`templateTestCostLabelKo`). 자기 판정으로 바뀌면 그 이유를 한 줄로 알린다(위 셋 중 하나). n은 **실제로 보낸 요청 수**다(구현 반영) — 0.6초 미만·1 MiB 초과·받지 않는 형식·WAV 변환 중 끊음(보내지 않았다)과 501(전사가 일어나지 않았다)은 세지 않고, 보낸 뒤의 실패·빈 전사·시간 초과·끊음은 센다.
+- **목표 시간**(검토 S5): 한 문항 15~20초(말하기 3~6초 + 받아쓰기 2~5초 + 정답 3~5초 + 판정), 10문항 한 판 3~4분. 받아쓰기 대기는 실기기에서 p90 5초 이하를 기준으로 본다(SPEC §20-10). 말이 끝나면 저절로 멈추는 무음 감지는 두지 않는다(§12-12 22).
+- **끝·그만두기** → 세션 저장(§12-5-6). 그만두면 판정한 문항만 `answered: true`, 나머지는 `null`이다. 끝 화면: ○ n / 전체, **제안과 다르게 판정한 문항 수**(첫 유효 시도의 제안 기준 — 제안 기준을 고칠 근거, §12-12 15), 틀린 틀 목록(카드로 가는 링크), "틀린 틀만 따라 말하기"·"틀린 틀만 다시 테스트"·"폴더로".
+
+#### 12-5-4. 전사 라우트 — `POST /api/toeic/guides/templates/transcribe`
+
+녹음을 글자로만 바꾼다. **저장하지 않는다.**
+
+- 본문: multipart `audio` 하나. 정답·틀·표현은 보내지 않는다 — 서버는 무엇을 말해야 했는지 모른다. 기대 문장을 전사 `prompt`로 넣지 않는 원칙(§5-0 2 — 전사가 기대 문장 쪽으로 끌려가면 비교가 뜻을 잃는다)을 구조로 지킨다.
+- 검사 순서: **키 먼저 501**(`hasToeicTranscribeApiKey` — 본문을 읽기 전에) → **413 먼저 한 번**(`content-length`가 `TOEIC_TEMPLATE_AUDIO_MAX_BYTES` + multipart 여유 16KiB를 넘으면 본문을 읽지 않고 413 — 검토 개선 8) → 400(multipart 아님·`audio` 없음·받지 않는 형식 — `isAcceptedToeicAudioType` 그대로·빈 파일) → 413(파일 크기 `TOEIC_TEMPLATE_AUDIO_MAX_BYTES` 1 MiB — 20초 16kHz mono WAV가 약 640KB, 원본 mp4는 더 작다) → 관문 T `transcribeAnswer({bytes, fileName, type}, req.signal)`(모델·`language:"en"`·30초 상한·재시도 1회 전부 그대로).
+- **파일 이름·형식**(검토 개선 8): 화면은 채점 업로드와 같은 도우미로 보낸다 — `toeicAudioBaseType`·`toeicAudioFileName`(형식에 맞는 확장자 파일 이름). 라우트는 파일 타입이 비었거나 `application/octet-stream`이면 `toeicAudioTypeFromName`으로 채운다(모두 `lib/toeic-attempt-contract.ts`. 구현 반영 — 브라우저·undici는 타입 없는 Blob을 `application/octet-stream`으로 보내 "빈 타입" 갈래가 실제로는 타지 않았다. 채점 라우트 `…/score`는 이 규칙을 더하지 않았다 — 화면이 늘 타입을 붙여 보내 실사용 영향은 없다). `transcribeAnswer`는 확장자 붙은 `fileName`을 요구한다.
+- 응답(단일 정의처 `lib/toeic-guide-contract.ts`): 200 `{ ok:true, text, words }` / 400 `invalid_input` / 413 `audio_too_large` / 501 `no_api_key` / 499 `client_closed` / 500 `transcribe_failed`(`retriable:true`). `words` = 전사문 낱말 수(`countWords(text)`) — 0이면 화면이 비교 없이 "잘 안 들렸어요"(유효하지 않은 시도)로 간다. `words`가 1 이상이어도 비교 결과가 `noSpeech`면 무효다(§12-5-3 유효 시도). 비교는 화면이 `text`로 한다.
+- 스토어를 import하지 않는다(eval이 소스로 본다). 로그는 바이트·ms·낱말 수만 남긴다(전사문·오디오 없음 — `transcribeAnswer`의 규칙 그대로).
+- **화면 쪽 시간 상한**(검토 개선 8): `transcribeAnswer`는 30초 × 재시도 1회라 최악이면 60초를 넘겨 Hosting이 요청을 끊는다. 화면은 요청마다 45초(`TOEIC_TEMPLATE_TRANSCRIBE_CLIENT_TIMEOUT_MS`) `AbortController` 타임아웃을 두고, 넘으면 "잘 안 들렸어요"(유효하지 않은 시도)로 넘긴다.
+- **비용 가드** — 이 라우트에는 세션 상태가 없다(가족 전용 PIN 게이트가 바깥 울타리다). 상한은 화면이 지킨다.
+  - 한 번에 하나 — 전사 요청이 떠 있는 동안 "말하기"·"다시 말하기"를 잠근다(연타 방지).
+  - 문항당 최대 2회(`TOEIC_TEMPLATE_TRANSCRIBE_PER_QUESTION` — 처음 + 유효하지 않은 시도 뒤 다시 말하기 1회), 세션당 최대 20회(`TOEIC_TEMPLATE_TRANSCRIBE_PER_SESSION` = 10문항 × 2). 넘으면 그 뒤로는 자기 판정만 한다.
+  - 0.6초(`TOEIC_TEMPLATE_REC_MIN_MS`) 미만의 녹음은 보내지 않는다("잘 안 들렸어요").
+  - 상한 판정은 순수 함수 `canTranscribeAgain({ perQuestion, perSession })` 하나가 한다(버튼 잠금·"다시 말하기" 표시·자기 판정 전환·머리의 "받아쓰기 n/20"이 같은 함수를 본다).
+  - 화면을 떠나거나 그만두면 `AbortController`로 끊는다 → 서버가 `req.signal`로 상류 전사를 멈춘다(499).
+  - 전사 1회는 녹음 10초 안팎이다(분당 약 $0.003 — `gpt-4o-mini-transcribe`, SPEC §21-4와 같은 요율). 10문항 한 판(최대 20회)이 1센트 안팎이다.
+
+#### 12-5-5. 비교 순수 함수 — 틀 고정 부분과 자리를 따로 (`lib/toeic-template.ts`)
+
+**정규화** `normalizeTemplateWords(text)` → 낱말 배열 = 축약형 풀기 `expandContractions` → `normalizeReadWords`(§5-4 — 소문자·문장부호 제거·0~100 숫자 통일·`p.m.` 접기·아포스트로피 삭제).
+
+- 축약형은 아포스트로피가 지워지기 **전에** 푼다(`it's`가 `its`가 되면 `it is`와 영영 어긋난다). 곧은·둥근 아포스트로피 둘 다.
+  - `n't` → ` not`(`can't` → `can not`, `won't` → `will not`, `shan't` → `shall not`), 낱말 `cannot` → `can not`
+  - `'m` → ` am`, `'re` → ` are`, `'ve` → ` have`, `'ll` → ` will`
+  - **두 뜻 축약형은 대안 낱말 하나로 푼다**(검토 개선 5): 대명사·지시어·의문사(`it`·`that`·`there`·`here`·`what`·`who`·`where`·`he`·`she`·`how`·`when`·`why`) + `'s` → `is|has`, 그리고 `'d`는 **모든 낱말**에서 `would|had`(구현 반영 — `'d`에는 소유격 뜻이 없어 넓혀도 잃을 것이 없고, 대명사 목록으로 좁히면 틀 `I'd like …`가 전사 "I would like …"와 영영 어긋난다. `'s`는 소유격이 있어 목록으로 좁힌 채 소유격이 없는 `how`·`when`·`why`만 더했다). 대안 낱말은 둘 중 하나와 맞으면 같은 낱말이다(양쪽 모두 대안이면 겹치면 같다 — `sameTemplateWord(a, b)`). 그래서 완전형 틀 `It has been {…}`에 전사 "It's been …"도, 축약형 틀 `It's {…}`에 전사 "It is …"도 맞는다. 정답과 전사문을 같은 규칙으로 한쪽 뜻으로만 풀면 한쪽만 축약일 때 어긋난다(검토 — 고정 부분에 대명사 + `has`가 있는 틀 1개, `'s`·`'d` 축약형이 있는 틀 5개).
+  - `let's` → `let us`
+  - 명사 소유격 `'s`는 풀지 않는다(아포스트로피만 지워진다).
+- 숫자는 `normalizeReadWords` 그대로다 — `twenty`·`20`, `twenty-five`·`25`, `seven thirty`·`7:30`이 같다. `$`는 떼어진다(`$15` → `15`). 100을 넘는 수(연도 등)는 낱말 그대로 남는다(알려진 한계 — 숫자는 대개 자리 안이라 너그럽게 본다).
+- 정규식 lookbehind 금지(클라이언트 번들).
+
+**정렬 코어** `alignWordSeq(expected, heard, eq?, { substitutionCost? })` — `lib/toeic-score.ts`의 `alignReadAloud` 안에 있는 편집거리·되짚기를 그대로 뽑아낸 순수 함수다. 선택 인자 `eq`는 낱말 같음 판정이다(기본 `===`). 틀 비교는 대안 낱말을 아는 `sameTemplateWord`와 **`{ substitutionCost: 2 }`**(치환 = 삭제 + 삽입 — 맞은 낱말 수를 최대화)를 넘긴다(구현 반영: 치환 비용 1로는 고정 낱말 둘의 어순이 바뀐 답이 "다름 2 → 0"으로 나와 아래 표 3행 "빠짐 1 + 더함 1 → 0.5"와 어긋난다. 표 1·2·4행과 7개 중 1 빠짐 ○ / 6개 중 1 ✕ 경계는 그대로다). `alignReadAloud`는 `eq`·옵션 없이 이 코어를 불러 **결과가 글자까지 같다**(기존 eval의 Q1–2 대조 항목이 그대로 통과해야 한다 — 같은 비용이면 일치·치환 → 삭제 → 삽입 순. eval이 옛 구현과 무작위 400쌍을 대조한다). 결과 = 기대 낱말마다 `{ status: "ok" | "missing" | "wrong", heard }`와 더한 낱말 `extra`(들은 위치).
+
+**비교** `compareTemplateAnswer(frameEn, fills, transcript)` → `TemplateAnswerCheck`
+
+1. 기대 낱말열: `frameEn`을 자리로 끊어, 고정 조각은 `normalizeTemplateWords`로 **고정 낱말**(role `fixed`)을, 자리 i는 `fills[i]`를 같은 함수로 **자리 낱말**(role `slot`, slot i)을 만든다. 자리 낱말에서는 관사 `a`·`an`·`the`를 뺀다 — 자리 안의 관사는 채점하지 않는다. 고정 부분의 관사는 그대로 본다.
+2. 들은 낱말열: `normalizeTemplateWords(transcript)`.
+3. `alignWordSeq(…, sameTemplateWord)`로 정렬한다.
+4. **틀 정확도** `frameAccuracy` = 맞은 고정 낱말 ÷ 고정 낱말 수(zod가 1개 이상을 보장한다). 빠진·다른 고정 낱말 목록을 함께 준다. **이것이 핵심 지표다.**
+5. **자리**(너그럽게): 자리마다 `filled`와 참고용 `matched / total`(자리 낱말 중 그대로 들은 수). `filled`는 그 자리 앞뒤의 맞은 고정 낱말 사이에 들은 낱말 중 **관사(`a`·`an`·`the`)가 아닌 낱말이 하나라도 있는가**다 — 뜻이 같은 다른 말로 채워도 채움이지만, 관사만 들린 자리(지어낸 예 "set on the.")는 비었다(검토 개선 9). 자리 바로 앞뒤 고정 낱말이 빠졌으면 경계는 가장 가까운 맞은 고정 낱말로 잡는다(없으면 문장 처음·끝). 자리가 붙어 있으면(`{가} {나}`) 두 자리가 같은 구간을 본다.
+6. 더한 말(`extra`)은 표시만 하고 점수에 넣지 않는다("음…", 같은 말 되풀이).
+7. 들은 낱말이 0개면 `noSpeech: true`.
+8. **제안** `suggest` = `!noSpeech && frameAccuracy >= 0.85`(`TOEIC_TEMPLATE_SUGGEST_MIN`) `&& 모든 자리 filled`면 `"pass"`, 아니면 `"fail"`. 고정 낱말이 7개 미만이면 0.85는 "전부 맞음"과 같다 — 짧은 틀은 한 낱말만 빠져도 틀 다름이다(의도 — 원본 152틀 중 106개. 그래서 축약형 두 뜻을 대안으로 받는다). **제안일 뿐이다** — 전사는 발음이 서툴면 다른 낱말로 적히므로 최종 ○/✕는 아빠가 정한다(§12-5-3). 반대 방향의 오류도 있다(알려진 한계, 검토 S13): 전사 모델은 흔한 구절 쪽으로 매끄럽게 적는 경향이 있어, 흔한 틀일수록 한 낱말 틀리게 말한 것이 맞게 적힐 수 있다(○ 제안이 부푼다). 기대 문장을 보내지 않는 원칙으로는 막히지 않는다 — 실기기 확인에 "일부러 한 낱말 바꿔 말하기"를 둔다(SPEC §20-10).
+
+**같은 뜻 교재 틀 대조**(검토 S6) `compareWithAlternatives(asked, alternatives, fills, transcript)` — (가) 예문 말하기에서만 쓴다.
+
+- 대안 = 같은 유형 안에서 한국어 틀(`frameKo`, trim)이 **글자까지 같고** 자리 수가 같은 다른 틀(교재가 같은 뜻으로 가르친 어휘 대안 짝 — 원본 2쌍). 한국어만 보고는 어느 쪽을 묻는지 알 수 없다.
+- 물은 틀과 대안마다 같은 채움으로 `compareTemplateAnswer`를 돌려 틀 정확도가 가장 높은 결과를 쓴다. 대안으로 맞으면 제안은 ○이고 "같은 뜻의 다른 교재 틀로 말했어요"와 그 틀 줄을 함께 보인다. 기록 키는 물은 틀이다.
+- (나)는 예문 소리로 틀을 이미 들었으므로 대안 대조를 하지 않는다.
+
+지어낸 예(틀 `{활동} helps me {효과}.`, 정답 "Gardening on weekends helps me clear my head."):
+
+| 전사문 | 틀(고정 `helps me`) | 자리 | 제안 |
+|---|---|---|---|
+| "Gardening on weekends helps me to clear my mind." | 전부 맞음(`to`는 더한 말) | 둘 다 채움(자리 2는 `head` → `mind` 다름 — 참고 표시) | ○ |
+| "Gardening on weekends make me clear my head." | `helps` 다름 → 0.5 | 채움 | ✕ |
+| "Gardening on weekends me helps clear my head." | 어순이 바뀌어 한 낱말이 빠지고 하나가 더해짐 → 0.5 | 채움 | ✕ |
+| "Gardening helps me the." | 전부 맞음 | 자리 2는 관사만 → 비었음 | ✕ |
+| "" | — | — | ✕(안 들렸어요) |
+
+- 축약형: 틀 `It's easy to {동작} after {때}.`에 전사 "It is easy to …" → 고정 낱말이 같다. 완전형 틀 `It has been {기간} since {때}.`에 전사 "It's been …" → 같다. 숫자: 채움 `twenty minutes`에 전사 "20 minutes" → 같다. 관사: 채움 `a short nap`에 전사 "short nap" → 자리 낱말 전부 맞음. 고정 부분의 `the`가 빠지면 → 다름.
+- **화면 표시**: 정답 예문(원래 글자 — §12-5-1 표시)과 그 아래 비교 칩(정규화된 낱말 — 고정 낱말은 맞음/빠짐/다름 색, 자리 낱말은 자리 색, 더한 말은 회색). 정규화된 낱말(`20`·`it is`)을 원문 글자에 되짚어 칠하지 않는다(되짚는 대응이 결정적이지 않다).
+
+**전사문에서 틀 찾기**(실전 적용 — §12-7-9) `findTemplatesInTranscript(transcript, templates)`
+
+- 틀마다 고정 조각(자리로 끊은 구간)을 `normalizeTemplateWords`로 바꾸고 **두 낱말 이상인 조각만** 찾는다. 그런 조각이 모두 전사문 낱말열에 **이어서, 순서대로**(겹치지 않게, 앞 조각 뒤에 — 낱말 같음은 `sameTemplateWord`) 있으면 "쓴 틀"이다. 한 낱말 조각(`first`·`also` 같은 것)은 우연히 겹치므로 요구하지 않는다.
+- 두 낱말 이상인 조각이 하나도 없는 틀은 매칭하지 않는다(원본 실측 4틀 — §12-2-7). 결과에 "찾을 수 없는 틀"로 따로 센다.
+- 반환: `{ key, at }[]`(첫 조각 위치 순), 같은 틀은 한 번.
+- `templateStepCoverage(part, foundKeys, bank)` → 그 유형 흐름의 **단계**마다 `{ stepKo, used: key[] }`(단계 안 묶음들의 틀 중 찾은 것). `used`가 빈 단계가 "이 답변에서 빠진 단계"다. **소재 묶음은 세지 않는다**(검토 B2 — 묶음 단위로 세면 60초 답변에도 빠진 것이 15개 안팎 뜬다. 단계는 3~6개라 답 하나가 지나갈 수 있다).
+
+#### 12-5-6. 기록·숙련도 — 틀 단위
+
+- **저장** `POST /api/toeic/guides/templates/sessions` — 본문 `{ clientSessionId, mode, startedAt, finishedAt, items: { word, correct, answered }[] }` → `toeicQuizzes`에 `setId: "guide-templates"`로 한 건. AI·키 검사·prod-guard 없음(생성이다).
+  - 200 `{ ok:true, id, reused }` / 404 `bank_not_found`(틀 은행이 없거나 렌더 불가) / 500 `save_failed`. 계약은 `lib/toeic-guide-contract.ts`.
+  - **400 `invalid_input`**(검토 B4 — 문서 id가 사용자 값에서 오므로 형식부터 막는다):
+    - `clientSessionId`가 **소문자 UUID**가 아님 — `TOEIC_TEMPLATE_SESSION_ID_RE`(`lib/toeic-guide-contract.ts`, 자유대화 `TALK_SAVE_ID_RE`와 같은 모양). 문서 id가 `tpl-{clientSessionId}`라 `/`가 들어가면 Firestore `doc()`이 하위 경로를 가리킨다.
+    - `startedAt`이 ISO datetime이 아님, `finishedAt`이 ISO datetime도 null도 아님(`z.string().datetime()` — 표현 시험 저장 라우트와 같다).
+    - `mode`가 `tpl-recall`·`tpl-swap`이 아님, `word`가 `^tpl:[a-z0-9][a-z0-9-]{0,39}$` 아님, 세션 안 `word` 중복(한 판 한 틀), `items` 1~10 밖.
+  - 틀 은행에 지금 없는 키도 받는다 — 교정하다 빠진 틀의 기록을 버리지 않는다(표현 시험 라우트도 키가 세트에 있는지 보지 않는다).
+  - **멱등**: 문서 id = `tpl-{clientSessionId}`(화면이 세션을 시작할 때 만든 UUID). 스토어 `addToeicQuizWithId(id, input)`(판정은 순수 함수 `decideToeicQuizWithId(existing, input)` → `create`·`reuse`·`create_new_id`. 파일은 `mutate` 한 번 안에서, Firestore는 트랜잭션이 아니라 단일 문서 `ref.create()`(원자) — `ALREADY_EXISTS`면 읽어서 판정한다. 트랜잭션이 필요한 다른 읽기가 없어 자유대화 저장과 같은 모양으로 구현했다):
+    - 같은 id가 없으면 만든다 → `reused:false`.
+    - 있고 `mode`·`startedAt`이 같으면 새로 쓰지 않고 그 문서를 돌려준다 → `reused:true`("다시 저장"이 같은 판을 두 벌 쌓아 거짓 졸업을 만드는 경로를 막는다).
+    - 있는데 `mode`나 `startedAt`이 다르면 **덮지 않고 자동 id로 새 문서를 쓴다** → `reused:false`(자유대화 저장 관용구 `lib/store-firestore.ts` — 키 충돌이 남의 기록을 지우지 않게).
+  - 표현 시험 라우트는 바꾸지 않는다.
+  - **화면 이탈 저장**(구현 반영 — 스펙 공백): 판정한 문항이 있는데 저장되지 않은 채 화면을 떠나면(언마운트·`pagehide`의 `persisted=false`) 같은 멱등 키로 keepalive 저장한다 — 진행 중이면 그만두기 모양(`finishedAt: null`), 끝 화면 저장이 실패한 채면 그 판 본문 그대로(`templateTestLeaveSave`, `lib/toeic-template-test-view.ts`). bfcache로 되살아날 수 있는 이탈(`persisted=true`)은 저장하지 않는다 — 되살아나 이어 풀면 같은 판이 `reused`로 버려져 뒤 결과를 잃는다. 판정 0이면 저장하지 않는다(끝·그만두기도 같다 — 표현 시험 러너 관용구). 저장 중에 전체 이동·탭 닫기가 겹치는 짧은 창은 건너뛸 수 있다(알려진 한계 — QA 이월 P3).
+- **숙련도** `aggregateToeicTemplateStats(sessions)` → `Record<ToeicTemplateQuizMode, Record<string, WordStat>>`. 모드로 가른 뒤 **같은 날 잇단 ○를 접고** `aggregateWordStats`(은우 순수 함수)를 부른다. 세션을 `VocabQuizRecord` 모양으로 옮기는 것은 표현 시험의 어댑터를 **공개해 그대로** 쓴다 — 지금 `lib/toeic-quiz.ts`의 비공개 `toVocabQuizRecords`를 `toeicSessionsToVocabRecords`로 export한다(검토 B3 — 복사하면 두 벌이 된다). 세션은 `startedAt` 오름차순(§6-2 계약).
+  - **두 모드는 따로 센다**(§6-2 모드 분리) — 예문을 기억해 말하는 힘과 틀을 새 채움에 쓰는 힘은 다르다. 졸업은 그 모드에서 연속 2회 ○다.
+  - **같은 날 잇단 ○는 하나로 센다**(검토 S8). 한 틀의 시도를 시간순으로 걸을 때, ○ 바로 앞 시도도 ○이고 두 세션의 날짜(KST, `startedAt` 기준)가 같으면 뒤의 ○를 세지 않는다 — 그 항목을 뺀 세션 사본을 `aggregateWordStats`에 넘긴다(은우 함수는 바꾸지 않는다). ✕는 언제나 센다. 그래서 졸업에는 **서로 다른 날** 두 번의 ○가 필요하다 — "틀린 틀만 다시 테스트"를 연달아 해서 몇 분 만에 졸업하지 않게(단기 기억). 날짜는 스트릭과 같은 하루 기준 `kstDateString`(`lib/kst.ts` — 런타임 의존성 없는 순수 함수, SPEC §17-2)으로 가른다. 배지의 "오늘"은 화면이 같은 함수로 지금 시각에서 구한다.
+  - 틀 은행이 하나라 **한 틀의 숙련도는 폴더와 상관없이 하나**다 — Q5–7 폴더에서 맞힌 공통 틀은 Q11 폴더에서도 맞힌 것으로 보인다.
+  - **표현 시험과는 따로다.** 틀이 `guideRefs`로 가리키는 공략 표현의 통계(유형 공략 세트의 세션 — 키는 표현 문자열·`quiz:{no}`)와 틀 통계(틀 은행 세션 — 키는 `tpl:{key}`)는 서로 읽지 않는다. 화면이 둘을 나란히 보일 뿐이다(§12-5-7).
+- **틀린 틀** `toeicTemplateWrongKeys(sessions, mode)` = 그 모드에서 틀린 적 있고 아직 졸업하지 않은 틀. "틀린 틀만 다시 테스트"는 그 모드의 목록을, "틀린 틀만 따라 말하기"는 두 모드의 합집합을 쓴다. 틀 카드의 ✕ 배지와 이 두 범위가 오답노트다 — 따로 오답노트 페이지를 두지 않는다.
+- **배지**(모드마다): 안 해 봄(시도 0) · 진행 중(마지막이 ○, 연속 1) · **오늘 ○ — 내일 한 번 더**(마지막 시도가 오늘 ○이고 연속 1 — 같은 날 ○를 더해도 이 상태다) · ✕(마지막이 ✕) · 🎓(졸업).
+- **최근 테스트**: 틀 탭 아래에 그 유형 틀이 든 세션 최신 10개(날짜·모드·○ n / 전체 — 전체는 세션 전체의 판정 문항 수다. 공통 틀은 여러 폴더에서 풀므로 세션을 쪼개지 않는다. 판정 0인 세션은 빼고, 그만둔 판은 "그만둠"을 붙인다 — `recentTemplateTests`).
+- **폴더 카드**(§12-8): "틀 n · 익힘 m" — m은 그 유형 틀 중 **틀 바꿔 말하기**(`tpl-swap`)에서 졸업한 수다. 이 모드는 영어 글자 없이 대본에 없던 채움으로 말하므로 두 모드 중 더 어렵다(검토 B2 — 틀을 보여 주던 옛 설계에서는 이 말이 거꾸로였다). 틀 세션은 `setId`가 하나라 폴더 목록이 한 번 읽어 네 폴더에 나눠 쓴다.
+- 스트릭: 테스트 세션은 `toeicQuizzes`라 지금 규칙(답한 문항 ≥ 1) 그대로 센다(§12-9).
+
+#### 12-5-7. 교재 틀과 오가기 — 같은 틀임을 보인다
+
+- 틀 카드의 "📘 교재 틀" 칩은 연결된 교재 쪽으로 간다. 연결이 하나면 바로, 여럿이면(`guideRefs` 최대 4) 칩을 눌러 연결마다 한 줄인 작은 목록에서 고른다. `expression` 연결이면 ③ 탭의 그 표현(`?tab=quiz&expr={표현}` — 표현 목록이 그 줄로 스크롤), `template`·`lead` 연결이면 ① 탭의 그 블록(섹션을 열고 스크롤). 다른 유형 공략의 연결이면 그 유형 폴더로 간다.
+- 반대 방향은 🧩 칩이다 — ① 탭의 블록·줄(§12-4), ③ 탭의 표현 목록(§12-6). 판정은 순수 함수 하나 `templateLinksForGuide(bank, part)`가 한다(`guideRefs` 배열 전부).
+- 표현 시험(뜻 ↔ 표현 5지선다·말하기)과 템플릿 훈련(틀 말하기)은 모드가 달라 숙련도가 따로다(§12-5-6). 대신 틀 카드에 연결된 표현의 표현 시험 상태를 함께 보이고("표현 시험: 뜻→표현 🎓 · 표현→뜻 ✕"), 표현 목록의 🧩 칩 옆에 그 틀의 테스트 상태를 보인다.
+- **자리 표기 맞추기**: 틀은 이름 있는 자리 `{이름}`으로 저장하고 보인다(영어·한국어가 같은 이름 — 색으로 잇는다). 교재 쪽 표기 `~`는 **파생**이다 — `frameToExpression(frameEn)`이 자리마다 `~`로 바꾸고, 공백을 접고, 끝의 마침표 하나를 뗀다(지어낸 예: `The scene is set on {장소}.` → `The scene is set on ~`). 이 파생 글자는 세 곳에 쓴다 — ④ 한 문제 연습의 "활용할 표현"(§12-7-9), 호출 C·D가 돌려준 `usedExpressions`·`tryExpressions`를 틀로 되짚는 표(§12-7-9), ① 탭 줄 머리 🧩 칩 판정(§12-4). 한국어 틀은 파생하지 않는다.
+
+#### 12-5-8. 비용 — 템플릿 훈련
+
+| 행동 | 드는 것 | 언제 |
+|---|---|---|
+| 틀 탭 보기 · 카드 🔊 | 클라우드 TTS(예문 en-US) — 고른 범위의 영어 최대 90개 자동 프리페치 | 탭 열기·범위 고르기 / 🔊 탭 |
+| 따라 말하기 | TTS만 — ▶ 때 고른 범위의 고유 조각(영어·한국어) 최대 90개를 준비(`prepareSpeech` — 어차피 재생할 조각). 영어 N번 반복은 캐시, 무음 쉼은 합성 0 | ▶ 탭 |
+| 테스트 | 문항당 전사 1회(유효하지 않은 시도 뒤 다시 말하기 1회까지 — 최대 2), 세션 최대 20회. 정답·예문 소리 en-US — 틀 바꿔 말하기의 정답은 대본에 없던 새 문장이라 문항마다 짧은 합성 1회 | 🎤 멈춤(문항마다 — 버튼 흐름 안) |
+| 기록 저장 | 0 | 끝·그만두기 |
+
+- 호출 A~D는 0이다. 키가 없으면 틀 탭·따라 말하기는 기기 음성으로(잠금 화면 연속 재생은 기대하지 않는다), 테스트는 자기 판정으로 전부 돈다.
+- 화면의 비용 안내: 테스트 시작·머리 "받아쓰기 n/20 · 이 판 최대 약 1센트"(§12-5-3).
+
+#### 12-5-9. 함수·상수가 사는 곳
+
+| 곳 | 무엇 | 경계 |
+|---|---|---|
+| `lib/toeic-template.ts` | `fillFrame`·`frameToExpression`·`splitFrameForDisplay`·`splitExampleByFills`·`templateLinksForGuide`·`templateFlowOrder`·`leadMatchesFrame`, `buildTemplateShadowScript`·`estimateShadowMs`·`shadowResumeIndex`, `expandContractions`·`normalizeTemplateWords`·`sameTemplateWord`·`compareTemplateAnswer`·`compareWithAlternatives`, `findTemplatesInTranscript`·`templateStepCoverage`·`templateByExpression`, `buildTemplateTestQuestions`·`aggregateToeicTemplateStats`·`toeicTemplateWrongKeys`·`pickTemplatesForDrill`, 화면 상한 판정 `canTranscribeAgain({ perQuestion, perSession })`, 상수 `TOEIC_SHADOW_REPEAT_DEFAULT`(4)·`TOEIC_SHADOW_ESTIMATE`·`TOEIC_TEMPLATE_TEST_MAX`(10)·`TOEIC_TEMPLATE_TEST_REVIEW_SLOTS`(2)·`TOEIC_TEMPLATE_SUGGEST_MIN`(0.85)·`TOEIC_TEMPLATE_REC_MAX_MS`(20,000)·`TOEIC_TEMPLATE_REC_MIN_MS`(600)·`TOEIC_TEMPLATE_TRANSCRIBE_PER_QUESTION`(2)·`TOEIC_TEMPLATE_TRANSCRIBE_PER_SESSION`(20)·`TOEIC_TEMPLATE_TRANSCRIBE_CLIENT_TIMEOUT_MS`(45,000)·`TOEIC_DRILL_TEMPLATES_MAX`(10)·`TOEIC_TEMPLATE_FLOW_CHECK_PARTS`·`TOEIC_TEMPLATE_SUGGESTIONS_MAX`(5), 그리고 `lib/toeic-guide.ts`의 `TOEIC_SHADOW_PAUSE`·`TOEIC_SHADOW_PAUSE_LEVELS`·`shadowPauseMs`를 **재수출**(구현 반영 — 정의는 `lib/toeic-guide.ts`. 그 값을 쓰는 `shadowPauseMs`가 거기 살고, `lib/toeic-guide`는 이 모듈을 import하지 않는다 — 순환 금지) | 클라이언트 안전(번들 경계 목록 — §12-10). 런타임 import는 `lib/toeic-guide`·`lib/toeic-text`·`lib/toeic-score`·`lib/toeic-quiz`·`lib/vocab-mastery`·`lib/kst`·`lib/tts-split`·`lib/tts-shared`뿐(`lib/toeic-quiz`는 검토 B3로, `lib/kst`는 같은 날 ○ 접기로 더했다 — 둘 다 클라이언트 안전 모듈이고 `lib/toeic-quiz`는 이미 번들 경계 목록에 있다). `lib/ai`는 `import type`만 |
+| `lib/toeic-quiz.ts` | 새 export: `weaknessRank`(지금 비공개 — 그대로 공개), `toeicSessionsToVocabRecords`(지금 비공개 `toVocabQuizRecords`를 이 이름으로 공개), 틀 모드 `ToeicTemplateQuizMode`·`TOEIC_TEMPLATE_QUIZ_MODES`·`isToeicTemplateQuizMode`·`TOEIC_TEMPLATE_QUIZ_MODE_LABELS_KO`. `ToeicQuizSessionLike.mode`를 두 모드 유니온으로 넓힌다(§12-3 "모드 타입 넓히기") | 기존 경계 그대로(`lib/toeic-template`을 import하지 않는다 — 순환 금지) |
+| `lib/toeic-guide.ts` | `shadowPauseMs`·`TOEIC_SHADOW_PAUSE`·`TOEIC_SHADOW_PAUSE_LEVELS`(0.8·1·1.5 — 정의처, 공략 읽기와 템플릿이 함께 쓴다), `cleanGuideKoForTts`(자리 `{…}` 포함), 유형 이름표·결정적 id(`TOEIC_GUIDE_PARTS`·`toeicGuideSetId`·`TOEIC_TEMPLATE_BANK_ID`) | 런타임 import에 `lib/toeic-text`(`countWords`)를 더한다(검토 개선 6). `lib/toeic-template`을 import하지 않는다(순환 금지) |
+| `lib/toeic-score.ts` | `alignWordSeq(expected, heard, eq?, { substitutionCost? })`(추출 — `alignReadAloud`는 `eq`·옵션 없이 부르고 결과 불변, 틀 비교만 치환 비용 2) | 기존 경계 그대로 |
+| `lib/ai/toeic/schemas.ts` | 가져오기 zod의 틀 은행 부분·`TOEIC_TEMPLATES_MAX`(300)·`TOEIC_TEMPLATE_EXAMPLES_MIN`(3)·`MAX`(5)·`TOEIC_TEMPLATE_TEST_FILLS_MIN`(1)·`MAX`(3)·`TOEIC_TEMPLATE_GUIDE_REFS_MAX`(4)·`TOEIC_TEMPLATE_FLOW_STEPS_MIN`(3)·`MAX`(6)·`TOEIC_TEMPLATE_GROUP_MAX`(6), 정렬 빠짐 검사 | 서버·eval(`leadMatchesFrame`·`normalizeTemplateWords`는 `lib/toeic-template`에서 값 import — `lib/ai` → `lib` 방향이라 경계 안) |
+| `lib/ai/toeic/mock.ts` | `pickExpressionsForDrill`(틀 인자 추가 — `pickTemplatesForDrill`을 부른다) | 서버 전용 |
+| `lib/toeic-guide-contract.ts` | 전사·기록 라우트 요청·응답 타입, `TOEIC_TEMPLATE_AUDIO_MAX_BYTES`(1 MiB — 화면이 올리기 전에 보고 라우트가 413으로 본다), `TOEIC_TEMPLATE_SESSION_ID_RE`(소문자 UUID) | 계약 파일(값은 자기 상수뿐 — `lib/ai`는 `import type`만) |
+| `lib/speech.ts` | `SpeakQueueItem.pauseAfterMs`·`onPause`·`queueTiming.pauseMaxMs`, 무음 조각 쉼(`makeSilentWav(ms)`), `prepareSpeech`(`PrepareSpeechOptions`·`PrepareSpeechResult`), `getSpeechSpeedFactor(lang)`, 테스트 훅 `__speechPlaybackState()` | 공용(네 과목) |
+| `lib/media-session.ts` | `bindMediaSession`·`setMediaSessionPlaybackState`·`isMediaSessionSupported`(§12-5-2) | 클라이언트, 런타임 import 0 — 따라 말하기 플레이어만 부른다 |
+| `lib/toeic-guide-view.ts` · `lib/toeic-template-test-view.ts` · `lib/toeic-drill-view.ts` | 화면 판단 순수 함수 — 폴더 탭·범위 여섯·이어 듣기 서명·설정 파싱·goto(`guideReadInitialOpen`)·"뒤로"(`toeicSetBackLink`) / 테스트 주소·유효 시도·비용 문구·라틴 가림·이탈 저장·최근 테스트 / 연습 상태·폴더 카드·비용 캡션·단계마다 틀·틀 점검 자료·"뒤로"(`toeicMockBackLink`) | 클라이언트 안전(번들 경계 목록) |
+| `lib/toeic-firestore-codec.ts` | `encodeToeicGuideForFirestore`·`decodeToeicGuideFromFirestore`·`hasNestedArray`(§12-3) | 순수, import 0 — Firestore 쓰기·읽기 헬퍼와 eval |
+| `lib/ai/toeic/guide-import.ts` | `planToeicGuideImport`·`decideGuideUpsert`·`TOEIC_GUIDE_UPDATE_FIELDS`·내용 지문 함수(§12-2-5) | 서버 전용(`node:crypto`) |
+| `components/use-toeic-shadow-settings.ts` · `components/toeic-template-lines.tsx` | 따라 말하기 설정 기기 기억(`toeic-shadow-settings:v1`) / 틀 줄·예문 줄 조각(② 탭과 테스트가 한 벌) | 클라이언트 |
+| `lib/store.ts`·`lib/store-firestore.ts` | `upsertToeicGuides`(가져오기 — 원자 단위), `addToeicQuizWithId`(같은 판이면 reused, 다른 판이면 새 id — 판정 `decideToeicQuizWithId`), `listToeicDrills(mockPart)`(§12-8), `ToeicQuizRecord.mode` 넓히기, `ToeicSetRecord.guide`의 두 종류, `ToeicMockRecord.drillPart`·`ToeicAttemptRecord.questions` | `lib/toeic-normalize.ts`가 정규화 단일 정의처 |
+
+### 12-6. ③ 표현 말하기 시험 — 기존 네 모드 중 셋
+
+| 모드 | 공략 세트에서 | 출처 |
+|---|---|---|
+| `ko-to-expr` 뜻 → 표현 | **나온다** | `expressions` |
+| `expr-to-ko` 표현 → 뜻 | **나온다** | `expressions` |
+| `cloze` 빈칸 | 나오지 않는다(모드 고르기 화면에 0문항으로 비활성 — 기존 동작) | 발화 포인트(`points.exampleSpan`)가 없다 |
+| `speak` 말하기 | **나온다** — 이 폴더의 주 시험 | `speak` → 세트 `quiz`(키 `quiz:{no}`) |
+
+- 화면·저장은 기존 그대로다 — `/toeic/sets/{공략 세트 id}/quiz`(모드 고르기·5지선다·말하기 자기 채점), `…/wrong`(모드 탭), `…/history`, `POST /api/toeic/sets/[id]/quiz`(모드마다 1건), `toeicQuizzes`. 폴더의 "📝 표현 시험" 탭은 표현 목록(🔊)과 이 화면들로 가는 버튼을 보인다. 달라지는 것은 일곱 가지다 — "뒤로" 링크(§12-3 표), 말하기 문항 순서, 5지선다 한 판 상한, 공략용 안내 문구, 📝 탭의 프리페치(아래), 틀로 가는 🧩 칩(아래), 말하기 버튼 이름(아래).
+- **말하기 버튼 이름**(검토 S11): 공략 세트의 말하기 모드는 버튼·화면 제목을 "📝 교재 문장 말하기"로 적는다(표현집 문구는 그대로). ② 탭의 "🧩 틀 테스트"(§12-5-3)와 둘 다 "한국어 보고 영어로 말하기"라 이름으로 가른다 — 여기는 교재 문장을 자기 채점하고, 틀 테스트는 새 예문·채움을 받아쓰기로 비교한다. 여기에도 받아쓰기 비교를 붙일지는 §12-12 21.
+- **틀로 가는 🧩 칩**: 표현 목록에서 틀 은행의 어떤 틀이 `guideRefs`(`kind:"expression"`)로 가리키는 표현 옆에 "🧩 틀" 칩과 그 틀의 테스트 상태(§12-5-6 배지)를 둔다. 누르면 ② 탭의 그 틀로 간다. `?expr={표현}`으로 열리면 그 줄로 스크롤한다(틀 카드의 "📘 교재 틀" 칩이 여기로 온다 — §12-5-7). 판정은 `templateLinksForGuide`(§12-4) 하나다. 숙련도는 섞지 않는다 — 표현 시험은 표현 시험 세션만, 칩의 상태는 틀 세션만 읽는다.
+- **📝 탭의 🔊·프리페치**: 탭을 열 때 표현 영어(`expressions[].expression`, 최대 60 — `PREFETCH_MAX_ITEMS` 90 안)를 `prefetchSpeech(…, "en-US")`로 미리 받는다. 표현집 상세와 같은 관용구다. 글자는 **trim만** 한다. 표현집 카드·시험 러너의 🔊와 캐시 키가 같아야 하므로 공략 읽기의 정리 함수(`cleanGuideEnForTts`)를 여기에는 쓰지 않는다(`~`도 표현집과 같이 그대로 둔다). 폴더를 여는 것만으로는 받지 않는다 — 탭을 열 때만.
+- **말하기 문항 순서**: 지금 `buildToeicSpeakSession`은 교재 QUIZ를 **파일 순서대로** 앞에 놓고 10문항에서 자른다(교재 QUIZ는 세트당 2문항이라 문제가 없었다). 공략 `speak`는 수십 개라 이대로면 매번 앞 10개만 나온다. 그래서 옵션 `quizOrder: "book" | "weakness"`를 둔다 — 기본 `"book"`(표현집 동작·기존 eval 불변), 공략 세트는 `"weakness"`: QUIZ 항목도 **말하기 모드 통계만으로** 약함 순위(틀렸고 미졸업 → 안 해 봄 → 진행 중 → 졸업, 같은 순위는 오답 많은 순 → 무작위 — `weaknessRank` 그대로)를 매겨 앞에서 10개.
+- **5지선다 한 판 상한**: `buildToeicChoiceQuestions`에는 상한이 없다. 공략 표현이 40개면 두 모드로 80문항이 한 판이 된다(폰에서 한 번에 풀기엔 길다). 그래서 옵션 `max`와 `sessions`를 둔다.
+  - 기본은 상한 없음이다(표현집 동작·기존 eval 불변).
+  - 공략 세트는 `max: TOEIC_GUIDE_CHOICE_SESSION_MAX`(20)이다. 모드 고르기 화면은 "시작 (n문항)"에 `min(선택한 모드 합, 20)`을 보이고, 모드별 칸에는 낼 수 있는 전체 수를 둔다(구현 반영). (항목, 모드) 문항마다 **그 모드의** 통계로 약함 순위(`weaknessRank` 그대로)를 매기고, 같은 순위는 오답 많은 순 → 무작위로 둔다. 앞에서 20개를 고른 뒤 한 번 섞는다.
+  - 오답 재시험(`onlyKeys`)에도 같은 상한이 걸린다.
+  - 한 판에 다 못 푼 표현은 다음 판에 약한 순으로 올라온다.
+- **공략용 안내 문구**(시험 페이지가 `guide`를 보고 고른다). 지금 문구는 공략에서 막힌 길을 가리킨다 — 공략은 `…/points`가 409이고, 표현집 상세는 폴더로 리다이렉트된다.
+  - 말하기 0문항: "공략 파일에 말하기 문항(speak)이 없어요. 파일에 넣어 다시 가져오세요" + 폴더로 가는 링크. 지금은 "표현집 화면에서 발화 포인트를 먼저 만들어 주세요" + "📒 표현집으로"다.
+  - 빈칸 0문항 사유: "공략에는 빈칸 시험이 없어요". 지금은 "예문과 발화 포인트가 있어야".
+  - `speak` 하한은 0 그대로 둔다(§12-2-3). 말하기 후보가 없는 유형도 가져올 수 있어야 한다.
+- **공략 오답노트에는 빈칸 탭이 없다**(구현 반영 — 공략에는 빈칸 시험이 없어 늘 "안 봤어요"만 보이는 탭이 된다). 표현집 오답노트는 네 모드 그대로다.
+- **숙련도·오답노트는 표현집과 자동으로 갈린다** — 시험 세션이 `setId`에 매달리고 집계가 세트 단위다(§6-2). 같은 표현이 표현집과 공략에 둘 다 있어도 통계가 섞이지 않는다. 모드별 분리(말하기가 뜻 모드를 오염시키지 않음)도 그대로다. 표현 문자열로 세트를 가로질러 모으는 곳은 활용할 표현 고르기(`pickExpressionsForMock`·`pickExpressionsForDrill`)뿐이다. 이 두 함수도 세션을 `setId`로 갈라 받는다 — 공략 세션은 공략 표현만, 표현집 세션은 표현집 표현만 매긴다(§12-3 표·§12-7-2).
+- 발화 포인트(호출 B)는 공략 세트에 만들지 않는다(`…/points`가 409 `is_guide`). 만들면 빈칸 모드가 열리지만, 공략 표현은 `~` 자리가 있는 틀이라 B의 "교재 예문 속 구간" 규칙에 잘 맞지 않고, 다시 가져오기가 포인트를 지우지 않게 병합 규칙을 더해야 한다(§12-12 4).
+- 문제를 소리로 읽지 않고 답한 뒤 en-US로 읽는다(§6-1 소리 규칙 그대로).
+
+### 12-7. ④ 한 문제 연습
+
+#### 12-7-1. 연습 단위 — 확정
+
+순수 단위표 `TOEIC_DRILL_UNITS`(`lib/toeic-drill.ts` — 단일 정의, eval이 리터럴로 잠근다):
+
+| 유형 | 모의고사 파트 | 응시 문항 | 만드는 것 | 근거 |
+|---|---|---|---|---|
+| `q3_4` | `picture` | **Q3 하나** | C2 1회 → 두 장면 중 **하나만**(무작위) 남김 + 사진 1장 | 사진은 서로 독립이라 한 장이 곧 "한 문제"다. 사진(관문 P)이 가장 비싼 단위라 반으로 준다. 실전 시간(준비 45·답변 30초)은 그대로 |
+| `q5_7` | `respond` | Q5·Q6·Q7 | C3 1회 | Q5가 상황 소개를 읽고 Q6·Q7이 같은 주제를 이어받는다(§4-4) — 한 문항만 떼면 실전과 다른 문제가 된다 |
+| `q8_10` | `info` | Q8·Q9·Q10 | C4 1회 | 표 읽기 45초가 Q8 앞에 한 번이고 세 질문이 같은 표를 쓴다(§6-4) — 표 하나에 질문 셋이 한 단위다 |
+| `q11` | `opinion` | Q11 | C5 1회 | 원래 한 문항 |
+
+- Q3–4를 사진 1장으로 하되 **C2 프롬프트는 바꾸지 않는다**(§4-3 "정확히 2개"는 spec-sync 대상). 두 장면을 받아 **하나만** 저장한다.
+  - 고르는 장면은 `rng`로 정한다(`items[0]`·`items[1]` 중 하나). 늘 첫 장면만 쓰면, C2가 장소 목록 앞쪽에서 여는 버릇이 있을 경우 그 버릇이 연습마다 되풀이된다(검토 지적 — 실호출로 확인하지는 않았다. 무작위로 고르는 비용은 0이다).
+  - 저장된 문서에는 그 장면이 `items[0]`이다(Q3 = slot 0).
+  - 텍스트 호출이 장면 하나만큼 더 쓰지만 사진은 1장이다.
+  - 나머지 장면은 저장하지 않으므로, 어떤 화면도 slot 1 사진을 자동으로 요청할 수 없다. 요청해도 기존 404가 막는다(§12-3).
+- **함수가 사는 곳** — 클라이언트 번들 경계(`scripts/eval-toeic.ts`의 "번들 경계" 검사는 `/ai/`·`/store`·`openai`·`zod` 값 import를 금지한다) 때문에 셋으로 나눈다.
+  - `lib/toeic-drill.ts`(클라이언트 안전, 번들 경계 목록에 등록). 런타임 import는 `lib/toeic-mock`뿐이고, `lib/ai`는 `import type`만 한다. 여기에 둔다:
+    - `TOEIC_DRILL_UNITS`와 조회 함수(`toeicDrillUnit(part)`)
+    - `toDrillRecordPart(mockPart, recordPart, rng)` — `toMockRecordPart`(서버, `lib/ai/toeic/mock.ts`)가 사진 칸을 `pending`으로 붙인 **레코드 파트**를 받아 사진이면 한 장면만 남긴다(`attachPendingImages`를 다시 쓰지 않는다 — 값 import를 피한다)
+    - `nextToeicDrillTitle`, 주제 풀 `TOEIC_DRILL_TOPIC_POOL`·`pickDrillTopic`(§12-7-2)
+  - `lib/toeic-mock.ts`: 지시문 변형 `toeicPartDirections`(§12-7-4). 템플릿·`COUNT_EN`·형식표가 이미 여기 있다.
+  - `lib/ai/toeic/mock.ts`(**서버 전용**): `pickExpressionsForDrill`(§12-7-2). 재사용할 `pickExpressionsForMock`이 여기 있고, 이 모듈은 `./schemas`(zod)를 끌어온다. 연습 모듈에 두면 번들 경계 eval이 실패하거나 순위 규칙이 두 벌이 된다.
+  - `lib/toeic-attempt-rules.ts`는 `decideAttemptScope`가 단위표를 쓰려고 `lib/toeic-drill`을 런타임 import한다. 머리 주석의 "런타임 import는 순수 모듈(lib/toeic-mock)뿐"을 "lib/toeic-mock·lib/toeic-drill뿐"으로 고치고, 이 파일도 번들 경계 목록에 등록한다.
+- 응시 범위가 파트의 일부(Q3만)가 되므로 응시 기록에 `questions`를 둔다(§12-3). 연습의 범위는 **서버가 단위표에서 정한다** — 요청 본문(`{scope, parts}`)은 그대로이고, 클라이언트가 문항 부분집합을 고를 길은 없다.
+
+#### 12-7-2. 만들기 — `POST /api/toeic/guides/[part]/drills`
+
+- **키 검사를 맨 먼저**(501, §1-1 관용구). `[part]`가 `q3_4|q5_7|q8_10|q11`이 아니면 404 `part_not_found`. 본문 `{ targetGrade }`(IM3·IH·AL — 화면 기본 IH, 마지막 선택은 기기 `localStorage` `toeic-drill-grade:v1`에 기억).
+- **주제 힌트 하나**: `pickDrillTopic(mockPart, 최근 연습들의 topicHints, rng)`(`lib/toeic-drill.ts`, 순수)가 주제 풀에서 하나를 무작위로 고른다.
+  - 주제 풀 `TOEIC_DRILL_TOPIC_POOL[mockPart]`: 파트마다 8개 이상의 일상 주제 낱말(한국어 — 표현집 `topicKo`와 같은 모양). 이 앱이 정한 일반 낱말이다(교재 글이 아니다). 지어낸 예: picture "시장"·"기차역", respond "주말 취미", info "행사 일정", opinion "재택근무".
+  - 그 유형 **최근 연습 3개**가 쓴 주제는 뺀다(다 빠지면 풀 전체에서 고른다).
+  - 고른 주제는 `topicHints: [주제]`로 호출 C에 넘기고, 문서에도 그대로 저장한다.
+  - 힌트는 기존 입력(§4-7 "주제 힌트")이라 프롬프트 변경은 0이다. C2는 "주제 힌트를 받으면 그와 어울리는 장소를 먼저 고른다"(§4-3).
+  - 힌트가 없으면 temperature 0.8만으로 소재가 갈리는데, 연습을 거듭하면 같은 장소·주제가 되풀이되기 쉽다(검토 지적 — 실호출로 확인한 것은 아니다).
+- **활용할 표현** `pickExpressionsForDrill(templates, guide, book, opts)`(**`lib/ai/toeic/mock.ts`**, 서버 전용 — §12-7-1):
+  - 인자: `templates = {items: 그 유형 틀(틀 은행에서 parts로 고른 것) | [], sessions: 틀 세션}`, `guide = {set: 공략 세트 | null, sessions: 그 세트의 시험 세션}`, `book = {sets: 표현집 세트들, sessions: setId ∈ 표현집 세트인 세션}`. 세션을 `setId`로 갈라 넘긴다. 통계 키가 표현 문자열이라, 섞으면 공략 시험 기록이 같은 글자의 표현집 표현 순위를 움직인다(반대도 같다).
+  - **틀을 맨 앞에** 둔다 — `pickTemplatesForDrill`(`lib/toeic-template.ts`, 순수)이 **단계마다 하나씩**(단계 순서, 그 단계 묶음들의 틀 중 틀 테스트 약함 순위가 가장 약한 것) 먼저 고르고, 남은 칸을 단계·소재 묶음을 통틀어 약한 순으로 채워 최대 10개(`TOEIC_DRILL_TEMPLATES_MAX`)를 고른다. 각 틀은 `frameToExpression`(§12-5-7)으로 `~` 형태가 되어 들어간다. 단계마다 하나씩 먼저 고르는 까닭은 모범답변이 답변 흐름의 단계를 고루 쓰게 하려는 것이다(단계는 3~6개라 10칸 안에 모두 든다 — 검토 B2: 묶음 단위로 고르면 묶음이 15~20개인 유형에서 흐름 앞쪽만 들어갔다). 자세한 것은 §12-7-9.
+  - 그다음은 규칙을 새로 쓰지 않는다. **`pickExpressionsForMock`을 두 번** 부른다 — 공략 세트 하나로 한 번(그 유형 공략 표현, 숙련도 낮은 것 우선), 표현집 세트들로 한 번(나머지 칸).
+  - 틀 → 공략 → 표현집 순으로 두고 대소문자 무시로 중복을 접어(교재 틀을 옮긴 틀의 `~` 형태는 흔히 그 공략 표현과 같은 글자다 — 한 번만 남는다) 최대 24개(`TOEIC_MOCK_EXPRESSIONS_MAX`)로 자른다.
+  - 이 목록을 `normalizeMockExpressions`로 정리해 호출 C에 넘기고, **같은 목록을** `expressionsUsed`로 저장한다(보낸 목록 = 저장 목록 — 호출 D의 `tryExpressions`가 여기서 고른다, §5-1).
+  - 틀 은행·공략이 아직 없으면 있는 것만, 셋 다 없으면 "없음"이다.
+  - 공략 표현과 틀의 `~` 형태는 `~` 자리를 남긴 틀이고 `/`·`{}`가 없다(§12-2-1·§12-2-3·§12-2-7). 그래서 `" / "`로 이은 목록 경계와 `cleanUsedExpressions`의 대조가 그대로 맞는다.
+- 호출: `generateMockPart(mockPart, { targetGrade, topicHints: [주제], expressions })`(`lib/ai/toeic/calls.ts` — 프롬프트·스키마·zod·호출 옵션 전부 §4 그대로) → `toMockRecordPart` → `toDrillRecordPart(mockPart, recordPart, rng)` → `createToeicMock({ drillPart, parts: {그 파트만}, topicHints, expressionsUsed, titleKo, … })`.
+- 제목: `nextToeicDrillTitle(mockPart, 같은 유형 연습 제목들)` → "{유형 짧은 이름} 연습 {n}"(유형 짧은 이름 = `TOEIC_MOCK_PART_NAME_KO` — 예 "사진 묘사 연습 3"). 번호 규칙은 `nextToeicMockTitle`과 같은 관용구이고, 연습끼리·유형별로 센다.
+- 응답(`lib/toeic-guide-contract.ts`): 200 `{ ok:true, id, titleKo, mockPart, expressionsCount }` / 404 / 400 `invalid_input` / 501 `no_api_key` / 500 `ai_failed`(`retriable:true`, 저장 안 함 — 파트가 하나라 부분 성공이 없다) / 500 `save_failed`.
+- 요청이 도중에 끊기면(60초 상한) 서버는 저장까지 마칠 수 있다 — 화면은 목록을 다시 읽어 누른 뒤 생긴 연습이 있으면 그것을 쓰고 "서버에서 만들어졌을 수 있어요"를 알린다(버튼 이름 "그래도 새로 만들기" — SPEC §20-3 관용구).
+- **버튼 옆 비용 캡션**: "새 문제 만들기" 옆에 "AI 문제 만들기 1회 — 폴더를 보거나 공략을 듣는 건 AI 0"을 적고, **Q3–4 폴더에서만** "1회(사진 1장 포함)"으로 적는다(구현 반영 — 폴더 안에서 "Q3–4는"이 어색해 폴더마다 맞게 줄였다. `toeicDrillCostCaptionKo(part)`, `lib/toeic-drill-view.ts`). 그 유형에 **응시 전 연습**이 있으면 버튼 위에 "응시 전 연습 n개 — 먼저 풀어 보세요"와 가장 최근 것으로 가는 링크를 보인다(새로 만들기를 막지는 않는다).
+
+#### 12-7-3. 사진 (Q3–4만)
+
+- 만들기가 성공하면 **같은 버튼 흐름 안에서** `POST /api/toeic/mocks/[id]/image {slot:0}` 한 번을 부르고 기다린다(관문 P §4-10 그대로 — 압축 재시도·먼저 준비된 사진이 이긴다·끊겨도 서버가 끝까지 저장·실패를 받으면 한 번 다시 읽어 확인). 화면을 다시 열었는데 아직 `pending`이면 **자동으로 부르지 않고** "사진 만들기" 버튼을 보인다(비용이 드는 요청은 명시적 흐름으로만). 그 옆에 "사진 없이 시작"도 둔다(구현 반영 — 키가 없거나 비용을 쓰지 않으려는 경우. 실패 때와 같은 버튼이다).
+- 실패하면 "사진 다시 만들기" / "사진 없이 시작"(응시 화면이 장면 설명 `sceneKo`를 대신 보인다 — 기존 동작).
+- 준비 중에도 사진을 보여 주지 않는다 — 응시 화면의 준비 45초보다 먼저 사진을 보면 실전이 아니다. 상태("사진 준비 중 / 준비됨 / 실패")만 보인다.
+
+#### 12-7-4. 응시 — 기존 응시 화면 그대로
+
+- 경로는 기존 `/toeic/mocks/[id]/take?scope=part&part={mockPart}`. 시작 라우트(`POST …/attempts`)와 응시 페이지가 같은 판정을 쓴다 — `decideAttemptScope(scope, parts, mock.parts, mock.drillPart)`가 `{ok, parts, questions}`를 돌려준다. 연습이면 `scope`는 `"part"`, `parts`는 `[drillPart]`여야 하고(아니면 판정 사유 `scope_parts_mismatch` → 400 `invalid_input`, 기존 관용구), `questions`는 단위표에서 온다. 모의고사는 지금과 같다(`questions = toeicAttemptQuestions(parts)`).
+- `attempt.questions`를 읽는 자리로 바꾼다 — 지금 `toeicAttemptQuestions(attempt.parts)`를 부르는 다섯 곳(응시 페이지·결과 페이지·시작 라우트 응답·끝내기 라우트의 범위 검사와 `completeFinishAnswers`·채점 라우트의 문항 범위). **라우트가 바꾸는 것은 범위의 원천(`attempt.parts` → `attempt.questions`)뿐이고 상태코드·오류 이름은 기존 계약 그대로다.** 그래서 사진 연습(`questions = [3]`)에서는:
+  - 끝내기는 Q3만 채운다. 끝내기 본문에 Q4가 있으면 **400 `invalid_input`**(`answers.{i}.q` — "이 응시 범위에 없는 문항", 기존 관용구)이다.
+  - Q4 **채점** 요청은 **404 `question_not_found`**(`lib/toeic-attempt-contract.ts`의 채점 오류 유니온 — 기존 계약)이다.
+  - 400으로 바꾸지 않는다. 결과 화면의 채점 오류 분기와 기존 eval이 404를 전제한다.
+- 형식표(§6-4)는 그대로다 — 준비·답변 시간, Q8 앞 표 읽기 45초, Q10 두 번 재생, 질문 음성·무음 안전망·녹음 규칙·마이크 상한까지 실전과 같다.
+- **지시문 변형 하나**: 지시문은 파트 첫 문항에서 읽고 숫자는 형식표에서 계산한다(§6-4). 사진 1장 응시에서 "사진 2장이 한 장씩 나와요"를 읽으면 틀리므로 순수 함수 `toeicPartDirections(part, count)`를 둔다 — `count`가 그 파트 문항 수와 같으면 `TOEIC_PART_DIRECTIONS[part]`와 **글자까지 같고**, `picture`의 `count = 1`이면 한 장짜리 문장(형식표에서 계산 — en "Describing a picture. One photo will appear. Study it for {prep} seconds, then talk about it for {answer} seconds." / ko "사진 묘사. 사진 1장이 나와요. {prep}초 동안 살펴본 뒤, {answer}초 동안 묘사하세요."). 이 앱의 문장이다(ETS 원문 아님).
+  - 함수는 `lib/toeic-mock.ts`에 둔다(템플릿·`COUNT_EN`·형식표가 이미 거기 있다). `count`가 파트 문항 수와 같으면 `TOEIC_PART_DIRECTIONS[part]`를 **그대로** 돌려준다.
+  - 응시 화면(`components/toeic-take-view.tsx`)은 `TOEIC_PART_DIRECTIONS[part]`를 쓰는 **세 곳을 모두** 이 함수로 바꾼다 — 지시문 읽기, 지시문 프리페치, 화면 글. 셋이 같은 글자여야 프리페치 캐시가 맞는다(하나만 바꾸면 사진 한 장 연습에서 "사진 2장"이 화면이나 소리 한쪽에 남는다).
+- **응시 범위 라벨**: 연습이면 `toeicScopeLabelKo` 대신 `toeicDrillScopeLabelKo(part, questions)`를 쓴다(`lib/toeic-attempt-contract.ts`, 순수).
+  - 결과는 "공략 연습 · {toeicMockPartLabelKo}"이고, 문항이 파트의 일부면 " · Q3"처럼 문항을 덧붙인다.
+  - 기존 라벨 "유형 연습 · Q3–4 사진 묘사"는 두 문항을 푸는 것처럼 읽혀 쓰지 않는다.
+  - 응시 페이지·결과 페이지가 문서의 `drillPart`로 고른다.
+- 연습에 `scope:"full"`이나 다른 파트를 보내면 400 `invalid_input`이다. 문구는 "공략 연습은 그 유형 하나로만 응시해요." — 기존 "실전 응시는 다섯 파트를…" 문구를 연습에 내지 않는다.
+
+#### 12-7-5. 채점·결과 — 기존 그대로
+
+- 결과 화면 `/toeic/attempts/[id]`와 "AI 채점 받기" 버튼(문항마다 관문 T 1회 + 호출 D 1회, 동시 2)을 그대로 쓴다. **자동 채점하지 않는다**(§0-2 비용 원칙 — 연습이 끝나면 결과 화면이 곧바로 열리고 버튼이 맨 위에 있다).
+- `buildFeedbackInput`은 `attempt.mockId → 연습 문서`로 그대로 돈다(`picture.items[0]`이 Q3). 추정 총점은 11문항이 모두 있을 때만이라 연습에는 나오지 않고, 결과 화면의 "유형 연습은 문항 점수만" 안내가 그대로 뜬다.
+- 결과 화면의 "뒤로"는 그 유형 폴더(`?tab=drill`)다. 끝 버튼 줄은 연습이면 "같은 문제 다시"(같은 연습 응시 — 기존 "↻ 다시 응시")와 "새 문제"(폴더의 만들기로) 두 개이고, **"학습 보기로"는 숨긴다**. 학습 보기는 연습이면 무조건 폴더로 보내므로(§12-3), 버튼을 두면 폴더로 튄다.
+- **응시 뒤 복습 자료를 결과 화면에 보인다**(검토 반영 — 선택지 (나), §12-0). 모범답변 접기(`<details>` "모범답변(참고용) 보기") 안의 `tipKo` 아래에 둘을 더한다.
+  - Q3–4는 **묘사 포인트** `keyPointsKo`(목록).
+  - Q11은 **답변 뼈대** `outlineKo`(번호 목록).
+  - 두 필드는 이미 문항 화면 자료 `ToeicQuestionView`(`buildToeicQuestionView`)에 실려 있다. 데이터 경로는 새로 없고 화면만 그린다.
+  - 규칙은 하나다 — "비어 있지 않으면 보인다". 그래서 실전 모의고사의 결과 화면에도 똑같이 보인다(무해한 추가 — 학습 보기에 이미 있는 자료다).
+  - 교재 공략(묘사 순서·의견 답변 틀)과 짝을 이루는 자료라, 응시가 끝난 뒤 공략 읽기로 돌아가기 전에 여기서 확인한다.
+- 문항별 채점 버튼(묶음 3문항 중 하나만 채점)은 이번에 두지 않는다. 결과 화면은 실전과 공용이고, 실패한 문항의 "↻ 다시 채점"은 이미 문항별이다 — §12-12 7.
+- 연습이면 문항마다 **"🧩 틀 점검"**을 더 보인다(§12-7-9 — AI 없음).
+
+#### 12-7-6. 녹음 보관 — 연습이 실전 녹음을 밀어내지 않게
+
+`lib/toeic-rec-store.ts`는 지금 **전체 최근 응시 5회분**만 남긴다(`pickAttemptsToEvict`는 종류를 모른다). 실전 응시 뒤 채점 전에 연습을 다섯 번 하면 실전 녹음이 기기에서 지워지고, 그 응시는 영영 채점할 수 없다. 그래서 녹음 메타에 `pool: "mock" | "drill"`(옛 메타는 `"mock"` — `toeicRecPoolOf`)을 두고 **풀마다 따로** 최근 5회분(`TOEIC_REC_KEEP_ATTEMPTS`, 같은 값)을 남긴다 — 같은 `pickAttemptsToEvict`를 풀별로 거른 목록에 부른다(`pickAttemptsToEvictByPool`). 응시 화면은 문서의 `drillPart`로 풀을 안다. IndexedDB 버전·store 이름은 그대로다(업그레이드 없음).
+
+#### 12-7-7. 새 프롬프트 — 없다
+
+호출 C(머리말 + 파트 과제 5)·D·관문 P 접미사·JSON Schema 8개를 한 글자도 바꾸지 않는다. spec-sync 대상(원문 14 + JSON 8 + 호출 옵션 문장)도 그대로다. 연습에서 달라지는 것은 입력(활용할 표현 목록의 내용·순서 — 틀의 `~` 형태가 앞에 온다, 주제 힌트 하나)과 후처리(두 장면 중 하나만)뿐이고, 공략 본문과 틀 예문은 프롬프트에 들어가지 않는다(§12-2-6). 템플릿 훈련(§12-5)도 새 프롬프트가 없다 — 전사는 관문 T 그대로다.
+
+#### 12-7-8. 비용 — 연습 한 번
+
+| 유형 | 만들기(버튼) | 사진(버튼 흐름 안) | 채점(버튼) | 발음 |
+|---|---|---|---|---|
+| Q3–4 | 호출 C 1회(재요청 시 2) | 관문 P **1장**(크기 초과면 한 번 더 압축해 1장 더) | T 1 + D 1 | 지시문·결과 모범답변/개선 답변 en-US |
+| Q5–7 | 호출 C 1회(≤2) | 0 | T 3 + D 3(재요청 시 D 최대 6) | 지시문·소개·질문 3 + 결과 |
+| Q8–10 | 호출 C 1회(≤2) | 0 | T 3 + D 3(≤6) | 지시문·도입·질문 3(Q10 두 번 재생은 캐시) + 결과 |
+| Q11 | 호출 C 1회(≤2) | 0 | T 1 + D 1(≤2) | 지시문·질문 + 결과 |
+
+- 폴더를 열거나 목록을 보는 것만으로는 AI가 돌지 않는다. 무응답(전사 2단어 미만)은 호출 D 없이 0점(§5-0). 이미 채점된 문항은 0.
+- 틀을 잇는 것(§12-7-9)은 비용을 늘리지 않는다 — "활용할 표현" 목록의 내용만 바뀌고(24개 상한 그대로), 틀 점검은 이미 만든 전사문·저장된 출력만 쓴다.
+
+#### 12-7-9. 실전 적용 — 틀을 연습에 잇는다
+
+외운 틀을 처음 보는 문제에 꺼내 쓰는 연습이다(참고 자료가 권한 세 번째 단계). 새 AI 호출·새 프롬프트 없이 **기존 입력 경로**로 잇는다.
+
+- **입력 경로 — 코드로 확인한 것**: 호출 C 사용자 메시지의 "활용할 표현" 칸(§4-7 — `buildMockUserMessage`가 `normalizeMockExpressions`로 정리해 `" / "`로 잇는다), 호출 C 머리말의 "활용할 표현 목록을 받으면 모범답변에 자연스럽게 어울리는 것만 쓰고 `usedExpressions`에 원래 표현과 실제 구간으로 적는다"(§4-1), 호출 D의 `tryExpressions`(받은 목록 중 0~3개 — §5-1), 후처리 `cleanUsedExpressions`·`postprocessFeedback`(목록 밖은 버린다, 대소문자 무시 대조). 틀을 `~` 형태로 이 목록에 넣으면 C·D의 프롬프트·스키마·zod를 바꾸지 않고도 **모범답변이 틀을 쓰고**, 피드백이 **넣었으면 좋았을 틀**을 짚는다. 그래서 입력 칸을 새로 만들지 않는다.
+- **고르기** `pickTemplatesForDrill(items, sessions, opts)`(`lib/toeic-template.ts`, 순수 — `pickExpressionsForDrill`이 부른다, §12-7-2)
+  - 대상: 그 유형 틀(`parts`에 그 유형이 든 것).
+  - 약함은 두 테스트 모드를 합쳐 본다 — 어느 모드든 틀렸고 미졸업 → 둘 다 안 해 봄 → 진행 중 → 두 모드 다 졸업. 같은 순위는 오답 많은 순 → 무작위(`rng`).
+  - **단계마다** 가장 약한 틀 하나를 단계 순서로 먼저 고르고(그 단계의 묶음들 안에서), 남은 칸을 단계·소재 묶음을 통틀어 약한 순으로 채워 최대 10개(`TOEIC_DRILL_TEMPLATES_MAX`)를 고른다. 연습 문제의 주제 힌트(`pickDrillTopic`)에 맞는 소재 묶음을 따로 고르지는 않는다 — 주제 풀은 코드 상수이고 소재 묶음은 원본이라 둘을 잇는 표를 두면 두 곳이 어긋난다. 약한 순 채우기가 소재 묶음의 틀도 올린다(§12-12 20).
+  - `frameToExpression`으로 바꾼 글자가 목록에 들어가고, 그 목록이 그대로 `expressionsUsed`에 저장된다(보낸 목록 = 저장 목록 — 채점 때 D가 같은 목록을 받는다).
+- **결과 화면의 "🧩 틀 점검"** — 연습 문서일 때만, 문항마다(결과 화면은 실전과 공용이라 `drillPart`로 가른다). AI를 부르지 않는다 — 채점 때 이미 만든 전사문과 저장된 C·D 출력만 쓴다. 결과 페이지(서버)가 연습이면 틀 은행을 읽어 그 유형 틀을 넘긴다(클라이언트에는 타입만).
+  - **내 답에서 쓴 틀**: `findTemplatesInTranscript(그 문항 전사문, 그 유형 틀)`(§12-5-5) — 틀 줄(자리 칩)과 단계·묶음 이름.
+  - **빠진 단계**(Q3–4·Q11만 — `TOEIC_TEMPLATE_FLOW_CHECK_PARTS`): `templateStepCoverage`에서 쓴 틀이 없는 **단계**(소재 묶음은 세지 않는다). 한 답이 흐름 전체를 지나야 하는 유형만 보인다 — Q5–7·Q8–10은 질문마다 짧게 답해 흐름 전부를 요구하지 않는다. 원본 흐름으로 Q3–4는 단계 4개, Q11은 5개라, 60초 답이 흐름을 따랐다면 빠진 단계는 0~1개다.
+  - **쓸 수 있었던 틀**(합쳐 최대 5개, 겹치지 않게 이 순서로): ① 모범답변이 쓴 틀 — 문항의 `usedExpressions`를 틀로 되짚은 것 중 내가 안 쓴 것 ② AI 피드백의 `tryExpressions` 중 틀로 되짚히는 것 ③ (Q3–4·Q11) 빠진 단계마다 그 단계의 가장 약한 틀 하나.
+  - 되짚는 표 `templateByExpression(items)`: `matchKey(frameToExpression(frameEn))` → 틀 `key`(zod가 은행 안 유일을 보장한다), 그리고 `guideRefs`의 공략 표현마다 그 표현의 `matchKey` → 틀 `key`(교재 표현 글자와 `~` 형태가 다를 때. 여러 틀이 같은 표현을 가리키면 파일 순서로 첫 틀).
+  - 보이는 틀마다 "이 틀 연습하기" → ② 탭의 그 카드(`?tab=templates&tpl={key}`).
+  - 채점 전(전사문 없음)에는 ①만 보인다("모범답변이 쓴 틀"). 무응답(전사 2낱말 미만 — 0점 처리된 문항)도 전사문이 있는 것으로 본다 — 쓴 틀 0, (Q3–4·Q11) 빠진 단계 전부.
+  - 결과 페이지가 넘기는 틀 자료(`toeicDrillCheckData`)에서 예문·`testFills`를 뺀다 — 틀 점검은 틀 줄만 쓰고, 틀 바꿔 말하기의 정답 채움이 다른 화면 소스에 실리지 않게(구현 반영).
+  - 전사문 매칭의 한계: 한 낱말 조각뿐인 틀은 찾지 않고, 발음 때문에 전사가 다른 낱말로 적히면 쓴 틀도 못 찾는다 — 그래서 "쓴 틀"은 참고이고 점수가 아니다.
+- **준비 화면 — 옛 열린 결정 §12-12 9를 닫는다**: ④ 탭의 "새 문제 만들기"·"시작" 위에 접힌 "🧩 이 유형 답변 흐름"을 둔다 — 흐름의 **단계**마다 단계 이름과 틀 하나(가장 약한 것)의 틀 줄(자리 칩)과 "이 틀 연습하기"(② 탭의 그 카드). 이 접기와 틀 점검의 "빠진 단계의 가장 약한 틀"은 `drillStepPicks`(`lib/toeic-drill-view.ts`)가 `pickTemplatesForDrill`을 **무작위 없이**(같은 약함이면 파일 순서) 불러 고른다 — 화면을 새로 읽을 때마다 바뀌지 않게. 연습 **입력**의 틀 고르기는 무작위 동률 깨기 그대로라, 약함이 같은 틀이 많으면 접기에 보인 틀과 모범답변에 넣은 틀이 다를 수 있다(알려진 차이 — QA 이월 P3). **응시 화면(준비 45초) 안에는 두지 않는다** — 응시 화면은 실전과 공용이고, 준비 시간에 틀을 보면 실전 조건이 흐려진다. 시작 전에 보는 것은 자료를 보고 시험장에 들어가는 것과 같다.
+
+### 12-8. 화면·경로
+
+```
+/toeic                              허브 — 카드 셋: 📒 표현집 · 🧑‍💼 모의고사 · 🧭 토익스피킹 유형별 공략(sm:col-span-2)
+/toeic/guides                       유형 폴더 4개(Q3–4 사진 묘사 · Q5–7 듣고 답하기 · Q8–10 정보 활용 · Q11 의견 말하기) + 📂 파일로 가져오기
+/toeic/guides/[part]                part ∈ q3_4 | q5_7 | q8_10 | q11 — 탭 넷(?tab=read|templates|quiz|drill)
+                                      📖 공략 읽기(섹션·줄 🔊·섹션 ▶·듣기 바·"영어만" 틈·🧩 칩)
+                                      🧩 템플릿 훈련(이어서 하기·단계/소재 칩·틀 카드·예문 🔊·따라 말하기 바·🧩 틀 테스트·최근 테스트 — ?tpl= 로 카드)
+                                      📝 표현 시험(표현 목록 🔊·🧩 칩 + 시험·📝 교재 문장 말하기·오답노트·기록 버튼 → /toeic/sets/guide-{part}/… — ?expr= 로 줄)
+                                      🎤 한 문제 연습(🧩 답변 흐름 접기 + 목표 등급 + "새 문제 만들기" → 사진 준비(Q3–4) → "시작" → 응시 화면, 최근 연습 목록)
+/toeic/guides/[part]/templates/test 🧩 틀 테스트(?mode=recall|swap&scope=group|step|wrong|all&group=&step=) — 전면 화면·시작 탭·녹음·받아쓰기·○/✕
+/toeic/mocks/[id]/take              (기존) 연습도 여기서 응시 — "뒤로"는 유형 폴더
+/toeic/attempts/[id]                (기존) 연습 결과·AI 채점·🧩 틀 점검(연습만) — "뒤로"는 유형 폴더
+/toeic/sets/[id]/quiz|wrong|history (기존) 공략 표현 시험 — "뒤로"는 유형 폴더. 틀 은행 id면 /toeic/guides로
+
+/api/toeic/guides/import                 POST toeic-guides/v2 (AI 없음, 제자리 갱신·멱등 — 틀 은행 포함)
+/api/toeic/guides/templates/transcribe   POST 녹음 → 글자(키 검사 먼저 → 관문 T 1회, 저장 없음)
+/api/toeic/guides/templates/sessions     POST 템플릿 테스트 기록(AI 없음, 멱등 — 문서 id tpl-{clientSessionId})
+/api/toeic/guides/[part]/drills          POST 연습 만들기(키 검사 먼저 → 호출 C 1회 — 활용할 표현 앞에 틀)
+```
+
+- 셸은 토익 관용구 그대로 — `u-navbtn` "← 아빠의 영어"(폴더 목록)·"← 유형별 공략"(폴더), 공통 레이아웃·`EnglishNav` 없음, 새 전역 CSS·토큰 없음(화면별 CSS 모듈에 기존 변수만). store를 읽는 페이지는 `force-dynamic`. 경로 조각에 점을 쓰지 않는다(정적 확장자 예외가 PIN 게이트를 우회한다).
+- **유형 이름은 두 상수 중 어느 쪽인지 칸마다 정해 쓴다.**
+  - 긴 이름 `toeicMockPartLabelKo`("Q3–4 사진 묘사"): 폴더 이름·폴더 머리, 공략 세트 `titleKo`(§12-3), 스트릭 라벨(§12-9), 응시 범위 라벨(`toeicDrillScopeLabelKo` — §12-7-4).
+  - 짧은 이름 `TOEIC_MOCK_PART_NAME_KO`("사진 묘사"): 연습 제목 "사진 묘사 연습 3"(§12-7-2).
+  - 파일이 없어도 네 폴더가 보인다. 폴더 카드에는 가져왔는지(섹션 n · 표현 n · 말하기 n), **틀 n · 익힘 m**(§12-5-6), 최근 연습 수·마지막 점수를 보인다(구현 반영 — "연습 n · 마지막 a/b": n은 그 유형 연습 문서 수, 점수는 최신순으로 처음 만나는 **다 채점한** 연습의 점수 합/만점, `toeicDrillFolderCard`).
+- 탭 순서는 학습 흐름(① 읽기 ② 템플릿 훈련 ③ 표현 시험 ④ 한 문제 연습)이고, 주소가 탭을 기억한다(`?tab=` — 같은 폴더 안 탭·칩 이동은 `history.pushState`로 서버 왕복 없이, 다른 폴더는 `router.push`). 폰에서 탭 넷이 줄을 넘치면 고른 탭이 보이도록 **탭 줄만** 가로로 민다(페이지 가로 스크롤 없음 — 구현 반영). **`?tab`이 없으면 그 유형 틀이 1개 이상일 때 ② 템플릿 훈련을, 없으면 ① 읽기를 연다**(템플릿 반복이 핵심 — 폴더를 여는 대부분의 이유다). 기기에 마지막 탭을 기억해 바로 여는 기능은 두지 않는다(§12-12 10).
+- **빈 상태**: 공략을 아직 가져오지 않은 폴더에서 📖·📝 탭은 "아직 공략 자료가 없어요" + "📂 파일로 가져오기" 버튼, 🧩 탭은 틀 은행이 없거나 그 유형 틀이 없으면 "아직 틀이 없어요" + 같은 버튼. **🎤 한 문제 연습은 공략 없이도 된다**(AI가 새로 만들므로 — §0-4 독립 원칙과 같은 모양, 활용할 표현만 있는 곳에서 온다). 가져오기 결과는 "추가 n · 고침 n · 그대로 n"(틀 은행도 한 칸으로 센다)으로, 409는 충돌 키와 이유로 알린다.
+- 새 화면 파일: `components/toeic-template-view.tsx`(② 탭 — 틀 카드·따라 말하기 바), `components/toeic-template-test.tsx`(테스트 전면 화면), `app/toeic/guides/[part]/templates/test/page.tsx`(서버 — 틀 은행·틀 세션을 읽어 넘긴다, `force-dynamic`). 계약은 `lib/toeic-guide-contract.ts` 하나에 더한다(전사·기록 라우트 응답, 클라이언트는 타입만). 구현이 더한 것: 서버 페이지 `app/toeic/guides/page.tsx`(폴더 목록)·`app/toeic/guides/[part]/page.tsx`(폴더 — 네 값 밖은 404), `components/toeic-guide-folder-view.tsx`(탭 셸)·`toeic-guide-read-view.tsx`(①)·`toeic-guide-expr-list.tsx`(③의 표현 목록·🧩 칩)·`toeic-drill-view.tsx`(④)·`toeic-guide-import-button.tsx`(📂 — 목록·빈 상태 공용)·`toeic-template-lines.tsx`(틀 줄·예문 줄 — ② 탭과 테스트가 한 벌)·`use-toeic-shadow-settings.ts`(따라 말하기 설정 기억).
+- 최근 연습 목록: 그 유형 연습 최신 10개(`TOEIC_DRILL_RECENT_MAX`) — 제목·날짜·목표 등급·상태(사진 준비 중 / 응시 전 / 녹음 n · 채점 m / 점수 합·만점). 구현이 정한 뜻(`toeicDrillStatusKo`): 응시 기록이 0이면 "응시 전"이고, 그중 사진 칸이 아직 `pending`이면 "사진 준비 중"이다(만드는 요청이 진행 중인지는 서버가 모른다 — 다시 연 pending도 이 이름). 시작만 하고 떠난 응시도 "응시함"으로 센다. 응시가 있으면 가장 늦은 응시로 "녹음 n · 채점 m", 녹음된 문항을 다 채점했으면 "점수 합 / 만점"(만점 = 응시 범위 문항 만점의 합). "응시 전 연습 n개" 안내도 같은 판정(`pendingToeicDrills`)이다.
+  - 읽기는 스토어 메서드 `listToeicDrills(mockPart)`로 한다. Firestore는 `where("drillPart", "==", mockPart)` **등호 하나**로 읽고, `orderBy`를 섞지 않는다(복합 색인이 필요 없다). 메모리에서 최신순으로 정렬해 10개를 자르고, 파일 백엔드는 메모리에서 거른다.
+  - 필드가 없는 옛 문서가 빠지는 것은 맞는 결과다 — 옛 문서는 연습이 아니다.
+  - 모의고사 목록 쪽(`drillPart == null`)은 §12-3대로 메모리에서 거른다. 등호 null 쿼리는 필드가 없는 옛 문서를 빠뜨린다.
+  - 응시 기록은 응시 컬렉션을 읽어 메모리에서 모은다(가족 규모). 삭제·자동 정리는 두지 않는다 — 연습을 지우면 딸린 응시가 연쇄 삭제되고 스트릭 과거가 사라진다(SPEC §20-6).
+
+### 12-9. 스트릭 §17-8 영향
+
+계산식 변경 **0** — 공략 표현 시험과 **템플릿 테스트**는 `toeicQuizzes`에, 연습 응시는 `toeicAttempts`에 저장되어 기존 규칙(답한 문항 ≥ 1 / 녹음된 문항 ≥ 1)으로 그대로 센다. `toeicStreakSessions`는 모드를 보지 않으므로 틀 모드 세션도 들어간다. 템플릿 테스트에서 "답한 문항"은 아빠가 ○/✕를 정한 문항이다(받아쓰기를 못 써 자기 판정한 문항도 — 녹음 없이 한 테스트도 센다. 표현 말하기 시험의 자기 채점과 같은 근거다). `eval:streak` ⑥의 배선 정규식도 그대로 통과해야 한다(회귀 확인용으로 돌린다).
+
+- 세지 않는 것: 공략 읽기·🔊·섹션 듣기(읽기·듣기 — §17-8 "전체 듣기·학습 보기"와 같은 근거), **템플릿 따라 말하기**(듣고 따라 하는 것 — 기록이 남지 않아 확인할 수 없다. 같은 근거), 가져오기·연습 만들기·사진(준비), AI 채점(응시한 날을 이미 셌다). "녹음 없이 연습"한 연습 응시도 세지 않는다(기존 규칙).
+- 라벨만 가른다(`/api/streak`, 가장 늦게 시작한 것 규칙 그대로): 공략 세트의 시험이면 `공략 표현 · {유형 이름}`, **틀 은행의 테스트면 `템플릿 훈련 · {모드 이름}`**(모드 이름 = `TOEIC_TEMPLATE_QUIZ_MODE_LABELS_KO` — "예문 말하기"·"틀 바꿔 말하기". 틀은 여러 유형에 걸치므로 유형 이름을 붙이지 않는다), 연습 응시면 `공략 연습 · {유형 이름}`(유형 이름 = `toeicMockPartLabelKo`), 그 밖은 기존 `표현집 · …`/`모의고사 · …`.
+- SPEC §17-8에 한 줄을 덧붙였다(2026-09-28 — append, 표와 §번호 그대로). 라벨은 순수 함수 `toeicQuizStreakLabel`·`toeicAttemptStreakLabel`(`lib/toeic-streak.ts` — 런타임 import 0, 이름표는 라우트가 단일 정의처 `lib/toeic-quiz`·`lib/toeic-mock-contract`에서 넘긴다)이 만들고, `eval:streak` "영어 트랙" ⑦·⑧이 잠근다.
+
+### 12-10. eval (`scripts/eval-toeic.ts` — 오프라인, 실호출 0)
+
+> 구현 반영(2026-09-28): 아래 항목은 `scripts/eval-toeic-guides.ts`(순수 층 — 가져오기·틀 은행 zod·대본·비교·테스트·연습 순수 함수·실제 파일)·`eval-toeic-guides-app.ts`(S1 — 화면 순수 함수·Firestore 본문·가져오기·읽기·템플릿 탭 소스 대조)·`eval-toeic-guides-s2.ts`(S2 — 틀 테스트 화면·표현 시험·전사/기록 라우트 소스 대조·`addToeicQuizWithId` 파일 백엔드 실행)·`eval-toeic-guides-s3.ts`(S3 — 연습 레코드·녹음 풀·연습 화면·상태코드 소스 대조)에 나뉘어 있고 `eval-toeic.ts`가 한 번에 부른다. 합계 **985항목**(유형별 공략 628 — 큰 영역은 틀 은행 zod 99·공략 화면 순수 함수 64·공략 가져오기 zod 57·소스 대조 S1 43/S2 53/S3 33·공략 실제 파일 25), 0 SKIP(두 가져오기 파일이 있는 로컬 기준). 파일 백엔드를 실제로 도는 항목은 **임시 폴더를 cwd로 둔 자식 프로세스**에서 `getStore()`를 만든다 — eval 프로세스는 이미 `lib/store`를 불러 저장소 `data/db.json`을 가리키므로 여기서 스토어를 만들지 않는다(전후 sha 검사 포함). 공용 발음 모듈은 `eval:speech` **168항목**(쉼 21·준비 10·잠금화면 4 포함), 스트릭 라벨은 `eval:streak` **56항목**("영어 트랙" 9 — ⑦ 틀 테스트·공략 표현 라벨, ⑧ 연습 라벨)이 잠근다.
+
+- **가져오기 zod 반례**(모든 문장은 지어낸 것)
+  - 형식·최상위: 형식 문자열 다름(`toeic-sets/v1`, 초안 `toeic-guides/v1`), `guides` 5개, `templates`가 null인데 `guides` 0개(통과 쪽: `templates`가 있으면 0개도 된다 — 단 `guideRefs`가 빈 틀만), `part` `q1_2`, 파일 안 `part` 중복, `presetKey` 형식/중복(틀 은행 키가 공략 키와 같은 것 포함).
+  - 칸 내용: 한국어 칸에 한글 없음, 영어 줄에 라틴 없음, **슬롯 밖 한글**, 슬롯 짝 안 맞음, 중첩 슬롯, 빈 슬롯, **영어 줄에 대괄호**, `groupKo` 31자.
+  - 강조·밑줄: `emphasis`·`underline`이 `en` 밖(대소문자만 다른 것도 거부), `en`이 null인데 `emphasis`/`underline` 있음.
+  - 블록: `alt`가 list 블록이나 첫 줄에, `en`·`ko` 둘 다 null, 빈 `text` 블록.
+  - **completions**: `lead` null, `lead.en`에 `~`·슬롯, 줄 `en` null, 줄에 `example`·`alt`, 합성 문장 301자.
+  - 개수·크기: 개수 상한(섹션 31·블록 61·줄 41). **크기 900,000바이트 초과**는 한글로 채운다 — 글자 수는 300,000 남짓이라 글자 기준이면 통과해 버리는 입력이다.
+  - 표현: 81자, 중복(대소문자·공백 차이), `partial` 없이도 뜻 빈 값 거부. **공략 표현·예문에 `{x}`·`a/b`·`[x]`** — 영어 슬롯도 거부. **표현에 한글 자리 `{장소}`**가 들어오면 거부 경로가 그 항목의 `expression`이다(파일 전체 400이 어디서 났는지 경로로 보인다).
+  - 말하기: `speak.no` null/중복, `modelAnswer`에 한글·`~`·`/`, `promptKo` 301자, `speak` 61개.
+  - 통과 쪽: 지어낸 예시 파일(§12-2-2 — completions 블록 포함), 한국어 칸 속 영어 단어, 영어 줄의 슬래시 대안·띄어 쓴 괄호(읽기 본문에서는 된다), 형광과 밑줄이 겹침, `speak` 60개, 모르는 키(버려짐).
+  - 기존 `checkEntryText` 불변: 표현집 가져오기(`toeicImportFileSchema`)는 표현에 `/`가 있어도 **지금처럼 통과**한다(공략 쪽 규칙이 새지 않았다).
+- **틀 은행 zod 반례**(§12-2-7 — 모든 문장은 지어낸 것. 각 반례의 거부 경로가 그 칸을 가리키는지도 본다)
+  - **예문 ≠ 틀 + 채움**: 한 글자 다름, **대소문자만 다름**(문장 첫 자리 채움을 소문자로), 끝 마침표 빠짐, 공백 두 칸. 채움 수 ≠ 자리 수(모자람·남음).
+  - 틀 줄: 자리 0개·5개, 자리 이름 중복, 자리 밖 한글, 자리 밖 `~`·`/`·`[`, 낱말에 붙은 자리(`{동작}ing`·`{사람}'s`), 고정 낱말 0개(`{가} {나}.`), 121자.
+  - 한국어 틀: 자리 이름 모임이 영어와 다름(하나 빠짐·이름 다름), `~` 사용, 한글 없음.
+  - 채움: 한글, `{`, `~`, `/`, 앞뒤 공백, 81자, **라틴도 숫자도 없는 채움**(기호만 — `$`·`-`). 통과 쪽(검토 B1): **`$15`·`20`·`7:30`**처럼 숫자만 있는 채움. 예문 2개·6개, 예문 `en` 중복(대소문자만 다름), `fills` 묶음 중복, 예문 `ko`에 `~`.
+  - **테스트 전용 채움** `testFills`: 0묶음·4묶음, 묶음 길이 ≠ 자리 수, 채움 규칙 위반(한글·`/`), 예문 채움 묶음과 같음(대소문자만 다른 것 포함), 두 묶음이 같음, 채운 문장 301자.
+  - 키·유형: `key` 형식(대문자·밑줄·41자)·중복, `parts` 빈 배열·`q1_2`·중복, `items` 301개.
+  - 출처: `source:"guide"`인데 `guideRefs` 빈 배열, `source:"new"`인데 `kind:"expression"`·`kind:"lead"`, `guideRefs` 5개, 같은 연결 두 번, 연결의 `part` ∉ `parts`, **가리키는 표현이 파일에 없음**(글자 다름·다른 유형에 있음·그 유형 항목이 파일에 없음), 없는 템플릿 단계 `label`, 없는 머리말. 통과 쪽: 한 틀이 두 유형 공략의 표현과 단계에 함께 걸린 것.
+  - **교재 고정 부분이 온전하지 않음**: 교재 표현 `I find ~ relaxing`(지어낸 것)을 가리키면서 틀이 `I find {활동} calming.`(한 낱말 바꿈) → 거부. 통과 쪽: 대소문자·축약형만 다른 것(`It's ~` ↔ `It is {…}`), 교재 조각이 자리를 사이에 두고 순서대로 있는 것, 첫 낱말이 아닌 `A`·`B` 자리(`I rank A above B` ↔ `I rank {하나} above {다른 하나}.`), 머리말의 `a/b` 대안 중 하나, **소문자로 시작하는 동사 연어**의 활용형(`pay rent` ↔ `She pays rent {때}.` — 불규칙 활용은 거부).
+  - **머리말 연결**(`leadMatchesFrame`): 통과 — 포함(`Two cooks are` ↔ `Two cooks are {동작}.`), 머리 사례(`I water the plants` ↔ `I water {무엇} {얼마나 자주}.` — 맞춘 고정 낱말 2개). 거부 — 맞춘 고정 낱말이 1개뿐인 머리 사례(`I bake cookies` ↔ `I {동작} {때}.`), 머리말 낱말 하나가 바뀜, 머리말이 틀 머리가 아닌 가운데에만 걸침(포함도 아닌 것).
+  - **`~` 형태 충돌**: 두 틀의 `frameToExpression` 글자가 같음(자리 이름만 다름) → 거부.
+  - `flows`: 유형 중복, 쓰이는 유형의 흐름이 없음, 틀이 없는 유형의 흐름, 단계 2개·7개, `stepKo` 중복·한글 없음, 단계 안 묶음 0개·9개, 소재 17개, 묶음이 두 번(단계와 소재에), 틀의 `groupKo`가 흐름에 없음, 흐름의 묶음에 그 유형 틀이 없음, **한 유형 묶음의 틀 7개**(유형별 틀 6개 + 다른 유형 원본의 공통 틀 1개로 7이 되는 것 포함 — 유형마다 센다).
+  - **`alignmentSkips`**: 대상이 파일에 없음, **어떤 틀이 연결한 대상을 건너뜀**, 같은 대상 두 번, `reasonKo` 한글 없음·81자, `coveredBy`가 없는 key·그 유형을 `parts`에 갖지 않은 틀.
+  - **정렬 빠짐**(검토 B5): 자리 표현 하나를 연결도 건너뜀도 안 함 → 400, 경로 `templates.alignment.{유형}.expression.{i}`이고 본문에 그 표현 글자가 없다(값 누출 검사와 같은 표식). 답변 틀 단계 `label`·머리말도 같게. 통과 쪽: 자리 없는 연결어 표현은 빠져도 된다, `guides`에 없는 유형은 보지 않는다, `templates: null`이면 검사하지 않는다.
+  - 크기: 틀 은행 900,000바이트 초과(한글 `ko`로 채운다 — 글자 수 기준이면 통과해 버리는 입력). 유형 공략과 따로 잰다 — 유형 공략이 850,000바이트이고 틀 은행이 850,000바이트여도 통과.
+  - 통과 쪽: **eval이 만든 최소 픽스처**(§12-2-2 예시 공략 + 유형마다 단계 3개·묶음마다 틀 하나 — 공통 틀·머리 사례 연결·건너뜀·숫자 채움·`testFills` 포함. §12-2-7의 JSON은 발췌라 그대로는 통과하지 않는다), 첫 자리 채움이 대문자인 예문, 틀이 없는 유형(흐름 없음).
+- **틀 순수 함수**
+  - `fillFrame`: 자리 순서대로 채우고 대소문자를 고치지 않는다. `frameToExpression`: 자리 → `~`, 공백 접기, 끝 마침표 하나 떼기(`?`는 그대로), 결과에 `{`·`}`·`/`가 없다.
+  - `splitFrameForDisplay`·`splitExampleByFills`: 이어 붙이면 원문, 채움 구간이 채움 글자와 같다.
+  - `templateLinksForGuide`: `guideRefs` 배열의 표현·템플릿 단계·머리말 연결을 모두 찾고(한 틀이 셋 모두에 걸린 경우 포함), 가리키는 틀이 없으면 비어 있다. ① 탭 줄 머리 칩 판정: `list` 줄 `en`의 `~` 모양이 연결된 표현과 같으면 칩, 슬래시 대안 줄은 펼친 것 중 하나가 같으면 칩.
+  - `templateFlowOrder`: 단계 → 단계 안 묶음 → 소재 → 파일 순서, 흐름에 없는 묶음은 "기타"로 맨 뒤.
+- **세트 불변식 — 두 갈래**(§7-1)
+  - 표현집 가져오기 `quiz` 13개 거부 — 지금은 이 반례가 없다. 기존 불변식 잠금을 새로 둔다.
+  - 공략 가져오기 `speak` 60개 통과·61개 거부.
+  - `normalizeToeicSetRecord`·`isRenderableToeicSet`이 quiz 60개짜리 공략 세트를 그대로 열고 자르지 않는다.
+  - 표현집 저장 라우트 zod의 quiz 상한은 `TOEIC_SET_QUIZ_MAX` 그대로다(소스 대조).
+- **값 누출 없음**: 틀린 칸마다 지어낸 표식 문자열을 넣고, `JSON.stringify(toeicGuideImportInvalidBody(issues))`에 그 표식이 없는지 본다. 이 함수는 라우트가 400 본문을 만드는 **같은 함수**다(§12-2-3). 라우트 핸들러를 부르지 않는다 — eval은 라우트를 소스 읽기로만 본다. 라우트 소스가 이 함수를 쓰는지도 소스 대조로 확인한다.
+- **다시 가져오기 판정** `decideGuideUpsert`
+  - 표 여섯 갈래 전부. 같은 내용이면 unchanged다 — 키 순서만 다른 입력도 zod 출력 기준이라 지문이 같다.
+  - 갱신이 `id`·`createdAt`·`sortIndex`를 지키고 `enriched`를 파생값으로 쓴다(유형 공략 false). 충돌이 하나면 파일 전체를 쓰지 않는다.
+  - 새 공략 세트의 id는 `guide-{part}`다. 같은 유형을 다른 `presetKey`로 두 번(순서대로) 가져오면 둘째가 `part_taken`이다.
+  - **틀 은행**: 새 문서 id `guide-templates`, 같은 내용 unchanged, 틀 글만 고치면 updated이고 틀 테스트 세션은 그대로, 다른 키로 두 번이면 `part_taken`(`part: "templates"`), 같은 키가 유형 공략이면 `part_mismatch`, `templates: null`이면 틀 은행 자리를 읽지도 쓰지도 않는다.
+- **정규화·목록**
+  - `guide` 없는 문서 = null. `guide`가 객체인데 `part`가 네 값 밖이거나 `kind`가 두 값 밖이면 null로 떨어지지 않는다(`isToeicGuideSet` true, 렌더 판정 false). 그래서 표현집 목록에 나오지 않는다. `kind`가 없는 객체는 `"part"`로 읽는다.
+  - 틀 은행(`entries` 0)은 `isRenderableToeicSet` false, `isRenderableToeicTemplateBank` true, `enriched` false(파생값 — 검토 개선 2). 깨진 틀 하나는 그 틀만 빠진다(`isRenderableToeicTemplate`).
+  - 목록이 공략 계열·연습을 **먼저** 빼고 `skippedCount`를 센다 — 공략 세트 4개·틀 은행·연습 3개가 있을 때 "열지 못한 n개" = 0.
+  - `normalizeToeicQuizRecord`가 틀 모드 세션을 받고, 모르는 모드는 지금처럼 버린다. `aggregateToeicStatsByMode`는 틀 모드 세션이 섞여 들어와도 결과가 같다(`TOEIC_QUIZ_MODES`만 돈다 — `ToeicQuizSessionLike.mode`가 넓어져 이 입력이 타입상 된다, 검토 B3).
+  - 세트 단위 화면(표현 시험·오답·기록 페이지)과 모의고사 라우트가 세션을 `isToeicQuizMode`로 거른 뒤 넘기는지(소스 대조).
+  - 표현집 상세·시험 페이지의 틀 은행 리다이렉트, 표현 시험 저장 라우트가 틀 은행 id에 404인 것(소스 대조·순수 판정).
+- **대본**
+  - 블록 종류마다 조각 순서가 §12-4 표와 같다. 영어만 모드도 본다.
+  - **completions**: 합성 조각 = 머리말 + " " + 행, 조각 수 = 행 수. `all`에서 `lead.en` 단독 조각이 없고 `lead.ko`가 한 번 있다. 영어만 모드에 머리말 단독 조각이 없다. 줄 🔊 조각·프리페치 목록에 합성 문장이 같은 글자로 있다.
+  - **괄호·자리 정리 예**(지어낸 문장):
+    - (a) 슬래시 대안 `upper/lower shelf` → "upper, lower shelf"
+    - (b) `two thousand (and) five` → "two thousand and five"
+    - (c) 메모를 `note`로 옮긴 줄은 메모를 읽지 않는다
+    - 맨몸 자리 `{출발 장소}`와 en dash에서 온 `{대상}` → "…"
+    - 한국어 `~`·`–` → "…"이고 뒤의 조사가 남는다("…에서")
+    - 한국어 `+` → 쉼표("플러스"가 나오지 않는다)
+    - 영어 슬롯·물결·슬래시
+  - 라틴 없는 영어 조각이 없다. 긴 `bodyKo`는 같은 주소로 여러 조각이 된다.
+  - 불변식: trim·비어 있지 않음·≤300·lang 명시. 줄 🔊 조각 = 대본에서 그 줄 주소로 거른 것. 프리페치 목록 ⊆ 영어 조각.
+  - 강조·밑줄 분할: 이어 붙이면 원문, 겹침 처리, 형광+밑줄 동시 표시.
+  - "영어만"의 틈 기본값은 끔이다(모든 조각 `pauseAfterMs` 0 — 큐의 쉼 경로를 타지 않는다). 켬: 영어 조각마다 `pauseAfterMs = shadowPauseMs(글자, 단계)`, 한국어 조각은 0. "전부" 모드는 모든 조각 0. 화면 토글의 초기값이 끔인 것은 앱 소스 대조가 본다.
+  - `cleanGuideKoForTts`: 이름 있는 자리 `{활동}은` → "…은"(자리 이름을 읽지 않는다 — 검토 개선 1).
+- **템플릿 따라 말하기 대본** `buildTemplateShadowScript`
+  - 순서: (소개) 한국어 틀 → (영어 소개) 영어 틀 → 예문마다 `ko` → `en` × N. N = 1·4에서 영어 조각 수. 반복 조각의 글자가 같다(캐시 키 하나). 소개 끔이면 한국어 틀 조각이, 영어 소개 끔(기본)이면 영어 틀 조각이 없다. 영어 틀 조각은 자리가 "…"이고 쉼이 없다.
+  - 쉼: 영어 예문 조각만 `shadowPauseMs`, 틈 끔이면 전부 0. 한국어 틀의 `{자리}`가 "…"로 읽힌다.
+  - `shadowPauseMs`: 경계(1낱말 → 1,500 하한, 8낱말 → 3,900, 30낱말 → 8,000 상한), 낱말 수는 `countWords`. 단계 배율: 8낱말 짧게 3,120 · 길게 5,850.
+  - `estimateShadowMs`: 조각 글자에서 계산한 값이 손으로 센 지어낸 대본(틀 1개·예문 3개·반복 2)과 같다, 속도 배율로 나뉜다, 쉼 끔이면 쉼 몫이 0.
+  - `shadowResumeIndex`: "영어 3/4"에서 멈추면 그 예문의 한국어 조각 번호, 틀 소개 중이면 그 틀의 첫 조각 번호, 첫 조각이면 0.
+  - 불변식: trim·비어 있지 않음·≤300·lang 명시. 예문 `en` 조각의 글자 = 카드 🔊 글자(trim만).
+  - 이어 듣기 오프셋: 대본을 k부터 잘라도 조각 번호 = k + 큐 인덱스.
+- **`speakQueue` 쉼**(`eval:speech` — 가짜 window·Audio·speechSynthesis 위에서, 기존 항목은 전부 그대로)
+  - 칸 없음·0·음수·NaN: 이벤트 순서(`onItem`·`onEnd`·재생 호출 순서)가 칸을 넣기 전과 **같다**(같은 입력 두 벌의 기록을 비교).
+  - **칸이 옮겨진다**: 입력을 다시 만드는 첫 줄이 `pauseAfterMs`를 버리지 않는다 — 칸만 다른 두 입력의 재생 기록이 달라야 한다(검토 개선 3 — 빠뜨리면 다른 항목이 모두 통과해도 쉼이 사라진다).
+  - **쉼 = 무음 조각 재생 1회**(검토 B1 (가)): 조각 i가 끝나면 `onPause(i, ms)`가 한 번 오고, **같은 큐 오디오 요소**에서 길이 `ms`(250ms 단위로 올림)의 무음 WAV가 한 번 재생된 뒤 다음 `onItem`이 온다. 무음 WAV의 길이가 WAV 헤더에서 읽힌다(8kHz·8bit·mono). `ms = pauseAfterMs ÷ speedFactor` — 클라우드 엔진 보통 1(공식 그대로)·천천히 0.85(쉼이 길어진다)·빠르게 1.15, 기기 음성은 `getTtsRate() ÷ TTS_RATE`(검토 개선 4). `pauseMaxMs`(15초)에서 자른다. 쉼 도중 속도를 바꾸면 다음 쉼부터 반영된다.
+  - 오디오 요소가 없거나 무음 재생이 거부되면 타이머로 기다리고, 끝나면 `currentPlayStop`을 **자기일 때만** 비운다(다음 `stopCloudAudio`가 URL을 회수하는지로 본다).
+  - 쉼 도중 멈춤: stop·`stopSpeaking()`·새 큐 → 옛 `onEnd("stopped")`가 **동기로**, 새 큐 `onItem(0)`보다 먼저. 옛 큐는 그 뒤 `onItem`을 내지 않는다. 쉼 도중 외부 pause(잠금 화면 ⏸ 흉내)도 `"stopped"`다(§18-2 그대로).
+  - 마지막 조각 뒤 쉼이 끝난 다음 `onEnd("done")`. 공백 조각의 쉼은 건너뛴다. `sounded`·무음 연속 판정은 쉼과 무관하다(무음 조각은 `sounded`에 들지 않는다. 기기 음성까지 실패한 조각 뒤에도 쉼은 지킨다).
+  - **`prepareSpeech`**: 고유 글자만·클라우드로 읽을 것만 합성(상한 앞에 둔 ja 기기·301자·공백 조각을 거른다), 캐시에 있으면 건너뜀, 90에서 자름, `onProgress`가 단조 증가로 `total`까지, `signal`로 끊으면 그 뒤 요청이 없고 reject하지 않는다, 501이면 곧바로 끝, 기존 `prefetchSpeech`의 진행을 끊지 않는다(서로 다른 abort), 매달린 조각은 `fetchMs` 뒤 건너뜀, 준비 도중 기기 엔진으로 바꾸면 남은 조각 POST 0, 준비한 조각은 큐에서 합성 0(P1~P9).
+  - **잠금 화면 관문**(M1~M4): 큐(쉼 포함)·`speak`·stop은 `navigator.mediaSession`을 건드리지 않는다(기존 호출부의 잠금 화면 ⏸ = 정지 그대로), 걸고 풀기, 낡은 풀기는 무시, 미지원이면 no-op.
+- **전사 비교** `compareTemplateAnswer`·`normalizeTemplateWords`(지어낸 문장)
+  - 축약형: `it's`↔`it is`, `don't`↔`do not`, `can't`↔`can not`↔`cannot`, `won't`↔`will not`, `I'm`↔`I am`, `they're`, `we've`, `I'll`, `let's`↔`let us`, 둥근 아포스트로피(’). 명사 소유격 `'s`는 풀지 않는다.
+  - **두 뜻 축약형**(검토 개선 5): 완전형 틀 `It has been {…}` ↔ 전사 "It's been …" → 같다. 축약형 틀 `It's {…}` ↔ "It is …"·"It has …" → 같다. `he'd` ↔ "he would"·"he had" → 같다. `alignReadAloud`는 `eq` 없이 불러 결과가 그대로다.
+  - 숫자: `twenty`↔`20`, `twenty-five`↔`25`, `seven thirty`↔`7:30`.
+  - 대소문자·문장부호·쉼표 위치 차이는 무시.
+  - 관사: 자리 안 `a`·`the` 빠짐 → 자리 낱말 전부 맞음. 고정 부분 `the` 빠짐 → 틀 정확도가 준다.
+  - 어순: 고정 낱말 둘이 바뀜 → 빠짐 1 + 더함 1 → 제안 ✕.
+  - 빈 전사·공백뿐 → `noSpeech`·제안 ✕.
+  - **틀 부분만 맞고 자리가 다름**(자리를 다른 말로 채움) → 틀 정확도 1·자리 `filled`·제안 ○. **자리를 비움**(고정 낱말만 말함) → 그 자리 `filled:false` → ✕. **자리에 관사만 들림**("… set on the.") → `filled:false` → ✕(검토 개선 9).
+  - `compareWithAlternatives`: 한국어 틀이 같은 대안 틀로 말하면 제안 ○와 대안 표시, 기록 키는 물은 틀. 자리 수가 다른 틀은 대안으로 쓰지 않는다. (나)에는 대안 대조가 없다.
+  - 더한 말(앞뒤 "음", 문장 되풀이)은 점수에 들지 않는다.
+  - 경계: 고정 낱말 7개 중 1개 빠짐 → 0.857 → ○, 6개 중 1개 → 0.83 → ✕.
+  - `alignWordSeq` 추출 뒤 `alignReadAloud`의 기존 Q1–2 항목 전부 그대로(결과 글자까지).
+- **전사문 속 틀 찾기** `findTemplatesInTranscript`·`templateStepCoverage`
+  - 두 낱말 이상 고정 조각이 순서대로 있으면 찾는다. 조각 순서가 바뀜·조각 하나가 반만 있음 → 못 찾는다. 축약형 차이(`that is because` ↔ `that's because`)는 찾는다.
+  - 한 낱말 조각뿐인 틀은 찾지 않고 "찾을 수 없는 틀"로 센다. 같은 틀이 두 번 나와도 한 번.
+  - **단계 커버리지**(검토 B2): 쓴 틀이 없는 **단계**가 빠진 단계로 나온다. 소재 묶음의 틀만 쓴 답은 단계를 채우지 않는다. 단계 안 묶음이 여럿이면 그중 하나의 틀만 써도 그 단계는 채워진다. Q5–7·Q8–10에서는 빠진 단계를 내지 않는다(`TOEIC_TEMPLATE_FLOW_CHECK_PARTS`).
+  - `templateByExpression`: `~` 형태·`guideRefs`의 공략 표현 모두로 되짚는다. "쓸 수 있었던 틀" = 모범답변 사용 → `tryExpressions` → 빠진 단계 순, 최대 5개, 내가 쓴 틀은 빠진다.
+- **템플릿 테스트**
+  - `buildTemplateTestQuestions`: 한 판 한 틀(같은 `key` 두 번 없음), 최대 10개, 약한 순으로 고른 뒤 흐름 순서로 늘어섬, `onlyWrong`은 그 모드 틀린 틀만. **복습 칸**: 졸업한 틀이 있으면 최대 2칸이 마지막 시도가 가장 오래된 졸업 틀이다(`onlyWrong`이면 없다, 범위에 졸업 틀이 없으면 그 칸도 약한 순). (가) 예문 `a = t mod n`(시도 0 → 첫 예문, 시도 4·예문 4개 → 첫 예문으로 돌아옴). (나) 들려줄 예문 `m = t mod n`, 정답 채움 `testFills[t mod L]` — 정답 문장이 그 틀의 어떤 예문 `en`과도 다르다.
+  - 약함 순위는 `lib/toeic-quiz.ts`에서 공개한 `weaknessRank`를 부른다 — `lib/toeic-template.ts` 소스에 순위 규칙 사본이 없다(소스 대조, 검토 B3). 세션 어댑터도 공개한 `toeicSessionsToVocabRecords` 하나다.
+  - `aggregateToeicTemplateStats`: 두 모드가 서로의 통계에 섞이지 않는다. **공통 틀**(Q5–7·Q11)은 어느 폴더에서 풀어도 통계가 하나다. 표현 시험 세션(유형 공략 세트)은 틀 통계를 바꾸지 않고, 틀 세션은 표현 시험 통계(`aggregateToeicStatsByMode`)를 바꾸지 않는다.
+  - **같은 날 ○ 접기**(검토 S8): 같은 KST 날 두 세션 ○○ → 연속 1(졸업 아님, 배지 "오늘 ○ — 내일 한 번 더"), 다른 날 ○○ → 졸업, 같은 날 ○✕ → ✕가 세진다, 같은 날 ✕○ → 연속 1. KST 날짜 경계(UTC 15:00 전후)를 넘는 두 세션은 다른 날이다.
+  - `toeicTemplateWrongKeys`: 틀렸고 미졸업만. "틀린 틀만 따라 말하기" = 두 모드 합집합.
+  - 상한 상수: 문항당 전사 2·세션 20·녹음 20초·0.6초 미만은 보내지 않음(화면 순수 판정 `canTranscribeAgain(counts)`).
+- **템플릿 라우트**(소스 대조 — eval은 라우트 핸들러를 부르지 않는다)
+  - 전사 라우트: 키 검사가 `formData()` 읽기보다 앞선다, `content-length` 413이 `formData()`보다 앞선다, 413 상한 상수 1 MiB, 파일 이름·형식 도우미(`toeicAudioFileName`·`toeicAudioTypeFromName`)를 쓴다, `transcribeAnswer`에 prompt 인자가 없다(기존 정적 검사 그대로), 스토어 import가 없다, `req.signal`을 넘긴다.
+  - 기록 라우트: `mode` enum이 틀 모드 둘뿐, `word` 형식 정규식, 세션 안 중복 거부, **`clientSessionId`가 `TOEIC_TEMPLATE_SESSION_ID_RE`**(대문자 UUID·`/` 든 값·빈 값 거부 — 검토 B4), **`startedAt`·`finishedAt`이 `z.string().datetime()`**, `setId`가 `guide-templates`로 고정(본문 값을 믿지 않는다), 멱등 저장 메서드를 쓴다.
+  - 스토어 `addToeicQuizWithId`(파일 백엔드 — 가짜 DB로 실행): 같은 id·같은 판(`mode`·`startedAt` 같음) 두 번 → 한 건·둘째 `reused:true`. 같은 id·다른 판 → 원 문서는 그대로이고 새 id로 한 건 더(`reused:false`).
+- **연습**
+  - `TOEIC_DRILL_UNITS` 리터럴 4행.
+  - `toDrillRecordPart`: picture는 rng가 고른 한 장면만 남기고 image는 pending이다(rng 0 → 첫 장면, rng 0.99 → 둘째 장면). 다른 파트는 그대로다.
+  - `decideAttemptScope`의 연습 갈래: `[3]`·`[5,6,7]`·`[8,9,10]`·`[11]`. 연습에 `full`·다른 파트를 보내면 거부한다.
+  - **사진 연습 상태코드**
+    - 끝내기에 Q4가 있으면 범위 밖 400이다(범위 판정 순수 함수 + 라우트가 `attempt.questions`로 범위를 잡는지 소스 대조).
+    - Q4 채점은 **404 `question_not_found`**다. 채점 라우트가 범위를 `attempt.questions`에서 읽고 이 오류 이름을 그대로 쓰는지 소스 대조한다.
+    - 사진 slot 1은 **404 `picture_not_found`**이고, 이 판정이 키 검사·관문 P 호출보다 앞선다(소스 대조 — 계약 잠금).
+  - 옛 응시 문서 `questions` = 파트 문항.
+  - `toeicPartDirections`: 전체 개수면 `TOEIC_PART_DIRECTIONS`와 글자까지 같다. 사진 1장 문장의 숫자는 형식표 값이다. 응시 화면 소스에 `TOEIC_PART_DIRECTIONS[` 직접 참조가 남지 않았다(세 곳 모두 함수).
+  - `toeicDrillScopeLabelKo`: "공략 연습 · Q3–4 사진 묘사 · Q3", Q5–7이면 문항 표시가 없다.
+  - `pickExpressionsForDrill`
+    - **틀 먼저**(단계마다 하나 → 단계·소재를 통틀어 약한 순, 최대 10, `~` 형태 — `{`·`}` 없음 — 단계가 5개인 유형에서 단계마다 하나씩 모두 들어간다), 공략 다음, 표현집으로 채움, 24 상한, 중복 없음(교재 틀을 옮긴 틀의 `~` 형태와 같은 글자의 공략 표현은 한 번), 보낸 목록 = 저장 목록. 틀 은행이 없으면 지금과 같은 결과다.
+    - 다른 유형의 틀은 들어가지 않는다(`parts`로 거른다).
+    - **세션 분리**: 공략 세션만 틀린 표현은 표현집 쪽 순위를 바꾸지 않는다(반대도 같다).
+    - `pickExpressionsForMock`을 거친다 — 같은 입력이면 공략 쪽 순위가 `pickExpressionsForMock([guide], guideSessions)`와 같다.
+  - `pickDrillTopic`: 최근 3개 주제 제외, 다 빠지면 풀 전체, 풀 파트마다 8개 이상.
+  - 모의고사 목록·`nextToeicMockTitle`이 연습을 무시한다. `POST /api/toeic/mocks`가 표현집 세트의 세션만 넘긴다(소스 대조 또는 순수 도우미). `nextToeicDrillTitle`은 유형별 번호를 매긴다.
+  - 녹음 보관 풀: 연습 6회가 채점 전 실전 녹음을 지우지 않는다. 옛 메타는 mock 풀이다.
+- **시험 출제**
+  - `quizOrder:"weakness"`가 말하기 통계만으로 QUIZ를 약한 순으로 낸다. 다른 모드 통계를 섞으면 순서가 달라지는 반례로 잠근다. 기본 `"book"`은 지금과 같은 결과다(기존 항목 그대로 통과).
+  - `buildToeicChoiceQuestions`의 `max`: 20에서 자르고 그 모드 통계로 약한 순이다. `max` 없으면 지금과 같은 결과다.
+  - **같은 뜻 대안**: 어휘 대안 두 항목의 `meaningKo`가 글자까지 같으면 서로의 오답 보기로 나오지 않는다(두 모드). 뜻이 다르게 적힌 조건 변형(왼쪽/오른쪽)은 서로 보기로 나온다.
+- **번들 경계**
+  - `lib/toeic-guide.ts`·`lib/toeic-template.ts`·`lib/toeic-drill.ts`·`lib/toeic-attempt-rules.ts`를 기존 "번들 경계" 목록에 등록한다(`/ai/`·`/store`·`openai`·`zod` 값 import 금지·lookbehind 금지). `lib/toeic-template.ts`의 런타임 import는 `lib/toeic-guide`·`lib/toeic-text`·`lib/toeic-score`·`lib/toeic-quiz`·`lib/vocab-mastery`·`lib/kst`·`lib/tts-split`·`lib/tts-shared`뿐이다(`lib/toeic-quiz`·`lib/kst`는 검토 반영으로 더했다). `lib/toeic-guide.ts`는 `lib/tts-shared`·`lib/tts-split`·`lib/ja-coaching-script`·`lib/toeic-text`뿐이다. `lib/toeic-guide`와 `lib/toeic-quiz`는 `lib/toeic-template`을 import하지 않는다 — 순환 금지.
+  - `lib/toeic-guide-contract.ts`는 계약 파일 검사 목록(`toeic-mock-contract.ts`와 같은 줄)에 등록한다.
+  - `pickExpressionsForDrill`이 `lib/ai/toeic/mock.ts`에 있고 `lib/toeic-drill.ts`에는 없다.
+- **실제 가져오기 파일**: `data/private/toeic-strategy/toeic-guides.json`이 있으면 검사하고, 없으면 SKIP이다(공개 저장소·CI 기준). **개수만** 출력하고 내용은 찍지 않는다. 기존 표현집 파일 검사(10세트·140표현·20 QUIZ)와 **섞지 않는다**.
+  - zod 통과(**정렬 빠짐 0 포함** — 빠짐이 있으면 zod가 거부하므로 FAIL이다), 유형 4개, 유형별 섹션·표현·말하기 수, 문서 바이트. 틀 은행: 틀 수, 유형별 틀 수(`parts` 기준), 공통 틀 수, `source`별 수, 예문 수, 테스트 전용 채움 수, 유형별 단계·묶음·소재 수와 묶음당 최대 틀 수, **유형별 정렬 "연결 n / 건너뜀 n / 빠짐 0"**(대상 종류마다), 문서 바이트.
+  - 대본 불변식을 실제 데이터로 한 번 더(공략 읽기·템플릿 따라 말하기 둘 다).
+  - 변환 규칙 점검(각각 개수 = 0):
+    - `completions` 블록 줄 중 소문자로 시작하지 않는 줄
+    - `list` 블록 중 이어 말하기 판정(§12-2-1)에 맞는데 `list`로 남은 블록
+    - 영어 줄의 `+`·en dash 자리
+    - 라틴 글자에 바로 붙은 여는 소괄호(영어 대안이 남은 것)
+  - 틀 점검(개수만 — 0이 아니어도 실패로 두지 않고 알린다. 내용 판단이 섞여 있다):
+    - `guideRefs`에 `template` 연결이 있는 틀 중 그 템플릿 줄의 첫 고정 조각(슬래시 대안 중 하나)이 틀에 없는 것
+    - 두 낱말 이상 이어진 고정 조각이 없는 틀(전사문 매칭 제외 — §12-5-5)
+    - `source:"new"`인데 `frameToExpression` 글자가 그 유형 공략 표현과 같은 틀(교재 틀인데 "new"로 적힌 것)
+    - 같은 유형 안에서 한국어 틀이 글자까지 같은 쌍(어휘 대안 — (가) 대안 대조가 받는다)
+    - 정렬 규칙 12 대상 틀 중 한국어 틀이 교재 뜻풀이와 자리 조사·어미 밖에서 다른 것
+    - 따라 말하기 예상 시간이 20분을 넘는 묶음(`estimateShadowMs` — 반복 4·틈 보통)
+- **spec-sync**: 대상 변경 없음(§12-7-7). 이 절의 JSON 예시(§12-2-2·§12-2-7)는 최상위 `name`이 없어 JSON Schema 블록 수(8) 검사에 걸리지 않는다. 호출 옵션 문장 정규식(temperature·maxOutputTokens·call 라벨이 한 문장에 나오는 형식)에 걸리는 문장을 이 절에 쓰지 않는다.
+- 스트릭 라벨은 `eval:streak`에서 본다(⑥ 배선 정규식 불변 확인과 함께 — 틀 모드 세션이 영어 트랙에 들고, 라벨이 `템플릿 훈련 · {모드}`). `speakQueue` 쉼은 `eval:speech`가 본다(위). `lib/speech.ts`는 네 과목이 쓰므로 `eval:toeic`·`eval:japanese`·`eval:english`·`eval:workout` 오프라인도 함께 돌린다. `normalizeKoForTts`를 공용 모듈로 옮기면 `eval:speech`도 돌린다.
+- **실호출 게이트는 새로 두지 않는다** — 연습은 기존 호출 C·D·관문 P·T를 입력만 바꿔 부른다(`EVAL_TOEIC=1`의 C 파트 1개·D 1개가 같은 경로다). 템플릿 테스트의 전사는 관문 T 그대로라 실기기(사용자 동의 후)에서 본다 — 오디오 픽스처를 저장소에 두지 않는다.
+
+### 12-11. 로드맵
+
+| 단계 | 내용 | AI 호출 | 의존 |
+|---|---|---|---|
+| **T6** | 가져오기 — `toeic-guides/v2` zod(completions·밑줄·`groupKo`·공략 표현 기호 거부·바이트 상한 + **틀 은행 zod**: 예문 = 틀 + 채움(채움은 라틴 또는 숫자)·`testFills`·자리 규칙·한국어 틀 자리 모임·`~` 형태 유일·`guideRefs` 대상과 교재 고정 부분(머리말 포함·머리 사례·동사 연어 활용)·`flows` 단계/소재·묶음 6개 상한·`alignmentSkips`·**정렬 빠짐 0**)·`toeicGuideImportInvalidBody`·`decideGuideUpsert`(틀 은행 자리 포함)·스토어 `upsertToeicGuides`(결정적 id `guide-{part}`·`guide-templates`, 두 백엔드 원자 단위)·라우트·`ToeicSetRecord.guide` 필드(두 종류)와 정규화 깊이·목록 가리기(`skippedCount` 순서)·허브 카드·`/toeic/guides` 폴더 목록과 빈 상태. 원본 → 가져오기 파일 변환(Claude, `data/private` — §12-2-1·§12-2-7 규칙, 틀 원본은 `core/templates.json`(`toeic-core-raw/v3`) 한 파일 — 흐름·건너뜀도 원본에 있다) | 0 | — |
+| **T7** | 공략 읽기 + 🔊 — 대본(`guideLineEn` 이어 말하기 합성 포함)·정리(한국어 `~` → "…")·강조·밑줄 분할 순수 함수, 읽기 탭, 듣기 바·섹션 ▶·줄 🔊·프리페치 | 0(발음만) | T6 |
+| **T8** | 표현 말하기 시험 — 시험 탭(표현 프리페치), 공략 세트 "뒤로" 링크·상세 리다이렉트·rename/points 409·공략용 안내 문구, `quizOrder:"weakness"`, 5지선다 `max` 20, 스트릭 라벨(표현) | 0 | T6 |
+| **T9** | 한 문제 연습 — `drillPart`·`questions` 필드, 단위표·`toDrillRecordPart`(장면 무작위)·주제 풀·지시문 변형(세 곳)·범위 라벨, `pickExpressionsForDrill`(서버, 세션 분리)과 실전 모의고사 세션 거르기, 연습 라우트·연습 탭(비용 캡션·응시 전 연습 안내)·사진 준비, 응시·결과 "뒤로"·결과 화면 묘사 포인트/답변 뼈대·"학습 보기로" 숨김, 모의고사 목록·제목·학습 보기·regenerate 409, 사진 slot 404 잠금(변경 없음), 녹음 보관 풀, 스트릭 라벨(연습) | C·P(만들기), T·D(채점 버튼) | T0~T5. **T6 없이도 된다**(공략 표현만 빠진다) |
+| **T10** | 템플릿 읽기·따라 말하기 — 틀 순수 함수(`fillFrame`·`frameToExpression`·표시 분할·`templateFlowOrder`·`templateLinksForGuide`), ② 탭(이어서 하기·단계/소재 칩·틀 카드·예문 🔊·배지 자리·빈 상태·`?tpl=`), 폴더 기본 탭·폴더 카드 "틀 n", **`speakQueue` `pauseAfterMs` — 무음 조각 쉼·`prepareSpeech`**(공용 — `eval:speech` 전체 + 네 과목 오프라인 회귀), `shadowPauseMs`(세 단계)·`buildTemplateShadowScript`(영어 틀 소개)·`estimateShadowMs`·`shadowResumeIndex`, 따라 말하기 바(범위 여섯·반복·틈 단계·소개·지금 틀 띄우기·이어 듣기(예문 머리)·준비 n/m·Media Session·Wake Lock·프리페치), 공략 읽기 "영어만" 틈 토글(기본 끔), ①(블록·줄)·③ 탭의 🧩 칩과 틀 카드의 "📘 교재 틀" 칩 | 0(발음만) | T6 |
+| **T11** | 템플릿 테스트·전사 비교 — `expandContractions`(두 뜻 대안)·`normalizeTemplateWords`·`sameTemplateWord`·`alignWordSeq` 추출(`eq` 인자 — `alignReadAloud` 불변)·`compareTemplateAnswer`(관사만 들린 자리)·`compareWithAlternatives`, `lib/toeic-quiz.ts`의 공개(`weaknessRank`·`toeicSessionsToVocabRecords`·틀 모드 타입)와 `ToeicQuizSessionLike.mode` 넓히기·세트 화면 거르기, `buildTemplateTestQuestions`(복습 칸·`testFills`)·`aggregateToeicTemplateStats`(같은 날 ○ 접기)·`toeicTemplateWrongKeys`, `ToeicQuizRecord.mode` 넓히기·정규화, 전사 라우트(키 먼저·`content-length` 413·파일 이름 도우미·1 MiB·저장 없음)·기록 라우트(`clientSessionId` 형식·datetime·멱등 `addToeicQuizWithId` 세 갈래), 테스트 페이지(시작 탭·(나) 영어 없는 단서·녹음·WAV·전사(45초 상한)·첫 유효 시도 판정·한 번 더 따라 말하기·판정 탭이 다음 문항·자기 판정 폴백·상한·비용 표시), 배지(오늘 ○)·"틀린 틀만"·최근 테스트·폴더 "익힘 m", 스트릭 라벨(템플릿) | 전사(테스트 문항마다 — 버튼 흐름 안) | T10 |
+| **T12** | 실전 적용 — `pickTemplatesForDrill`(단계마다 하나)과 `pickExpressionsForDrill`의 틀 앞자리, `findTemplatesInTranscript`·`templateStepCoverage`·`templateByExpression`, 결과 화면 "🧩 틀 점검"(연습만 — 빠진 단계), 연습 탭 "🧩 이 유형 답변 흐름" 접기(단계마다) | 0(연습 만들기·채점은 T9 그대로) | T9 + T10(T11 없이도 된다 — 약함 순위가 "안 해 봄"으로 모인다) |
+
+- **권하는 순서**: T6 → **T10 → T11** → T7 → T8 → T9 → T12. 템플릿 반복이 이 기능의 핵심이라(사용자 요구) 틀을 먼저 쓸 수 있게 한다. T7·T8은 T10과 겹치는 칩 자리만 서로 기다린다(칩은 어느 쪽이 먼저 들어가도 된다 — 대상이 없으면 칩이 없다).
+- 각 단계는 오프라인 eval을 먼저 통과한다. T9·T11의 실기기 확인(SPEC §20-10)은 배포본에서 한다. 실호출 첫 확인은 사용자 동의 후 연습 한 번(유형 하나)과 템플릿 테스트 한 판(전사 몇 번)으로 묶는다.
+- 틀 원본(`core/templates.json`) 작성·교정은 코드 단계와 별개로 Claude가 한다. 변환한 가져오기 파일이 zod를 통과해야 T10 화면 확인을 실데이터로 할 수 있다(T6 eval의 "실제 가져오기 파일" 검사).
+
+### 12-12. 열린 결정 — 스펙에는 기본값을 썼다
+
+상태: **닫힘**(사용자 확정이거나 이 스펙이 근거를 들어 정했다 — 다시 열려면 §12-0 표부터 고친다) / **열림**(기본값으로 구현하고 실사용 뒤 사용자에게 올린다). 번호는 옛 목록(1~10)을 그대로 두고 뒤에 더했다.
+
+1. **실전 모의고사에 공략 표현·틀을 넣을지** — 열림. 기본: 넣지 않는다(실전 모의고사의 입력·주제 칩을 지금과 같게). 넣으면 모범답변에 공략 틀이 섞여 학습에는 이롭지만, 24개 중 비중을 정해야 한다. 틀은 한 문제 연습에만 잇는다(§12-7-9).
+2. **Q3–4 연습을 사진 2장(실전 파트 그대로)으로 할지** — 열림. 기본: 1장(§12-7-1). 2장이면 응시 기록 `questions`·지시문 변형이 필요 없어지지만 사진 비용·시간이 두 배다.
+3. **연습 채점 자동화** — 열림. 기본: 버튼(§0-2 비용 원칙). 연습은 채점까지가 한 흐름이라 끝나면 자동으로 채점하는 선택지도 있다(문항당 T 1 + D 1).
+4. **공략 세트의 발화 포인트(빈칸 모드)** — 열림. 기본: 만들지 않는다(§12-6).
+5. **연습 삭제·정리** — 열림. 기본: 화면에 두지 않는다(자동 정리는 가족 기록을 되돌릴 수 없게 지운다).
+6. **손으로 표시한 줄(✎) 표시** — 열림. 기본: 작은 표시만. "표시한 줄만 듣기" 같은 기능은 두지 않는다. 손 표시는 Q3–4에만 있고 표 행의 대부분에 걸려 있어 필터로는 잘 갈리지 않는다. 표현·말하기 60개 상한을 넘을 때 고르는 순서에만 쓴다(§12-2-1).
+7. **연습 채점을 문항별로** — 열림. 기본: 지금처럼 "AI 채점 받기"가 녹음된 문항을 한 번에 채점한다(Q5–7·Q8–10은 3문항 — 비용 3배). 결과 화면은 실전과 공용이고, 문항별 버튼은 실패한 문항의 "↻ 다시 채점"에만 있다. 문항마다 "이 문항만 채점"을 두는 것은 실사용 뒤에 정한다.
+8. **"영어만"에 따라 말할 틈** — **닫힘(2026-09-27 업그레이드)**. 옛 기본값 "두지 않는다"를 뒤집었다 — 공용 `speakQueue`에 조각 뒤 쉼(`pauseAfterMs`)을 더하고(칸이 없으면 기존 경로 그대로), 템플릿 따라 말하기와 공략 읽기 "영어만"(토글, **기본 끔** — §12-4 검토 반영. 이 줄의 옛 "기본 켬"은 2026-09-28 코드 기준으로 고쳤다 — 구현·§12-4·§12-10·§12-11 T10이 모두 끔이다)이 같은 쉼 함수를 쓴다(§12-4·§12-5-2). 근거: 틈은 따라 말하기 방법의 본체이고, 칸 하나를 더하는 하위 호환 변경이라 `eval:speech` 전체와 네 과목 오프라인으로 회귀를 잠근다. 표현집 전체 듣기(§6-3)는 13으로 따로 남긴다.
+9. **연습 준비 화면의 "공략 틀 보기"** — **닫힘(부분)**. 응시 화면(준비 45초) 안에는 두지 않는다(실전 조건·공용 화면). 대신 ④ 탭의 "시작" 전 자리에 접힌 "🧩 이 유형 답변 흐름"(단계마다 틀 하나)을 둔다(§12-7-9). 시작 전에 보는 것은 자료를 보고 시험장에 들어가는 것과 같다.
+10. **탭 기억·폴더 진도** — **닫힘(부분)**. 탭은 주소(`?tab=`)로만 기억하고, `?tab`이 없으면 틀이 있는 유형은 ② 템플릿 훈련을 연다(§12-8). 폴더 카드에 "틀 n · 익힘 m"을 더했다 — 틀 세션은 `setId`가 하나라 폴더 목록이 한 번만 읽으면 된다(§12-5-6). "표현 졸업 n/m"은 여전히 뒤로 미룬다(폴더 목록이 네 공략 세트의 시험 세션을 모두 읽어야 한다).
+11. **따라 말하기를 스트릭에 셀지** — 열림. 기본: 세지 않는다(§12-9 — 듣기와 같고, 기록이 남지 않아 확인할 수 없다). 세려면 따라 말하기 완료를 기록하는 저장 경로가 새로 필요하다. 검토 반영으로 따라 말하기가 잠금 화면·주머니에서 이어지면(§12-5-2) 출퇴근 듣기가 주된 쓰임이 되고, 따라 말하기만 한 날은 스트릭에 잡히지 않는다 — 동기가 약해질 수 있다. 붙인다면 큐의 `onEnd("done")` 때 "틀 n개 끝까지 들음"을 남기는 길이다(올릴 때 이 쓰임을 함께 적는다).
+12. **테스트 두 모드의 숙련도를 합칠지** — 열림. 기본: 따로 센다(§6-2 모드 분리 — §12-5-6). 폴더 카드의 "익힘"은 더 어려운 틀 바꿔 말하기로 센다.
+13. **표현집 전체 듣기(§6-3) "영어만"에도 따라 말할 틈** — 열림. 기본: 이번에는 붙이지 않는다(이미 배포된 기능이라 따로 바꾼다). `speakQueue` 쉼이 생겼으므로 그 화면 대본에 칸만 실으면 된다.
+14. **내 녹음 보관** — 열림. 기본: 템플릿 테스트의 녹음은 그 세션 동안 기기 메모리에만 두고 끝나면 버린다(서버·IndexedDB에 두지 않는다 — 응시 녹음과 달리 다시 채점할 일이 없다). 지난 판의 내 목소리를 다시 듣고 싶다는 요구가 생기면 정한다.
+15. **자동 ○/✕ 제안의 기준** — 열림. 기본: 틀 정확도 0.85 이상이고 모든 자리가 채워지면 ○ 제안(§12-5-5). 최종은 아빠가 정하므로 실사용에서 제안과 최종이 자주 어긋나면 기준을 고친다(제안·최종이 어긋난 수를 세션 끝 화면에 보인다).
+16. **틀·예문의 양** — 열림. 기본: 원본 기준 폴더당 37~60틀(공통 틀 포함 — 검토 반영 뒤 152틀), 틀마다 예문 4~5개·테스트 전용 채움 2묶음. 묶음은 폴더마다 틀 6개 이하(zod)라 따라 말하기 한 묶음이 약 3~20분이다(§12-2-7 실측 — 옛 "10분 안팎" 가정은 실제와 맞지 않았다). 폴더 전체를 영어 4번으로 들으면 약 2~3.2시간이다. 너무 많으면 틀을 줄이고 예문을 늘리는 쪽이 "틀 반복"에 맞다.
+17. **"🧩 틀 점검"을 실전 모의고사 결과에도** — 열림. 기본: 한 문제 연습에만(§12-7-9). 실전 모의고사는 활용할 표현에 틀을 넣지 않으므로(1) "모범답변이 쓴 틀"이 비고, 11문항 전체에 틀 점검을 붙이면 결과 화면이 길어진다.
+18. **서버 쪽 전사 상한** — 열림. 기본: 전사 라우트에는 세션 상태가 없고 상한은 화면이 지킨다(§12-5-4 — 가족 전용 PIN 게이트가 바깥 울타리). 비용이 튀는 신호가 보이면 서버에 하루 상한(스토어 카운터)을 둔다.
+19. **폴더를 열면 템플릿 훈련 탭부터** — 열림. 기본: 틀이 있는 유형은 ② 탭(§12-8). 읽기부터 보고 싶다는 피드백이 오면 되돌린다(주소 `?tab=read`는 그대로 된다).
+
+20. **소재 묶음과 연습 주제 잇기** — 열림. 기본: 잇지 않는다. 검토는 소재 묶음마다 주제 태그를 두고 `pickTemplatesForDrill`이 연습 주제 힌트에 맞는 소재 묶음 틀 하나를 넣자고 했다. 연습 주제 풀(`TOEIC_DRILL_TOPIC_POOL`)은 코드 상수이고 소재 묶음은 원본이라, 둘을 잇는 태그 표를 두면 두 곳이 어긋난다(주제 풀을 고칠 때 원본도 고쳐야 한다). 지금은 단계마다 하나를 넣고 남은 칸을 약한 순으로 채우면 소재 묶음 틀도 올라온다(§12-7-9). 모범답변이 소재와 동떨어진 틀을 권하는 일이 잦으면 연다.
+21. **③ "교재 문장 말하기"에도 받아쓰기 비교** — 열림. 기본: 지금처럼 자기 채점(전사 0). ② 틀 테스트와 이름으로 갈랐다(§12-6). `compareTemplateAnswer`에 자리 0개 틀처럼 넘기면 붙일 수 있지만, 문항당 전사 비용이 표현 시험에도 생긴다.
+22. **말이 끝나면 저절로 녹음 멈추기** — 열림. 기본: 두지 않는다("다 말했어요" 탭 또는 20초). 검토는 말한 뒤 1.2초 조용하면 멈추는 선택지를 권했다. 응시 화면의 레벨 미터가 있어 만들 수는 있다. 하지만 출퇴근길 소음에서는 조용함 판정이 흔들리고, 말 가운데 멈칫한 것을 끝으로 보면 녹음이 잘린다(잘린 녹음은 그 문항을 처음부터 다시 한다). 실기기에서 탭이 번거롭다는 피드백이 오면 기본 끔인 선택지로 연다.
+23. **잠금 화면 재생 (가)가 실기기에서 안 되면** — 열림. 기본: (가) 무음 조각 쉼·준비·Media Session(§12-5-2). 실기기 확인(SPEC §20-10 실기기 4)에서 화면이 잠긴 뒤 다음 조각이 이어지지 않으면 (나)로 간다 — "화면 켠 채로 들어요"를 플레이어와 SPEC에 적고, **주머니 모드**(검은 전면 화면, 길게 눌러야 풀린다 — 켜진 화면이 주머니에서 눌리지 않게)를 둔다. 무음 조각 쉼은 (나)에서도 해가 없으므로 남긴다.
+24. **테스트 전용 채움의 양** — 열림. 기본: 틀마다 2묶음(zod 1~3). 틀 바꿔 말하기에서 졸업(다른 날 두 번 ○)까지 서로 다른 두 문장이 나오고, 세 번째 시도부터 같은 문장이 되풀이된다. 되풀이가 외우기로 흐르면 원본에 셋째 묶음을 더한다(코드 변경 없음).

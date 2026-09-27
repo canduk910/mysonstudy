@@ -3,9 +3,11 @@
  *
  * 학습자는 은우가 아니라 **아빠**(토익스피킹 수험자)다(§0-1). 은우의 영어(`/english` — 북카드·단어장)와 경로·컬렉션·스트릭이
  * 전부 갈린다. 코드·경로 이름이 `toeic`인 이유는 `english`를 은우 북카드가 쓰고 있어서다(§0-3).
- * 허브는 **두 독립 기능을 나란히 세운 갈림길**일 뿐이다(일본어 허브와 같은 모양, §0-4):
+ * 허브는 **독립 기능을 나란히 세운 갈림길**일 뿐이다(일본어 허브와 같은 모양, §0-4):
  *   - **표현집**(`/toeic/sets`) — 표현 암기장 사진·파일 → 발화 포인트 카드 · 전체 듣기 · 표현 시험(T1·T2).
  *   - **모의고사**(`/toeic/mocks`) — AI가 새로 만든 11문항(T3 만들기·학습 보기, 응시·채점은 T4·T5).
+ *   - **토익스피킹 유형별 공략**(`/toeic/guides`, §12) — 유형 폴더 4개(공략 읽기·템플릿 훈련·표현 시험·한 문제 연습). 카드가 셋이라
+ *     격자가 어긋나지 않게 세 번째 카드는 `sm:col-span-2`(홈의 운동 카드 관용구, §12-8).
  * 한쪽이 비어 있어도 다른 쪽은 온전히 동작한다. 기능은 하나도 갖지 않는다 — 고르기만 한다.
  *
  * 잠금: proxy.ts가 허용목록 밖을 전부 막으므로 자동으로 PIN 게이트 안이다. 셸은 일본어 방식(공통 레이아웃 없이 u-navbtn
@@ -17,7 +19,7 @@ import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "아빠의 영어 — 은우학습",
-  description: "토익스피킹 표현집(발화 포인트·전체 듣기·말하기 시험)과 모의고사로 아빠가 영어 말하기를 준비하는 곳.",
+  description: "토익스피킹 표현집(발화 포인트·전체 듣기·말하기 시험)·모의고사·유형별 공략(템플릿 훈련)으로 아빠가 영어 말하기를 준비하는 곳.",
 };
 
 export default function ToeicHubPage() {
@@ -53,6 +55,16 @@ export default function ToeicHubPage() {
           <span className="u-entry-title">모의고사</span>
           <span className="u-entry-desc">
             AI가 새로 만든 11문항 — 모범답변·사진으로 공부하고, 지문 읽기부터 의견 말하기까지 실제 시간대로 연습해요.
+          </span>
+        </Link>
+
+        <Link href="/toeic/guides" className="u-entry u-entry-secondary sm:col-span-2">
+          <span className="u-entry-icon" aria-hidden>
+            🧭
+          </span>
+          <span className="u-entry-title">토익스피킹 유형별 공략</span>
+          <span className="u-entry-desc">
+            사진 묘사·듣고 답하기·정보 활용·의견 말하기 — 유형마다 교재 공략을 듣고 읽고, 답변 틀을 따라 말하며 입에 붙여요.
           </span>
         </Link>
       </div>

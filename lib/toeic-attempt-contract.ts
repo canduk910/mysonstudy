@@ -25,7 +25,7 @@ import type {
 } from "./ai/toeic/schemas";
 import type { ToeicAttemptRecord } from "./store";
 import { TOEIC_READ_KIND_KO, toeicMockPartLabelKo } from "./toeic-mock-contract";
-import { TOEIC_MOCK_PART_NAME_KO, toeicQuestionFormat, type ToeicMockPart } from "./toeic-mock";
+import { TOEIC_MOCK_PART_NAME_KO, toeicPartQuestions, toeicQuestionFormat, type ToeicMockPart } from "./toeic-mock";
 
 export type { ToeicAnswer, ToeicAttemptRecord, ToeicAttemptScope, ToeicFeedback, ToeicInfoTable, ToeicReadDiff };
 
@@ -108,6 +108,18 @@ export function toeicAttemptHref(attemptId: string): string {
 /** 응시 범위 라벨 — "실전 응시" / "유형 연습 · Q5–7 듣고 답하기" */
 export function toeicScopeLabelKo(scope: ToeicAttemptScope, parts: readonly ToeicMockPart[]): string {
   return scope === "full" ? "실전 응시" : `유형 연습 · ${parts.map(toeicMockPartLabelKo).join(" · ")}`;
+}
+
+/**
+ * 한 문제 연습의 응시 범위 라벨(docs/harness/toeic.md §12-7-4) — "공략 연습 · Q3–4 사진 묘사", 문항이 파트의 일부면 " · Q3"을 덧붙인다.
+ * 기존 "유형 연습 · …"은 두 문항을 푸는 것처럼 읽혀 연습에 쓰지 않는다. 응시·결과 페이지가 문서의 drillPart로 고른다.
+ */
+export function toeicDrillScopeLabelKo(part: ToeicMockPart, questions: readonly number[]): string {
+  const base = `공략 연습 · ${toeicMockPartLabelKo(part)}`;
+  const all = toeicPartQuestions(part);
+  const qs = [...new Set(questions)].filter((q) => all.includes(q)).sort((a, b) => a - b);
+  if (qs.length === 0 || qs.length === all.length) return base;
+  return `${base} · ${qs.map((q) => `Q${q}`).join(" · ")}`;
 }
 
 // ===========================================================================

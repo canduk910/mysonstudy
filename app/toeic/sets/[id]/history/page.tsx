@@ -7,11 +7,13 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import ToeicQuizHistoryView, { type ToeicHistorySession } from "@/components/toeic-quiz-history-view";
 import { getStore } from "@/lib/store";
+import { toeicGuidePartOfSet, toeicSetBackLink } from "@/lib/toeic-guide-view";
+import { TOEIC_QUIZ_MODE_LABELS_KO, isToeicQuizModeSession } from "@/lib/toeic-quiz";
 import { toeicItemKeyLabel } from "@/lib/toeic-quiz-contract";
-import { isRenderableToeicSet } from "@/lib/toeic-record";
+import { isRenderableToeicSet, isToeicTemplateBankSet } from "@/lib/toeic-record";
 
 export const dynamic = "force-dynamic";
 
@@ -30,9 +32,13 @@ export default async function ToeicHistoryPage({ params }: HistoryPageProps) {
   const { id } = await params;
   const store = getStore();
   const record = await store.getToeicSet(id);
+  if (record && isToeicTemplateBankSet(record)) redirect("/toeic/guides"); // 틀 은행은 표현 시험이 없다(§12-3 표)
   if (!record || !isRenderableToeicSet(record)) notFound();
+  const isGuide = toeicGuidePartOfSet(record) !== null;
+  const back = toeicSetBackLink(record);
 
-  const quizzes = await store.listToeicQuizzes(id);
+  // 표현 시험 모드만(레코드 mode는 틀 테스트 모드까지 넓다 — docs/harness/toeic.md §12-3 "모드 타입 넓히기")
+  const quizzes = (await store.listToeicQuizzes(id)).filter(isToeicQuizModeSession);
   const sessions: ToeicHistorySession[] = [...quizzes].reverse().map((q) => ({
     id: q.id,
     mode: q.mode,
@@ -45,8 +51,8 @@ export default async function ToeicHistoryPage({ params }: HistoryPageProps) {
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
       <header className="mb-4">
         <div className="flex items-center justify-between gap-3">
-          <Link href={`/toeic/sets/${id}`} className="u-navbtn">
-            ← 표현집으로
+          <Link href={back.href} className="u-navbtn">
+            {back.labelKo}
           </Link>
           <p className="t-caption flex-none">시험 기록</p>
         </div>
@@ -65,13 +71,13 @@ export default async function ToeicHistoryPage({ params }: HistoryPageProps) {
             <Link href={`/toeic/sets/${id}/quiz`} className="u-btn u-btn-primary">
               📝 시험 보기
             </Link>
-            <Link href={`/toeic/sets/${id}`} className="u-btn u-btn-secondary">
-              📒 표현집으로
+            <Link href={back.href} className="u-btn u-btn-secondary">
+              {back.buttonKo}
             </Link>
           </div>
         </section>
       ) : (
-        <ToeicQuizHistoryView sessions={sessions} />
+        <ToeicQuizHistoryView sessions={sessions} modeLabelsKo={isGuide ? { ...TOEIC_QUIZ_MODE_LABELS_KO, speak: "교재 문장 말하기" } : TOEIC_QUIZ_MODE_LABELS_KO} />
       )}
     </main>
   );

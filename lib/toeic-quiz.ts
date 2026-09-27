@@ -47,8 +47,38 @@ export function isToeicQuizMode(v: unknown): v is ToeicQuizMode {
   return typeof v === "string" && (TOEIC_QUIZ_MODES as readonly string[]).includes(v);
 }
 
+// ---------------------------------------------------------------------------
+// 템플릿(틀) 테스트 모드 (§12-3·§12-5-6) — 표현 시험 모드(TOEIC_QUIZ_MODES)와 **다른 목록**이다.
+// 표현 시험 화면·통계·오답 탭이 도는 TOEIC_QUIZ_MODES에 틀 모드가 섞이지 않게 따로 둔다. 모드 목록이 이 모듈 한 곳에 모이고,
+// lib/toeic-template.ts가 이 모듈을 import한다(반대 방향 없음 — 순환 금지).
+// ---------------------------------------------------------------------------
+
+/** 틀 테스트 두 모드 — 예문 말하기(tpl-recall) · 틀 바꿔 말하기(tpl-swap) */
+export const TOEIC_TEMPLATE_QUIZ_MODES = ["tpl-recall", "tpl-swap"] as const;
+export type ToeicTemplateQuizMode = (typeof TOEIC_TEMPLATE_QUIZ_MODES)[number];
+
+export const TOEIC_TEMPLATE_QUIZ_MODE_LABELS_KO: Record<ToeicTemplateQuizMode, string> = {
+  "tpl-recall": "예문 말하기",
+  "tpl-swap": "틀 바꿔 말하기",
+};
+
+export function isToeicTemplateQuizMode(v: unknown): v is ToeicTemplateQuizMode {
+  return typeof v === "string" && (TOEIC_TEMPLATE_QUIZ_MODES as readonly string[]).includes(v);
+}
+
+/**
+ * 세트 단위 화면(표현 시험·오답노트·기록)과 모의고사 라우트가 세션을 넘기기 전에 거르는 판정(§12-3 "모드 타입 넓히기").
+ * 레코드의 mode가 두 목록의 유니온으로 넓어졌으므로, 표현 시험 모드만 남기고 타입도 그 모드로 좁힌다.
+ */
+export function isToeicQuizModeSession<T extends { mode: string }>(s: T): s is T & { mode: ToeicQuizMode } {
+  return isToeicQuizMode(s.mode);
+}
+
 /** 말하기 세션 최대 문항 수(§6-1) */
 export const TOEIC_SPEAK_SESSION_MAX = 10;
+
+/** 공략 세트 5지선다 한 판 상한(§12-6) — 표현집은 상한 없음(옵션을 넘기지 않는다) */
+export const TOEIC_GUIDE_CHOICE_SESSION_MAX = 20;
 
 /**
  * 5지선다 문항의 최소 보기 수(정답 포함) — 이보다 적으면 출제하지 않는다(skipped). 보기가 정답 하나뿐인 문항은 무조건
@@ -84,11 +114,15 @@ export interface ToeicQuizSourceSet {
   quiz: readonly ToeicQuizSourceBookQuiz[];
 }
 
-/** 시험 세션 최소 타입(ToeicQuizRecord가 구조적으로 만족) */
+/**
+ * 시험 세션 최소 타입(ToeicQuizRecord가 구조적으로 만족). mode는 표현 시험 네 모드 + 틀 테스트 두 모드의 유니온이다(§12-3 —
+ * 레코드 mode를 넓혀도 기존 호출처가 tsc에서 깨지지 않게). 집계 함수는 모드 등호로 거르므로(aggregateToeicStatsByMode는
+ * TOEIC_QUIZ_MODES만 돈다) 틀 세션이 섞여 들어와도 결과가 같다.
+ */
 export interface ToeicQuizSessionLike {
   id: string;
   setId: string;
-  mode: ToeicQuizMode;
+  mode: ToeicQuizMode | ToeicTemplateQuizMode;
   startedAt: string;
   finishedAt: string | null;
   items: readonly { word: string; correct: boolean; answered: boolean | null }[];
@@ -292,11 +326,19 @@ export interface ToeicChoiceBuildOptions {
   /** 이 키(표현)만 출제 — 오답 재시험(`?wrong=<mode>`)용. 생략하면 전부 */
   onlyKeys?: ReadonlySet<string>;
   rng?: Rng;
+  /**
+   * 한 판 상한(§12-6 — 공략 세트는 TOEIC_GUIDE_CHOICE_SESSION_MAX 20). 생략하면 상한 없음(표현집 동작·기존 결과 그대로 —
+   * rng 소비 순서도 같다). 주면 (항목, 모드) 문항마다 **그 모드의** 통계로 약함 순위(weaknessRank)를 매기고 같은 순위는
+   * 오답 많은 순 → 무작위로 둔 뒤 앞에서 max개를 골라 한 번 섞는다. 오답 재시험(onlyKeys)에도 같은 상한이 걸린다.
+   */
+  max?: number;
+  /** max를 줄 때 약함 순위를 매기는 이 세트의 시험 세션(startedAt 오름차순, 모드 무관 — 모드별로 갈라 본다) */
+  sessions?: readonly ToeicQuizSessionLike[];
 }
 
 /**
  * 5지선다 세션 문항을 1회 조립한다(셔플은 세션 시작 1회). 항목 × 모드마다 문항을 만들고(출제 불가면 skipped),
- * 문항 순서를 한 번 섞는다. 보기는 buildChoices가 섞는다.
+ * 문항 순서를 한 번 섞는다. 보기는 buildChoices가 섞는다. `max`가 있으면 약한 문항부터 max개(§12-6).
  */
 export function buildToeicChoiceQuestions(
   set: Pick<ToeicQuizSourceSet, "entries">,
@@ -315,7 +357,14 @@ export function buildToeicChoiceQuestions(
       else skipped += 1;
     }
   });
-  return { questions: shuffle(questions, rng), skipped };
+  if (options.max === undefined) return { questions: shuffle(questions, rng), skipped };
+  // 상한(§12-6): 그 모드의 통계로 약함 순위 → 오답 많은 순 → 무작위(먼저 섞어 둔 순서), 앞에서 max개 → 한 번 섞는다
+  const byMode = aggregateToeicStatsByMode(options.sessions ?? []);
+  const ranked = shuffle(questions, rng)
+    .map((q, order) => ({ q, order, stat: byMode[q.mode][q.key] }))
+    .sort((a, b) => weaknessRank(a.stat) - weaknessRank(b.stat) || (b.stat?.wrong ?? 0) - (a.stat?.wrong ?? 0) || a.order - b.order);
+  const picked = ranked.slice(0, Math.max(0, Math.floor(options.max))).map((r) => r.q);
+  return { questions: shuffle(picked, rng), skipped };
 }
 
 export interface ToeicSpeakBuildOptions {
@@ -324,10 +373,19 @@ export interface ToeicSpeakBuildOptions {
   /** 이 키만 — 오답 재시험용 */
   onlyKeys?: ReadonlySet<string>;
   rng?: Rng;
+  /**
+   * 교재 QUIZ 순서(§12-6). 기본 "book" — 교재 QUIZ를 파일 순서대로 앞에 놓는다(표현집 동작·기존 결과 그대로).
+   * "weakness" — 공략 세트용(말하기 문항이 수십 개): QUIZ 항목도 **말하기 모드 통계만으로** 약함 순위를 매겨 useIn 후보와 함께
+   * 약한 순으로 앞에서 max개(같은 순위는 오답 많은 순 → 무작위).
+   */
+  quizOrder?: "book" | "weakness";
 }
 
-/** 말하기 우선순위용 약함 순위 — 틀렸고 미졸업(0) → 안 해 봄(1) → 해 봤고 틀린 적 없음·미졸업(2) → 졸업(3) */
-function weaknessRank(stat: WordStat | undefined): number {
+/**
+ * 약함 순위 — 틀렸고 미졸업(0) → 안 해 봄(1) → 해 봤고 틀린 적 없음·미졸업(2) → 졸업(3). 표현 시험 말하기·5지선다 상한(§12-6)·
+ * 틀 테스트 문항 고르기(lib/toeic-template.ts, §12-5-3)가 **이 함수 하나**를 쓴다(검토 B3 — 복사하면 순위 규칙이 두 벌이 된다).
+ */
+export function weaknessRank(stat: WordStat | undefined): number {
   if (!stat || stat.total === 0) return 1;
   if (isStatMastered(stat)) return 3;
   return stat.wrong > 0 ? 0 : 2;
@@ -349,6 +407,8 @@ export function buildToeicSpeakSession(
   const allow = (key: string) => !options.onlyKeys || options.onlyKeys.has(key);
   const out: ToeicSpeakQuestion[] = [];
   const used = new Set<string>();
+
+  if (options.quizOrder === "weakness") return buildSpeakByWeakness(set, speakSessions, max, rng, allow);
 
   for (const q of set.quiz) {
     if (out.length >= max) return out;
@@ -376,6 +436,45 @@ export function buildToeicSpeakSession(
     out.push({ mode: "speak", key: e.expression, source: "useIn", entryIndex: i, part: pick.part, promptKo: pick.sentenceKo, hint: null, answer: pick.sentence });
   }
   return out;
+}
+
+/**
+ * 말하기 세션 — 약한 순(§12-6 quizOrder "weakness"). 교재 QUIZ 항목과 useIn 후보를 **말하기 모드 통계만으로** 한 줄에 세워
+ * weaknessRank → 오답 많은 순 → 무작위(먼저 섞은 순서)로 앞에서 max개. 같은 키는 한 번(QUIZ 쪽이 먼저 자리를 잡는다).
+ */
+function buildSpeakByWeakness(
+  set: ToeicQuizSourceSet,
+  speakSessions: readonly ToeicQuizSessionLike[],
+  max: number,
+  rng: Rng,
+  allow: (key: string) => boolean,
+): ToeicSpeakQuestion[] {
+  const stats = aggregateToeicStatsByMode(speakSessions)["speak"];
+  type Cand = { key: string; make: () => ToeicSpeakQuestion };
+  const cands: Cand[] = [];
+  const seen = new Set<string>();
+  for (const q of set.quiz) {
+    const key = speakKeyForBookQuiz(q);
+    if (seen.has(key) || !allow(key)) continue;
+    seen.add(key);
+    cands.push({ key, make: () => ({ mode: "speak", key, source: "quiz", entryIndex: null, part: null, promptKo: q.promptKo, hint: q.hint, answer: q.modelAnswer }) });
+  }
+  set.entries.forEach((e, i) => {
+    if ((e.points?.useIn.length ?? 0) === 0 || !allow(e.expression) || seen.has(e.expression)) return;
+    seen.add(e.expression);
+    cands.push({
+      key: e.expression,
+      make: () => {
+        const useIn = e.points!.useIn;
+        const pick = useIn[Math.floor(rng() * useIn.length)];
+        return { mode: "speak", key: e.expression, source: "useIn", entryIndex: i, part: pick.part, promptKo: pick.sentenceKo, hint: null, answer: pick.sentence };
+      },
+    });
+  });
+  const ranked = shuffle(cands, rng)
+    .map((c, order) => ({ c, order, stat: stats[c.key] }))
+    .sort((a, b) => weaknessRank(a.stat) - weaknessRank(b.stat) || (b.stat?.wrong ?? 0) - (a.stat?.wrong ?? 0) || a.order - b.order);
+  return ranked.slice(0, Math.max(0, max)).map((r) => r.c.make());
 }
 
 // ---------------------------------------------------------------------------
@@ -410,8 +509,9 @@ export function splitToeicItemsByMode(
  * 토익 세션을 은우 aggregateWordStats/buildReviewCandidates가 받는 VocabQuizRecord 모양으로 옮긴다.
  * mode는 "def-to-word"로 고정한다 — 두 함수는 mode를 "relation" 제외 판정에만 쓰고, 호출 전에 이미 토익 모드로 걸러 두므로
  * 이 고정값은 집계에 영향이 없다(일본어 어댑터와 같은 규약). setId는 bookId 자리로.
+ * 틀 테스트 숙련도(lib/toeic-template.ts aggregateToeicTemplateStats)도 **이 어댑터 하나**를 쓴다(§12-5-6 검토 B3).
  */
-function toVocabQuizRecords(sessions: readonly ToeicQuizSessionLike[]): VocabQuizRecord[] {
+export function toeicSessionsToVocabRecords(sessions: readonly ToeicQuizSessionLike[]): VocabQuizRecord[] {
   return sessions.map((s) => ({
     id: s.id,
     bookId: s.setId,
@@ -432,7 +532,7 @@ export function aggregateToeicStatsByMode(
 ): Record<ToeicQuizMode, Record<string, WordStat>> {
   const out = {} as Record<ToeicQuizMode, Record<string, WordStat>>;
   for (const mode of TOEIC_QUIZ_MODES) {
-    out[mode] = aggregateWordStats(toVocabQuizRecords(sessions.filter((s) => s.mode === mode)));
+    out[mode] = aggregateWordStats(toeicSessionsToVocabRecords(sessions.filter((s) => s.mode === mode)));
   }
   return out;
 }
@@ -442,7 +542,7 @@ export function buildToeicReviewCandidatesByMode(
   sessions: readonly ToeicQuizSessionLike[],
   mode: ToeicQuizMode,
 ): ReviewCandidate[] {
-  return buildReviewCandidates(toVocabQuizRecords(sessions.filter((s) => s.mode === mode)));
+  return buildReviewCandidates(toeicSessionsToVocabRecords(sessions.filter((s) => s.mode === mode)));
 }
 
 /** 오답 재시험(`?wrong=<mode>`) 대상 키 — 그 모드에서 틀린 적 있고 아직 졸업(연속 2회 정답) 전인 것 */

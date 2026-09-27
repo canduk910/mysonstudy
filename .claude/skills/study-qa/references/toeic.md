@@ -1,8 +1,8 @@
 # 토익(아빠의 영어 · 토익스피킹) 정합성 매트릭스·체크리스트
 
 > `study-qa` 스킬에서 subject가 `toeic`일 때 읽는다. 은우 영어는 `english.md`, 일본어는 `japanese.md`, 발음 관문·스트릭 코어 같은 과목 공통 기능은 `common.md`가 맡는다.
-> 원문 스펙은 `docs/harness/toeic.md`다. 구현 규칙은 `.claude/skills/ai-harness-impl/references/toeic.md`에 있다. 이 문서의 값은 2026-09-26에 코드를 열어 확인한 것이다. 검증할 때는 다시 열어 대조하라.
-> 선례 리포트: `_workspace/qa_report_toeic_ai_{1,2}.md`(AI 모듈), `qa_report_toeic_m1_{1,2}.md`(표현집·시험), `qa_report_toeic_m2_1.md`(모의고사·응시·채점 — e2e·실기기 목록의 출처). 그 P2 두 건의 수정은 `build_app-builder_toeic-m2-p2fix_report.md`(2026-09-26)다.
+> 원문 스펙은 `docs/harness/toeic.md`다. 구현 규칙은 `.claude/skills/ai-harness-impl/references/toeic.md`에 있다. 이 문서의 값은 2026-09-26에 코드를 열어 확인한 것이다(유형별 공략 12절은 2026-09-28). 검증할 때는 다시 열어 대조하라.
+> 선례 리포트: `_workspace/qa_report_toeic_ai_{1,2}.md`(AI 모듈), `qa_report_toeic_m1_{1,2}.md`(표현집·시험), `qa_report_toeic_m2_1.md`(모의고사·응시·채점 — e2e·실기기 목록의 출처). 그 P2 두 건의 수정은 `build_app-builder_toeic-m2-p2fix_report.md`(2026-09-26)다. 유형별 공략(2026-09-27~28)은 `qa_report_toeic_guides-{foundation_1,s1_1,s2_1,s2_2,s3_1,final_1,final_2,final_3}.md`와 공용 큐 쉼 `qa_report_common_speech-pause_{1,2}.md` — 12절.
 
 ## 목차
 
@@ -17,6 +17,7 @@
 9. e2e 요령 — 가짜 마이크·시간 배율·스텁 4종
 10. iPhone 실기기 체크리스트
 11. 리포트 형식과 열린 항목
+12. 유형별 공략 — 템플릿 훈련·틀 테스트·한 문제 연습(2026-09-27)
 
 ## 1. 검증의 무게중심
 
@@ -215,7 +216,7 @@
 
 ## 11. 리포트 형식과 열린 항목
 
-`_workspace/qa_report_toeic_{tag}_{n}.md`(기존 tag: `ai`·`m1`·`m2`). SKILL.md 공통 형식에 아래 절을 더한다.
+`_workspace/qa_report_toeic_{tag}_{n}.md`(기존 tag: `ai`·`m1`·`m2`·`guides-foundation`·`guides-s1`~`s3`·`guides-final`). SKILL.md 공통 형식에 아래 절을 더한다.
 
 ```
 ## 안전 — 실행 접두어·스텁 포트·store 백엔드 로그·db.json shasum(전/후)·git status 전후·data/private 읽기 전용·원문 미기재
@@ -243,3 +244,37 @@
 `- {제약} | 위치별 값 | {파일:함수} | 반례와 관측 | 수정 방법 | 담당: ai-engineer|app-builder|prompt-tuner | P1/P2`
 
 틀린 점수·통계가 사용자에게 가는 경로(거짓 졸업, 지어낸 said, 오염된 스트릭)와 교재 원문 노출은 P1이다. 드문 이중 실패·실기기 조건에서만 나는 것은 P2로 두고 조건을 함께 적는다.
+
+## 12. 유형별 공략 — 템플릿 훈련·틀 테스트·한 문제 연습 (2026-09-27, 스펙 `docs/harness/toeic.md` §12)
+
+새 AI 호출·새 컬렉션이 없는 대신 **기존 컬렉션·라우트·공용 모듈에 갈래가 더해졌다.** 검증의 무게는 ① 섞이지 않는가(표현집 ↔ 공략 ↔ 틀 ↔ 연습) ② 거짓 졸업이 없는가(한 판 한 틀·첫 유효 시도·같은 날 ○ 접기) ③ 정답이 새지 않는가((나) 영어 0·페이로드) ④ 비용이 버튼 뒤에만 있는가 ⑤ 교재·틀 원본이 저장소로 새지 않는가다. 구현 규칙은 `ai-harness-impl/references/toeic.md` 14절.
+
+**오프라인 eval — 먼저 돌린다.** `eval:toeic` **985항목**(2026-09-28, 유형별 공략 628 — 영역 이름: 공략 가져오기 zod·틀 은행 zod·공략 다시 가져오기·공략 정규화·렌더·공략 값 누출·세트 불변식·공략 읽기 대본·따라 말하기 대본·틀 순수 함수·틀 전사 비교·틀 찾기·커버리지·틀 테스트·숙련도·한 문제 연습·공략 번들 경계·공략 실제 파일 / 공략 화면 순수 함수·공략 Firestore 본문·공략 앱 소스 대조 / 틀 테스트 화면 순수 함수·공략 표현 시험·멱등 저장 — 파일 백엔드 실행·S2 소스 대조 / S3 연습 레코드·녹음 보관 풀·연습 화면 순수 함수·연습 — 파일 백엔드 실행·S3 소스 대조), `eval:speech` **168**(쉼·준비·잠금화면 — `common.md` §2), `eval:streak` **56**(영어 트랙 9). 항목 수가 이보다 적으면 회귀다. 공략 가져오기 파일(`data/private/toeic-strategy/toeic-guides.json`)이 없으면 "공략 실제 파일" 25항목이 SKIP 1건이 된다(CI 기준).
+
+| 제약 | 스펙 | 코드(단일 정의처) | 반례 — 실제로 거부·분리되는가 |
+|---|---|---|---|
+| 가져오기 zod · 정렬 빠짐 0 | §12-2-3·§12-2-7 | `toeicGuideFileSchema`(`lib/ai/toeic/schemas.ts`) | 자리 표현·답변 틀 단계·머리말 하나를 연결도 건너뜀도 안 함 → 400, 경로 `templates.alignment.{유형}.{kind}.{i}`, **본문에 그 글자 0**. 예문 ≠ `fillFrame(틀, 채움)`(대소문자·마침표·공백 한 칸), 두 틀의 `~` 형태 같음, `frameKo` 자리 밖 한글 없음, 채움에 라틴도 숫자도 없음(숫자·가격 채움은 통과), 공략 표현에 `{}`·`/`·`[]`, 크기 900,000**바이트** 초과(한글로 채워 글자 수로는 통과하는 입력) |
+| 값 누출 0 | §12-2-3·§12-2-6 | `toeicGuideImportInvalidBody` | 틀린 칸마다 지어낸 표식 → `JSON.stringify(본문)`에 표식 0. 라우트 소스가 이 함수를 쓰는지. 409 본문은 키·유형·사유만 |
+| 제자리 갱신 여섯 갈래 | §12-2-5 | `decideGuideUpsert`(`lib/ai/toeic/guide-import.ts`) → 스토어 `upsertToeicGuides` | 같은 내용 unchanged(키 순서만 다른 입력도), 교정 updated(id·createdAt·sortIndex·presetKey 유지, 시험·틀 세션 무접촉), 다른 키로 같은 유형 `part_taken`, 틀 은행 키를 유형 자리에 `part_mismatch`, 표현집 키 `preset_key_is_book`, 충돌 하나면 쓰기 0. 건너뜀 이유만 고친 파일은 unchanged |
+| Firestore 배열 속 배열 | §12-3 | `lib/toeic-firestore-codec.ts` | 실제 가져오기 파일의 쓸 문서 전부 "인코딩 뒤 배열 속 배열 0 · 왕복 불변". 실제 Firestore 쓰기는 미검증(에뮬레이터 없음 — 배포 뒤 첫 가져오기가 첫 확인) |
+| 목록 가리기 순서 | §12-3 표 | `isToeicGuideSet`·`isToeicDrill` → 그다음 `skippedCount` | 공략 4·틀 은행·연습 3이 있을 때 표현집·모의고사 목록의 "열지 못한 n개" = 0. 모의고사 제목 번호·주제 칩·`POST /mocks` 활용할 표현이 공략·연습·공략 세션을 무시(`bookSetIds.has(q.setId)`) — 지금 eval은 소스 순서를 보므로(이월 P3) e2e 수치로 한 번 더 |
+| 모드 분리 | §12-3·§12-5-6 | `isToeicQuizModeSession`·`TOEIC_TEMPLATE_QUIZ_MODES` | 틀 세션이 세트 화면(시험·오답·기록)·표현 시험 통계에 섞이지 않는다. 틀 두 모드가 서로의 통계에 섞이지 않는다. 공통 틀은 어느 폴더에서 풀어도 통계 하나 |
+| 거짓 졸업 | §12-5-3·§12-5-6 | `buildTemplateTestQuestions`·`aggregateToeicTemplateStats`·`isValidTemplateAttempt` | 한 판에 같은 틀 두 번 0, 기록 라우트가 세션 안 `word` 중복을 400. 같은 KST 날 ○○ → 연속 1("오늘 ○ — 내일 한 번 더"), 다른 날 ○○ → 🎓. 정답 공개 뒤 "🗣️ 한 번 더"가 전사·판정을 바꾸지 않는다. `words ≥ 1`이어도 `noSpeech`면 무효(정답 비공개 유지) |
+| 멱등 기록 | §12-5-6 | `addToeicQuizWithId`·`decideToeicQuizWithId` | 같은 id·같은 판 두 번 → 한 건·`reused:true`, 같은 id·다른 판 → 원 문서 그대로 + 새 id. `clientSessionId` 대문자 UUID·`/` 든 값·datetime 아님 → 400. 이탈 저장(keepalive)과 "다시 저장"이 겹쳐도 한 벌. bfcache 이탈(`persisted=true`)은 저장 0 |
+| 틀 비교 | §12-5-5 | `compareTemplateAnswer`·`alignWordSeq(…, { substitutionCost: 2 })` | 어순 바뀜 → 빠짐 1 + 더함 1(0.5) → ✕, 관사만 들린 자리 → `filled:false`, 7개 중 1 빠짐 ○ / 6개 중 1 ✕, `It's` ↔ `It has been`·`I'd` ↔ `I would`, `alignReadAloud`는 옵션 없이 옛 결과와 글자까지 같다(무작위 400쌍) |
+| 전사 라우트 | §12-5-4 | `app/api/toeic/guides/templates/transcribe/route.ts` | 키 없으면 1.2MB 본문에도 501(413보다 먼저)·상류 0, `content-length` 413이 `formData()`보다 앞, multipart에 prompt 필드 0, 타입 없는 Blob(octet-stream) → 파일 이름 확장자, 스토어 import 0 |
+| (나) 영어 0 · 페이로드 | §12-5-3 | `templateSwapClue`·`templateTestPromptMeta`·`maskLatinForTestKo` | (나) 화면의 라틴 글자 = 채움 칩뿐(단서 줄·묶음 이름·`useKo` 가림). ② 탭·테스트 페이지 HTML·RSC에 다른 예문·테스트 전용 채움 0, 틀 점검 자료(`toeicDrillCheckData`)에 예문·`testFills` 0. 시작 화면 범위 줄(`묶음 · {이름}`)은 아직 가림을 지나지 않는다(이월 P3) |
+| 연습 범위·상태코드 | §12-7-4 | `decideAttemptScope(…, drillPart)` → `attempt.questions` | 사진 연습 `questions=[3]` — 끝내기 Q4 400(`answers.0.q`), 채점 Q4 404 `question_not_found`(전사 0), 사진 slot 1 404 `picture_not_found`(관문 P 0), regenerate 409 `is_drill`, 공략 세트 rename·points 409 `is_guide`, 연습에 `scope:"full"` 400. 옛 응시 문서 `questions` = 파트 문항. 지시문 세 곳이 `toeicPartDirections`(사진 1장 문장) |
+| 녹음 풀 | §12-7-6 | `pickAttemptsToEvictByPool` | 연습 6회 뒤에도 채점 전 실전 녹음이 남는다, 옛 메타 = mock. WebKit 임시 컨텍스트는 IndexedDB에 Blob을 못 넣어 메타 풀 값은 Chromium으로 본다 |
+| 연습 입력 | §12-7-2·§12-7-9 | `pickExpressionsForDrill`(서버) | 틀 `~` 형태가 맨 앞(단계마다 하나 — 단계 5개 유형에서 다 든다)·`{}` 0, 다른 유형 틀 0, 공략 세션만 틀린 표현이 표현집 순위를 안 움직임(반대도), 보낸 목록 = 저장 목록, 24 상한 |
+| 스트릭 | §12-9, SPEC §17-8 | `toeicQuizStreakLabel`·`toeicAttemptStreakLabel` | 라벨 `템플릿 훈련 · {모드}`(유형 이름 없음)·`공략 표현 · {유형}`·`공략 연습 · {유형}`. 따라 말하기만 한 날은 늘지 않는다. 녹음 0 연습 응시는 안 센다. `eval:streak` ⑥ 배선 정규식 불변 |
+
+**비용 경로(키를 비운 서버에서 전부 501·스텁 상류 0, 스텁 키에서는 버튼 뒤에만)**: 폴더 목록·가져오기 AI 0 · ② 탭 열기 = 영어 예문 프리페치(≤90)만, ▶ 따라 말하기 = 고유 조각 준비(≤90, 반복은 캐시, 무음 쉼 합성 0) · 🧩 틀 테스트 = 문항당 전사 ≤2·판당 ≤20(열기만으로 0 — 전사 요청 multipart는 `audio` 하나) · ① 읽기 = 열린 섹션의 영어만 프리페치(한국어는 재생 때 look-ahead) · ③ = 표현 영어 ≤60 · ④ 열기 **0**, 새 문제 = 호출 C 1(+ Q3–4 사진 1 — 같은 버튼 흐름), 다시 연 pending 사진은 자동 요청 0 · 연습 채점 = 문항당 T 1 + D 1(버튼), 🧩 틀 점검 0. 선례 실측표: `qa_report_toeic_guides-final_3.md` "비용 경로 총점검".
+
+**공개 저장소 오염 — 대조 기준이 넓어졌다.** 교재 전사(`data/private/toeic-strategy/raw/*`·`parts/*`)·**틀 원본**(`core/templates.json`·옛 `core/*.json`)·가져오기 파일·**강의 자막**(`design/toeicspeaking/drill.md` — 작업 폴더에 있지만 `.gitignore`로 git 밖이고, 같은 폴더의 공략 교재 사진도 그렇다. 문장은 스펙·코드·픽스처로 옮기지 않는다 — `git status`에 이 폴더가 나타나면 결함이다)이 전부 대조 기준이다(영어 6-gram·한국어 12자 창 선례). 틀 원본의 예문은 Claude가 새로 쓴 문장이라도 저장소 밖 데이터다 — eval 픽스처 틀은 지어낸 것이고 private 틀과 같은 글자 0이어야 한다. `?goto=t:…`·`?expr=…` 주소에 교재 조각이 실려 dev 로그·e2e 출력에 남는다 — e2e 출력은 개수·참거짓·경로만 찍고, 검증 뒤 그 로그를 지운다. 스크린샷은 실데이터 화면이라 scratchpad에만 둔다.
+
+**e2e 요령(9절에 더해)**: 가져오기 라우트로 공략 파일을 **로컬 파일 DB에** 넣고(`[store] backend=file` 확인·`data/db.json` 백업 → 끝에 복원·sha 대조), 네 유형 × 두 엔진(Chromium·WebKit) × 폰(390·360)·iPad 가로로 여정(가져오기 → 폴더 → ② 따라 말하기·틀 테스트 → 틀린 틀만 → ① 🧩 → ③ 시험 → ④ 연습·응시·채점·틀 점검)을 돈다. 긴 칩·목차·goto는 좌표로 판정한다(칩이 카드 안인지, 섹션 머리가 sticky 덮개 아래인지, goto 목표가 화면 안인지 — 앱 안 이동·새로 불러오기·다른 폴더·마운트된 채 goto 변경 네 경로). 잠금 화면은 Media Session 핸들러를 직접 부른 흉내까지다. WebKit의 `/api/tts` 끊김 pageerror·`WebKitBlobResource error 1`은 기존 기준선이다(빠른 이동).
+
+**iPhone 실기기(10절에 더해 — SPEC §20-10 실기기 1~12)**: 잠그고 이어폰으로 들을 때 틈 뒤 다음 예문이 탭 없이 이어지는가(§12-12 23의 갈림길), 잠금 화면 ⏯·⏭·⏮, 다른 앱에서 돌아온 뒤 이어 듣기가 예문 머리부터인가, Wake Lock(준비·재생 동안), 틀 테스트 🎤마다 권한 창·녹음 직후 정답 🔊 볼륨·받아쓰기 대기 p90 5초·**일부러 한 낱말 바꿔 말했을 때 전사가 그대로 적는가**, 테스트 중 잠금 → 그 문항 처음부터, 연습 사진 1장 지시문·연습 여섯 번 뒤 실전 녹음 보존, 📘 → 그 블록 스크롤(앱 안·탭 되살림)·목차 칩 → 섹션 머리·긴 "넣었으면 좋았을 표현" 칩 줄바꿈.
+
+**열린 항목(2026-09-28, QA final 3 — 배포를 막지 않는다)**: 이월 P3 17건(`ai-harness-impl/references/toeic.md` 14절 "알려진 틈"과 같은 목록 — 접기 동률 깨기·범위 줄 가림·이탈 저장 짧은 창·전사 본문 사후 검사·깨진 문서 다시 가져오기·goto 주소 등), 공용 큐 쉼 QA의 살아남은 변이 3(스펙 성질이 eval에 안 잠김 — `qa_report_common_speech-pause_2.md`). 회차마다 아직 남았는지 다시 확인한다.

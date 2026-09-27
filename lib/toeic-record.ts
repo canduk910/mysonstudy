@@ -11,6 +11,7 @@
 
 import type { ToeicMockRecord, ToeicSetRecord } from "./store";
 import { TOEIC_MOCK_PARTS } from "./toeic-mock";
+import { TOEIC_GUIDE_PARTS } from "./toeic-guide";
 
 function isArray(v: unknown): v is unknown[] {
   return Array.isArray(v);
@@ -132,4 +133,131 @@ export function isRenderableToeicMock(record: ToeicMockRecord): boolean {
     if (!isRenderableMockPart(part, p)) return false;
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// 한 문제 연습(docs/harness/toeic.md §12-3·§12-7) — 모의고사 목록·제목 번호·학습 보기에서 가리는 판정
+// ---------------------------------------------------------------------------
+
+/**
+ * 한 문제 연습 문서인가(`drillPart`가 null이 아니다) — 모의고사 목록·제목 번호·학습 보기가 연습을 가리는 **유일한** 판정.
+ * 목록은 이 판정으로 먼저 빼고 그다음에 skippedCount("열지 못한 n개")를 센다(순서가 반대면 연습이 "깨진 문서"로 보고된다).
+ */
+export function isToeicDrill(m: Pick<ToeicMockRecord, "drillPart">): boolean {
+  return m.drillPart !== null && m.drillPart !== undefined;
+}
+
+/**
+ * 모의고사 목록 — 연습을 **먼저** 빼고 렌더 판정을 한 뒤 `skippedCount`(연습이 아닌데 열지 못한 문서 수)를 센다(§12-3 표).
+ * 목록은 상한 없이 읽은 전체를 받는다 — 상한으로 자른 뒤 거르면 연습이 많아질 때 오래된 모의고사가 빠진다. 순서는 받은 그대로.
+ */
+export function listableToeicMocks<T extends ToeicMockRecord>(stored: readonly T[]): { mocks: T[]; skippedCount: number } {
+  const notDrill = stored.filter((m) => !isToeicDrill(m));
+  const mocks = notDrill.filter(isRenderableToeicMock);
+  return { mocks, skippedCount: notDrill.length - mocks.length };
+}
+
+// ---------------------------------------------------------------------------
+// 유형별 공략(docs/harness/toeic.md §12-3) — 공략 계열 가리기·렌더 판정
+// ---------------------------------------------------------------------------
+
+const GUIDE_PART_SET: ReadonlySet<string> = new Set(TOEIC_GUIDE_PARTS);
+
+/**
+ * 공략 계열 문서인가(유형 공략 + 틀 은행) — 기존 목록(표현집 목록·모의고사 주제 칩·활용할 표현)에서 가리는 **유일한** 판정.
+ * 목록은 이 판정으로 먼저 빼고 그다음에 skippedCount("열지 못한 n개")를 센다(순서가 반대면 공략 세트·틀 은행이 "깨진 문서"로 보고된다).
+ */
+export function isToeicGuideSet(s: Pick<ToeicSetRecord, "guide">): boolean {
+  return s.guide !== null && s.guide !== undefined;
+}
+
+/** 유형 공략 문서인가(guide.kind "part" — 판정 전 모양 방어) */
+export function isToeicGuidePartSet(s: Pick<ToeicSetRecord, "guide">): boolean {
+  const g = s.guide as unknown;
+  return isObj(g) && g.kind === "part";
+}
+
+/** 틀 은행 문서인가(guide.kind "templates") */
+export function isToeicTemplateBankSet(s: Pick<ToeicSetRecord, "guide">): boolean {
+  const g = s.guide as unknown;
+  return isObj(g) && g.kind === "templates";
+}
+
+/** 줄 하나 — 읽기 탭이 읽는 자리 */
+function isRenderableGuideLine(v: unknown): boolean {
+  if (!isObj(v)) return false;
+  if (!isStrOrNull(v.label) || !isStrOrNull(v.en) || !isStrOrNull(v.ko) || !isStrOrNull(v.note)) return false;
+  if (!isStrList(v.emphasis) || !isStrList(v.underline)) return false;
+  if (typeof v.alt !== "boolean" || typeof v.marked !== "boolean") return false;
+  const ex = v.example;
+  if (ex === null) return true;
+  return isObj(ex) && typeof ex.en === "string" && isStrOrNull(ex.ko) && isStrList(ex.emphasis);
+}
+
+function isRenderableGuideBlock(v: unknown): boolean {
+  if (!isObj(v)) return false;
+  switch (v.kind) {
+    case "heading":
+      return typeof v.textKo === "string";
+    case "text":
+      return isStrOrNull(v.label) && isStrOrNull(v.titleKo) && isStrOrNull(v.bodyKo) && isArray(v.lines) && v.lines.every(isRenderableGuideLine);
+    case "lines":
+      return (
+        (v.style === "list" || v.style === "template" || v.style === "completions") &&
+        isStrOrNull(v.captionKo) &&
+        (v.lead === null || isRenderableGuideLine(v.lead)) &&
+        isArray(v.lines) &&
+        v.lines.every(isRenderableGuideLine)
+      );
+    default:
+      return false;
+  }
+}
+
+/**
+ * 유형 공략을 📖 읽기 탭·폴더 카드 "가져옴" 표시에 올릴 수 있는가 — kind "part"·part 네 값·섹션·블록·줄 배열과 문자열 자리.
+ * **시험 페이지는 이 판정을 보지 않는다**(isRenderableToeicSet만 — 시험은 entries·quiz만 쓰므로 본문이 깨져도 시험은 된다).
+ */
+export function isRenderableToeicGuide(record: ToeicSetRecord): boolean {
+  const g = (record as Partial<ToeicSetRecord>).guide as unknown;
+  if (!isObj(g) || g.kind !== "part") return false;
+  if (typeof g.part !== "string" || !GUIDE_PART_SET.has(g.part)) return false;
+  if (!isStrOrNull(g.introKo) || !isArray(g.sections)) return false;
+  return g.sections.every(
+    (sec) => isObj(sec) && typeof sec.titleKo === "string" && isStrOrNull(sec.label) && isStrOrNull(sec.introKo) && isStrOrNull(sec.groupKo) && isArray(sec.blocks) && sec.blocks.every(isRenderableGuideBlock),
+  );
+}
+
+/**
+ * 틀 하나가 화면이 읽는 모양인가 — key·frameEn·frameKo·groupKo·useKo 문자열, parts·guideRefs 배열, testFills 문자열 배열의 배열,
+ * examples의 en·ko·fills. 모양이 깨진 틀은 **그 틀만** 빠지고 나머지는 보인다(폴더 머리 "열지 못한 틀 n개").
+ */
+export function isRenderableToeicTemplate(v: unknown): boolean {
+  if (!isObj(v)) return false;
+  if (typeof v.key !== "string" || v.key === "") return false;
+  if (typeof v.frameEn !== "string" || typeof v.frameKo !== "string" || typeof v.groupKo !== "string" || typeof v.useKo !== "string") return false;
+  if (!isStrList(v.parts) || !isArray(v.guideRefs) || !v.guideRefs.every(isObj)) return false;
+  if (!isArray(v.testFills) || !v.testFills.every(isStrList)) return false;
+  return isArray(v.examples) && v.examples.every((ex) => isObj(ex) && typeof ex.en === "string" && typeof ex.ko === "string" && isStrList(ex.fills));
+}
+
+/**
+ * 틀 은행 문서를 열 수 있는가 — kind "templates", flows·items 배열, 흐름마다 steps 배열(단계마다 stepKo 문자열·groupsKo 문자열 배열)·
+ * banksKo 배열. 틀 하나하나는 isRenderableToeicTemplate으로 따로 본다. **틀 은행은 isRenderableToeicSet을 통과하지 못한다**(entries 0) —
+ * 틀 은행을 여는 곳은 전부 이 판정을 쓴다.
+ */
+export function isRenderableToeicTemplateBank(record: ToeicSetRecord): boolean {
+  const r = record as Partial<ToeicSetRecord>;
+  if (!r.id || typeof r.createdAt !== "string" || typeof r.titleKo !== "string") return false;
+  const g = r.guide as unknown;
+  if (!isObj(g) || g.kind !== "templates") return false;
+  if (!isArray(g.flows) || !isArray(g.items)) return false;
+  return g.flows.every(
+    (f) =>
+      isObj(f) &&
+      typeof f.part === "string" &&
+      isArray(f.steps) &&
+      f.steps.every((st) => isObj(st) && typeof st.stepKo === "string" && isStrList(st.groupsKo)) &&
+      isStrList(f.banksKo),
+  );
 }

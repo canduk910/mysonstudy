@@ -64,7 +64,7 @@ model: opus
 
 - **영어** (`scripts/eval-english.ts`): 기본 실행이 카드 3회(Wolves·Pooh·Pooh+장면 메모), `EVAL_SKIP_PAGES=1`이면 2회. 나머지는 **게이트별 1회**이고 게이트 하나만 돌고 끝난다 — `EVAL_TRANSCRIPT=1`(자막 카드), `EVAL_CHAPTERS=1`(호출 F 챕터화), `EVAL_VOCAB=1`(호출 D 보강), `EVAL_WORDMEANING=1`(호출 G 단어 뜻), `EVAL_TALK=1`(자유대화 호출 I **2회**). 호출 H(유의어 추천)와 자유대화 선생님(관문 R)은 eval에 실호출 구간이 없어 오케스트레이터가 별도 프로브·실연결로 본다. 호출마다 재요청이 나면 +1회.
 - **수학** (`scripts/eval-math.ts`): 픽스처 4문제 × 2~4회 = 8~16회, 2단 픽스처(`rect-count`)에 호출 E 1~2회가 더해진다. `EVAL_ONLY=id`면 픽스처당 2~4회, `EVAL_SKIP_2DAN=1`이면 6~12회.
-- **토익** (`scripts/eval-toeic.ts`): 기본 오프라인 0회(357항목). `EVAL_TOEIC=1`이면 B 1(지어낸 표현 7개) + C 1(`EVAL_TOEIC_PART`, 기본 `opinion`) + D 1(Q11 픽스처 전사문) = 3회, `EVAL_TOEIC_PHOTO=<사진 경로>`를 주면 A 1회 더. 관문 P·T는 게이트에 없다. 다이얼을 바꾼 파트를 보려면 `EVAL_TOEIC_PART`를 리포트에 적어 넘긴다.
+- **토익** (`scripts/eval-toeic.ts`): 기본 오프라인 0회(985항목 — 2026-09-28, 유형별 공략 628 포함). `EVAL_TOEIC=1`이면 B 1(지어낸 표현 7개) + C 1(`EVAL_TOEIC_PART`, 기본 `opinion`) + D 1(Q11 픽스처 전사문) = 3회, `EVAL_TOEIC_PHOTO=<사진 경로>`를 주면 A 1회 더. 관문 P·T는 게이트에 없다. 다이얼을 바꾼 파트를 보려면 `EVAL_TOEIC_PART`를 리포트에 적어 넘긴다.
 - **일본어** (`scripts/eval-japanese.ts`): 현재 **실호출 0회**다. `EVAL_JAPANESE=1` 게이트는 자리만 있고 안내 문구만 찍는다. 실호출 점검(레벨 준수·제외 위반·전사·해설 품질, §9)이 필요하면 구현부터 오케스트레이터에게 요청한다.
 - 과목 공통(`eval:speech`·`eval:streak`·`eval:workout`)은 전부 실호출 0회다.
 

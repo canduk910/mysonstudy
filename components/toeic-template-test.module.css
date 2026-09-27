@@ -1,0 +1,668 @@
+/* 🧩 틀 테스트 (docs/harness/toeic.md §12-5-3) — 토큰 재사용(새 색조 없음 — 흰색·그레이·파랑 계열). 맞음/빠짐/다름은 색만이 아니라
+ * 선 모양·취소선으로도 가른다. danger(빨강)는 삭제 확인 전용이라 쓰지 않는다. 폰 390px·iPad 가로에서 가로 넘침 0(긴 영어는 줄바꿈). */
+
+.head {
+  margin-bottom: 12px;
+}
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 28px 16px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  text-align: center;
+}
+.emptyText {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-lead);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+/* ── 시작 화면 ── */
+.intro {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+  min-width: 0;
+}
+.modeSwitch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.modeChip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 4px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.modeOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.introHint {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--fs-body);
+  line-height: 1.55;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.introFacts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding-left: 1.1em;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.5;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.introActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.startBtn {
+  min-width: 9rem;
+  min-height: 52px;
+  font-size: 17px;
+}
+.cost {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-caption);
+  font-variant-numeric: tabular-nums;
+}
+.notice {
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--ink-3);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.5;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.noticeSub {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-caption);
+  overflow-wrap: anywhere;
+}
+.textBtn {
+  min-height: 40px;
+  padding: 4px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+/* ── 진행 ── */
+.run {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.topRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.modeTag {
+  padding: 2px 10px;
+  border-radius: var(--radius-chip);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+}
+.counter {
+  color: var(--ink-2);
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.progressTrack {
+  height: 6px;
+  border-radius: var(--radius-chip);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.progressFill {
+  height: 100%;
+  border-radius: var(--radius-chip);
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  min-width: 0;
+}
+.promptMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+  font-weight: 700;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.promptUse {
+  font-weight: 400;
+}
+.reviewChip {
+  margin-right: 4px;
+  padding: 0 8px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-chip);
+  color: var(--accent-ink);
+  font-size: var(--fs-meta-chip);
+}
+/* 정답이 열리면 문제 카드를 줄인다 — 정답·판정 버튼이 폰 한 화면에 오게 */
+.promptDone {
+  padding: 10px 14px;
+  gap: 4px;
+}
+.promptDone .promptKo {
+  font-size: 16px;
+  line-height: 1.55;
+}
+.promptDone .listenRow {
+  display: none;
+}
+.promptKo {
+  margin: 0;
+  color: var(--ink);
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1.65;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.promptKo .clueFill {
+  display: inline;
+  margin: 0 3px;
+  padding: 1px 8px;
+  font-size: 0.82em;
+  line-height: 1.9;
+}
+.listenRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+.listenBtn {
+  min-height: 40px;
+  padding: 4px 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  color: var(--accent-ink);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.listenHint {
+  color: var(--ink-2);
+  font-size: var(--fs-caption);
+}
+
+.step {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.stepCol {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.stepHint {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  text-align: center;
+}
+.bigBtn {
+  min-height: 56px;
+  font-size: 18px;
+}
+.recNow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.recDot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: recPulse 1s ease-in-out infinite;
+}
+@keyframes recPulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .recDot {
+    animation: none;
+  }
+}
+.invalidMsg {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 700;
+  text-align: center;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+/* 결과 */
+.answerBox {
+  scroll-margin-top: calc(var(--streak-h, 0px) + 12px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+  min-width: 0;
+}
+.answerHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.answerLabel {
+  color: var(--ink-3);
+  font-size: var(--fs-caption);
+  font-weight: 700;
+}
+.speak {
+  flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 40px;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  font-size: 16px;
+  cursor: pointer;
+}
+.answerEn {
+  margin: 0;
+  color: var(--ink);
+  font-size: 19px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.answerFrameKo {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.7;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.viaAlt {
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.heardBox {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.heard {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.myRec {
+  width: 100%;
+  max-width: 22rem;
+  height: 36px;
+}
+.compare {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+.chipOk {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+.chipMissing {
+  border-style: dashed;
+  border-color: var(--ink-2);
+  color: var(--ink-3);
+  text-decoration: line-through;
+}
+.chipWrong {
+  border-style: dotted;
+  border-width: 2px;
+  border-color: var(--ink);
+  font-weight: 700;
+}
+.chipWrong del {
+  color: var(--ink-3);
+  font-weight: 400;
+}
+/* 자리 칩 모양(색·선)은 ② 탭 CSS의 .slot.toneN — 여기서는 크기만 비교 칩에 맞춘다(선택자를 한 단계 높여 순서와 무관하게) */
+.chips .chipSlot {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 500;
+}
+.chips .chipSlotOther {
+  opacity: 0.6;
+}
+.extra {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-vocab-example);
+  overflow-wrap: anywhere;
+}
+.extraLabel {
+  margin-right: 4px;
+  font-size: var(--fs-caption);
+  font-weight: 700;
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 0 0;
+}
+.legend .chip {
+  min-height: 22px;
+  padding: 0 6px;
+  font-size: var(--fs-meta-chip);
+}
+.legendNote {
+  color: var(--ink-3);
+  font-size: var(--fs-caption);
+}
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.suggest {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-box);
+  font-size: 16px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+.suggestPass {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.suggestFail {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.suggestWhy {
+  font-size: var(--fs-caption);
+  font-weight: 500;
+}
+.shadowRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+.shadowBtn {
+  align-self: flex-start;
+  min-height: 40px;
+  padding: 4px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.cue {
+  margin: 0;
+  color: var(--accent-ink);
+  font-size: var(--fs-vocab-example);
+  font-weight: 700;
+}
+.judgeAsk {
+  margin: 4px 0 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+}
+.judgeRow {
+  display: flex;
+  gap: 8px;
+}
+.judgeBtn {
+  flex: 1 1 0;
+  min-height: 56px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 800;
+}
+.judgeOk {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.judgeNo {
+  border-style: dashed;
+  border-color: var(--ink-2);
+}
+.footer {
+  display: flex;
+  justify-content: center;
+  margin-top: 8px;
+}
+
+/* ── 끝 화면 ── */
+.done {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+  text-align: center;
+  min-width: 0;
+}
+.scoreBig {
+  margin: 4px 0;
+  color: var(--accent-ink);
+  font-size: 44px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.scoreSlash {
+  color: var(--ink-3);
+  font-weight: 500;
+}
+.doneLead {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-lead);
+  word-break: keep-all;
+}
+.doneMeta {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--fs-vocab-example);
+  font-weight: 700;
+  word-break: keep-all;
+}
+.doneMetaSub {
+  color: var(--ink-3);
+  font-weight: 400;
+}
+.saveMsg {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+}
+.saveMsgError {
+  color: var(--ink);
+  font-weight: 700;
+}
+.wrongBox {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+}
+.wrongTitle {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--fs-section-title);
+  font-weight: 700;
+}
+.wrongList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.wrongItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  color: var(--ink);
+  text-decoration: none;
+  min-width: 0;
+}
+.wrongFrame {
+  font-size: 16px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.wrongGroup {
+  color: var(--ink-3);
+  font-size: var(--fs-caption);
+}
+.doneActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.linkBusy {
+  pointer-events: none;
+  opacity: 0.5;
+}

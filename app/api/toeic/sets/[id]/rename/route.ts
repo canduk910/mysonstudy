@@ -7,13 +7,14 @@
  * 응답 shape (단일 정의처는 `lib/toeic-set-contract.ts` ToeicSetRenameResponse):
  * - 200 { ok:true, id, titleKo }
  * - 400 invalid_input / 404 set_not_found / 500 save_failed
+ * - 409 { ok:false, error:"is_guide", messageKo } ← 공략 계열(유형 공략·틀 은행) 세트 — 이름은 유형 이름으로 고정(docs/harness/toeic.md §12-3)
  */
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { TOEIC_SET_TITLE_MAX } from "@/lib/ai/toeic/schemas";
 import { getStore } from "@/lib/store";
-import { isRenderableToeicSet } from "@/lib/toeic-record";
+import { isRenderableToeicSet, isToeicGuideSet } from "@/lib/toeic-record";
 import type { ToeicSetRenameResponse } from "@/lib/toeic-set-contract";
 import { collapseSpaces } from "@/lib/toeic-text";
 import { toToeicIssues, toeicZodErrorKo } from "@/lib/toeic-zod-ko";
@@ -54,8 +55,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     );
   }
 
-  // 존재·렌더 판정 — 목록/상세와 같은 함수(lib/toeic-record)
+  // 존재·렌더 판정 — 목록/상세와 같은 함수(lib/toeic-record). 공략 계열은 렌더 판정보다 먼저 409(틀 은행은 entries 0이라 404로 새지 않게)
   const record = await store.getToeicSet(id);
+  if (record && isToeicGuideSet(record)) {
+    return json({ ok: false, error: "is_guide", messageKo: "유형별 공략 자료의 이름은 바꿀 수 없어요." }, 409);
+  }
   if (!record || !isRenderableToeicSet(record)) {
     return json({ ok: false, error: "set_not_found", messageKo: "없거나 열 수 없는 표현집이에요." }, 404);
   }

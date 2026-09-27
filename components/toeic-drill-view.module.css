@@ -1,0 +1,318 @@
+/* ④ 🎤 한 문제 연습 탭(docs/harness/toeic.md §12-7·§12-8) — 성인 학습자용, 정보 밀도 우선.
+ * 토큰 재사용(새 색조·새 전역 CSS 없음 — 흰색·그레이·accent, 모의고사 만들기 화면과 같은 목표 등급 칸 모양). */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.lead {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.6;
+  word-break: keep-all;
+}
+.caption {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+/* 🧩 이 유형 답변 흐름(접힘) */
+.flow {
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+.flowSummary {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  word-break: keep-all;
+}
+.flowList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+}
+.flowItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-box);
+  background: var(--bg);
+}
+.flowStep {
+  color: var(--accent-ink);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+  word-break: keep-all;
+}
+.flowEn {
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.flowKo {
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.flowLink {
+  align-self: flex-start;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink);
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+/* 응시 전 연습 안내 */
+.pending {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-box);
+  background: var(--accent-soft);
+}
+.pendingText {
+  margin: 0;
+  color: var(--accent-ink);
+  font-size: 15px;
+  font-weight: 700;
+  word-break: keep-all;
+}
+
+/* 준비 카드(지금 고른 연습) */
+.prep {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+  scroll-margin-top: calc(var(--streak-h, 0px) + 16px);
+}
+.prepHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.prepTitle {
+  margin: 0;
+  min-width: 0;
+  color: var(--ink);
+  font-size: var(--fs-list-title);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.picState {
+  padding: 8px 12px;
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+.picLine {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 15px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.picWarn {
+  margin: 0;
+  color: var(--danger);
+  font-size: 15px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.prepActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 새 문제 만들기 */
+.create {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+}
+.fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.legend {
+  margin-bottom: 8px;
+  padding: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  font-weight: 500;
+  word-break: keep-all;
+}
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.choices {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.choice {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  min-height: var(--tap-min);
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+  cursor: pointer;
+}
+.choice:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.choiceOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.choiceTitle {
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 700;
+}
+.choiceOn .choiceTitle {
+  color: var(--accent-ink);
+}
+.choiceDesc {
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+  line-height: 1.4;
+  word-break: keep-all;
+}
+.createRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.cost {
+  flex: 1 1 14em;
+  min-width: 0;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-box);
+  background: var(--danger-soft);
+}
+.errorText {
+  margin: 0;
+  color: var(--danger);
+  font-size: 15px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+/* 최근 연습 */
+.recent {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+.recentTitle {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--fs-section-title);
+  font-weight: 700;
+}
+.empty {
+  margin: 0;
+  padding: 16px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-box);
+  color: var(--ink-3);
+  font-size: 14px;
+  text-align: center;
+  word-break: keep-all;
+}
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.rowButton {
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.rowBody {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+.rowChips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}

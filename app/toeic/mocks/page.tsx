@@ -7,6 +7,9 @@
  *
  * 주제 힌트 칩은 표현집 세트의 주제(topicKo)들이다(§4-0 "표현집 세트의 topicKo들 + 사용자가 고른 주제") — 여기서 모아
  * 넘기고, 사용자가 고른 것만 요청에 싣는다. 활용할 표현은 서버가 만들 때 표현집에서 고른다(화면은 개수만 안내).
+ * 유형별 공략 계열 문서(같은 toeicSets 컬렉션 — §12-3)는 주제 칩·표현 수에서 뺀다(실전 모의고사의 입력은 표현집 그대로, §12-12 1).
+ * 유형별 공략의 **한 문제 연습**(같은 toeicMocks 컬렉션, drillPart)은 목록에서 뺀다 — 상한 없이 전부 읽어 **먼저** 연습을 빼고 그다음
+ * skippedCount를 센다(lib/toeic-record listableToeicMocks). 상한으로 자른 뒤 거르면 연습이 많아질 때 오래된 모의고사가 빠진다(§12-3 표).
  */
 
 import type { Metadata } from "next";
@@ -16,7 +19,7 @@ import { TOEIC_MOCK_EXPRESSIONS_MAX } from "@/lib/ai/toeic/schemas";
 import { getStore } from "@/lib/store";
 import { missingToeicMockParts } from "@/lib/toeic-mock-contract";
 import { TOEIC_MOCK_PARTS } from "@/lib/toeic-mock";
-import { isRenderableToeicMock, isRenderableToeicSet } from "@/lib/toeic-record";
+import { isRenderableToeicSet, isToeicGuideSet, listableToeicMocks } from "@/lib/toeic-record";
 import { collapseSpaces } from "@/lib/toeic-text";
 
 export const dynamic = "force-dynamic";
@@ -26,18 +29,19 @@ export const metadata: Metadata = {
   description: "AI가 새로 만든 토익스피킹 11문항 — 모범답변·사진으로 공부하고 실전처럼 응시해요.",
 };
 
-/** 가족용 소규모 앱 — 전체 목록으로 충분한 상한 */
+/** 가족용 소규모 앱 — 전체 목록으로 충분한 상한(연습을 뺀 **뒤에** 자른다) */
 const LIST_LIMIT = 500;
 
 export default async function ToeicMocksPage() {
   const store = getStore();
   const [storedMocks, sets, attempts] = await Promise.all([
-    store.listToeicMocks(LIST_LIMIT),
-    store.listToeicSets(LIST_LIMIT),
+    store.listToeicMocks(),
+    store.listToeicSets(),
     store.listAllToeicAttempts(),
   ]);
-  const mocks = storedMocks.filter(isRenderableToeicMock);
-  const skippedCount = storedMocks.length - mocks.length;
+  const listed = listableToeicMocks(storedMocks);
+  const mocks = listed.mocks.slice(0, LIST_LIMIT);
+  const skippedCount = listed.skippedCount;
 
   const attemptCount = new Map<string, number>();
   for (const a of attempts) attemptCount.set(a.mockId, (attemptCount.get(a.mockId) ?? 0) + 1);
@@ -67,8 +71,8 @@ export default async function ToeicMocksPage() {
     return a.sortIndex! - b.sortIndex!;
   });
 
-  // 주제 칩 — 표현집 세트 주제(공백 정리·대소문자 무시 중복 제거, 표현집 목록 순서)
-  const renderableSets = sets.filter(isRenderableToeicSet);
+  // 주제 칩 — 표현집 세트 주제(공백 정리·대소문자 무시 중복 제거, 표현집 목록 순서). 공략 계열을 먼저 뺀다(§12-3 표).
+  const renderableSets = sets.filter((s) => !isToeicGuideSet(s)).filter(isRenderableToeicSet);
   const topicChoices: string[] = [];
   const seenTopic = new Set<string>();
   for (const s of renderableSets) {
