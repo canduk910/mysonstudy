@@ -10,13 +10,25 @@
  * `EVAL_OFFLINE_ONLY=1`이면 실호출 0회로 정의 동기화만 본다. 그 안에 **프롬프트 원문 ↔ 스펙 문서
  * 대조**가 들어 있다 — `lib/ai/english/prompts.ts`의 시스템 프롬프트가 `docs/harness/english.md`의
  * 코드블록과 글자 단위로 같은지 파일을 읽어서 확인한다(`scripts/spec-sync.ts`).
- * 자유대화(§12)는 오프라인 구간에서 프롬프트 원문 11개(§12-6 화면 카드 4개 포함, 조립 없는 block-exact)·호출 I JSON Schema와
- * §12-6 도구 정의(의미 동치)·지시문 조립·세션 설정(도구·tool_choice)·실시간 스크립트 리듀서·문장 나누기·호출 I zod·설명 낭독 대본·
- * 도구 호출 검사·말문 막힘 도움 상태 기계·주제 일러스트 장면·단어장 ✓ 매칭을 본다. 호출 I 실호출은 게이트 `EVAL_TALK=1`(2회)뿐이다.
+ * 자유대화(§12)는 오프라인 구간에서 프롬프트 원문 13개(§12-6 3개·§12-7 차례 규칙·호출 J 2개 포함, 조립 없는 block-exact)·호출 I와
+ * 호출 J JSON Schema(의미 동치)·지시문 조립(교사 + 차례 규칙)·세션 설정(도구·tool_choice 없음)·실시간 스크립트 리듀서(출처 태깅 포함)·
+ * 문장 나누기·호출 I zod·호출 J(사용자 메시지·zod·후처리 근거 검사·철 지난 도움)·설명 낭독 대본·§12-6 도구 호출 검사(폐기 예정 —
+ * 컨트롤러가 아직 부른다)·말문 막힘 도움 상태 기계·주제 일러스트 장면·단어장 ✓ 매칭을 본다. 호출 I 실호출은 게이트 `EVAL_TALK=1`(2회)뿐이고,
+ * 호출 J는 스펙에 실호출 게이트가 없다(오프라인만).
  */
 
 import { readFileSync } from "node:fs";
-import { chapterizeTranscript, enrichVocab, explainTalkSentence, generateCard, lookupWordMeaning } from "../lib/ai/client";
+import {
+  DEFAULT_TALK_CARDS_MODEL,
+  buildCallRequestOptions,
+  chapterizeTranscript,
+  enrichVocab,
+  explainTalkSentence,
+  generateCard,
+  lookupWordMeaning,
+  resolveTalkCardsModel,
+  talkCardsAbortSignal,
+} from "../lib/ai/client";
 import {
   CHAPTER_TITLE_GROUP_JOINER,
   CHAPTER_TITLE_MAX,
@@ -129,8 +141,13 @@ import {
 // 자유대화(§12) — 관문 R 지시문·세션 설정, 실시간 스크립트 리듀서, 호출 I 프롬프트·스키마·zod, 설명 낭독 대본, 스트릭 입력
 import type { RealtimeServerEvent } from "openai/resources/realtime/realtime";
 import {
-  TALK_CARDS_INSTRUCTIONS,
-  TALK_CARDS_INSTRUCTIONS_JOINER,
+  TALK_CARDS_CALL_OPTIONS,
+  TALK_CARDS_LIST_JOINER,
+  TALK_CARDS_NONE,
+  TALK_CARDS_SDK_MAX_RETRIES,
+  TALK_CARDS_SYSTEM_PROMPT,
+  TALK_CARDS_TIMEOUT_MS,
+  TALK_CARDS_USER_TEMPLATE,
   TALK_CONTEXT_MARK,
   TALK_EXPLAIN_CALL_OPTIONS,
   TALK_EXPLAIN_SYSTEM_PROMPT,
@@ -146,7 +163,10 @@ import {
   TALK_SCENE_WORDS_JOINER,
   TALK_SCENE_WORDS_PREFIX,
   TALK_TEACHER_INSTRUCTIONS,
+  TALK_TURN_RULES,
+  TALK_TURN_RULES_JOINER,
   TALK_WRAPUP_INSTRUCTIONS,
+  buildTalkCardsUserMessage,
   buildTalkExplainUserMessage,
   buildTalkSceneImagePrompt,
   buildTalkSceneNote,
@@ -155,33 +175,36 @@ import {
 import {
   TALK_EXPLAIN_LIMITS,
   TALK_LIMITS,
+  TALK_SAVE_TURN_TEXT_MAX,
+  TALK_SCREEN_CARDS_JSON_SCHEMA,
+  TALK_SCREEN_CARDS_ZOD_LIMITS,
   TALK_SENTENCE_EXPLANATION_JSON_SCHEMA,
-  TALK_TOOLS,
-  TALK_TOOL_CHOICE,
+  TALK_TURN_ORIGINS,
   buildTalkExplainZod,
   containsLatin as talkContainsLatin,
   isKeyWordInSentence,
+  talkSaveTurnSchema,
+  talkScreenCardsSchema,
   type TalkCard,
   type TalkSentenceExplanation,
   type TalkTopic,
   type TalkTurn,
 } from "../lib/ai/english/talk-schemas";
 import {
+  TALK_CARDS_REQUEST_LIMITS,
   TALK_CARD_LIMITS,
-  TALK_CONTINUE_CHAIN_MAX,
   TALK_FALLBACK_HINTS,
-  TALK_TOOL_NAMES,
-  TALK_TOOL_OUTPUT,
-  buildTalkToolOutputEvent,
+  TALK_SCREEN_ANSWER_WORDS,
+  buildTalkCardsRequest,
   containsHangulText as talkCardsContainsHangul,
-  decideTalkContinue,
-  extractTalkFunctionCalls,
+  decideTalkCardsArrival,
+  isTalkPictureInLine,
   matchTalkWord,
-  parseTalkToolCall,
+  pickTalkCardsContext,
+  pickTalkCardsShown,
   sanitizeTalkCards,
-  stepTalkContinue,
-  summarizeTalkResponseDone,
-  talkSpokeQuestion,
+  sanitizeTalkEmoji,
+  sanitizeTalkScreenCards,
 } from "../lib/talk-cards";
 import {
   TALK_HINT_NUDGE_AFTER_MS,
@@ -196,10 +219,14 @@ import {
   type TalkHintsEvent,
   type TalkHintsState,
 } from "../lib/talk-hints";
+import { TALK_IMAGE_COMPRESSION, TALK_IMAGE_COMPRESSION_RETRY, TALK_IMAGE_QUALITY, TALK_IMAGE_SIZE } from "../lib/talk-image";
 import {
   TALK_SAVE_KEEPALIVE_MAX_BYTES,
+  TALK_SCENE_DATA_URL_MAX,
   planTalkSaveBody,
   talkSaveBodyBytes,
+  type TalkCardsRequest,
+  type TalkConnectSuccess,
   type TalkSaveRequest,
 } from "../lib/talk-contract";
 import {
@@ -216,6 +243,7 @@ import {
   DEFAULT_TALK_TRANSCRIBE_MODEL,
   TALK_REALTIME_MAX_OUTPUT_TOKENS,
   TALK_SPEED_VALUES,
+  TALK_TRANSCRIBE_LANGUAGE,
   buildTalkInstructions,
   buildTalkLesson,
   buildTalkSceneEn,
@@ -239,12 +267,23 @@ import {
   pickTalkSentence,
   reduceTalkTranscript,
   reduceTalkTranscriptEvents,
+  requestTalkResponseOrigin,
   splitTalkSentences,
   toTalkTurns,
   type TalkLine,
   type TalkTranscriptState,
 } from "../lib/talk-transcript";
 import { buildTalkExplainSpeakQueue } from "../lib/talk-explain-script";
+import {
+  TALK_AUTO_REPLY_WAIT_MS,
+  TALK_TICK_MS,
+  TALK_WRAPUP_WAIT_MS,
+  TalkCallController,
+  type TalkTransport,
+  type TalkTransportHandlers,
+} from "../lib/talk-realtime";
+import type { MicStreamHandle } from "../lib/mic-session";
+import { normalizeTalkSessionRecord, normalizeTalkTopic } from "../lib/talk-normalize";
 import { isCountedTalkSession, talkStreakLabel, talkStreakSessions } from "../lib/talk-streak";
 import { computeStreak } from "../lib/streak";
 import { TTS_TEXT_MAX_CHARS } from "../lib/tts-shared";
@@ -3056,7 +3095,9 @@ function runRelatedSuggestChecks(): CheckResult[] {
 // - 지시문 조립(프리셋·직접 입력 정리·단어장 20개 상한·뜻 없는 단어)·세션 설정(env 빈 값 폴백·속도 두 값·전사 무유도)
 // - 리듀서(늦게 온 은우 전사의 자리·멱등·cancelled→interrupted·빈 전사·실패·app_ 제외·모르는 이벤트 무시)·toTalkTurns·문장 나누기
 // - 호출 I zod 반례·사용자 메시지 문맥 창·설명 낭독 대본·스트릭 입력(§17-9 — 라우트 배선 점검은 eval:streak 몫)
-// - §12-6 화면 카드: 도구 정의 의미 동치·장면 표·도구 호출 검사(항목 단위로 버림)·도움 상태 기계(시계는 인자)·장면 문장·✓ 매칭
+// - §12-6 화면 카드: 장면 표·도구 호출 검사(항목 단위로 버림 — 폐기 예정, 컨트롤러가 아직 부른다)·도움 상태 기계(시계는 인자)·장면 문장·✓ 매칭
+// - §12-7 호출 J: JSON Schema 의미 동치·세션에 도구 없음·지시문 = 교사 + 차례 규칙·사용자 메시지·zod(타입·폭만)·후처리(근거 없는 그림
+//   카드 null·이미 보인 카드 null·한글 섞인 대답 버림·s/es 허용)·출처 태깅·철 지난 도움 버림·정적 점검(세션 설정 쪽 지금, 컨트롤러는 보류)
 // ---------------------------------------------------------------------------
 
 type TalkAdd = (check: string, pass: boolean, detail?: string) => void;
@@ -3083,8 +3124,9 @@ function talkDeepEqual(a: unknown, b: unknown): boolean {
 function runTalkSpecChecks(): CheckResult[] {
   const results: CheckResult[] = [];
   const add = talkAdder(results, "자유대화 ↔ 스펙");
-  // 1. talk_sentence_explanation JSON Schema — 스펙 코드블록을 JSON으로 파싱해 deep-equal
+  // 1. talk_sentence_explanation(§12-3)·talk_screen_cards(§12-7) JSON Schema — 스펙 코드블록을 JSON으로 파싱해 deep-equal
   let specSchema: unknown;
+  let specCardsSchema: unknown;
   let specText = "";
   try {
     specText = readFileSync(ENGLISH_SPEC_URL, "utf-8");
@@ -3092,6 +3134,7 @@ function runTalkSpecChecks(): CheckResult[] {
       try {
         const parsed = JSON.parse(b.text) as { name?: unknown };
         if (parsed && typeof parsed === "object" && parsed.name === "talk_sentence_explanation") specSchema = parsed;
+        if (parsed && typeof parsed === "object" && parsed.name === "talk_screen_cards") specCardsSchema = parsed;
       } catch {
         // JSON 아닌 블록은 건너뛴다
       }
@@ -3125,6 +3168,7 @@ function runTalkSpecChecks(): CheckResult[] {
     ["기본 모델", `빈 값이면 \`${DEFAULT_TALK_REALTIME_MODEL}\``],
     ["기본 음성", `빈 값이면 \`${DEFAULT_TALK_REALTIME_VOICE}\``],
     ["기본 전사 모델", `빈 값이면 ${DEFAULT_TALK_TRANSCRIBE_MODEL}`],
+    ["전사 언어", `language: "${TALK_TRANSCRIBE_LANGUAGE}" }\`, **prompt·keywords 지정 없음**`],
     ["max_output_tokens", `| \`max_output_tokens\` | ${TALK_REALTIME_MAX_OUTPUT_TOKENS} |`],
     ["속도 두 값", `천천히 ${TALK_SPEED_VALUES.slow}(기본) · 보통 ${TALK_SPEED_VALUES.normal.toFixed(1)}`],
     ["턴 감지", `\`{ type: "semantic_vad", eagerness: "low", create_response: true, interrupt_response: true }\``],
@@ -3144,7 +3188,7 @@ function runTalkSpecChecks(): CheckResult[] {
     ["zod keyWords 개수", `\`keyWords\` 0~${L.keyWordsMax}개`],
     ["zod keyWords.ko 글자", `\`ko\`는 한글 포함 ${L.keyWordKoMaxChars}자 이하`],
   );
-  // §12-6 화면 카드 — 검사 폭·시간·보관 수·도구 선택·기본 문구·호출 결과·장면 앞머리·지시문 이음
+  // §12-6 화면 카드 — 검사 폭·시간·보관 수·기본 문구·장면 앞머리·지시문 이음(도구·이어 말하기 문장은 §12-7이 대체 — 상수와 함께 지웠다)
   const C = TALK_CARD_LIMITS;
   tableFacts.push(
     ["카드 answers 폭", `\`answers\` ${C.answersMin}~${C.answersMax}개(각 ${C.answerMaxChars}자 이하·라틴 포함·한글 금지)`],
@@ -3152,48 +3196,70 @@ function runTalkSpecChecks(): CheckResult[] {
     ["도움 카드 5초", `**${TALK_HINT_SHOW_AFTER_MS / 1000}초** 동안 은우 발화`],
     ["도움 요청 12초", `**${TALK_HINT_NUDGE_AFTER_MS / 1000}초** 동안 계속 조용하면`],
     ["도움 요청 연속 상한", `도움 요청(12초 자동·🙋 합산)은 **연속 ${TALK_HINT_NUDGE_STREAK_MAX}번**까지다`],
-    ["이어 말하기 연속 상한", `(\`lib/talk-cards.ts\` \`TALK_CONTINUE_CHAIN_MAX\`): 이어 말하기는 **연속 ${TALK_CONTINUE_CHAIN_MAX}회**까지다`],
     ["기록 카드 30장", `보인 카드를 최대 ${C.savedCardsMax}장 남긴다`],
     ["저장 모델 cards 30", `\`cards: {emoji, en, ko}[]\`(최대 ${TALK_LIMITS.cards})`],
     ["칩 6장", `최근 ${C.recentChips}장까지`],
-    ["tool_choice", `\`tool_choice: "${String(TALK_TOOL_CHOICE)}"\``],
     ["기본 문구 4개", TALK_FALLBACK_HINTS.map((h) => `\`${h.en}\``).join("·")],
-    ["호출 결과 글", `output: ${JSON.stringify(TALK_TOOL_OUTPUT)}`],
     ["직접 입력 장면", `\`${TALK_SCENE_CUSTOM_PREFIX}{주제}\``],
     ["단어장 장면", `\`${TALK_SCENE_WORDS_PREFIX}{앞 ${TALK_SCENE_VOCAB_WORDS}개 단어를 "${TALK_SCENE_WORDS_JOINER}"로}\``],
-    ["지시문 이음", `(\`{lesson}\` 치환) + \`${JSON.stringify(TALK_CARDS_INSTRUCTIONS_JOINER)}\` + 이 블록`],
+    ["지시문 이음(§12-7 차례 규칙)", `(\`{lesson}\` 치환) + \`${JSON.stringify(TALK_TURN_RULES_JOINER)}\` + **\`TALK_TURN_RULES\`**`],
+    ["일러스트 품질", `**품질 ${TALK_IMAGE_QUALITY}**`],
+    [
+      "일러스트 크기·압축·재생성",
+      `${TALK_IMAGE_SIZE.replace("x", "×")}, JPEG 압축 ${TALK_IMAGE_COMPRESSION}, ${TALK_SCENE_DATA_URL_MAX.toLocaleString("en-US")}자 초과 시 압축 ${TALK_IMAGE_COMPRESSION_RETRY}으로 1회 재생성`,
+    ],
+  );
+  // §12-7 호출 J — 호출 옵션·시간 상한·zod 폭·후처리 폭·입력 개수(스펙 문장을 needle로 — 상수를 바꾸면 스펙과 함께 바꾼다)
+  const J = TALK_SCREEN_CARDS_ZOD_LIMITS;
+  const R = TALK_CARDS_REQUEST_LIMITS;
+  tableFacts.push(
+    [
+      "호출 J 옵션·시간 상한",
+      `call \`${TALK_CARDS_CALL_OPTIONS.call}\`, temperature ${TALK_CARDS_CALL_OPTIONS.temperature}, max_output_tokens ${TALK_CARDS_CALL_OPTIONS.maxOutputTokens}, 모델 env \`OPENAI_TALK_CARDS_MODEL\``,
+    ],
+    ["호출 J 서버 시간 상한", `서버 시간 상한 ${TALK_CARDS_TIMEOUT_MS / 1000}초`],
+    ["호출 J zod 개수", `zod: \`answers\` 0~${J.answersMax}, \`words\` 0~${J.wordsMax}, 문자열 길이 상한`],
+    ["호출 J 후처리 answers", `\`answers\`는 ${C.answersMax}개·단어 ${TALK_SCREEN_ANSWER_WORDS.min}~${TALK_SCREEN_ANSWER_WORDS.max}개로 자른다`],
+    ["호출 J {words} 모양·개수", `\`apple(사과)${TALK_CARDS_LIST_JOINER}dog(강아지)…\`(최대 ${R.words}), 아니면 \`${TALK_CARDS_NONE}\``],
+    ["호출 J {shown} 개수", `그림 카드 영어 목록(최근 ${R.shown}개), 없으면 \`${TALK_CARDS_NONE}\``],
+    ["호출 J {context} 줄 수", `선생님 줄 앞의 최근 ${R.context}줄`],
+    ["세션 설정 도구 없음", "세션 설정: `tools`·`tool_choice`를 싣지 않는다"],
+    ["출처 값", "`reply`(은우 발화 뒤 자동 응답) · `greeting` · `nudge`(도움 요청) · `wrapup`"],
   );
   for (const [name, needle] of tableFacts) add(`§12 값 == 코드: ${name}`, specText.includes(needle), needle);
+  add(
+    "호출 J 출처 값 = TALK_TURN_ORIGINS(reply·greeting·nudge·wrapup)",
+    TALK_TURN_ORIGINS.join(",") === "reply,greeting,nudge,wrapup",
+    TALK_TURN_ORIGINS.join(","),
+  );
+  add(
+    "호출 J 입력 폭 = 저장 상한 한 곳(단어 수 = TALK_LIMITS.vocabWords · 줄 글자 = TALK_LIMITS.turnChars · 보인 카드 글자 = 카드 영어 폭)",
+    R.words === TALK_LIMITS.vocabWords && R.lineMaxChars === TALK_LIMITS.turnChars && R.shownMaxChars === C.enMaxChars,
+    `${R.words}/${R.lineMaxChars}/${R.shownMaxChars}`,
+  );
+  add(
+    "호출 J zod 폭은 후처리 폭 이상(zod가 먼저 거부해 재요청으로 카드를 늦추지 않게)",
+    J.answersMax >= C.answersMax && J.wordsMax >= C.wordsMax && J.answerMaxChars >= C.answerMaxChars && J.emojiMaxChars >= C.emojiMaxChars * 2 && J.enMaxChars >= C.enMaxChars && J.koMaxChars >= C.koMaxChars,
+  );
   add("대화 상한 5분 == TALK_MAX_DURATION_SEC", TALK_MAX_DURATION_SEC === 300 && TALK_LIMITS.maxDurationSec === TALK_MAX_DURATION_SEC, String(TALK_MAX_DURATION_SEC));
   add("기록 카드 상한은 한 곳(TALK_LIMITS.cards = TALK_CARD_LIMITS.savedCardsMax)", TALK_LIMITS.cards === TALK_CARD_LIMITS.savedCardsMax);
 
-  // 4. §12-6 도구 정의 — 스펙 JSON 배열 블록을 파싱해 의미 동치
-  let specTools: unknown;
-  for (const b of extractSpecBlocks(ENGLISH_SPEC_URL)) {
-    try {
-      const parsed: unknown = JSON.parse(b.text);
-      if (Array.isArray(parsed) && parsed.some((t) => (t as { name?: unknown })?.name === TALK_TOOL_NAMES.hints)) specTools = parsed;
-    } catch {
-      // JSON 아닌 블록은 건너뛴다
-    }
-  }
+  // 4. §12-7 호출 J — talk_screen_cards JSON Schema 의미 동치(§12-6 도구 정의 TALK_TOOLS를 대체 — 세션에 도구가 없다)
   add(
-    "TALK_TOOLS ↔ §12-6 도구 정의 의미 동치",
-    specTools !== undefined && talkDeepEqual(specTools, TALK_TOOLS),
-    specTools === undefined ? "스펙에서 도구 정의 블록을 찾지 못함" : "",
+    "TALK_SCREEN_CARDS_JSON_SCHEMA ↔ §12-7 의미 동치",
+    specCardsSchema !== undefined && talkDeepEqual(specCardsSchema, TALK_SCREEN_CARDS_JSON_SCHEMA),
+    specCardsSchema === undefined ? "스펙에서 talk_screen_cards 블록을 찾지 못함" : "",
   );
-  const mutated = JSON.parse(JSON.stringify(TALK_TOOLS)) as { parameters: { required: string[] } }[];
-  mutated[0].parameters.required = ["words", "answers"];
-  add("도구 의미 동치 비교기가 실제로 작동(required 순서만 바꿔도 불일치)", specTools !== undefined && !talkDeepEqual(specTools, mutated));
+  const mutated = JSON.parse(JSON.stringify(TALK_SCREEN_CARDS_JSON_SCHEMA)) as { schema: { required: string[] } };
+  mutated.schema.required = ["words", "answers", "picture"];
+  add("호출 J 의미 동치 비교기가 실제로 작동(required 순서만 바꿔도 불일치)", specCardsSchema !== undefined && !talkDeepEqual(specCardsSchema, mutated));
   add(
-    "도구 이름 = TALK_TOOL_NAMES(show_hints·show_picture)",
-    TALK_TOOLS.map((t) => t.name).join(",") === `${TALK_TOOL_NAMES.hints},${TALK_TOOL_NAMES.picture}`,
-    TALK_TOOLS.map((t) => t.name).join(","),
+    "호출 J JSON에 개수·길이 키 없음(개수·길이는 zod, 근거는 후처리)",
+    !/minItems|maxItems|maxLength|minLength/.test(JSON.stringify(TALK_SCREEN_CARDS_JSON_SCHEMA)),
   );
-  add("도구 JSON에 개수·길이 키 없음(검사는 parseTalkToolCall)", !/minItems|maxItems|maxLength|minLength/.test(JSON.stringify(TALK_TOOLS)));
 
   // spec-sync block-exact — 두 블록을 이어 붙인 상수는 조립 규칙("block")으로는 통과하지만 block-exact는 거부한다(QA talk-ai P2-4)
-  const glued = `${TALK_TEACHER_INSTRUCTIONS}\n\n${TALK_CARDS_INSTRUCTIONS}`;
+  const glued = `${TALK_TEACHER_INSTRUCTIONS}\n\n${TALK_TURN_RULES}`;
   const probe = (mode: SpecSyncTarget["mode"]) =>
     checkSpecSync(ENGLISH_SPEC_URL, [{ constName: "GLUED", source: "eval", specLabel: "probe", text: glued, mode }])[0]?.ok === true;
   add("spec-sync block-exact: 두 블록을 이어 붙인 상수 거부(조립 규칙 꺼짐)", probe("block") && !probe("block-exact"), `block=${probe("block")} block-exact=${probe("block-exact")}`);
@@ -3239,10 +3305,13 @@ function runTalkInstructionChecks(): CheckResult[] {
     add("프리셋 수업 블록 = TALK_LESSON_TOPIC의 {topic} ← \"Animals (동물)\"", lesson === TALK_LESSON_TOPIC.replace("{topic}", "Animals (동물)"), lesson.split("\n")[0]);
     const ins = buildTalkInstructions(animals);
     add(
-      "지시문 = 템플릿 앞부분 + 수업 블록 + 뒷부분 + \"\\n\\n\" + 화면 카드 덧붙임(치환은 {lesson} 한 자리)",
-      ins === `${before}${lesson}${after}\n\n${TALK_CARDS_INSTRUCTIONS}`,
+      "지시문 = 템플릿 앞부분 + 수업 블록 + 뒷부분 + \"\\n\\n\" + 차례 규칙(§12-7, 치환은 {lesson} 한 자리)",
+      ins === `${before}${lesson}${after}\n\n${TALK_TURN_RULES}`,
     );
-    add("화면 카드 덧붙임은 지시문 맨 끝에 한 번", ins.endsWith(`\n\n${TALK_CARDS_INSTRUCTIONS}`) && ins.split("# Screen cards").length === 2);
+    add(
+      "차례 규칙은 지시문 맨 끝에 한 번, §12-6 화면 카드 덧붙임·도구 이름은 없음",
+      ins.endsWith(`\n\n${TALK_TURN_RULES}`) && ins.split("# Your turns").length === 2 && !/# Screen cards|show_hints|show_picture|your tools/.test(ins),
+    );
     add("지시문에 치환 자리({lesson}·{topic})가 남지 않음", !/\{lesson\}|\{topic\}|\{title\}|\{words\}/.test(ins));
     add("스냅샷: 프리셋이면 key·labelEn 있고 words []", animals.kind === "preset" && animals.key === "animals" && animals.vocabBookId === null && animals.words.length === 0);
   } else {
@@ -3311,11 +3380,11 @@ function runTalkInstructionChecks(): CheckResult[] {
     "뜻: meanings[0].ko → definitionKo → null, 빈·되풀이 단어 건너뜀, 줄바꿈은 공백",
     JSON.stringify(mixed) ===
       JSON.stringify([
-        { en: "apple", ko: "사과" },
-        { en: "brave", ko: "두려워하지 않는" },
-        { en: "gather", ko: null },
-        { en: "rain bow", ko: "무지개" },
-        { en: "moon", ko: "밤하늘의 달" },
+        { en: "apple", ko: "사과", emoji: null },
+        { en: "brave", ko: "두려워하지 않는", emoji: null },
+        { en: "gather", ko: null, emoji: null },
+        { en: "rain bow", ko: "무지개", emoji: null },
+        { en: "moon", ko: "밤하늘의 달", emoji: null },
       ]),
     JSON.stringify(mixed),
   );
@@ -3337,6 +3406,76 @@ function runTalkInstructionChecks(): CheckResult[] {
   // "모은 단어" 단어장 모양(word·meanings[].ko만, definitionKo null)도 같은 경로
   const collected = resolveVocabTalkTopic({ id: "vb_c", titleKo: "모은 단어", entries: [{ word: "bellowed", meanings: [{ ko: "울부짖었다" }], definitionKo: null }] });
   add("'모은 단어' 모양도 해석", collected?.words[0]?.ko === "울부짖었다", JSON.stringify(collected?.words));
+
+  // 단어장 이모지(2026-09-27) — 화면 표시용 스냅샷 필드. 카드 이모지 판정(sanitizeTalkEmoji) 한 곳을 지나고, 지시문에는 넣지 않는다
+  const withEmoji = (word: string, ko: string, imageEmoji: string | null | undefined): TalkVocabEntryLike => ({
+    word,
+    meanings: [{ ko }],
+    definitionKo: null,
+    ...(imageEmoji === undefined ? {} : { imageEmoji }),
+  });
+  const emojiWords = buildTalkVocabWords([
+    withEmoji("fix", "고치다", "🛠️"),
+    withEmoji("bike", "자전거", " 🚲\n"),
+    withEmoji("apple", "사과", "apple"),
+    withEmoji("cat", "고양이", "고양이"),
+    withEmoji("star", "별", ""),
+    withEmoji("respect", "존중하다", null),
+    withEmoji("dog", "개", undefined),
+    withEmoji("circle", "동그라미", "●"),
+    withEmoji("family", "가족", "👨‍👩‍👧‍👦"),
+    withEmoji("letter", "글자", "Ⓐ"),
+  ]);
+  add(
+    "단어장 이모지: imageEmoji → emoji(정리), 글자·한글·빈 값·없음·글자형 기호 → null, 도형 기호·ZWJ 가족 이모지는 살림",
+    JSON.stringify(emojiWords.map((w) => w.emoji)) === JSON.stringify(["🛠️", "🚲", null, null, null, null, null, "●", "👨‍👩‍👧‍👦", null]),
+    JSON.stringify(emojiWords.map((w) => w.emoji)),
+  );
+  add(
+    "단어장 이모지 판정 = 카드 이모지 판정(sanitizeTalkEmoji 한 곳 — sanitizeTalkCards도 같은 값에서 살고 죽음)",
+    ["🛠️", " 🚲\n", "apple", "고양이", "", "●", "👨‍👩‍👧‍👦", "Ⓐ", ":dog:", "▲A", "🐶".repeat(TALK_CARD_LIMITS.emojiMaxChars + 1)].every((e) => {
+      const card = sanitizeTalkCards([{ emoji: e, en: "word", ko: "낱말" }])[0] ?? null;
+      return (card?.emoji ?? null) === sanitizeTalkEmoji(e);
+    }),
+  );
+  const emojiBook = resolveVocabTalkTopic({
+    id: "vb_emoji",
+    titleKo: "DAY 01",
+    entries: [withEmoji("fix", "고치다", "🛠️"), withEmoji("bike", "자전거", "🚲"), withEmoji("respect", "존중하다", null)],
+  });
+  add(
+    "단어장 이모지는 수업 블록에 넣지 않음(TALK_LESSON_WORDS {words} 줄 형식 불변)",
+    emojiBook !== null &&
+      buildTalkLesson(emojiBook) === TALK_LESSON_WORDS.replace("{title}", "DAY 01").replace("{words}", "- fix (고치다)\n- bike (자전거)\n- respect (존중하다)") &&
+      !/🛠|🚲/u.test(buildTalkInstructions(emojiBook)),
+    emojiBook ? buildTalkLesson(emojiBook).split("\n").slice(1, 4).join(" / ") : "해석 실패",
+  );
+  add(
+    "단어장 장면 문장에도 이모지 없음(영어 단어만)",
+    emojiBook !== null && buildTalkSceneEn(emojiBook) === "a cheerful scene with: fix, bike, respect",
+    emojiBook ? buildTalkSceneEn(emojiBook) : "",
+  );
+  add("스냅샷 단어 키 = {en, ko, emoji}(필수 nullable — undefined 없음)", emojiWords.every((w) => JSON.stringify(Object.keys(w)) === '["en","ko","emoji"]' && w.emoji !== undefined));
+  // 옛 스냅샷(emoji 키 없음)·빈 문자열·숫자 → null, 있는 값은 그대로(normalize는 글자를 손보지 않는다)
+  const normalized = normalizeTalkTopic({
+    kind: "vocab",
+    key: null,
+    labelKo: "옛 단어장",
+    labelEn: null,
+    vocabBookId: "vb_old",
+    words: [{ en: "apple", ko: "사과" }, { en: "bike", ko: null, emoji: "" }, { en: "fix", ko: "고치다", emoji: "🛠️" }, { en: "cat", ko: null, emoji: 7 }],
+  });
+  add(
+    "normalize: 옛 스냅샷(emoji 없음)·빈 문자열·문자열 아님 → null, 있는 이모지는 그대로",
+    JSON.stringify(normalized.words) ===
+      JSON.stringify([
+        { en: "apple", ko: "사과", emoji: null },
+        { en: "bike", ko: null, emoji: null },
+        { en: "fix", ko: "고치다", emoji: "🛠️" },
+        { en: "cat", ko: null, emoji: null },
+      ]),
+    JSON.stringify(normalized.words),
+  );
   add("넘길 단어 0개 → null(라우트 400)", resolveVocabTalkTopic({ id: "vb_e", titleKo: "빈 책", entries: [entry(" ", "뜻")] }) === null);
 
   // 아이 이름은 AI에 보내지 않는다 — 어떤 지시문에도 "은우"가 없다
@@ -3346,13 +3485,15 @@ function runTalkInstructionChecks(): CheckResult[] {
     TALK_GREETING_INSTRUCTIONS,
     TALK_WRAPUP_INSTRUCTIONS,
     TALK_EXPLAIN_SYSTEM_PROMPT,
-    TALK_CARDS_INSTRUCTIONS,
+    TALK_TURN_RULES,
     TALK_NUDGE_NOTE,
     TALK_SCENE_NOTE,
     TALK_SCENE_IMAGE_PROMPT,
-    JSON.stringify(TALK_TOOLS),
+    TALK_CARDS_SYSTEM_PROMPT,
+    TALK_CARDS_USER_TEMPLATE,
+    JSON.stringify(TALK_SCREEN_CARDS_JSON_SCHEMA),
   ];
-  add("지시문·인사·마무리·도움 요청·장면·도구·호출 I 프롬프트에 아이 이름 없음", allIns.every((s) => !s.includes("은우")));
+  add("지시문·차례 규칙·인사·마무리·도움 요청·장면·호출 I·호출 J 프롬프트에 아이 이름 없음", allIns.every((s) => !s.includes("은우")));
   return results;
 }
 
@@ -3398,9 +3539,16 @@ function runTalkSessionConfigChecks(): CheckResult[] {
     add("기본 모델이면 reasoning.effort low", c.reasoning?.effort === "low");
     add("instructions = buildTalkInstructions(주제 스냅샷)", c.instructions === buildTalkInstructions(topic));
     add(
-      "전사: 모델만 — language·prompt 지정 없음(무유도)",
-      JSON.stringify(Object.keys(c.audio?.input?.transcription ?? {})) === '["model"]',
+      "전사: language en · prompt 없음 — 키는 정확히 {model, language}(prompt·keywords·languages 무유도)",
+      JSON.stringify(Object.keys(c.audio?.input?.transcription ?? {}).sort()) === '["language","model"]' &&
+        c.audio?.input?.transcription?.language === "en" &&
+        TALK_TRANSCRIBE_LANGUAGE === "en",
       JSON.stringify(c.audio?.input?.transcription),
+    );
+    add(
+      "전사 언어는 env로 바뀌지 않음(전사 모델 env를 바꿔도 en)",
+      overridden.audio?.input?.transcription?.language === "en" && !("prompt" in (overridden.audio?.input?.transcription ?? {})),
+      JSON.stringify(overridden.audio?.input?.transcription),
     );
     add(
       "턴 감지: semantic_vad · eagerness low · 응답 생성·끼어들기 허용",
@@ -3410,14 +3558,25 @@ function runTalkSessionConfigChecks(): CheckResult[] {
     add("소음 억제 far_field", c.audio?.input?.noise_reduction?.type === "far_field");
     add("표에 없는 필드(tracing·truncation·include·prompt) 없음", !["tracing", "truncation", "include", "prompt"].some((k) => k in c), Object.keys(c).join(","));
     add(
-      "최상위 키 = §12-1 표 + §12-6 도구(type·model·instructions·output_modalities·max_output_tokens·audio·reasoning·tools·tool_choice)",
-      Object.keys(c).sort().join(",") === ["audio", "instructions", "max_output_tokens", "model", "output_modalities", "reasoning", "tool_choice", "tools", "type"].join(","),
+      "최상위 키 = §12-1 표(type·model·instructions·output_modalities·max_output_tokens·audio·reasoning) — §12-7 도구 없음",
+      Object.keys(c).sort().join(",") === ["audio", "instructions", "max_output_tokens", "model", "output_modalities", "reasoning", "type"].join(","),
       Object.keys(c).sort().join(","),
     );
-    add("§12-6 도구: tools = TALK_TOOLS(show_hints·show_picture)", talkDeepEqual(c.tools, TALK_TOOLS), (c.tools ?? []).map((t) => ("name" in t ? t.name : "?")).join(","));
-    add("§12-6 도구 선택: tool_choice auto", c.tool_choice === "auto");
-    add("§12-6 지시문 덧붙임: instructions 끝이 \"\\n\\n\" + TALK_CARDS_INSTRUCTIONS", typeof c.instructions === "string" && c.instructions.endsWith(`\n\n${TALK_CARDS_INSTRUCTIONS}`));
-    add("세션마다 도구 배열은 새 배열(공유 상수를 내주지 않음)", c.tools !== TALK_TOOLS && buildTalkSessionConfig({ topic, speed: "slow" }).tools !== c.tools);
+    add("§12-7 도구 없음: tools·tool_choice 키가 없다(선생님이 도구로 응답을 끊지 않게)", !("tools" in c) && !("tool_choice" in c));
+    add(
+      "§12-7 지시문 덧붙임: instructions 끝이 \"\\n\\n\" + TALK_TURN_RULES(도구 안내 없음)",
+      typeof c.instructions === "string" && c.instructions.endsWith(`\n\n${TALK_TURN_RULES}`) && !/# Screen cards|show_hints|show_picture/.test(c.instructions),
+    );
+    add(
+      "주제·속도·env가 달라도 도구는 끝내 없음(프리셋·단어장·보통 속도·비추론 모델)",
+      (() => {
+        process.env.OPENAI_REALTIME_MODEL = "gpt-realtime-mini";
+        const vocab = resolveVocabTalkTopic({ id: "vb_t", titleKo: "DAY 1", entries: [{ word: "apple", meanings: [{ ko: "사과" }], definitionKo: null }] });
+        const configs = [buildTalkSessionConfig({ topic, speed: "normal" }), ...(vocab ? [buildTalkSessionConfig({ topic: vocab, speed: "slow" })] : [])];
+        delete process.env.OPENAI_REALTIME_MODEL;
+        return vocab !== null && configs.every((cfg) => !("tools" in cfg) && !("tool_choice" in cfg) && cfg.instructions?.endsWith(TALK_TURN_RULES) === true);
+      })(),
+    );
     add("속도: 천천히 0.85 · 보통 1.0", c.audio?.output?.speed === 0.85 && buildTalkSessionConfig({ topic, speed: "normal" }).audio?.output?.speed === 1.0);
     add("속도 키는 두 개뿐(slow·normal)", TALK_SPEEDS.join(",") === "slow,normal" && isTalkSpeed("slow") && isTalkSpeed("normal") && !isTalkSpeed("fast") && !isTalkSpeed(0.85));
     add("알 수 없는 속도 → 던짐", (() => {
@@ -3680,7 +3839,7 @@ function runTalkTranscriptChecks(): CheckResult[] {
     failedResp.lines[0].status === "interrupted" && failedResp.lines[0].text === "Let us talk about" && isVisibleTalkLine(failedResp.lines[0]),
     talkLinesKey(failedResp),
   );
-  add("진행 중 선생님 줄(글자 전)은 보임", isVisibleTalkLine({ itemId: "x", speaker: "teacher", text: "", status: "partial", filtered: false }));
+  add("진행 중 선생님 줄(글자 전)은 보임", isVisibleTalkLine({ itemId: "x", speaker: "teacher", text: "", status: "partial", filtered: false, origin: null }));
 
   // 모르는 이벤트·모양이 틀린 이벤트 — 같은 상태 객체를 그대로
   const ignored = [
@@ -3700,19 +3859,19 @@ function runTalkTranscriptChecks(): CheckResult[] {
   const turnsState = reduceTalkTranscriptEvents([...all, ...[talkEv.speechStarted("item_c15"), talkEv.inCompleted("item_c15", "")], ...[talkEv.speechStarted("item_c16"), talkEv.inFailed("item_c16")]]);
   const turns = toTalkTurns(turnsState.lines);
   add(
-    "toTalkTurns: empty·failed·글자 없는 줄 제외, {speaker,text,interrupted}",
+    "toTalkTurns: empty·failed·글자 없는 줄 제외, {speaker,text,interrupted,origin}(청 없는 선생님 응답 = reply, 은우 = null)",
     JSON.stringify(turns) ===
       JSON.stringify([
-        { speaker: "teacher", text: "Hello! I am Sunny. Do you like dogs?", interrupted: false },
-        { speaker: "child", text: "Yes, I like dogs.", interrupted: false },
-        { speaker: "teacher", text: "Great! Dogs are fun. What color is your dog?", interrupted: false },
+        { speaker: "teacher", text: "Hello! I am Sunny. Do you like dogs?", interrupted: false, origin: "reply" },
+        { speaker: "child", text: "Yes, I like dogs.", interrupted: false, origin: null },
+        { speaker: "teacher", text: "Great! Dogs are fun. What color is your dog?", interrupted: false, origin: "reply" },
       ]),
     JSON.stringify(turns),
   );
   add("childTurnCount = 은우 턴 수", childTurnCount(turns) === 1 && childTurnCount([]) === 0);
   const cutTurns = toTalkTurns(cutA.lines);
   add("끊긴 선생님 턴은 interrupted:true로 저장, 글자 없는 listening 줄은 제외", cutTurns.length === 1 && cutTurns[0].interrupted === true, JSON.stringify(cutTurns));
-  const partialLine: TalkLine = { itemId: "item_c17", speaker: "child", text: "  My dog is ", status: "partial", filtered: false };
+  const partialLine: TalkLine = { itemId: "item_c17", speaker: "child", text: "  My dog is ", status: "partial", filtered: false, origin: null };
   add("세션이 끝날 때 partial 은우 글자는 trim해서 남긴다", toTalkTurns([partialLine])[0]?.text === "My dog is");
   return results;
 }
@@ -3739,8 +3898,8 @@ function runTalkSentenceChecks(): CheckResult[] {
   const sample = "Hello! I am Sunny. It is 3.5 meters. Do you like dogs?";
   add("같은 글자는 늘 같게 나뉜다(결정적)", JSON.stringify(splitTalkSentences(sample)) === JSON.stringify(splitTalkSentences(`${sample}`)) && splitTalkSentences(sample).length === 4);
   const turns: TalkTurn[] = [
-    { speaker: "teacher", text: "Hello! Do you like dogs?", interrupted: false },
-    { speaker: "child", text: "Yes.", interrupted: false },
+    { speaker: "teacher", text: "Hello! Do you like dogs?", interrupted: false, origin: "greeting" },
+    { speaker: "child", text: "Yes.", interrupted: false, origin: null },
   ];
   const picked = pickTalkSentence(turns, 0, 1);
   add("pickTalkSentence: 범위 안", picked?.speaker === "teacher" && picked.sentence === "Do you like dogs?", JSON.stringify(picked));
@@ -3857,6 +4016,7 @@ function runTalkExplainChecks(): CheckResult[] {
     speaker: i % 2 === 0 ? ("teacher" as const) : ("child" as const),
     text: i === 5 ? "I like\ndogs. They are cute." : `line ${i}.`,
     interrupted: false,
+    origin: i % 2 === 0 ? ("reply" as const) : null,
   }));
   const msg = buildTalkExplainUserMessage({ topicLabel: "동물", turns, turnIndex: 5, sentence: "I like dogs." });
   const expectedContext = [
@@ -3943,36 +4103,45 @@ function runTalkStreakChecks(): CheckResult[] {
   return results;
 }
 
-/** §12-6 도구 호출 검사(parseTalkToolCall)·카드 보관·기본 문구·단어장 ✓ 매칭·이벤트 도우미 */
+/**
+ * §12-6 카드 칸 규칙(호출 J 후처리가 재사용)·카드 보관·기본 문구·단어장 ✓ 매칭·숨은 안내 항목.
+ * 2026-09-27(§12-7): §12-6 도구 호출 검사(parseTalkToolCall)·이어 말하기 판정(stepTalkContinue 등)·호출 결과 항목은 컨트롤러에서 걷어
+ * 내며 함수와 반례를 지웠다. 그 반례 가운데 **호출 J 후처리가 같은 규칙으로 여전히 지키는 것**(답 글자 폭·되풀이·항목 단위 버림·
+ * 값 정리·배열 아님)은 `sanitizeTalkScreenCards` 위로 옮겨 잠금을 남겼다(이모지 칸 목록은 이미 "자유대화 호출J"에 있다).
+ */
 function runTalkCardChecks(): CheckResult[] {
   const results: CheckResult[] = [];
   const add = talkAdder(results, "자유대화 카드");
   const C = TALK_CARD_LIMITS;
-  const H = TALK_TOOL_NAMES.hints;
-  const P = TALK_TOOL_NAMES.picture;
   const apple: TalkCard = { emoji: "🍎", en: "apple", ko: "사과" };
-  const hintsOf = (args: unknown) => {
-    const r = parseTalkToolCall(H, JSON.stringify(args));
-    return r && r.name === H ? r.hints : null;
-  };
+  // 호출 J 후처리 — 선생님 말에 apple·banana·dog·cat·family·three·frog·red apple이 다 있어 그림 근거 검사에 가려지지 않는다
+  const line = "I like apples and a banana. My dog, cat, family, three frogs and a red apple!";
+  const screen = (raw: unknown) => sanitizeTalkScreenCards(raw, { teacherLine: line, words: [], shown: [] });
 
   // 정상
-  const ok = hintsOf({ answers: ["I like apples.", "It is red."], words: [apple, { emoji: "🍌", en: "banana", ko: "바나나" }] });
-  add("show_hints 정상 → 답 2개·단어 2개 그대로", JSON.stringify(ok) === JSON.stringify({ answers: ["I like apples.", "It is red."], words: [apple, { emoji: "🍌", en: "banana", ko: "바나나" }] }), JSON.stringify(ok));
-  const pic = parseTalkToolCall(P, JSON.stringify(apple));
-  add("show_picture 정상 → 카드 한 장", pic !== null && pic.name === P && JSON.stringify(pic.card) === JSON.stringify(apple), JSON.stringify(pic));
+  const ok = screen({ answers: ["I like apples.", "It is red."], words: [apple, { emoji: "🍌", en: "banana", ko: "바나나" }], picture: apple });
+  add(
+    "후처리 정상 → 답 2개·단어 2개·그림 그대로",
+    JSON.stringify(ok) === JSON.stringify({ answers: ["I like apples.", "It is red."], words: [apple, { emoji: "🍌", en: "banana", ko: "바나나" }], picture: apple }),
+    JSON.stringify(ok),
+  );
 
   // 그 항목만 버림
-  const mixed = hintsOf({ answers: ["I like 사과.", "It is red.", "  ", 42], words: [] });
-  add("한글 섞인 답·빈 답·문자열 아닌 답은 그 항목만 버림", JSON.stringify(mixed?.answers) === '["It is red."]', JSON.stringify(mixed));
-  const exact = "a".repeat(C.answerMaxChars - 1) + ".";
-  const longAns = hintsOf({ answers: [`${"b".repeat(C.answerMaxChars)}!`, exact], words: [] });
-  add(`답 ${C.answerMaxChars + 1}자는 버리고 ${C.answerMaxChars}자는 남김`, JSON.stringify(longAns?.answers) === JSON.stringify([exact]), JSON.stringify(longAns?.answers.map((a) => a.length)));
-  const many = hintsOf({ answers: ["Yes.", "yes.", "No.", "Maybe.", "I do."], words: [] });
-  add(`답은 같은 문장 되풀이를 하나로, 앞 ${C.answersMax}개까지`, JSON.stringify(many?.answers) === '["Yes.","No.","Maybe."]', JSON.stringify(many?.answers));
-  const noLatin = hintsOf({ answers: ["123!", "좋아요"], words: [apple] });
-  add("남는 답이 없으면 null(단어만 있어도 — 답 예시가 도움 카드의 본체)", noLatin === null);
-  const words = hintsOf({
+  const mixed = screen({ answers: ["I like 사과.", "It is red.", "  ", 42], words: [], picture: null });
+  add("한글 섞인 답·빈 답·문자열 아닌 답은 그 항목만 버림", JSON.stringify(mixed.answers) === '["It is red."]', JSON.stringify(mixed));
+  const exact = `I have ${"a".repeat(C.answerMaxChars - 8)}.`;
+  const tooLong = `I have ${"b".repeat(C.answerMaxChars - 7)}.`;
+  const longAns = screen({ answers: [tooLong, exact], words: [], picture: null });
+  add(
+    `답 ${C.answerMaxChars + 1}자는 버리고 ${C.answerMaxChars}자는 남김`,
+    exact.length === C.answerMaxChars && tooLong.length === C.answerMaxChars + 1 && JSON.stringify(longAns.answers) === JSON.stringify([exact]),
+    JSON.stringify(longAns.answers.map((a) => a.length)),
+  );
+  const many = screen({ answers: ["Yes, I do.", "yes, i do.", "No, I don't.", "Maybe not.", "I do."], words: [], picture: null });
+  add(`답은 같은 문장 되풀이를 하나로, 앞 ${C.answersMax}개까지`, JSON.stringify(many.answers) === '["Yes, I do.","No, I don\'t.","Maybe not."]', JSON.stringify(many.answers));
+  const noLatin = screen({ answers: ["123!", "좋아요"], words: [apple], picture: null });
+  add("남는 답이 없으면 핵심 단어도 [](단어만 있어도 — 답 예시가 도움 카드의 본체)", noLatin.answers.length === 0 && noLatin.words.length === 0);
+  const words = screen({
     answers: ["I like apples."],
     words: [
       { emoji: "", en: "cat", ko: "고양이" }, // 빈 이모지
@@ -3989,34 +4158,32 @@ function runTalkCardChecks(): CheckResult[] {
       { emoji: "3️⃣", en: "three", ko: "셋" }, // 키캡
       { emoji: "🐸", en: "frog", ko: "개구리" }, // 넷째 — 앞 3개까지
     ],
+    picture: null,
   });
   add(
     "잘못된 단어(빈·가짜 이모지·긴 값·한글 en·한글 없는 ko·칸 누락)는 그 항목만 버리고, 되풀이 하나로, 앞 3개",
-    JSON.stringify(words?.words.map((w) => w.en)) === '["apple","family","three"]',
-    JSON.stringify(words?.words.map((w) => w.en)),
+    JSON.stringify(words.words.map((w) => w.en)) === '["apple","family","three"]',
+    JSON.stringify(words.words.map((w) => w.en)),
   );
-  // 도형·기호 블록(QA cards P2-1) — "색깔과 모양"에서 모델이 텍스트 기호를 줘도 그림 카드가 살아남는다. 글자·숫자만이면 여전히 거부.
-  const shapeOf = (emoji: string) => parseTalkToolCall(P, JSON.stringify({ emoji, en: "shape", ko: "모양" }));
-  const shapeKept = ["▲", "●", "■", "◆", "△", "○", "□", "☆", "◯", "▭", "⬟", "⬢", "✦", "▲●■", "🔺", "⭐", "★", "🔵", "🟥"];
-  const shapeLost = shapeKept.filter((s) => { const r = shapeOf(s); return !(r && r.name === P && r.card.emoji === s); });
-  add("도형·기호 블록(▲●■◆△○□☆⬟⬢✦)도 이모지 칸 통과 — 이모지(🔺⭐★🔵🟥)와 함께", shapeLost.length === 0, shapeLost.length ? `버려짐: ${shapeLost.join(" ")}` : `${shapeKept.length}개 통과`);
-  const shapeHints = hintsOf({ answers: ["It is a triangle."], words: [{ emoji: "▲", en: "triangle", ko: "세모" }, { emoji: "●", en: "circle", ko: "동그라미" }] });
-  add("show_hints 단어의 도형 기호도 그 단어를 살림", JSON.stringify(shapeHints?.words.map((w) => w.en)) === '["triangle","circle"]', JSON.stringify(shapeHints?.words));
-  // 글자형 기호(Ⓐ ① ㉠ ❶ ➓)·숫자·한자·ASCII 기호만 → 그림 아님. 도형 + 라틴/한글 → 라틴·한글 금지로 거부.
-  const letterish = ["1", "12", "0", "#", "*", "Ⓐ", "①", "㉠", "❶", "➓", "三", "▲A", "●빨강", "◆ red", "▲:circle:"];
-  const letterishKept = letterish.filter((s) => shapeOf(s) !== null);
-  add("글자·숫자만(동그라미 숫자·글자 포함)이거나 도형에 라틴·한글이 섞인 이모지 칸은 여전히 거부", letterishKept.length === 0, letterishKept.length ? `통과해 버림: ${letterishKept.join(" ")}` : `${letterish.length}개 거부`);
-  add("show_hints에 words가 없거나 배열이 아니어도 답만으로 통과",JSON.stringify(hintsOf({ answers: ["Yes!"] })) === '{"answers":["Yes!"],"words":[]}' && hintsOf({ answers: ["Yes!"], words: "x" })?.words.length === 0);
-  add("show_picture 빈 이모지 → null", parseTalkToolCall(P, JSON.stringify({ ...apple, emoji: " " })) === null);
-  add("show_picture 긴 영어 → null", parseTalkToolCall(P, JSON.stringify({ ...apple, en: "a".repeat(C.enMaxChars + 1) })) === null);
-  add("show_picture 한글 영어 칸 → null", parseTalkToolCall(P, JSON.stringify({ ...apple, en: "사과" })) === null);
-  add("값 앞뒤 공백·줄바꿈은 정리", JSON.stringify(parseTalkToolCall(P, JSON.stringify({ emoji: " 🍎 ", en: " red\napple ", ko: " 빨간 사과 " }))) === JSON.stringify({ name: P, card: { emoji: "🍎", en: "red apple", ko: "빨간 사과" } }));
-  add("모르는 도구 이름 → null", parseTalkToolCall("show_video", JSON.stringify(apple)) === null && parseTalkToolCall(undefined, "{}") === null);
-  add("인자가 JSON이 아니거나 객체가 아니면 null", parseTalkToolCall(P, "{not json") === null && parseTalkToolCall(H, "[1,2]") === null && parseTalkToolCall(H, null) === null);
+  add(
+    "words가 배열이 아니거나 없어도 답만으로 통과",
+    JSON.stringify(screen({ answers: ["Yes, I do."], picture: null })) === '{"answers":["Yes, I do."],"words":[],"picture":null}' &&
+      screen({ answers: ["Yes, I do."], words: "x", picture: null }).words.length === 0,
+  );
+  add("그림 카드 빈 이모지 → null", screen({ answers: [], words: [], picture: { ...apple, emoji: " " } }).picture === null);
+  add("그림 카드 긴 영어 → null", screen({ answers: [], words: [], picture: { ...apple, en: `${"a".repeat(C.enMaxChars)} apple` } }).picture === null);
+  add("그림 카드 한글 영어 칸 → null", screen({ answers: [], words: [], picture: { ...apple, en: "사과" } }).picture === null);
+  add(
+    "값 앞뒤 공백·줄바꿈은 정리(그림 카드)",
+    JSON.stringify(screen({ answers: [], words: [], picture: { emoji: " 🍎 ", en: " red\napple ", ko: " 빨간 사과 " } }).picture) ===
+      JSON.stringify({ emoji: "🍎", en: "red apple", ko: "빨간 사과" }),
+  );
+  add("answers가 배열이 아니면 [](도움 없음)", screen({ answers: "Yes, I do.", words: [apple], picture: null }).answers.length === 0);
 
   // 기록 카드 — 검사·되풀이·30장
   const saved = sanitizeTalkCards([
     apple,
+    { emoji: "🐶", en: "dog 강아지", ko: "강아지" }, // 섞인 영어 칸 — 버려져야 둘째가 star 0(QA talk-cards-j P3-G)
     { emoji: "🍏", en: "APPLE", ko: "사과" },
     { emoji: "", en: "cat", ko: "고양이" },
     ...Array.from({ length: C.savedCardsMax + 5 }, (_, i) => ({ emoji: "⭐", en: `star ${i}`, ko: `별 ${i}` })),
@@ -4055,102 +4222,7 @@ function runTalkCardChecks(): CheckResult[] {
     add(`✓ 매칭: "${card}" → ${expected ?? "없음"}`, matchTalkWord(card, today) === expected, String(matchTalkWord(card, today)));
   }
 
-  // 이벤트 도우미 — function_call 꺼내기·응답 끝 요약·호출 결과·숨은 system 메시지·response.create
-  const fcItem = { type: "function_call" as const, id: "item_fc1", call_id: "call_1", name: H, arguments: '{"answers":["Yes!"],"words":[]}' };
-  const outputDone: RealtimeServerEvent = { type: "response.output_item.done", event_id: "e1", response_id: "resp_1", output_index: 1, item: fcItem };
-  const refs = extractTalkFunctionCalls(outputDone);
-  add("response.output_item.done의 function_call → 호출 1개(callId·name·arguments·responseId)", refs.length === 1 && refs[0].callId === "call_1" && refs[0].name === H && refs[0].responseId === "resp_1" && parseTalkToolCall(refs[0].name, refs[0].argumentsJson) !== null);
-  const msgItem = { type: "message" as const, role: "assistant" as const, id: "item_m1", content: [] };
-  const doneWith = (status: "completed" | "cancelled", output: unknown[]): RealtimeServerEvent =>
-    ({ type: "response.done", event_id: "e2", response: { id: "resp_2", object: "realtime.response", status, output } }) as RealtimeServerEvent;
-  // 이어 말하기(§12-6 — 2026-09-26 실연결 정정): 도구 + 정상 완료 + **말한 글자에 질문 없음**(오디오 없음 포함) → 이어 말하기 후보.
-  // 말한 글자 = response.done output의 assistant 메시지 content 오디오 전사(SDK GA RealtimeConversationItemAssistantMessage.Content.transcript)
-  const spoke = (id: string, transcript: string | null, type: "output_audio" | "output_text" = "output_audio") => ({
-    type: "message" as const,
-    role: "assistant" as const,
-    id,
-    content: transcript === null ? [] : [type === "output_audio" ? { type, transcript } : { type, text: transcript }],
-  });
-  const toolOnlyEv = doneWith("completed", [fcItem, { ...fcItem, call_id: "call_2", name: P }]);
-  const statementToolEv = doneWith("completed", [spoke("item_s1", "Nice, that is a lovely choice."), fcItem]);
-  const questionToolEv = doneWith("completed", [spoke("item_q1", "Great! Do you like apples?"), fcItem]);
-  const toolOnly = summarizeTalkResponseDone(toolOnlyEv);
-  add("오디오 없이 도구만 부르고 끝난 응답 → 이어 말하기 후보(말한 글자 \"\")", toolOnly !== null && toolOnly.functionCalls.length === 2 && !toolOnly.hadAudio && toolOnly.spokenText === "" && toolOnly.shouldContinue);
-  const statementTool = summarizeTalkResponseDone(statementToolEv);
-  add(
-    "질문 없는 오디오 + 도구 → 이어 말하기 후보(말만 하다 도구로 끝난 응답)",
-    statementTool !== null && statementTool.hadAudio && statementTool.spokenText === "Nice, that is a lovely choice." && !statementTool.askedQuestion && statementTool.shouldContinue,
-    JSON.stringify(statementTool && { spokenText: statementTool.spokenText, shouldContinue: statementTool.shouldContinue }),
-  );
-  const questionTool = summarizeTalkResponseDone(questionToolEv);
-  add("질문 있는 오디오 + 도구 → 이어 말하지 않음(은우 차례)", questionTool !== null && questionTool.hadAudio && questionTool.askedQuestion && !questionTool.shouldContinue);
-  // QA 5 P2-A — 빈 전사("")·공백은 글자가 아니다: 대체 조회(리듀서가 모은 선생님 줄)로 넘어가야 한다.
-  const emptyTranscriptEv = doneWith("completed", [spoke("item_e1", ""), fcItem]);
-  const viaFallback = summarizeTalkResponseDone(emptyTranscriptEv, (id) => (id === "item_e1" ? "Great! Do you like apples?" : null));
-  add("빈 전사 + 대체 조회에 질문 → 이어 말하지 않음(빈 문자열을 글자로 받지 않음)", viaFallback !== null && viaFallback.askedQuestion && !viaFallback.shouldContinue, JSON.stringify(viaFallback && { spokenText: viaFallback.spokenText, shouldContinue: viaFallback.shouldContinue }));
-  const blankNoFallback = summarizeTalkResponseDone(doneWith("completed", [spoke("item_e2", "   "), fcItem]));
-  add("공백 전사 + 대체 조회 없음 → 말한 글자를 모름 → 이어 말하지 않음", blankNoFallback !== null && !blankNoFallback.shouldContinue, JSON.stringify(blankNoFallback && { spokenText: blankNoFallback.spokenText, shouldContinue: blankNoFallback.shouldContinue }));
-  const fullWidthQ = summarizeTalkResponseDone(doneWith("completed", [spoke("item_q2", "Do you like apples？"), fcItem]));
-  add("전각 물음표 ？도 질문 → 이어 말하지 않음", fullWidthQ !== null && fullWidthQ.askedQuestion && !fullWidthQ.shouldContinue);
-  const twoMsgs = summarizeTalkResponseDone(doneWith("completed", [spoke("item_a", "Nice."), fcItem, spoke("item_b", "What color is it?")]));
-  add("메시지가 둘이면 글자를 이어 본다(뒤 메시지의 질문도 질문)", twoMsgs !== null && twoMsgs.spokenText === "Nice. What color is it?" && twoMsgs.askedQuestion && !twoMsgs.shouldContinue, String(twoMsgs?.spokenText));
-  const textMode = summarizeTalkResponseDone(doneWith("completed", [spoke("item_t", "Is it red?", "output_text"), fcItem]));
-  add("글자 모드(output_text의 text)도 말한 글자로 본다", textMode !== null && textMode.spokenText === "Is it red?" && !textMode.shouldContinue);
-  const noTool = summarizeTalkResponseDone(doneWith("completed", [spoke("item_s2", "Good job.")]));
-  add("질문 없는 오디오라도 도구가 없으면 이어 말하지 않음(도구를 부른 응답만)", noTool !== null && !noTool.askedQuestion && !noTool.shouldContinue);
-  const withAudio = summarizeTalkResponseDone(doneWith("completed", [msgItem, fcItem]));
-  add("오디오는 있는데 전사가 없고 대체 조회도 없음 → 글자 모름(null) → 이어 말하지 않음(질문했을지 모른다)", withAudio !== null && withAudio.hadAudio && withAudio.spokenText === null && !withAudio.shouldContinue && withAudio.functionCalls.length === 1);
-  const viaFallbackStatement = summarizeTalkResponseDone(doneWith("completed", [msgItem, fcItem]), (id) => (id === "item_m1" ? "Let's keep going." : null));
-  const viaFallbackQuestion = summarizeTalkResponseDone(doneWith("completed", [msgItem, fcItem]), (id) => (id === "item_m1" ? "What do you see?" : null));
-  add(
-    "전사가 없으면 대체 조회(스크립트 선생님 줄)로 본다 — 질문 없음 → 이어 말하기 · 질문 → 없음",
-    viaFallbackStatement?.spokenText === "Let's keep going." && viaFallbackStatement.shouldContinue === true && viaFallbackQuestion?.askedQuestion === true && viaFallbackQuestion.shouldContinue === false,
-  );
-  const cancelled = summarizeTalkResponseDone(doneWith("cancelled", [fcItem]));
-  const cancelledStatement = summarizeTalkResponseDone(doneWith("cancelled", [spoke("item_s3", "Nice."), fcItem]));
-  add("끊긴 응답 → 이어 말하게 하지 않음(오디오 유무 무관)", cancelled !== null && !cancelled.shouldContinue && cancelledStatement !== null && !cancelledStatement.shouldContinue);
-  add("질문 판정: ? · ？ 만(마침표·느낌표는 질문 아님)", talkSpokeQuestion("Why?") && talkSpokeQuestion("なに？") && !talkSpokeQuestion("Let's go!") && !talkSpokeQuestion("Nice."));
-
-  // 연속 상한 — stepTalkContinue(앱 컨트롤러가 이벤트마다 부르는 한 곳). 은우 발화(speech_started)로만 0, 오디오 응답으로는 되돌리지 않는다
-  const runContinue = (events: RealtimeServerEvent[], live = true, start = 0) => {
-    let chain = start;
-    const sends: boolean[] = [];
-    for (const ev of events) {
-      const r = stepTalkContinue(chain, ev, live);
-      chain = r.chain;
-      if (r.summary) sends.push(r.send);
-    }
-    return { chain, sends: sends.map((b) => (b ? "T" : "F")).join("") };
-  };
-  add(`이어 말하기 연속 상한 = ${TALK_CONTINUE_CHAIN_MAX}`, TALK_CONTINUE_CHAIN_MAX === 2);
-  const c1 = runContinue([statementToolEv]);
-  add("step: 질문 없는 오디오 + 도구 → 보냄(셈 1)", c1.sends === "T" && c1.chain === 1, JSON.stringify(c1));
-  const c2 = runContinue([questionToolEv]);
-  add("step: 질문 있는 오디오 + 도구 → 보내지 않음(셈 0)", c2.sends === "F" && c2.chain === 0, JSON.stringify(c2));
-  const c3 = runContinue([toolOnlyEv]);
-  add("step: 오디오 없음 + 도구 → 보냄", c3.sends === "T" && c3.chain === 1, JSON.stringify(c3));
-  const c4 = runContinue([statementToolEv, toolOnlyEv, statementToolEv, statementToolEv]);
-  add(`step: 연속 ${TALK_CONTINUE_CHAIN_MAX}번 뒤에는 보내지 않음(질문 없는 응답이 계속돼도)`, c4.sends === "TTFF" && c4.chain === TALK_CONTINUE_CHAIN_MAX, JSON.stringify(c4));
-  const c5 = runContinue([statementToolEv, statementToolEv, statementToolEv, talkEv.speechStarted("item_c9"), statementToolEv, statementToolEv, statementToolEv]);
-  add("step: 은우 발화(speech_started) 뒤 다시 연속 2번까지 허용", c5.sends === "TTFTTF" && c5.chain === TALK_CONTINUE_CHAIN_MAX, JSON.stringify(c5));
-  const noToolEv = doneWith("completed", [spoke("item_s4", "Good job.")]);
-  const c6 = runContinue([statementToolEv, statementToolEv, questionToolEv, noToolEv, statementToolEv]);
-  add("step: 오디오가 있던 응답(질문·도구 없음)으로는 셈이 0으로 돌아가지 않음 → 상한 뒤 여전히 없음", c6.sends === "TTFFF" && c6.chain === TALK_CONTINUE_CHAIN_MAX, JSON.stringify(c6));
-  const c7 = runContinue([statementToolEv, toolOnlyEv], false, 1);
-  add("step: 마무리 중(live 아님) → 보내지 않음·셈 그대로", c7.sends === "FF" && c7.chain === 1, JSON.stringify(c7));
-  const c8 = runContinue([outputDone, { type: "response.created", event_id: "e7", response: { id: "resp_9", object: "realtime.response", status: "in_progress", output: [] } }, talkEv.speechStarted("item_c8")], true, 2);
-  add("step: 그 밖의 이벤트는 셈을 바꾸지 않고, 은우 발화만 0으로", c8.chain === 0 && runContinue([outputDone], true, 2).chain === 2 && c8.sends === "");
-  add(
-    "decideTalkContinue: 상한 바로 아래는 보내고 상한에서는 보내지 않음",
-    decideTalkContinue(TALK_CONTINUE_CHAIN_MAX - 1, statementTool!, true).send && decideTalkContinue(TALK_CONTINUE_CHAIN_MAX - 1, statementTool!, true).chain === TALK_CONTINUE_CHAIN_MAX && !decideTalkContinue(TALK_CONTINUE_CHAIN_MAX, statementTool!, true).send,
-  );
-  add("response.done이 아니면 요약 null, function_call 없으면 []", summarizeTalkResponseDone(outputDone) === null && extractTalkFunctionCalls({ type: "response.output_item.done", item: msgItem }).length === 0 && extractTalkFunctionCalls(null).length === 0);
-  const outEv = buildTalkToolOutputEvent("call_1", `${TALK_HIDDEN_ITEM_PREFIX}out_1`);
-  add(
-    "호출 결과 항목 = function_call_output {shown:true}, id app_",
-    JSON.stringify(outEv) === JSON.stringify({ type: "conversation.item.create", item: { id: "app_out_1", type: "function_call_output", call_id: "call_1", output: '{"shown":true}' } }),
-    JSON.stringify(outEv),
-  );
+  // 숨은 안내 항목 — system 메시지·response.create(인자 없음)·id 형식·되돌아와도 줄이 아님
   const noteEv = buildTalkSystemNoteEvent(`${TALK_HIDDEN_ITEM_PREFIX}nudge_1`, TALK_NUDGE_NOTE);
   add(
     "숨은 system 메시지 항목(role system·input_text·id app_)",
@@ -4168,11 +4240,12 @@ function runTalkCardChecks(): CheckResult[] {
   };
   add(
     "앱 항목 id가 app_ 형식이 아니면 던짐(너무 긴 id 포함)",
-    throws(() => buildTalkSystemNoteEvent("greet", "x")) && throws(() => buildTalkToolOutputEvent("call_1", "item_1")) && throws(() => buildTalkSystemNoteEvent(`app_${"x".repeat(29)}`, "x")) && !throws(() => buildTalkSystemNoteEvent(`app_${"x".repeat(28)}`, "x")),
+    throws(() => buildTalkSystemNoteEvent("greet", "x")) && throws(() => buildTalkSystemNoteEvent("item_1", "x")) && throws(() => buildTalkSystemNoteEvent(`app_${"x".repeat(29)}`, "x")) && !throws(() => buildTalkSystemNoteEvent(`app_${"x".repeat(28)}`, "x")),
   );
+  const sceneEv = buildTalkSystemNoteEvent(`${TALK_HIDDEN_ITEM_PREFIX}scene`, "A picture is now on the child's screen.");
   const echoed = reduceTalkTranscriptEvents([
     { type: "conversation.item.added", event_id: "e3", previous_item_id: null, item: noteEv.item },
-    { type: "conversation.item.added", event_id: "e4", previous_item_id: noteEv.item.id, item: outEv.item },
+    { type: "conversation.item.added", event_id: "e4", previous_item_id: noteEv.item.id, item: sceneEv.item },
   ] satisfies RealtimeServerEvent[]);
   add("앱이 보낸 항목이 서버에서 되돌아와도 줄이 되지 않음", echoed.lines.length === 0);
   return results;
@@ -4195,6 +4268,7 @@ function runTalkHintsChecks(): CheckResult[] {
     help: (now: number): TalkHintsEvent => ({ type: "help_tapped", now }),
     wrap: (now: number): TalkHintsEvent => ({ type: "wrapup_started", now }),
     tick: (now: number): TalkHintsEvent => ({ type: "tick", now }),
+    withheld: (now: number): TalkHintsEvent => ({ type: "nudge_withheld", now }),
   };
   const run = (events: TalkHintsEvent[], state?: TalkHintsState) => reduceTalkHintsEvents(events, state);
 
@@ -4303,8 +4377,8 @@ function runTalkHintsChecks(): CheckResult[] {
   add("상한에서 tick은 상태를 새로 만들지 않음(화면 재그림 없음)", capIdle.nudges === 0 && capIdle.st === reduceTalkHints(capIdle.st, e.tick(82_250)));
 
   // QA talk_4 P2-C — 위 행들은 `quietTurn`(선생님 말·멈춤·tick)만 써서 세 가지 되돌림을 못 잡았다.
-  // (a) 도움 도착은 셈을 되돌리지 않는다 — 실제 대화에선 선생님이 질문마다 show_hints를 부르므로(TALK_CARDS_INSTRUCTIONS)
-  //     "도움 도착 = 셈 0"이면 상한이 사실상 꺼진다. 도움은 선생님 말하는 중에 온다(질문과 같은 응답).
+  // (a) 도움 도착은 셈을 되돌리지 않는다 — 실제 대화에선 선생님 줄마다 도움이 오므로(§12-7 호출 J — 전에는 §12-6 show_hints)
+  //     "도움 도착 = 셈 0"이면 상한이 사실상 꺼진다. 도움은 대개 선생님 소리가 아직 나는 중에 온다(줄 글자 확정 뒤 호출 J 응답).
   const hintedTurns = (count: number) => {
     const evs: TalkHintsEvent[] = [];
     for (let i = 0; i < count; i++) {
@@ -4340,7 +4414,67 @@ function runTalkHintsChecks(): CheckResult[] {
     `🙋🙋 ${doubleTap.nudges}/셈 ${doubleTap.st.nudgeStreak} → 다음 ${doubleTapNext.nudges} · 12초+🙋 ${autoThenTap.nudges}/셈 ${autoThenTap.st.nudgeStreak} → 다음 ${autoThenTapNext.nudges}`,
   );
 
-  // 선생님 재개 시 이전 도움을 버린다 / 도구만 먼저 부른 응답의 도움은 살린다
+  // (d) 셈은 **보낸** 요청이다(QA talk-cards-j full_2 P3-A) — 은우가 말하는 중 🙋는 카드만(첫 겹), 앱(lib/talk-realtime.ts)이 요청 신호를
+  //     보내지 않고 버리면(말 끝 틈 — 이 상태 기계는 모른다 — ·보류 버림) `nudge_withheld`로 그 신호의 셈을 되돌린다. 되돌리지 않으면 버린 🙋가
+  //     상한을 먹어 연속 2번이 1번이 되고, 자동 응답이 끝내 안 오는 차례에는 12초 요청이 영영 나가지 않았다(가상 시계 N3·N4·N4b).
+  /** 앱처럼 접는다 — `withholdAt` 시각의 요청 신호는 앱이 버린 것(곧바로 nudge_withheld), 나머지는 보낸 것. 보낸 시각들을 돌려준다 */
+  const foldApp = (events: TalkHintsEvent[], withholdAt: ReadonlySet<number>, state: TalkHintsState = createTalkHints()) => {
+    let st = state;
+    const sentAt: number[] = [];
+    for (const ev of events) {
+      st = reduceTalkHints(st, ev);
+      if (!st.shouldNudge) continue;
+      if (withholdAt.has(ev.now)) st = reduceTalkHints(st, e.withheld(ev.now));
+      else sentAt.push(ev.now);
+    }
+    return { st, sentAt };
+  };
+  const tapWhileChild = reduceTalkHints(run([e.tStart(0), e.tStop(1000), e.cStart(2000)]), e.help(2500));
+  add(
+    "은우가 말하는 중 🙋: 카드만 — 요청 신호·보류 없음, 셈 그대로(은우 말에 대한 대답은 서버 자동 응답)",
+    tapWhileChild.visible && !tapWhileChild.shouldNudge && !tapWhileChild.helpPending && !tapWhileChild.nudgedThisTurn && tapWhileChild.nudgeStreak === 0,
+    JSON.stringify({ visible: tapWhileChild.visible, nudge: tapWhileChild.shouldNudge, held: tapWhileChild.helpPending, n: tapWhileChild.nudgedThisTurn, s: tapWhileChild.nudgeStreak }),
+  );
+  const heldThenChild = run([e.tStart(0), e.tStop(1000), e.tStart(2000), e.help(2500), e.cStart(3000)]);
+  const heldChildStop = reduceTalkHints(heldThenChild, e.tStop(3100));
+  add(
+    "보류 🙋 뒤 은우가 말하기 시작하고(끼어들기) 선생님 소리가 멈추면 보류를 버림 — 요청 신호 없음",
+    heldThenChild.helpPending && !heldChildStop.shouldNudge && !heldChildStop.helpPending && !heldChildStop.nudgedThisTurn,
+    JSON.stringify({ heldBefore: heldThenChild.helpPending, nudge: heldChildStop.shouldNudge, held: heldChildStop.helpPending }),
+  );
+  const tapAfterChild = run([e.tStart(0), e.tStop(1000), e.cStart(2000), e.cStop(3000), e.help(3500)]);
+  const withheldSt = reduceTalkHints(tapAfterChild, e.withheld(3500));
+  add(
+    "은우 말이 끝난 뒤 🙋는 요청(셈 1) → nudge_withheld가 그 셈을 되돌림(청하지 않은 차례·연속 셈 0) — 카드·조용함 시계 그대로, 요청 신호 없음",
+    tapAfterChild.shouldNudge && tapAfterChild.nudgedThisTurn && tapAfterChild.nudgeStreak === 1 &&
+      !withheldSt.shouldNudge && !withheldSt.nudgedThisTurn && withheldSt.nudgeStreak === 0 && withheldSt.visible && withheldSt.quietSince === 3000,
+    JSON.stringify({ before: [tapAfterChild.nudgedThisTurn, tapAfterChild.nudgeStreak], after: [withheldSt.nudgedThisTurn, withheldSt.nudgeStreak, withheldSt.visible, withheldSt.quietSince] }),
+  );
+  const closedSt = run([e.tStart(0), e.tStop(1000), e.tick(1000 + NUDGE), e.wrap(20_000)]);
+  add(
+    "nudge_withheld는 셈을 0 아래로 내리지 않고, 마무리 뒤에는 무시(상태 그대로)",
+    reduceTalkHints(createTalkHints(), e.withheld(0)).nudgeStreak === 0 && closedSt.nudgeStreak === 1 && reduceTalkHints(closedSt, e.withheld(20_001)) === closedSt,
+  );
+  // 자동 응답이 끝내 안 오는 드문 차례(잡음 커밋 등) — 🙋가 끼어도 은우 말이 멈춘 뒤 12초면 요청이 나간다
+  /** 은우 말이 `from`에 멈춘 뒤 250ms마다 tick(12초 + 2초) */
+  const tail = (from: number) => ticks(from + 250, from + NUDGE + 2000);
+  const stallTalking = foldApp([e.tStart(0), e.tStop(1000), e.cStart(2000), e.help(2500), e.cStop(4000), ...tail(4000)], new Set());
+  const stallGap = foldApp([e.tStart(0), e.tStop(1000), e.cStart(2000), e.cStop(3000), e.help(3200), ...tail(3000)], new Set([3200]));
+  add(
+    "자동 응답이 안 오는 차례: 은우 말하는 중 🙋(카드만)·말 끝 틈 🙋(앱이 버림) 뒤에도 은우 말이 멈춘 지 12초에 도움 요청 1번",
+    JSON.stringify(stallTalking.sentAt) === JSON.stringify([4000 + NUDGE]) && JSON.stringify(stallGap.sentAt) === JSON.stringify([3000 + NUDGE]),
+    `말하는 중 🙋 → ${JSON.stringify(stallTalking.sentAt)} · 틈 🙋 → ${JSON.stringify(stallGap.sentAt)}`,
+  );
+  // 버린 🙋 뒤에도 조용한 은우에게 연속 2번(보낸 요청만 센다) — 3번째 차례는 막힘
+  const streakTalking = foldApp([e.tStart(0), e.tStop(1000), e.cStart(2000), e.help(2500), e.cStop(4000), ...tail(4000), ...quietTurn(20_000, NUDGE + 2000), ...quietTurn(40_000, NUDGE + 2000)], new Set());
+  const streakGap = foldApp([e.tStart(0), e.tStop(1000), e.cStart(2000), e.cStop(3000), e.help(3200), ...tail(3000), ...quietTurn(20_000, NUDGE + 2000), ...quietTurn(40_000, NUDGE + 2000)], new Set([3200]));
+  add(
+    "은우가 말하는 중·말 끝 틈 🙋(보내지 않음) 뒤에도 조용한 은우에게 도움 요청 연속 2번 → 3번째 차례는 막힘",
+    streakTalking.sentAt.length === 2 && streakTalking.st.nudgeStreak === 2 && streakGap.sentAt.length === 2 && streakGap.st.nudgeStreak === 2,
+    `말하는 중 🙋 ${JSON.stringify(streakTalking.sentAt)} · 틈 🙋 ${JSON.stringify(streakGap.sentAt)}`,
+  );
+
+  // 선생님 재개 시 앞 줄의 도움을 늘 버린다(§12-7 2026-09-27 확정 — QA talk-cards-j P3-C)
   const stale = run([e.tStart(0), e.hints(500, h1), e.tStop(2000), e.cStart(3000), e.cStop(4000), e.tStart(5000)]);
   add("선생님이 다시 말하기 시작하면 카드를 접고 이전 도움을 버림", stale.hints === null && !stale.visible);
   const staleView = viewTalkHints(run([e.tStop(7000), e.tick(7000 + SHOW)], stale));
@@ -4363,19 +4497,32 @@ function runTalkHintsChecks(): CheckResult[] {
   );
   const nudgeFallback = run([e.tStart(0), e.tStop(2000), e.tick(2000 + NUDGE), e.tStart(2000 + NUDGE + 1500)]);
   add("기본 문구가 떠 있는 중 12초 요청 뒤 선생님이 말해도 접힘", !nudgeFallback.visible && !viewTalkHints(nudgeFallback).visible && nudgeFallback.hints === null);
-  // 요청 응답이 도구(show_hints)를 먼저 부르고 말하면 — 카드는 접되 그 새 도움은 살아서, 선생님이 멈추고 5초 뒤 뜬다
-  const nudgeTool = run([e.hints(2000 + NUDGE + 800, h2), e.tStart(2000 + NUDGE + 1500)], nudged);
-  const nudgeToolShown = viewTalkHints(run([e.tStop(2000 + NUDGE + 4000), e.tick(2000 + NUDGE + 4000 + SHOW)], nudgeTool));
+  // 호출 J는 선생님 줄이 끝난 **뒤**(소리가 멈춘 뒤일 수도) 도착한다 — §12-6의 "마지막 멈춤보다 먼저 받은 도움만 버린다"(도구를 먼저
+  // 부르던 순서용 epoch 규칙)를 두면 L1의 도움이 L2 동안 살아남고, L2의 호출 J가 실패하면 L2 질문 아래 L1의 답 예시가 떴다(P3-C 재현).
+  const lateJ = run([e.tStart(0), e.tStop(2000), e.hints(2500, h1), e.cStart(4000), e.cStop(5000), e.tStart(6000)]);
+  const lateJShown = viewTalkHints(run([e.tStop(8000), e.tick(8000 + SHOW)], lateJ));
   add(
-    "12초 요청 응답이 도구를 먼저 부르고 말하면 카드는 접고 새 도움은 살림",
-    !nudgeTool.visible && nudgeTool.hints?.value.answers[0] === "It is red." && nudgeToolShown.visible && nudgeToolShown.hints?.answers[0].en === "It is red.",
-    JSON.stringify(nudgeToolShown.hints),
+    "소리 멈춘 뒤 도착한 L1 도움은 L2가 시작되면 버림 → L2의 호출 J가 실패하면 기본 문구(L1 답 예시가 아님)",
+    lateJ.hints === null && lateJShown.visible && lateJShown.hints?.source === "fallback",
+    JSON.stringify(lateJShown.hints?.answers.map((a) => a.en)),
   );
-  const toolFirst = run([e.tStart(0), e.tStop(2000), e.cStart(3000), e.cStop(4000), e.hints(4500, h2), e.tStart(5000), e.tStop(7000), e.tick(7000 + SHOW)]);
+  const lateJOk = viewTalkHints(run([e.tStop(8000), e.hints(8500, h2), e.tick(8000 + SHOW)], lateJ));
   add(
-    "도구만 먼저 부르고 이어 질문한 차례의 도움은 살아남음",
-    viewTalkHints(toolFirst).hints?.source === "teacher" && viewTalkHints(toolFirst).hints?.answers[0].en === "It is red.",
-    JSON.stringify(viewTalkHints(toolFirst).hints),
+    "L2의 호출 J가 도착하면 그 도움이 뜸(가장 최근 선생님 줄의 도움)",
+    lateJOk.visible && lateJOk.hints?.source === "teacher" && lateJOk.hints.answers[0].en === "It is red.",
+    JSON.stringify(lateJOk.hints),
+  );
+  // 12초 도움 요청 → 선생님 예시 답(nudge 줄)이 시작되면 앞 도움을 버리고, 그 줄의 호출 J 도움이 오면 그것이 뜬다
+  const nudgeLine = run([e.tStart(2000 + NUDGE + 1500), e.tStop(2000 + NUDGE + 4000), e.hints(2000 + NUDGE + 4200, h2), e.tick(2000 + NUDGE + 4000 + SHOW)], nudged);
+  add(
+    "12초 요청 뒤 선생님 예시 답 줄: 시작하면 앞 도움을 버리고, 그 줄의 호출 J 도움이 5초 뒤 뜸",
+    viewTalkHints(nudgeLine).visible && viewTalkHints(nudgeLine).hints?.answers[0].en === "It is red.",
+    JSON.stringify(viewTalkHints(nudgeLine).hints),
+  );
+  const heldDuringSpeech = run([e.tStart(0), e.hints(500, h1), e.tStop(3000), e.tick(3000 + SHOW)]);
+  add(
+    "같은 줄이 말하는 중에 도착한 도움은 그 줄의 소리가 멈춘 뒤 그대로 뜸(버리는 것은 다음 줄이 시작될 때뿐)",
+    viewTalkHints(heldDuringSpeech).hints?.source === "teacher" && viewTalkHints(heldDuringSpeech).hints?.answers[0].en === "I like apples.",
   );
 
   // 🙋
@@ -4428,7 +4575,7 @@ function runTalkSaveBodyChecks(): CheckResult[] {
   const mk = (texts: string[], sceneB64: string | null): TalkSaveRequest => ({
     clientSessionId: "0b7e1a9c-2f4d-4c1e-9a55-3f0d2b8e6a11",
     topic,
-    turns: texts.map((text, i) => ({ speaker: i % 2 ? "child" : "teacher", text, interrupted: false })),
+    turns: texts.map((text, i) => ({ speaker: i % 2 ? "child" : "teacher", text, interrupted: false, origin: i % 2 ? null : "reply" })),
     cards: [{ emoji: "🐸", en: "frog", ko: "개구리" }],
     scene: sceneB64 === null ? null : { dataUrl: `data:image/jpeg;base64,${sceneB64}`, sceneEn: "a sunny farm" },
     startedAt: "2026-09-26T11:00:00.000+09:00",
@@ -4525,6 +4672,1433 @@ function runTalkSceneChecks(): CheckResult[] {
   return results;
 }
 
+/**
+ * §12-7 호출 J — 사용자 메시지 조립·zod(타입·폭만)·후처리(근거 검사)·앱 배선 도우미(문맥·보인 카드·철 지난 도움)·모델 env.
+ * 픽스처는 전부 지어낸 영어·한국어다. 실호출 0회 — 스펙에 호출 J 실호출 게이트가 없다.
+ */
+function runTalkCardsCallChecks(): CheckResult[] {
+  const results: CheckResult[] = [];
+  const add = talkAdder(results, "자유대화 호출J");
+  const R = TALK_CARDS_REQUEST_LIMITS;
+  const Z = TALK_SCREEN_CARDS_ZOD_LIMITS;
+
+  // 1. 사용자 메시지 — 템플릿 한 번 훑기 치환, 단어 `en(ko)`·뜻 없으면 단어만, 없음, 줄 표시(선생님/아이)
+  const msg = buildTalkCardsUserMessage({
+    topicLabel: "동물",
+    words: [{ en: "apple", ko: "사과" }, { en: "dog", ko: null }],
+    shown: ["cat"],
+    context: [
+      { speaker: "teacher", text: "Hi! Do you like animals?" },
+      { speaker: "child", text: "Yes." },
+    ],
+    teacherLine: "Great! Do you have a dog?",
+  });
+  const expected = TALK_CARDS_USER_TEMPLATE.replace("{topicLabel}", "동물")
+    .replace("{words}", "apple(사과), dog")
+    .replace("{shown}", "cat")
+    .replace("{context}", "선생님: Hi! Do you like animals?\n아이: Yes.")
+    .replace("{teacherLine}", "Great! Do you have a dog?");
+  add("사용자 메시지 = 템플릿 치환(단어 en(ko)·뜻 없으면 단어만·문맥 줄 선생님/아이)", msg === expected, JSON.stringify(msg.split("\n")));
+  const none = buildTalkCardsUserMessage({ topicLabel: "놀이", words: [], shown: [], context: [], teacherLine: "Hello! What do you like to play?" });
+  add(
+    `단어·보인 카드·문맥이 없으면 \`${TALK_CARDS_NONE}\``,
+    none === `주제: 놀이\n오늘의 단어: ${TALK_CARDS_NONE}\n이미 보여 준 그림 카드: ${TALK_CARDS_NONE}\n최근 대화:\n${TALK_CARDS_NONE}\n선생님이 방금 한 말: Hello! What do you like to play?`,
+    JSON.stringify(none),
+  );
+  const many = buildTalkCardsUserMessage({
+    topicLabel: "DAY 1",
+    words: Array.from({ length: R.words + 5 }, (_, i) => ({ en: `word${i}`, ko: `뜻${i}` })),
+    shown: Array.from({ length: R.shown + 3 }, (_, i) => `pic${i}`),
+    context: Array.from({ length: R.context + 2 }, (_, i) => ({ speaker: (i % 2 ? "child" : "teacher") as TalkTurn["speaker"], text: `line ${i}` })),
+    teacherLine: "Look!",
+  });
+  const lineOf = (prefix: string) => many.split("\n").find((l) => l.startsWith(prefix)) ?? "";
+  add(
+    `단어는 책 순서 앞 ${R.words}개, 보인 카드는 최근 ${R.shown}개, 문맥은 최근 ${R.context}줄`,
+    lineOf("오늘의 단어: ").split(", ").length === R.words &&
+      lineOf("오늘의 단어: ").endsWith(`word${R.words - 1}(뜻${R.words - 1})`) &&
+      lineOf("이미 보여 준 그림 카드: ") === `이미 보여 준 그림 카드: ${Array.from({ length: R.shown }, (_, i) => `pic${i + 3}`).join(", ")}` &&
+      many.includes(`최근 대화:\n선생님: line 2\n아이: line 3\n선생님: line 4\n아이: line 5\n선생님이`) &&
+      !many.includes("line 1\n"),
+    `${lineOf("오늘의 단어: ").split(", ").length}개 · ${lineOf("이미 보여 준 그림 카드: ").slice(0, 40)}`,
+  );
+  const tricky = buildTalkCardsUserMessage({
+    topicLabel: "우리\n동네",
+    words: [{ en: " ", ko: "빈 단어" }, { en: "sun\nny", ko: "맑은" }],
+    shown: ["", "  "],
+    context: [{ speaker: "child", text: "   " }, { speaker: "child", text: "I\nlike it." }],
+    teacherLine: "Say {teacherLine} $& now.\nWhat is it?",
+  });
+  add(
+    "값은 한 줄로(줄바꿈 → 공백), 빈 항목은 건너뜀, 값 속 {…}·$&는 글자 그대로(재치환 없음)",
+    tricky ===
+      `주제: 우리 동네\n오늘의 단어: sun ny(맑은)\n이미 보여 준 그림 카드: ${TALK_CARDS_NONE}\n최근 대화:\n아이: I like it.\n선생님이 방금 한 말: Say {teacherLine} $& now. What is it?`,
+    JSON.stringify(tricky),
+  );
+  const longLine = buildTalkCardsUserMessage({ topicLabel: "t", words: [], shown: [], context: [], teacherLine: "a".repeat(R.lineMaxChars + 50) });
+  add(`선생님 말은 ${R.lineMaxChars}자로 자름(폭 한 곳)`, longLine.endsWith(`: ${"a".repeat(R.lineMaxChars)}`));
+  add("사용자 메시지에 치환 자리가 남지 않고 아이 이름이 없음", !/\{(topicLabel|words|shown|context)\}/.test(msg) && !msg.includes("은우") && !none.includes("은우"));
+
+  // 2. zod — 타입·폭만(근거·한글 검사는 후처리). 거부는 개수·길이·모양
+  const card = (emoji: string, en: string, ko: string) => ({ emoji, en, ko });
+  const good = { answers: ["I have a dog."], words: [card("🐶", "dog", "강아지")], picture: card("🐶", "dog", "강아지") };
+  const zOk = (v: unknown) => talkScreenCardsSchema.safeParse(v).success;
+  add("zod: 정상 출력 통과", zOk(good));
+  add("zod: 빈 배열·picture null 통과(질문 없는 말)", zOk({ answers: [], words: [], picture: null }));
+  add("zod: 근거 없는 그림·한글 섞인 답도 통과(타입·폭만 — 근거는 후처리가 거른다, 재요청으로 카드를 늦추지 않게)", zOk({ answers: ["나는 강아지 좋아."], words: [], picture: card("🦄", "unicorn", "유니콘") }));
+  const zodRejects: [string, unknown][] = [
+    [`answers ${Z.answersMax + 1}개`, { ...good, answers: Array.from({ length: Z.answersMax + 1 }, (_, i) => `Answer ${i}.`) }],
+    [`words ${Z.wordsMax + 1}개`, { ...good, words: Array.from({ length: Z.wordsMax + 1 }, () => card("🐶", "dog", "강아지")) }],
+    [`답 ${Z.answerMaxChars + 1}자`, { ...good, answers: ["a".repeat(Z.answerMaxChars + 1)] }],
+    [`이모지 ${Z.emojiMaxChars + 1}자`, { ...good, picture: card("x".repeat(Z.emojiMaxChars + 1), "dog", "강아지") }],
+    [`영어 ${Z.enMaxChars + 1}자`, { ...good, words: [card("🐶", "d".repeat(Z.enMaxChars + 1), "강아지")] }],
+    [`뜻 ${Z.koMaxChars + 1}자`, { ...good, picture: card("🐶", "dog", "강".repeat(Z.koMaxChars + 1)) }],
+    ["picture 키 없음", { answers: [], words: [] }],
+    ["picture가 문자열", { ...good, picture: "dog" }],
+    ["answers가 배열 아님", { ...good, answers: "I have a dog." }],
+    ["카드 칸 누락", { ...good, words: [{ emoji: "🐶", en: "dog" }] }],
+  ];
+  for (const [name, value] of zodRejects) add(`zod 거부: ${name}`, !zOk(value));
+  add(
+    `zod 경계: 답 ${Z.answerMaxChars}자·answers ${Z.answersMax}개·words ${Z.wordsMax}개는 통과`,
+    zOk({ answers: Array.from({ length: Z.answersMax }, () => "a".repeat(Z.answerMaxChars)), words: Array.from({ length: Z.wordsMax }, () => card("🐶", "dog", "강아지")), picture: null }),
+  );
+
+  // 3. 후처리 sanitizeTalkScreenCards — 항목 단위로 버린다(§12-6 규칙 재사용) + 그림 카드 근거
+  const line = "Wow, you like dogs! Do you have a red ball?";
+  const ctx = { teacherLine: line, words: [] as { en: string }[], shown: [] as string[] };
+  const pic = (en: string, c = ctx, emoji = "🐶", ko = "강아지") => sanitizeTalkScreenCards({ answers: [], words: [], picture: card(emoji, en, ko) }, c).picture?.en ?? null;
+  add("근거 없는 그림 카드(선생님 말에 없음) → null", pic("cat", ctx, "🐱", "고양이") === null);
+  add("선생님 말의 복수형(dogs)에 단수 카드(dog) → 살림(끝의 s 허용)", pic("dog") === "dog");
+  add("선생님 말의 단수형(dog)에 복수 카드(dogs) → 살림(끝의 s 양쪽 방향)", pic("dogs", { ...ctx, teacherLine: "Do you have a dog?" }) === "dogs");
+  add("여러 낱말·관사: 'a red ball'·'the ball' → 살림(관사 무시, 단어 경계)", pic("a red ball", ctx, "🔴", "빨간 공") === "a red ball" && pic("the ball", ctx, "⚽", "공") === "the ball");
+  add(
+    "es 양쪽 방향: 말 boxes ↔ 카드 box, 말 box ↔ 카드 boxes → 살림",
+    pic("box", { ...ctx, teacherLine: "I see two boxes." }, "📦", "상자") === "box" && pic("boxes", { ...ctx, teacherLine: "Is it a box?" }, "📦", "상자") === "boxes",
+  );
+  add("단어 경계: 말 'category'에 카드 'cat' → null, 말 'hotdog'에 'dog' → null", pic("cat", { ...ctx, teacherLine: "What category is it?" }, "🐱", "고양이") === null && pic("dog", { ...ctx, teacherLine: "I ate a hotdog." }) === null);
+  add("대소문자 무시·소유격 인정: 말 'The Dog's ball'에 카드 'dog' → 살림", pic("dog", { ...ctx, teacherLine: "Look at The Dog's ball!" }) === "dog");
+  add("선생님 말에 없어도 오늘의 단어면 살림(단어장 모드)", pic("apple", { ...ctx, words: [{ en: "apple" }] }, "🍎", "사과") === "apple");
+  add("이미 보여 준 그림 카드와 같은 단어(대소문자·복수 무시) → null", pic("dog", { ...ctx, shown: ["Dogs"] }) === null && pic("dog", { ...ctx, shown: ["cat"] }) === "dog");
+  add(
+    "그림 카드 칸 검사(가짜 이모지·한글 영어·한글 없는 뜻) → null",
+    pic("dog", ctx, ":dog:") === null && pic("강아지", ctx) === null && pic("dog", ctx, "🐶", "dog") === null &&
+      // 섞인 영어 칸 — 라틴이 있어 라틴 검사를 지나고, 말에 그 구가 있어 근거 검사에도 가려지지 않는다(QA talk-cards-j P3-G)
+      pic("dog 강아지", { ...ctx, teacherLine: "Say dog 강아지!" }) === null,
+  );
+  add("isTalkPictureInLine: 빈 카드·빈 말 → false", !isTalkPictureInLine("", line) && !isTalkPictureInLine("dog", "") && isTalkPictureInLine("Red Ball!", line));
+  const ans = (answers: unknown[]) => sanitizeTalkScreenCards({ answers, words: [], picture: null }, ctx).answers;
+  add("한글 섞인 대답 버림(그 항목만)", JSON.stringify(ans(["I like 강아지.", "Yes, I do."])) === '["Yes, I do."]', JSON.stringify(ans(["I like 강아지.", "Yes, I do."])));
+  add(
+    `대답 단어 수 ${TALK_SCREEN_ANSWER_WORDS.min}~${TALK_SCREEN_ANSWER_WORDS.max}개만(1단어·9단어 버림, 8단어 살림)`,
+    JSON.stringify(ans(["Yes!", "I like red balls and blue cars very much.", "I like red balls and blue cars too.", "I have a dog."])) ===
+      '["I like red balls and blue cars too.","I have a dog."]',
+    JSON.stringify(ans(["Yes!", "I like red balls and blue cars very much.", "I like red balls and blue cars too.", "I have a dog."])),
+  );
+  add(
+    `대답은 같은 문장 되풀이를 하나로, 앞 ${TALK_CARD_LIMITS.answersMax}개`,
+    JSON.stringify(ans(["I like dogs.", "i like dogs.", "It is red.", "I have one.", "Yes, I do."])) === '["I like dogs.","It is red.","I have one."]',
+  );
+  const wordsOf = (answers: unknown[], words: unknown[]) => sanitizeTalkScreenCards({ answers, words, picture: null }, ctx).words.map((w) => w.en);
+  add(
+    "핵심 단어: 가짜 이모지·한글(섞인 값 포함) 영어 칸은 그 항목만 버림, 같은 영어 하나로, 앞 3개",
+    JSON.stringify(
+      wordsOf(["I have a dog."], [card(":dog:", "dog", "강아지"), card("🐶", "개", "강아지"), card("🐶", "dog 강아지", "강아지"), card("🐶", "dog", "강아지"), card("🐕", "Dog", "개"), card("⚽", "ball", "공"), card("🔴", "red", "빨강"), card("🏠", "house", "집")]),
+    ) === '["dog","ball","red"]',
+  );
+  add("대답이 하나도 안 남으면 핵심 단어도 [](답 예시가 도움 카드의 본체 — 화면은 기본 문구)", wordsOf(["좋아요"], [card("🐶", "dog", "강아지")]).length === 0);
+
+  // 이모지 칸 규칙(§12-6 "그대로" — QA cards P2-1 도형 기호, QA talk-cards-j P3-B) — 판정 한 곳 sanitizeTalkEmoji와 호출 J 후처리의
+  // words·picture 양쪽에서 잠근다. 원래 폐기 예정 parseTalkToolCall 위에만 있던 목록을 옮겼다 — 그 함수와 반례를 지워도 잠금이 남게.
+  const E = TALK_CARD_LIMITS;
+  const emojiKept = [
+    // 도형·기호 블록(▲●■◆△○□☆⬟⬢✦) — 이모지(🔺⭐★🔵🟥)와 함께
+    "▲", "●", "■", "◆", "△", "○", "□", "☆", "◯", "▭", "⬟", "⬢", "✦", "▲●■", "🔺", "⭐", "★", "🔵", "🟥",
+    // 그림 문자·키캡·국기·ZWJ 가족·여러 개, 16 코드 포인트 경계
+    "🐶", "☀", "✈", "⬛", "1️⃣", "3️⃣", "🇰🇷", "👨‍👩‍👧", "🐶🐱🐭", "🐶".repeat(E.emojiMaxChars),
+  ];
+  const emojiLost = [
+    // 글자형 기호(Ⓐ ① ㉠ ❶ ➓)·숫자·한자·ASCII 기호만 → 그림 아님. 도형 + 라틴/한글 → 라틴·한글 금지로 거부
+    "1", "12", "0", "#", "*", "Ⓐ", "①", "㉠", "❶", "➓", "三", "▲A", "●빨강", "◆ red", "▲:circle:",
+    // 단축어·글자·빈 값·공백·17 코드 포인트·전각 라틴
+    ":dog:", "dog", "개", "", "   ", "🐶".repeat(E.emojiMaxChars + 1), "Ａ🐶",
+  ];
+  const shapeLine = { ...ctx, teacherLine: "Look at the triangle!" };
+  const screenWord = (emoji: string) => sanitizeTalkScreenCards({ answers: ["It is a triangle."], words: [card(emoji, "triangle", "세모")], picture: null }, shapeLine).words[0]?.emoji ?? null;
+  const screenPic = (emoji: string) => sanitizeTalkScreenCards({ answers: [], words: [], picture: card(emoji, "triangle", "세모") }, shapeLine).picture?.emoji ?? null;
+  const emojiJudges: [string, (e: string) => string | null][] = [
+    ["sanitizeTalkEmoji", sanitizeTalkEmoji],
+    ["호출 J words", screenWord],
+    ["호출 J picture", screenPic],
+  ];
+  for (const [where, judge] of emojiJudges) {
+    const lost = emojiKept.filter((e) => judge(e) !== e);
+    add(
+      `이모지 칸 통과(${where}): 도형·기호 블록·이모지·키캡·국기·ZWJ·${E.emojiMaxChars} 코드 포인트`,
+      lost.length === 0,
+      lost.length ? `버려짐: ${lost.join(" ")}` : `${emojiKept.length}개 통과`,
+    );
+    const kept = emojiLost.filter((e) => judge(e) !== null);
+    add(
+      `이모지 칸 거부(${where}): 글자·숫자만(동그라미 숫자·글자 포함)·도형에 라틴·한글 섞임·단축어·빈 값·${E.emojiMaxChars + 1} 코드 포인트`,
+      kept.length === 0,
+      kept.length ? `통과해 버림: ${kept.map((e) => JSON.stringify(e)).join(" ")}` : `${emojiLost.length}개 거부`,
+    );
+  }
+  add("객체가 아니면 빈 카드", JSON.stringify(sanitizeTalkScreenCards(null, ctx)) === '{"answers":[],"words":[],"picture":null}' && JSON.stringify(sanitizeTalkScreenCards("x", ctx)) === '{"answers":[],"words":[],"picture":null}');
+  const full = sanitizeTalkScreenCards(
+    { answers: ["Yes, I do.", "No, I don't.", "I have a red ball."], words: [card("⚽", "ball", "공")], picture: card("⚽", "ball", "공") },
+    ctx,
+  );
+  add(
+    "정상 출력은 그대로(답 3개·단어·선생님 말에 있는 그림)",
+    JSON.stringify(full) === JSON.stringify({ answers: ["Yes, I do.", "No, I don't.", "I have a red ball."], words: [card("⚽", "ball", "공")], picture: card("⚽", "ball", "공") }),
+  );
+
+  // 4. 앱 배선 도우미 — 문맥 4줄·보인 카드 12개·철 지난 도움
+  const L = (itemId: string, speaker: "teacher" | "child", text: string, status: TalkLine["status"] = "final"): TalkLine => ({
+    itemId,
+    speaker,
+    text,
+    status,
+    filtered: false,
+    origin: speaker === "teacher" ? "reply" : null,
+  });
+  const lines: TalkLine[] = [
+    L("t0", "teacher", "Hi!"),
+    L("t1", "teacher", "Hello! I am Sunny."),
+    L("c0", "child", "", "empty"),
+    L("c1", "child", "Yes."),
+    L("t2", "teacher", "Do you like cats?"),
+    L("c2", "child", "  No.  "),
+    L("c3", "child", "", "failed"),
+    L("t3", "teacher", "Oh! What animal do you like?"),
+  ];
+  const ctxLines = pickTalkCardsContext(lines, "t3");
+  add(
+    `문맥: 선생님 줄 앞 최근 ${R.context}줄(빈 전사·실패 건너뜀, 글자 다듬음)`,
+    JSON.stringify(ctxLines) ===
+      JSON.stringify([
+        { speaker: "teacher", text: "Hello! I am Sunny." },
+        { speaker: "child", text: "Yes." },
+        { speaker: "teacher", text: "Do you like cats?" },
+        { speaker: "child", text: "No." },
+      ]),
+    JSON.stringify(ctxLines),
+  );
+  add("문맥: 선생님 줄을 못 찾으면 [] · 첫 줄이면 []", pickTalkCardsContext(lines, "nope").length === 0 && pickTalkCardsContext(lines, "t0").length === 0);
+  const shownList = pickTalkCardsShown(Array.from({ length: R.shown + 3 }, (_, i) => ({ en: `pic${i}` })));
+  add(`보인 카드: 보인 순서의 최근 ${R.shown}개`, shownList.length === R.shown && shownList[0] === "pic3" && shownList[R.shown - 1] === `pic${R.shown + 2}`, shownList.join(","));
+  const arrivedCards = { answers: ["I like dogs."], words: [card("🐶", "dog", "강아지")], picture: card("🐶", "dog", "강아지") };
+  const onTime = decideTalkCardsArrival({ cards: arrivedCards, lines, teacherItemId: "t3", live: true });
+  add("도착: 그 줄이 마지막이면 도움·그림 둘 다 씀", onTime.hints?.answers[0] === "I like dogs." && onTime.hints.words[0].en === "dog" && onTime.picture?.en === "dog");
+  const childStarted = decideTalkCardsArrival({ cards: arrivedCards, lines: [...lines, L("c9", "child", "", "listening")], teacherItemId: "t3", live: true });
+  add("철 지난 도움: 그 줄 뒤에 은우가 이미 말을 시작했으면(듣는 중) 도움은 버리고 그림 카드는 띄움", childStarted.hints === null && childStarted.picture?.en === "dog");
+  const newerTeacher = decideTalkCardsArrival({ cards: arrivedCards, lines: [...lines, L("t9", "teacher", "Can you say: I like dogs?")], teacherItemId: "t3", live: true });
+  add("철 지난 도움: 그 줄 뒤에 선생님의 새 줄이 있으면 도움은 버림(다른 질문의 도움이 아니게)", newerTeacher.hints === null && newerTeacher.picture?.en === "dog");
+  const lostLine = decideTalkCardsArrival({ cards: arrivedCards, lines, teacherItemId: "gone", live: true });
+  add("그 줄을 못 찾으면 도움은 버림(어느 질문의 도움인지 모름), 그림은 띄움", lostLine.hints === null && lostLine.picture?.en === "dog");
+  const closing = decideTalkCardsArrival({ cards: arrivedCards, lines, teacherItemId: "t3", live: false });
+  add("마무리·종료 중 도착 → 둘 다 버림", closing.hints === null && closing.picture === null);
+  const noQuestion = decideTalkCardsArrival({ cards: { answers: [], words: [], picture: arrivedCards.picture }, lines, teacherItemId: "t3", live: true });
+  add("답 예시가 없으면(질문 없는 말) 도움 null — 화면은 기본 문구", noQuestion.hints === null && noQuestion.picture?.en === "dog");
+
+  // 5. 모델 env — 빈 값 폴백(`||`), 기본은 비추론 소형 모델
+  const savedModel = process.env.OPENAI_TALK_CARDS_MODEL;
+  try {
+    const got: string[] = [];
+    for (const v of [undefined, "", "   "]) {
+      if (v === undefined) delete process.env.OPENAI_TALK_CARDS_MODEL;
+      else process.env.OPENAI_TALK_CARDS_MODEL = v;
+      got.push(resolveTalkCardsModel());
+    }
+    process.env.OPENAI_TALK_CARDS_MODEL = " gpt-x-cards ";
+    got.push(resolveTalkCardsModel());
+    add(
+      "호출 J 모델: env 미설정·빈 값·공백 → 기본 모델, 값은 앞뒤 공백을 걷어 그대로",
+      got.join("|") === [DEFAULT_TALK_CARDS_MODEL, DEFAULT_TALK_CARDS_MODEL, DEFAULT_TALK_CARDS_MODEL, "gpt-x-cards"].join("|"),
+      got.join("|"),
+    );
+  } finally {
+    if (savedModel === undefined) delete process.env.OPENAI_TALK_CARDS_MODEL;
+    else process.env.OPENAI_TALK_CARDS_MODEL = savedModel;
+  }
+  add("호출 J 기본 모델은 비추론 소형(gpt-4.1-mini — temperature·600토큰이 그대로 적용)", DEFAULT_TALK_CARDS_MODEL === "gpt-4.1-mini");
+  add("호출 J 옵션 = talk_cards · 0.3 · 600 · 6초", TALK_CARDS_CALL_OPTIONS.call === "talk_cards" && TALK_CARDS_CALL_OPTIONS.temperature === 0.3 && TALK_CARDS_CALL_OPTIONS.maxOutputTokens === 600 && TALK_CARDS_TIMEOUT_MS === 6000);
+  return results;
+}
+
+/**
+ * §12-7 앱 배선 — 요청 본문 조립(`buildTalkCardsRequest` — 라우트 zod 폭에 맞춰 자른다). 순수 함수라 동기.
+ */
+function runTalkCardsRequestChecks(): CheckResult[] {
+  const results: CheckResult[] = [];
+  const add = talkAdder(results, "자유대화 카드 요청");
+  const R = TALK_CARDS_REQUEST_LIMITS;
+  const L = (itemId: string, speaker: "teacher" | "child", text: string, status: TalkLine["status"] = "final"): TalkLine => ({
+    itemId,
+    speaker,
+    text,
+    status,
+    filtered: false,
+    origin: speaker === "teacher" ? "reply" : null,
+  });
+  const lines = [L("t0", "teacher", "Hi! Do you like dogs?"), L("c0", "child", "Yes."), L("t1", "teacher", "  Great! What color is your dog?  ")];
+  const body = buildTalkCardsRequest({
+    topicLabel: "동물",
+    words: [{ en: "dog", ko: "강아지" }, { en: " ", ko: "빈 단어" }, { en: "cat", ko: "" }],
+    shownCards: [{ en: "dog" }, { en: "" }],
+    lines,
+    teacherItemId: "t1",
+  });
+  add(
+    "요청 본문: 그 줄 글자(앞뒤 공백 정리)·앞 줄 문맥·보인 카드·단어(빈 단어 건너뜀·빈 뜻 null)·주제 라벨",
+    JSON.stringify(body) ===
+      JSON.stringify({
+        topic: "동물",
+        words: [{ en: "dog", ko: "강아지" }, { en: "cat", ko: null }],
+        shown: ["dog"],
+        context: [{ speaker: "teacher", text: "Hi! Do you like dogs?" }, { speaker: "child", text: "Yes." }],
+        teacherLine: "Great! What color is your dog?",
+      }),
+    JSON.stringify(body),
+  );
+  add(
+    "요청하지 않음(null): 은우 줄·못 찾은 줄·글자 없는 선생님 줄",
+    buildTalkCardsRequest({ topicLabel: "t", words: [], shownCards: [], lines, teacherItemId: "c0" }) === null &&
+      buildTalkCardsRequest({ topicLabel: "t", words: [], shownCards: [], lines, teacherItemId: "nope" }) === null &&
+      buildTalkCardsRequest({ topicLabel: "t", words: [], shownCards: [], lines: [L("t9", "teacher", "   ")], teacherItemId: "t9" }) === null,
+  );
+  const huge = buildTalkCardsRequest({
+    topicLabel: "가".repeat(R.topicLabelMaxChars + 10),
+    words: Array.from({ length: R.words + 5 }, (_, i) => ({ en: `w${i}${"x".repeat(R.wordMaxChars)}`, ko: "뜻".repeat(R.wordMaxChars + 3) })),
+    shownCards: Array.from({ length: R.shown + 4 }, (_, i) => ({ en: `pic ${i} ${"y".repeat(R.shownMaxChars)}` })),
+    lines: [
+      ...Array.from({ length: R.context + 3 }, (_, i) => L(`x${i}`, i % 2 ? "child" : "teacher", "z".repeat(R.lineMaxChars + 20))),
+      L("tt", "teacher", `${"🐶".repeat(R.lineMaxChars)}`),
+    ],
+    teacherItemId: "tt",
+  });
+  const within =
+    huge !== null &&
+    huge.topic.length <= R.topicLabelMaxChars &&
+    huge.words.length === R.words &&
+    huge.words.every((w) => w.en.length <= R.wordMaxChars && (w.ko === null || w.ko.length <= R.wordMaxChars)) &&
+    huge.shown.length === R.shown &&
+    huge.shown.every((x) => x.length <= R.shownMaxChars) &&
+    huge.context.length === R.context &&
+    huge.context.every((c) => c.text.length <= R.lineMaxChars) &&
+    huge.teacherLine.length <= R.lineMaxChars &&
+    !/[\uD800-\uDBFF]$/.test(huge.teacherLine);
+  add(
+    `폭을 넘는 입력은 라우트 zod 폭으로 자름(라벨 ${R.topicLabelMaxChars}·단어 ${R.words}×${R.wordMaxChars}·보인 카드 ${R.shown}×${R.shownMaxChars}·문맥 ${R.context}×${R.lineMaxChars}·말 ${R.lineMaxChars} — 이모지를 반으로 가르지 않음)`,
+    within,
+    huge ? `라벨 ${huge.topic.length} · 단어 ${huge.words.length} · 보인 ${huge.shown.length} · 문맥 ${huge.context.length} · 말 ${huge.teacherLine.length}` : "null",
+  );
+  add("주제 라벨이 비면 기본 라벨", buildTalkCardsRequest({ topicLabel: "  ", words: [], shownCards: [], lines, teacherItemId: "t1" })?.topic === "자유대화");
+  return results;
+}
+
+/**
+ * §12-7 컨트롤러 동작(lib/talk-realtime.ts `TalkCallController`) — 합성 이벤트 전송(eval 주입점 `createTransport`)과 **이 함수 안에서만**
+ * 갈아 끼운 fetch 대역으로 돈다. 대역은 `/api/english/talk/scene`(501)·`/api/english/talk/cards`(손으로 응답)만 받고 그 밖의 주소는
+ * 던진다 — 네트워크에 닿지 않는다(끝나면 오프라인 게이트의 차단 fetch로 되돌린다). 사용자 신고("선생님이 두 명처럼 답한다")를 잠근다:
+ * 은우의 한 번 대답에 앱이 보내는 response.create는 **0**(선생님 응답은 서버 자동 응답 하나), 선생님 줄마다 카드 요청 1회, 앞 요청 끊기,
+ * 철 지난 도움, 실패면 기본 문구, 마무리 중 요청 없음, 출처 청(greeting·nudge·reply)과 저장 턴의 origin.
+ */
+async function runTalkControllerChecks(): Promise<CheckResult[]> {
+  const results: CheckResult[] = [];
+  const add = talkAdder(results, "자유대화 컨트롤러");
+  const flush = async (n = 4) => {
+    for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+
+  const info: TalkConnectSuccess = {
+    ok: true,
+    sdp: "v=0",
+    callId: null,
+    topic: {
+      kind: "vocab",
+      key: null,
+      labelKo: "동물 단어",
+      labelEn: null,
+      vocabBookId: "book_1",
+      words: [
+        { en: "dog", ko: "강아지", emoji: "🐶" },
+        { en: "cat", ko: "고양이", emoji: null },
+      ],
+    },
+    model: "gpt-realtime-2.1",
+    voice: "marin",
+  };
+
+  class ScriptedTransport implements TalkTransport {
+    readonly kind = "fake" as const;
+    handlers: TalkTransportHandlers | null = null;
+    readonly sent: Record<string, unknown>[] = [];
+    closed = false;
+    async connect(_args: unknown, handlers: TalkTransportHandlers): Promise<TalkConnectSuccess> {
+      this.handlers = handlers;
+      return info;
+    }
+    send(event: object): void {
+      if (!this.closed) this.sent.push(event as Record<string, unknown>);
+    }
+    close(): void {
+      this.closed = true;
+    }
+    emit(...events: (RealtimeServerEvent | Record<string, unknown>)[]): void {
+      for (const ev of events) this.handlers?.onEvent(ev);
+    }
+  }
+
+  interface CardsCall {
+    body: TalkCardsRequest;
+    signal: AbortSignal;
+    respond: (json: unknown, status?: number) => void;
+  }
+  const calls: CardsCall[] = [];
+  const blockedFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: unknown, init?: RequestInit): Promise<Response> => {
+    const url = String(input);
+    if (url === "/api/english/talk/scene") {
+      return new Response(JSON.stringify({ ok: false, error: "no_api_key", messageKo: "eval" }), { status: 501 });
+    }
+    if (url === "/api/english/talk/cards") {
+      return new Promise<Response>((resolve, reject) => {
+        const signal = init?.signal ?? new AbortController().signal;
+        signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        calls.push({
+          body: JSON.parse(String(init?.body)) as TalkCardsRequest,
+          signal,
+          respond: (json, status = 200) => resolve(new Response(JSON.stringify(json), { status })),
+        });
+      });
+    }
+    throw new Error(`eval 컨트롤러 대역: 막힌 주소 ${url}`);
+  }) as typeof fetch;
+
+  const transport = new ScriptedTransport();
+  const audio = { muted: false, srcObject: null, pause() {}, play: () => Promise.resolve() } as unknown as HTMLAudioElement;
+  const mic: MicStreamHandle = { stream: { getAudioTracks: () => [] } as unknown as MediaStream, release() {} };
+  const ctl = new TalkCallController({
+    topic: { kind: "vocab", vocabBookId: "book_1" },
+    speed: "slow",
+    notes: { greeting: "GREETING NOTE", wrapup: "WRAPUP NOTE", nudge: "NUDGE NOTE" },
+    micPromise: Promise.resolve(mic),
+    audio,
+    labelKo: "동물 단어",
+    createTransport: async () => transport,
+  });
+  const appCreates = () => transport.sent.filter((e) => e.type === "response.create").length;
+  const hintsNow = () => (ctl as unknown as { hints: TalkHintsState }).hints.hints?.value.answers ?? null;
+  const lineOrigin = (id: string) => ctl.getSnapshot().lines.find((l) => l.itemId === id)?.origin ?? null;
+  const created = (id: string): RealtimeServerEvent => ({ type: "response.created", event_id: talkEid(), response: { id, object: "realtime.response", status: "in_progress", output: [] } });
+  const audioEv = (type: "output_audio_buffer.started" | "output_audio_buffer.stopped", response_id: string) => ({ type, event_id: talkEid(), response_id });
+  const cardsOk = (answers: string[], picture: TalkCard | null, words: TalkCard[] = []) => ({ ok: true, answers, words, picture });
+  const dog: TalkCard = { emoji: "🐶", en: "dog", ko: "강아지" };
+  const cat: TalkCard = { emoji: "🐱", en: "cat", ko: "고양이" };
+  /** 선생님 한 차례(응답 id·줄 id·앞 항목·글자) — created → 항목 → 소리 시작 → 전사 → .done → response.done(completed) */
+  const teacherTurn = (rid: string, tid: string, prev: string | null, text: string, opts: { created?: boolean } = {}) => {
+    if (opts.created !== false) transport.emit(created(rid));
+    transport.emit(talkEv.itemAdded(tid, "assistant", prev), audioEv("output_audio_buffer.started", rid), talkEv.outDelta(tid, rid, text), talkEv.outDone(tid, rid, text), talkEv.responseDone(rid, "completed", [tid]));
+  };
+  const childTurn = (cid: string, prev: string, text: string) => {
+    transport.emit(
+      talkEv.speechStarted(cid),
+      { type: "input_audio_buffer.speech_stopped", event_id: talkEid(), item_id: cid, audio_end_ms: 0 },
+      talkEv.committed(cid, prev),
+      talkEv.itemAdded(cid, "user", prev),
+      talkEv.inCompleted(cid, text),
+    );
+  };
+
+  try {
+    await ctl.start();
+    await flush();
+    transport.handlers?.onOpen();
+    add(
+      "연결되면 첫 인사: 숨은 안내(app_greet) + response.create 1회",
+      transport.sent.length === 2 &&
+        transport.sent[0].type === "conversation.item.create" &&
+        (transport.sent[0].item as { id?: string } | undefined)?.id === "app_greet" &&
+        appCreates() === 1,
+      JSON.stringify(transport.sent.map((e) => e.type)),
+    );
+
+    // A. 인사 줄 — 출처 greeting, 줄이 끝나면 카드 요청 1회
+    teacherTurn("r1", "t1", null, "Hi! I'm Sunny. Do you like dogs?");
+    await flush();
+    add("인사 줄의 출처 = greeting(앱이 청한 response.create 뒤 created)", lineOrigin("t1") === "greeting", String(lineOrigin("t1")));
+    add(
+      "선생님 줄이 끝나면(전사 .done + response.done completed) 카드 요청 1회 — 본문 = 주제 라벨·오늘의 단어·빈 문맥·그 줄 글자",
+      calls.length === 1 &&
+        JSON.stringify(calls[0].body) ===
+          JSON.stringify({
+            topic: "동물 단어",
+            words: [{ en: "dog", ko: "강아지" }, { en: "cat", ko: "고양이" }],
+            shown: [],
+            context: [],
+            teacherLine: "Hi! I'm Sunny. Do you like dogs?",
+          }),
+      JSON.stringify(calls.map((c) => c.body.teacherLine)),
+    );
+    calls[0]?.respond(cardsOk(["I like dogs.", "Yes, I do."], dog, [dog]));
+    await flush();
+    add(
+      "카드 도착: 도움은 상태 기계로(그 줄이 마지막), 그림 카드는 큰 카드 + 오늘의 단어 ✓",
+      JSON.stringify(hintsNow()) === '["I like dogs.","Yes, I do."]' && ctl.getSnapshot().picture?.en === "dog" && ctl.getSnapshot().practiced.includes("dog"),
+      `hints=${JSON.stringify(hintsNow())} picture=${ctl.getSnapshot().picture?.en}`,
+    );
+    transport.emit(audioEv("output_audio_buffer.stopped", "r1"));
+
+    // B. 은우의 한 번 대답 → 선생님 응답은 서버 자동 응답 하나. 질문 없는 말로 끝나도 앱은 response.create를 보내지 않는다(§12-6 이어 말하기 없음)
+    childTurn("c1", "t1", "Yes, I like dogs.");
+    teacherTurn("r2", "t2", "c1", "Great job! Dogs are fun.");
+    await flush();
+    add(
+      "은우의 한 번 대답: 앱이 보낸 response.create 0(선생님 응답은 서버 자동 응답 하나 — 질문 없는 말로 끝나도 이어 말하기 없음)",
+      appCreates() === 1 && ctl.getSnapshot().lines.filter((l) => l.speaker === "teacher").length === 2,
+      `app create ${appCreates()} · 선생님 줄 ${ctl.getSnapshot().lines.filter((l) => l.speaker === "teacher").length}`,
+    );
+    add("자동 응답 줄의 출처 = reply(청 없는 created)", lineOrigin("t2") === "reply", String(lineOrigin("t2")));
+    add(
+      "둘째 카드 요청 — 문맥은 그 줄 앞 줄들, 보인 카드는 이미 띄운 dog",
+      calls.length === 2 &&
+        JSON.stringify(calls[1].body.context) === JSON.stringify([{ speaker: "teacher", text: "Hi! I'm Sunny. Do you like dogs?" }, { speaker: "child", text: "Yes, I like dogs." }]) &&
+        JSON.stringify(calls[1].body.shown) === '["dog"]',
+      JSON.stringify(calls[1]?.body),
+    );
+    transport.emit(audioEv("output_audio_buffer.stopped", "r2"));
+    add("선생님 소리가 다시 시작되면 앞 줄의 도움을 버림(카드 요청 결과가 아직 없는 줄)", hintsNow() === null, JSON.stringify(hintsNow()));
+
+    // C. 철 지난 도움 — 응답이 오기 전에 은우가 말을 시작하면 도움은 버리고 그림 카드는 띄운다
+    transport.emit(talkEv.speechStarted("c2"));
+    calls[1]?.respond(cardsOk(["Yes, it is fun."], cat));
+    await flush();
+    add(
+      "철 지난 도움: 그 줄 뒤에 은우가 이미 말하기 시작 → 도움 버림(셈 staleHints), 그림 카드(오늘의 단어 cat)는 띄움",
+      hintsNow() === null && ctl.getSnapshot().picture?.en === "cat" && ctl.getSnapshot().cards.staleHints === 1,
+      `hints=${JSON.stringify(hintsNow())} picture=${ctl.getSnapshot().picture?.en} stale=${ctl.getSnapshot().cards.staleHints}`,
+    );
+
+    // D. 전사 .done이 response.done보다 늦게 와도 그때 요청한다(순서 무관) · 새 줄의 요청이 앞 요청을 끊는다
+    transport.emit(
+      { type: "input_audio_buffer.speech_stopped", event_id: talkEid(), item_id: "c2", audio_end_ms: 0 },
+      talkEv.committed("c2", "t2"),
+      talkEv.itemAdded("c2", "user", "t2"),
+      talkEv.inCompleted("c2", "Cats!"),
+      created("r3"),
+      talkEv.itemAdded("t3", "assistant", "c2"),
+      audioEv("output_audio_buffer.started", "r3"),
+      talkEv.outDelta("t3", "r3", "Cats are cute. What color is your cat?"),
+      talkEv.responseDone("r3", "completed", ["t3"]),
+    );
+    await flush();
+    const beforeDone = calls.length;
+    transport.emit(talkEv.outDone("t3", "r3", "Cats are cute. What color is your cat?"));
+    await flush();
+    add(
+      "response.done이 먼저 오고 전사 .done이 늦게 와도 .done에서 한 번 요청",
+      beforeDone === 2 && calls.length === 3 && calls[2].body.teacherLine === "Cats are cute. What color is your cat?",
+      `done 전 ${beforeDone} · 뒤 ${calls.length}`,
+    );
+    transport.emit(audioEv("output_audio_buffer.stopped", "r3"));
+    ctl.helpTapped();
+    await flush();
+    const tapView = ctl.getSnapshot().hints;
+    add(
+      "카드가 아직 없을 때 🙋 → 기본 문구 카드 + 도움 요청(response.create — 출처 nudge 청)",
+      tapView.visible && tapView.hints?.source === "fallback" && appCreates() === 2,
+      `source=${tapView.hints?.source} create=${appCreates()}`,
+    );
+    teacherTurn("r4", "t4", "t3", "You can say: It is white. Can you say it with me?");
+    await flush();
+    add("도움 요청 응답 줄의 출처 = nudge", lineOrigin("t4") === "nudge", String(lineOrigin("t4")));
+    add(
+      "새 선생님 줄의 요청이 앞 요청을 끊음(최신 줄만 — 셈 superseded)",
+      calls.length === 4 && calls[2].signal.aborted && !calls[3].signal.aborted && ctl.getSnapshot().cards.superseded === 1,
+      `calls ${calls.length} · 앞 끊김 ${calls[2]?.signal.aborted} · superseded ${ctl.getSnapshot().cards.superseded}`,
+    );
+    // E. 실패(500) → 아무것도 하지 않는다(도움 없음 → 기본 문구, 그림 그대로)
+    calls[3]?.respond({ ok: false, error: "cards_failed", messageKo: "eval" }, 500);
+    await flush();
+    add(
+      "카드 실패(500) → 도움 없음(화면은 기본 문구)·그림 카드 그대로·셈 failed",
+      hintsNow() === null && ctl.getSnapshot().picture?.en === "cat" && ctl.getSnapshot().cards.failed === 1,
+      `failed=${ctl.getSnapshot().cards.failed}`,
+    );
+    transport.emit(audioEv("output_audio_buffer.stopped", "r4"));
+
+    // F. 끊긴 응답(cancelled)은 카드를 청하지 않는다
+    transport.emit(created("r5"), talkEv.itemAdded("t5", "assistant", "t4"), talkEv.outDelta("t5", "r5", "Oh"), talkEv.responseDone("r5", "cancelled", ["t5"], "turn_detected"));
+    await flush();
+    add("끊긴 선생님 응답(cancelled)은 카드를 청하지 않음", calls.length === 4, String(calls.length));
+
+    // G. 마무리 중에는 청하지 않는다(진행 중이던 요청도 끊는다)
+    teacherTurn("r6", "t6", "t5", "Do you like birds?");
+    await flush();
+    const inflightBeforeWrap = calls[4];
+    // 대화 중에 completed로 끝났지만 전사 .done은 아직인 줄 — .done이 마무리 뒤에 와도 청하지 않아야 한다
+    transport.emit(created("r6b"), talkEv.itemAdded("t6b", "assistant", "t6"), talkEv.outDelta("t6b", "r6b", "Birds can fly."), talkEv.responseDone("r6b", "completed", ["t6b"]));
+    await flush();
+    (ctl as unknown as { beginWrapup(now: number): void }).beginWrapup(Date.now());
+    transport.emit(talkEv.outDone("t6b", "r6b", "Birds can fly. Can you fly?"));
+    await flush();
+    teacherTurn("r7", "t7", "t6b", "You did so well today! Goodbye!", { created: true });
+    await flush();
+    // 마무리 중 전사 .done이 response.done보다 늦게 와도 청하지 않는다(늦은 .done 경로도 대화 중일 때만)
+    transport.emit(
+      created("r8"),
+      talkEv.itemAdded("t8", "assistant", "t7"),
+      talkEv.outDelta("t8", "r8", "See you next time!"),
+      talkEv.responseDone("r8", "completed", ["t8"]),
+      talkEv.outDone("t8", "r8", "See you next time!"),
+    );
+    await flush();
+    add(
+      "마무리가 시작되면 진행 중 카드 요청을 끊고, 마무리 중 선생님 줄은 청하지 않음(대화 중 끝난 응답의 .done이 마무리 뒤에 와도)",
+      calls.length === 5 && inflightBeforeWrap !== undefined && inflightBeforeWrap.signal.aborted,
+      `calls ${calls.length} · 끊김 ${inflightBeforeWrap?.signal.aborted}`,
+    );
+
+    // H. 저장 턴의 출처 — 선생님 = 줄 출처, 은우 = null
+    const payload = ctl.getSavePayload();
+    add(
+      "저장 턴의 origin: 인사 greeting · 자동 응답 reply · 도움 요청 nudge · 은우 null",
+      payload !== null &&
+        JSON.stringify(payload.turns.map((t) => `${t.speaker[0]}:${t.origin}`)) ===
+          JSON.stringify(["t:greeting", "c:null", "t:reply", "c:null", "t:reply", "t:nudge", "t:reply", "t:reply", "t:reply", "t:reply", "t:reply"]),
+      JSON.stringify(payload?.turns.map((t) => `${t.speaker[0]}:${t.origin}`)),
+    );
+    add("앱이 보낸 response.create는 인사·도움 요청뿐(마무리 안내는 tick이 보낸다 — 이 열에선 아직)", appCreates() === 2, String(appCreates()));
+  } finally {
+    ctl.end("user");
+    await flush();
+    globalThis.fetch = blockedFetch;
+  }
+  add(
+    "끝내면 진행 중 카드 요청이 남지 않음(요청 수는 마무리 전 5회 그대로)",
+    (ctl as unknown as { cardsInflight: unknown }).cardsInflight === null && calls.length === 5,
+    String(calls.length),
+  );
+
+  // 대화 중에 끝내면(끝내기·숨김·뒤로가기) 진행 중인 카드 요청을 끊는다 — 상류 호출 J도 req.signal로 멈춘다(과금 중지)
+  const transport2 = new ScriptedTransport();
+  const ctl2 = new TalkCallController({
+    topic: { kind: "preset", key: "animals" },
+    speed: "slow",
+    notes: { greeting: "GREETING NOTE", wrapup: "WRAPUP NOTE", nudge: "NUDGE NOTE" },
+    micPromise: Promise.resolve(mic),
+    audio,
+    labelKo: "동물",
+    createTransport: async () => transport2,
+  });
+  globalThis.fetch = (async (input: unknown, init?: RequestInit): Promise<Response> => {
+    const url = String(input);
+    if (url === "/api/english/talk/scene") return new Response(JSON.stringify({ ok: false, error: "no_api_key", messageKo: "eval" }), { status: 501 });
+    if (url === "/api/english/talk/cards") {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal ?? new AbortController().signal;
+        signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        calls.push({ body: JSON.parse(String(init?.body)) as TalkCardsRequest, signal, respond: () => {} });
+      });
+    }
+    throw new Error(`eval 컨트롤러 대역: 막힌 주소 ${url}`);
+  }) as typeof fetch;
+  try {
+    await ctl2.start();
+    await flush();
+    transport2.handlers?.onOpen();
+    transport2.emit(created("s1"), talkEv.itemAdded("u1", "assistant", null), talkEv.outDone("u1", "s1", "Hello! Do you like cats?"), talkEv.responseDone("s1", "completed", ["u1"]));
+    await flush();
+    const pending = calls[5];
+    ctl2.end("hidden");
+    await flush();
+    add(
+      "대화 중에 끝내면(숨김·뒤로가기) 진행 중 카드 요청을 끊음",
+      calls.length === 6 && pending !== undefined && pending.signal.aborted && (ctl2 as unknown as { cardsInflight: unknown }).cardsInflight === null,
+      `calls ${calls.length} · 끊김 ${pending?.signal.aborted}`,
+    );
+  } finally {
+    ctl2.end("user");
+    await flush();
+    globalThis.fetch = blockedFetch;
+  }
+
+  // ── 시계를 손으로 돌리는 컨트롤러 — 은우 차례가 열려 있을 때의 response.create(QA talk-cards-j full_1 P2-A)·선생님 줄마다 한 번
+  //    (P3-A)·출처 청 거두기(P3-B). Date.now를 이 블록 안에서만 가짜 시계로 바꾸고, 컨트롤러의 250ms tick 타이머는 끄고 onTick을
+  //    손으로 부른다(TALK_TICK_MS 간격 — 같은 이벤트 열이면 늘 같은 결과). 카드 대역은 500(도움·그림 없음)이고 요청 본문만 센다.
+  const realDateNow = Date.now;
+  let clock = realDateNow();
+  const timedCards: TalkCardsRequest[] = [];
+  interface TimedPriv {
+    tickTimer: ReturnType<typeof setInterval> | null;
+    capAtMs: number | null;
+    pendingNudge: boolean;
+    hints: TalkHintsState;
+    onTick(): void;
+    requestNudge(): void;
+  }
+  const makeTimed = async () => {
+    const tr = new ScriptedTransport();
+    const c = new TalkCallController({
+      topic: { kind: "preset", key: "animals" },
+      speed: "slow",
+      notes: { greeting: "GREETING NOTE", wrapup: "WRAPUP NOTE", nudge: "NUDGE NOTE" },
+      micPromise: Promise.resolve(mic),
+      audio,
+      labelKo: "동물",
+      createTransport: async () => tr,
+    });
+    await c.start();
+    await flush();
+    tr.handlers?.onOpen();
+    const priv = c as unknown as TimedPriv;
+    if (priv.tickTimer !== null) clearInterval(priv.tickTimer);
+    /** 시계를 ms만큼 흘린다 — TALK_TICK_MS마다 tick(마지막 자투리도 tick) */
+    const advance = (ms: number) => {
+      const end = clock + ms;
+      while (clock + TALK_TICK_MS <= end) {
+        clock += TALK_TICK_MS;
+        priv.onTick();
+      }
+      if (clock < end) {
+        clock = end;
+        priv.onTick();
+      }
+    };
+    const creates = () => tr.sent.filter((e) => e.type === "response.create").length;
+    const wrapNotes = () => tr.sent.filter((e) => e.type === "conversation.item.create" && (e.item as { id?: string } | undefined)?.id === "app_wrapup").length;
+    const origin = (id: string) => c.getSnapshot().lines.find((l) => l.itemId === id)?.origin ?? null;
+    /** 그 줄 뒤의 선생님 줄 출처들 */
+    const teacherAfter = (itemId: string) => {
+      const ls = c.getSnapshot().lines;
+      return ls.slice(ls.findIndex((l) => l.itemId === itemId) + 1).filter((l) => l.speaker === "teacher").map((l) => l.origin);
+    };
+    /** 선생님 한 차례를 소리 멈춤까지 */
+    const teacher = (rid: string, tid: string, prev: string | null, text: string) =>
+      tr.emit(
+        created(rid),
+        talkEv.itemAdded(tid, "assistant", prev),
+        audioEv("output_audio_buffer.started", rid),
+        talkEv.outDelta(tid, rid, text),
+        talkEv.outDone(tid, rid, text),
+        talkEv.responseDone(rid, "completed", [tid]),
+        audioEv("output_audio_buffer.stopped", rid),
+      );
+    /** 은우 말이 끝남(VAD 커밋 + 전사) — 서버 자동 응답(response.created)은 따로 흘린다 */
+    const childEnds = (cid: string, prev: string, text: string) =>
+      tr.emit(
+        { type: "input_audio_buffer.speech_stopped", event_id: talkEid(), item_id: cid, audio_end_ms: 0 },
+        talkEv.committed(cid, prev),
+        talkEv.itemAdded(cid, "user", prev),
+        talkEv.inCompleted(cid, text),
+      );
+    return { c, tr, priv, advance, creates, wrapNotes, origin, teacherAfter, teacher, childEnds };
+  };
+  const timed: TalkCallController[] = [];
+  globalThis.fetch = (async (input: unknown, init?: RequestInit): Promise<Response> => {
+    const url = String(input);
+    if (url === "/api/english/talk/scene") return new Response(JSON.stringify({ ok: false, error: "no_api_key", messageKo: "eval" }), { status: 501 });
+    if (url === "/api/english/talk/cards") {
+      timedCards.push(JSON.parse(String(init?.body)) as TalkCardsRequest);
+      return new Response(JSON.stringify({ ok: false, error: "cards_failed", messageKo: "eval" }), { status: 500 });
+    }
+    throw new Error(`eval 컨트롤러 대역: 막힌 주소 ${url}`);
+  }) as typeof fetch;
+  Date.now = () => clock;
+  try {
+    const A = await makeTimed();
+    timed.push(A.c);
+
+    // P3-A — 같은 줄의 전사 .done·response.done이 다시 와도(재전송·중복 수신) 카드 요청은 줄마다 한 번(cardsRequested)
+    const t1Text = "Hi! I'm Sunny. Do you like dogs?";
+    const t1Done = talkEv.outDone("q_t1", "q_r1", t1Text);
+    const r1Done = talkEv.responseDone("q_r1", "completed", ["q_t1"]);
+    A.tr.emit(created("q_r1"), talkEv.itemAdded("q_t1", "assistant", null), audioEv("output_audio_buffer.started", "q_r1"), talkEv.outDelta("q_t1", "q_r1", t1Text), t1Done, r1Done);
+    await flush();
+    const cardsAtLineEnd = timedCards.length;
+    A.tr.emit(t1Done, r1Done); // 같은 이벤트 그대로 한 번 더
+    A.tr.emit(talkEv.outDone("q_t1", "q_r1", t1Text), talkEv.responseDone("q_r1", "completed", ["q_t1"])); // 새 event_id로 한 번 더
+    await flush();
+    add(
+      "같은 선생님 줄의 전사 .done·response.done이 다시 와도 카드 요청 수 그대로(줄마다 한 번)",
+      cardsAtLineEnd === 1 && timedCards.length === 1,
+      `줄 끝 ${cardsAtLineEnd} · 중복 뒤 ${timedCards.length}`,
+    );
+    A.tr.emit(audioEv("output_audio_buffer.stopped", "q_r1"));
+
+    // P2-A ① — 은우가 말하는 중(speech_started 뒤) 🙋: 카드는 뜨고 앱 response.create 0(보류도 없음). 은우 말이 끝나면 선생님 응답은 자동 응답 하나
+    A.advance(1_000);
+    A.tr.emit(talkEv.speechStarted("q_c1"));
+    A.c.helpTapped();
+    await flush();
+    const tapTalking = { creates: A.creates(), card: A.c.getSnapshot().hints.visible, held: A.priv.pendingNudge };
+    A.advance(2_000); // 아직 말하는 중("Um… I…")
+    A.childEnds("q_c1", "q_t1", "Um, I like dogs.");
+    A.advance(TALK_TICK_MS); // 말 끝 ~ 자동 응답 사이 tick
+    A.teacher("q_r2", "q_t2", "q_c1", "Me too! What is your dog's name?");
+    await flush();
+    add(
+      "은우가 말하는 중(speech_started 뒤) 🙋 → 카드는 뜨고 앱 response.create 0·보류 없음 → 은우 말 뒤 선생님 줄은 자동 응답 하나(reply)",
+      tapTalking.creates === 1 && tapTalking.card && !tapTalking.held && A.creates() === 1 && JSON.stringify(A.teacherAfter("q_c1")) === '["reply"]',
+      `🙋 때 create ${tapTalking.creates} · 카드 ${tapTalking.card} · 보류 ${tapTalking.held} · 끝 create ${A.creates()} · 은우 뒤 선생님 ${JSON.stringify(A.teacherAfter("q_c1"))}`,
+    );
+
+    // P2-A ② — 선생님 말하는 중 🙋(보류) + 은우 끼어들기, 실서버 순서(response.done cancelled → output_audio_buffer.cleared)
+    A.advance(1_000);
+    A.tr.emit(created("q_r3"), talkEv.itemAdded("q_t3", "assistant", "q_t2"), audioEv("output_audio_buffer.started", "q_r3"), talkEv.outDelta("q_t3", "q_r3", "Do you"));
+    A.c.helpTapped();
+    await flush();
+    const heldCreates = A.creates();
+    A.tr.emit(talkEv.speechStarted("q_c2"), talkEv.responseDone("q_r3", "cancelled", ["q_t3"], "turn_detected"), { type: "output_audio_buffer.cleared", event_id: talkEid(), response_id: "q_r3" });
+    await flush();
+    const bargeCreates = A.creates();
+    A.advance(1_500);
+    A.childEnds("q_c2", "q_t3", "Wait, I have a cat.");
+    A.teacher("q_r4", "q_t4", "q_c2", "A cat! What color is your cat?");
+    await flush();
+    add(
+      "선생님 말하는 중 🙋(보류) + 은우 끼어들기(실서버 순서 response.done → cleared) → 보류 요청이 은우 말 위로 나가지 않음 · 은우 말 뒤 선생님 줄 하나",
+      heldCreates === 1 && bargeCreates === 1 && A.creates() === 1 && JSON.stringify(A.teacherAfter("q_c2")) === '["reply"]',
+      `보류 ${heldCreates} · 끼어든 뒤 ${bargeCreates} · 끝 ${A.creates()} · 은우 뒤 선생님 ${JSON.stringify(A.teacherAfter("q_c2"))}`,
+    );
+
+    // P2-A ③ 둘째 겹 단독 — 상태 기계가 요청 신호를 내도(가정) 은우 차례가 열려 있으면(말하는 중·말이 막 끝나 자동 응답을 기다리는 틈) 보내지도 보류하지도 않는다
+    A.advance(1_000);
+    A.tr.emit(talkEv.speechStarted("q_c3"));
+    A.priv.pendingNudge = true; // 앞서 보류된 요청이 남아 있었다고 가정
+    A.priv.requestNudge();
+    const directTalking = { creates: A.creates(), held: A.priv.pendingNudge };
+    A.advance(1_000);
+    A.childEnds("q_c3", "q_t4", "It is black.");
+    A.advance(TALK_TICK_MS);
+    A.priv.requestNudge();
+    const directGap = { creates: A.creates(), held: A.priv.pendingNudge };
+    A.teacher("q_r5", "q_t5", "q_c3", "Black cats are cool! Does your cat like fish?");
+    await flush();
+    add(
+      "둘째 겹(컨트롤러 단독): 요청 신호가 와도 은우가 말하는 중·말이 막 끝나 자동 응답을 기다리는 틈이면 response.create 0 · 보류도 비움",
+      directTalking.creates === 1 && !directTalking.held && directGap.creates === 1 && !directGap.held && A.creates() === 1 && JSON.stringify(A.teacherAfter("q_c3")) === '["reply"]',
+      JSON.stringify({ directTalking, directGap, end: A.creates(), after: A.teacherAfter("q_c3") }),
+    );
+
+    // 틈은 짧게 묶인다 — 말이 끝나고 자동 응답이 끝내 안 오면(TALK_AUTO_REPLY_WAIT_MS 뒤) 🙋 도움 요청이 나간다
+    A.advance(1_000);
+    A.tr.emit(talkEv.speechStarted("q_c4"));
+    A.advance(500);
+    A.childEnds("q_c4", "q_t5", "Yes.");
+    A.advance(TALK_AUTO_REPLY_WAIT_MS);
+    A.c.helpTapped();
+    await flush();
+    const nudgeAfterGap = A.creates();
+    // P3-B — 그 도움 요청에 response.created가 5초 안에 안 오면(거부·유실) 출처 청을 거둔다 → 다음 자동 응답 줄은 reply
+    A.advance(5_000);
+    A.tr.emit(talkEv.speechStarted("q_c5"));
+    A.advance(500);
+    A.childEnds("q_c5", "q_c4", "I like fish.");
+    A.teacher("q_r6", "q_t6", "q_c5", "Fish are yummy! Do you like apples?");
+    await flush();
+    add(
+      `말이 끝나고 자동 응답이 끝내 안 오면 틈(${TALK_AUTO_REPLY_WAIT_MS}ms) 뒤 🙋 도움 요청은 나감(틈은 짧게 묶인다)`,
+      nudgeAfterGap === 2,
+      `create ${nudgeAfterGap}`,
+    );
+    add(
+      "도움 요청 response.create에 response.created가 5초 안에 안 오면 출처 청을 거둔다 → 그 뒤 자동 응답 줄의 출처 = reply(nudge로 태깅 안 됨)",
+      A.creates() === 2 && A.origin("q_t6") === "reply",
+      `create ${A.creates()} · 출처 ${A.origin("q_t6")}`,
+    );
+
+    // P2-A ④ 마무리 — 5분 상한에 은우가 말하는 중이면 기다린다(선생님과 같은 8초 상한): speech_stopped 전 0 · 말 끝~자동 응답 틈 0 ·
+    // 자동 응답 소리 중 0 → 자동 응답(reply)이 끝난 뒤 마무리 1회
+    A.advance(1_000);
+    A.tr.emit(talkEv.speechStarted("q_c6"));
+    A.priv.capAtMs = clock + 500;
+    A.advance(1_000); // 상한에 닿음 — 은우는 말하는 중
+    const atCap = { phase: A.c.getSnapshot().phase, creates: A.creates(), notes: A.wrapNotes() };
+    A.advance(2_500); // 상한 + 3초 — 아직 말하는 중
+    const talking = { creates: A.creates(), notes: A.wrapNotes() };
+    A.childEnds("q_c6", "q_t6", "My dog likes apples too.");
+    A.advance(1_000); // 말 끝 ~ 자동 응답 틈(TALK_AUTO_REPLY_WAIT_MS 안)
+    const inGap = A.creates();
+    A.tr.emit(created("q_r7"), talkEv.itemAdded("q_t7", "assistant", "q_c6"), audioEv("output_audio_buffer.started", "q_r7"), talkEv.outDelta("q_t7", "q_r7", "Wow, that is fun!"), talkEv.outDone("q_t7", "q_r7", "Wow, that is fun!"), talkEv.responseDone("q_r7", "completed", ["q_t7"]));
+    A.advance(1_000); // 자동 응답 소리가 나는 중
+    const replySpeaking = A.creates();
+    A.tr.emit(audioEv("output_audio_buffer.stopped", "q_r7"));
+    A.advance(TALK_TICK_MS);
+    const sent = A.creates();
+    const lastTwo = A.tr.sent.slice(-2).map((e) => (e.type === "conversation.item.create" ? (e.item as { id?: string } | undefined)?.id : e.type));
+    A.tr.emit(created("q_r8"), talkEv.itemAdded("q_t8", "assistant", "q_t7"), talkEv.outDelta("q_t8", "q_r8", "You did so well today!"));
+    await flush();
+    add(
+      "5분 상한에 은우가 말하는 중이면 speech_stopped 전에는 마무리 response.create 0(마무리 단계로는 들어감)",
+      atCap.phase === "wrapping" && atCap.creates === 2 && atCap.notes === 0 && talking.creates === 2 && talking.notes === 0,
+      JSON.stringify({ atCap, talking }),
+    );
+    add(
+      "은우 말이 끝나고 자동 응답이 오기 전 틈·자동 응답 소리 중에도 마무리 0 → 자동 응답(reply)이 끝난 뒤 마무리 1회(숨은 안내 + create, 출처 wrapup)",
+      inGap === 2 && replySpeaking === 2 && sent === 3 && JSON.stringify(lastTwo) === '["app_wrapup","response.create"]' && A.origin("q_t7") === "reply" && A.origin("q_t8") === "wrapup",
+      JSON.stringify({ inGap, replySpeaking, sent, lastTwo, reply: A.origin("q_t7"), wrap: A.origin("q_t8") }),
+    );
+
+    // 8초 상한 — 은우가 계속 말하면(잡음 등) 상한에서 마무리를 보낸다(대화가 끝나지 않는 일은 없다)
+    const B = await makeTimed();
+    timed.push(B.c);
+    B.teacher("w_r1", "w_t1", null, "Hi! I'm Sunny. Do you like dogs?");
+    await flush();
+    B.advance(1_000);
+    B.tr.emit(talkEv.speechStarted("w_c1"));
+    B.priv.capAtMs = clock + TALK_TICK_MS;
+    B.advance(TALK_TICK_MS); // 상한 — 마무리 단계 시작
+    B.advance(TALK_WRAPUP_WAIT_MS - TALK_TICK_MS); // 상한 + 7.75초 — 아직 말하는 중
+    const before8s = B.creates();
+    B.advance(TALK_TICK_MS); // 상한 + 8초
+    add(
+      `은우가 ${TALK_WRAPUP_WAIT_MS / 1000}초 넘게 말하면(잡음 등) 상한에서 마무리를 보낸다 — 대화가 끝나지 않는 일은 없다`,
+      before8s === 1 && B.creates() === 2 && B.wrapNotes() === 1,
+      `7.75초 ${before8s} · 8초 ${B.creates()}`,
+    );
+
+    // 마무리 쪽 틈도 짧게 묶인다 — 상한 뒤 은우 말이 끝났는데 자동 응답이 끝내 안 오면 틈 뒤에 마무리를 보낸다
+    const C = await makeTimed();
+    timed.push(C.c);
+    C.teacher("v_r1", "v_t1", null, "Hi! I'm Sunny. Do you like cats?");
+    await flush();
+    C.advance(1_000);
+    C.tr.emit(talkEv.speechStarted("v_c1"));
+    C.priv.capAtMs = clock + TALK_TICK_MS;
+    C.advance(500); // 상한 — 은우 말하는 중
+    C.childEnds("v_c1", "v_t1", "Yes.");
+    C.advance(TALK_AUTO_REPLY_WAIT_MS - TALK_TICK_MS);
+    const inGrace = C.creates();
+    C.advance(TALK_TICK_MS);
+    add(
+      `마무리: 은우 말이 끝났는데 자동 응답이 끝내 안 오면 틈(${TALK_AUTO_REPLY_WAIT_MS}ms) 뒤 마무리를 보낸다`,
+      inGrace === 1 && C.creates() === 2 && C.wrapNotes() === 1,
+      `틈 안 ${inGrace} · 틈 뒤 ${C.creates()}`,
+    );
+
+    // ── QA talk-cards-j full_2 P3-A — 셈은 **보낸** 요청이다. 앱이 보내지 않고 버린 도움 요청(은우 차례·보류 버림)은 도움 상태 기계의
+    //    셈(차례 하나에 한 번·연속 2번)에서 되돌린다(`nudge_withheld`). 되돌리지 않으면 버린 🙋가 상한을 먹어 연속 2번이 1번이 되고,
+    //    자동 응답이 끝내 안 오는 차례에는 12초 요청이 영영 나가지 않는다.
+    /** 조용한 은우 — 12초 도움 요청이 나가면 그 요청의 응답(선생님 예시 답)을 흘린다. `rounds`번 되풀이하고 앱 create 수를 차례로 돌려준다 */
+    const silentRounds = async (T: Awaited<ReturnType<typeof makeTimed>>, prefix: string, prev: string, rounds: number) => {
+      const seen: number[] = [];
+      let last = prev;
+      for (let i = 0; i < rounds; i++) {
+        T.advance(TALK_HINT_NUDGE_AFTER_MS + 1_000);
+        seen.push(T.creates());
+        const tid = `${prefix}_n${i}`;
+        T.teacher(`${prefix}_nr${i}`, tid, last, "You can say: I like it. Can you say it with me?");
+        await flush();
+        last = tid;
+      }
+      return seen;
+    };
+    // N3 모양 — 은우가 "Um… I…" 하다 막혀 말하는 도중 🙋(카드만 — 보내지 않음) → 말을 마친 뒤 조용함
+    const D = await makeTimed();
+    timed.push(D.c);
+    D.teacher("d_r1", "d_t1", null, "Hi! I'm Sunny. Do you like dogs?");
+    await flush();
+    D.advance(1_000);
+    D.tr.emit(talkEv.speechStarted("d_c1"));
+    D.advance(1_000);
+    D.c.helpTapped();
+    await flush();
+    const dTap = { creates: D.creates(), card: D.c.getSnapshot().hints.visible, held: D.priv.pendingNudge };
+    D.advance(1_500);
+    D.childEnds("d_c1", "d_t1", "Um, I like…");
+    D.advance(TALK_TICK_MS);
+    D.teacher("d_r2", "d_t2", "d_c1", "Me too! What is your dog's name?");
+    await flush();
+    const dRounds = await silentRounds(D, "d", "d_t2", 3);
+    add(
+      "은우가 말하는 중 🙋(카드만 — 보내지 않음) 뒤 조용한 은우: 도움 요청 연속 2번(보낸 요청만 센다) → 3번째 차례는 막힘",
+      dTap.creates === 1 && dTap.card && !dTap.held && JSON.stringify(dRounds) === "[2,3,3]" && D.origin("d_n0") === "nudge" && D.origin("d_n1") === "nudge",
+      `🙋 때 create ${dTap.creates} · 카드 ${dTap.card} · 보류 ${dTap.held} · 차례별 create ${JSON.stringify(dRounds)}`,
+    );
+
+    // N4b 모양 — 자동 응답이 끝내 안 오는 드문 차례(잡음 커밋) + 말 끝 틈의 🙋(버림) → 은우 말이 멈춘 지 12초에 도움 요청
+    const E = await makeTimed();
+    timed.push(E.c);
+    E.teacher("e_r1", "e_t1", null, "Hi! I'm Sunny. Do you like cats?");
+    await flush();
+    E.advance(1_000);
+    E.tr.emit(talkEv.speechStarted("e_c1"));
+    E.advance(800);
+    E.childEnds("e_c1", "e_t1", "");
+    E.advance(200); // 말 끝 ~ 자동 응답 틈(TALK_AUTO_REPLY_WAIT_MS 안)
+    E.c.helpTapped();
+    await flush();
+    const eGap = { creates: E.creates(), card: E.c.getSnapshot().hints.visible, held: E.priv.pendingNudge };
+    E.advance(TALK_HINT_NUDGE_AFTER_MS - 200 - 1); // 은우 말이 멈춘 지 12초 − 1ms
+    const eBefore = E.creates();
+    E.advance(1);
+    add(
+      "자동 응답이 끝내 안 오는 차례: 말 끝 틈의 🙋는 버리고(create 0, 카드는 뜸) 셈도 되돌림 → 은우 말이 멈춘 지 12초에 도움 요청 1번",
+      eGap.creates === 1 && eGap.card && !eGap.held && eBefore === 1 && E.creates() === 2,
+      `틈 🙋 create ${eGap.creates} · 12초 전 ${eBefore} · 12초 ${E.creates()}`,
+    );
+
+    // N5 모양 — 자동 응답 생성 중(created 뒤·소리 전) 🙋 → 보류 → 그 응답에 소리가 있어 버림 → 버린 요청은 셈에서도 빠진다
+    const F = await makeTimed();
+    timed.push(F.c);
+    F.teacher("f_r1", "f_t1", null, "Hi! I'm Sunny. Do you like apples?");
+    await flush();
+    F.advance(1_000);
+    F.tr.emit(talkEv.speechStarted("f_c1"));
+    F.advance(700);
+    F.childEnds("f_c1", "f_t1", "I like apples.");
+    F.advance(200);
+    F.tr.emit(created("f_r2"));
+    F.c.helpTapped();
+    await flush();
+    const fHeld = { creates: F.creates(), held: F.priv.pendingNudge };
+    const fText = "Apples are yummy! What color is your apple?";
+    F.tr.emit(
+      talkEv.itemAdded("f_t2", "assistant", "f_c1"),
+      audioEv("output_audio_buffer.started", "f_r2"),
+      talkEv.outDelta("f_t2", "f_r2", fText),
+      talkEv.outDone("f_t2", "f_r2", fText),
+      talkEv.responseDone("f_r2", "completed", ["f_t2"]),
+      audioEv("output_audio_buffer.stopped", "f_r2"),
+    );
+    await flush();
+    const fDropped = { creates: F.creates(), held: F.priv.pendingNudge };
+    const fRounds = await silentRounds(F, "f", "f_t2", 3);
+    add(
+      "자동 응답 생성 중(소리 전) 🙋 → 보류 → 그 응답에 소리가 있어 버림(create 0) — 버린 요청은 셈에서 빠져 조용한 은우에게 도움 요청 연속 2번",
+      fHeld.creates === 1 && fHeld.held && fDropped.creates === 1 && !fDropped.held && JSON.stringify(fRounds) === "[2,3,3]",
+      `보류 ${JSON.stringify(fHeld)} · 버림 ${JSON.stringify(fDropped)} · 차례별 create ${JSON.stringify(fRounds)}`,
+    );
+
+    // 보류 합치기(드문 순서 — 소리가 response.done보다 먼저 멈춤): 보류가 남은 채 새 차례의 🙋 보류가 풀려 신호가 또 오면 요청은 하나로
+    // 합쳐진다(많아야 하나 나감) — 합쳐진 신호의 셈은 그 자리에서 빼고, 그 보류가 버려지면 남은 셈도 뺀다(셈 = 보낸 요청 + 보류 1)
+    const I = await makeTimed();
+    timed.push(I.c);
+    I.teacher("i_r1", "i_t1", null, "Hi! I'm Sunny. Do you like frogs?");
+    await flush();
+    I.advance(1_000);
+    I.tr.emit(talkEv.speechStarted("i_c1"));
+    I.advance(700);
+    I.childEnds("i_c1", "i_t1", "Frogs jump.");
+    I.advance(200);
+    I.tr.emit(created("i_r2"));
+    I.c.helpTapped(); // 응답 진행 중 — 컨트롤러 보류(셈 1)
+    const iText = "Frogs jump so high! Can you jump?";
+    I.tr.emit(talkEv.itemAdded("i_t2", "assistant", "i_c1"), audioEv("output_audio_buffer.started", "i_r2"), talkEv.outDelta("i_t2", "i_r2", iText), talkEv.outDone("i_t2", "i_r2", iText));
+    I.c.helpTapped(); // 새 차례 — 선생님 말하는 중이라 상태 기계 보류
+    I.tr.emit(audioEv("output_audio_buffer.stopped", "i_r2")); // 소리가 먼저 멈춤 → 상태 기계 요청 신호(셈 2) → 응답 진행 중이라 이미 있는 보류와 합침
+    await flush();
+    const iMerged = { creates: I.creates(), held: I.priv.pendingNudge, streak: I.priv.hints.nudgeStreak };
+    I.tr.emit(talkEv.responseDone("i_r2", "completed", ["i_t2"])); // 소리 있는 응답 → 보류 버림
+    await flush();
+    const iRounds = await silentRounds(I, "i", "i_t2", 3);
+    add(
+      "보류 합치기(소리가 response.done보다 먼저 멈춘 드문 순서): 합쳐진 신호의 셈은 빼고(셈 = 보류 1) 보류를 버리면 남은 셈도 뺌 → 조용한 은우에게 도움 요청 연속 2번",
+      iMerged.creates === 1 && iMerged.held && iMerged.streak === 1 && JSON.stringify(iRounds) === "[2,3,3]",
+      `합친 뒤 ${JSON.stringify(iMerged)} · 차례별 create ${JSON.stringify(iRounds)}`,
+    );
+
+    // ── QA full_2 P3-B ① — 마무리의 진행 중 응답 가드(`!this.responseActive`). 틈을 닫는 것은 자동 응답의 response.created이고, 그 뒤 첫
+    //    소리(output_audio_buffer.started)까지는 teacherSpeaking이 false라 이 창을 막는 것은 이 가드 하나다(지우면 작별 인사가 진행 중
+    //    응답에 부딪혀 거부되고, 작별 없이 25초 상한으로 끝난다).
+    const G = await makeTimed();
+    timed.push(G.c);
+    G.teacher("g_r1", "g_t1", null, "Hi! I'm Sunny. Do you like birds?");
+    await flush();
+    G.advance(1_000);
+    G.tr.emit(talkEv.speechStarted("g_c1"));
+    G.priv.capAtMs = clock + TALK_TICK_MS;
+    G.advance(500); // 상한 — 은우 말하는 중(마무리 단계로 들어감)
+    G.childEnds("g_c1", "g_t1", "Birds can sing.");
+    G.advance(300); // 말 끝 ~ 자동 응답 틈
+    G.tr.emit(created("g_r2")); // 자동 응답 시작 — 틈이 닫힘, 아직 소리 전
+    G.advance(2_000); // created ~ 첫 소리 창에서 tick 여러 번
+    const gWindow = { creates: G.creates(), notes: G.wrapNotes(), phase: G.c.getSnapshot().phase };
+    const gText = "Birds sing so well!";
+    G.tr.emit(
+      talkEv.itemAdded("g_t2", "assistant", "g_c1"),
+      audioEv("output_audio_buffer.started", "g_r2"),
+      talkEv.outDelta("g_t2", "g_r2", gText),
+      talkEv.outDone("g_t2", "g_r2", gText),
+      talkEv.responseDone("g_r2", "completed", ["g_t2"]),
+    );
+    G.advance(1_000); // 자동 응답 소리 중(응답은 끝남)
+    const gSpeaking = G.creates();
+    G.tr.emit(audioEv("output_audio_buffer.stopped", "g_r2"));
+    G.advance(TALK_TICK_MS);
+    add(
+      "마무리: 자동 응답이 시작돼(response.created) 첫 소리가 나기 전 창에도 작별 인사 0(진행 중 응답 가드) → 그 응답의 소리가 멈춘 뒤 1회",
+      gWindow.phase === "wrapping" && gWindow.creates === 1 && gWindow.notes === 0 && gSpeaking === 1 && G.creates() === 2 && G.wrapNotes() === 1 && G.origin("g_t2") === "reply",
+      JSON.stringify({ gWindow, gSpeaking, end: G.creates(), notes: G.wrapNotes(), reply: G.origin("g_t2") }),
+    );
+
+    // ── QA full_2 P3-B ② — 보류 버림 두 겹: 은우 speech_started의 보류 버림 + onResponseDone의 은우 차례 판정. 서로를 가려 하나만 지우면
+    //    동등하지만 둘 다 지우면 보류 요청이 은우 말 위로 나간다. 실서버는 소리 전에 끊긴 응답을 출력 없이(output: []) 끝낸다(hadAudio false).
+    const H = await makeTimed();
+    timed.push(H.c);
+    H.teacher("h_r1", "h_t1", null, "Hi! I'm Sunny. Do you like fish?");
+    await flush();
+    H.advance(1_000);
+    H.tr.emit(talkEv.speechStarted("h_c1"));
+    H.advance(700);
+    H.childEnds("h_c1", "h_t1", "I like fish.");
+    H.advance(200);
+    H.tr.emit(created("h_r2")); // 자동 응답 생성 중(소리 전)
+    H.c.helpTapped(); // 보류
+    await flush();
+    const hHeld = H.priv.pendingNudge;
+    H.tr.emit(talkEv.speechStarted("h_c2"), talkEv.responseDone("h_r2", "cancelled", [], "turn_detected")); // 소리 전 끼어들기 → 출력 없는 cancelled
+    await flush();
+    const hAfter = { creates: H.creates(), held: H.priv.pendingNudge };
+    H.advance(1_000);
+    H.childEnds("h_c2", "h_c1", "And cats.");
+    H.advance(TALK_TICK_MS);
+    H.teacher("h_r3", "h_t3", "h_c2", "Fish and cats! Do you have a pet?");
+    await flush();
+    add(
+      "생성 중 🙋(보류) → 소리 전 은우 끼어들기 → 출력 없는 cancelled response.done: 보류 요청이 은우 말 위로 나가지 않음(create 0) · 은우 말 뒤 선생님 줄은 자동 응답 하나",
+      hHeld && hAfter.creates === 1 && !hAfter.held && H.creates() === 1 && JSON.stringify(H.teacherAfter("h_c2")) === '["reply"]',
+      JSON.stringify({ hHeld, hAfter, end: H.creates(), after: H.teacherAfter("h_c2") }),
+    );
+  } finally {
+    Date.now = realDateNow;
+    for (const c of timed) c.end("user");
+    await flush();
+    globalThis.fetch = blockedFetch;
+  }
+  return results;
+}
+
+/** §12-7 출처 태깅 — 앱이 response.create 직전에 적어 둔 출처가 다음 response.created로 간다, 그 밖은 reply(리듀서 한 곳) */
+function runTalkOriginChecks(): CheckResult[] {
+  const results: CheckResult[] = [];
+  const add = talkAdder(results, "자유대화 출처");
+  const created = (id: string): RealtimeServerEvent => ({
+    type: "response.created",
+    event_id: talkEid(),
+    response: { id, object: "realtime.response", status: "in_progress", output: [] },
+  });
+  const teacherTurn = (item: string, resp: string, prev: string | null, text: string): RealtimeServerEvent[] => [
+    talkEv.itemAdded(item, "assistant", prev),
+    talkEv.outDelta(item, resp, text),
+    talkEv.outDone(item, resp, text),
+    talkEv.responseDone(resp, "completed", [item]),
+  ];
+  let st = createTalkTranscript();
+  const events: (RealtimeServerEvent | { app: "greeting" | "nudge" | "wrapup" | null })[] = [
+    { app: "greeting" },
+    created("resp_g"),
+    ...teacherTurn("item_g", "resp_g", null, "Hi! I am Sunny. Do you like dogs?"),
+    talkEv.speechStarted("item_c1"),
+    talkEv.committed("item_c1", "item_g"),
+    talkEv.inCompleted("item_c1", "Yes!"),
+    created("resp_r"), // 은우 발화 뒤 서버 자동 응답 — 앱이 청하지 않음
+    ...teacherTurn("item_r", "resp_r", "item_c1", "Great! What color is your dog?"),
+    { app: "nudge" },
+    created("resp_n"),
+    ...teacherTurn("item_n", "resp_n", "item_r", "You can say: My dog is brown."),
+    { app: "wrapup" },
+    created("resp_w"),
+    ...teacherTurn("item_w", "resp_w", "item_n", "You did great today. Bye-bye!"),
+  ];
+  const apply = (s: TalkTranscriptState, e: (typeof events)[number]) => ("app" in e ? requestTalkResponseOrigin(s, e.app) : reduceTalkTranscript(s, e));
+  for (const e of events) st = apply(st, e);
+  const originKey = (s: TalkTranscriptState) => s.lines.map((l) => `${l.itemId}:${l.origin ?? "null"}`).join(",");
+  add(
+    "앱 response.create 뒤 created = 그 출처(greeting·nudge·wrapup), 청 없는 created = reply, 은우 줄 = null",
+    originKey(st) === "item_g:greeting,item_c1:null,item_r:reply,item_n:nudge,item_w:wrapup",
+    originKey(st),
+  );
+  add("청은 created 하나가 소비한다(끝나면 비어 있음)", st.pendingOrigin === null);
+  const turns = toTalkTurns(st.lines);
+  add(
+    "toTalkTurns가 출처를 싣는다(선생님 = 출처, 은우 = null)",
+    JSON.stringify(turns.map((t) => t.origin)) === JSON.stringify(["greeting", null, "reply", "nudge", "wrapup"]),
+    JSON.stringify(turns.map((t) => t.origin)),
+  );
+  add("저장 턴 zod(talkSaveTurnSchema)가 toTalkTurns 결과를 그대로 받음", turns.every((t) => talkSaveTurnSchema.safeParse(t).success));
+  // 멱등 — 서버 이벤트를 두 번씩 흘려도 같다(같은 created가 다시 와도 다음 청을 소비하지 않는다)
+  let twice = createTalkTranscript();
+  for (const e of events) twice = "app" in e ? apply(twice, e) : apply(apply(twice, e), e);
+  add("같은 서버 이벤트가 두 번씩 와도 출처가 같다(멱등)", originKey(twice) === originKey(st), originKey(twice));
+  const dupCreated = reduceTalkTranscript(requestTalkResponseOrigin(st, "nudge"), created("resp_g"));
+  add("이미 본 created가 다시 와도 새 청을 소비하지 않음", dupCreated.pendingOrigin === "nudge" && dupCreated.originOfResponse.resp_g === "greeting");
+  const withdrawn = reduceTalkTranscriptEvents(
+    [created("resp_x"), ...teacherTurn("item_x", "resp_x", "item_w", "Hmm, okay.")],
+    requestTalkResponseOrigin(requestTalkResponseOrigin(st, "nudge"), null),
+  );
+  add("청을 거두면(null — response.create 거부) 다음 응답은 reply", withdrawn.lines.find((l) => l.itemId === "item_x")?.origin === "reply");
+  const late = reduceTalkTranscriptEvents(
+    [talkEv.itemAdded("item_l", "assistant", null), talkEv.outDelta("item_l", "resp_l", "Bye!"), created("resp_l")],
+    requestTalkResponseOrigin(createTalkTranscript(), "wrapup"),
+  );
+  add("created가 글자보다 늦게 와도 그 줄의 출처를 고친다(reply → wrapup)", late.lines[0]?.origin === "wrapup" && late.pendingOrigin === null);
+  const s0 = createTalkTranscript();
+  add("같은 청을 다시 적으면 같은 상태 객체", requestTalkResponseOrigin(requestTalkResponseOrigin(s0, "nudge"), "nudge") !== s0 && requestTalkResponseOrigin(s0, null) === s0);
+  add(
+    "모양이 틀린 created(response·id 없음)는 무시(같은 상태 객체)",
+    reduceTalkTranscript(st, { type: "response.created", event_id: "x" }) === st && reduceTalkTranscript(st, { type: "response.created", response: {} }) === st,
+  );
+  add("출처를 모르는 선생님 줄(응답 id 전)은 null, 저장 턴에서는 reply", (() => {
+    const pre = reduceTalkTranscript(createTalkTranscript(), talkEv.itemAdded("item_p", "assistant", null));
+    const withText: TalkLine = { ...pre.lines[0], text: "Hello", status: "final" };
+    return pre.lines[0].origin === null && toTalkTurns([withText])[0]?.origin === "reply";
+  })());
+
+  // 저장 계약 — 출처 수용(옛 번들이 빼고 보내면 null), 모르는 값 거부, 옛 기록 읽기 null
+  const parsedOld = talkSaveTurnSchema.safeParse({ speaker: "teacher", text: "Hi!", interrupted: false });
+  add("저장 턴 zod: origin 없이 보내면(옛 번들) null로 받음", parsedOld.success && parsedOld.data.origin === null);
+  add(
+    "저장 턴 zod: 아는 출처 4개·null 받음, 모르는 값('tool')·글자 폭 초과는 거부",
+    TALK_TURN_ORIGINS.every((o) => talkSaveTurnSchema.safeParse({ speaker: "teacher", text: "Hi!", interrupted: false, origin: o }).success) &&
+      talkSaveTurnSchema.safeParse({ speaker: "child", text: "Yes", interrupted: false, origin: null }).success &&
+      !talkSaveTurnSchema.safeParse({ speaker: "teacher", text: "Hi!", interrupted: false, origin: "tool" }).success &&
+      !talkSaveTurnSchema.safeParse({ speaker: "teacher", text: "a".repeat(TALK_SAVE_TURN_TEXT_MAX + 1), interrupted: false, origin: null }).success,
+  );
+  const normalized = normalizeTalkSessionRecord({
+    turns: [
+      { speaker: "teacher", text: "Old turn", interrupted: false },
+      { speaker: "teacher", text: "Nudge", interrupted: false, origin: "nudge" },
+      { speaker: "child", text: "Yes", interrupted: false, origin: "reply" },
+      { speaker: "teacher", text: "Odd", interrupted: false, origin: "tool" },
+    ],
+  });
+  add(
+    "옛 기록 읽기: origin 없음·모르는 값·은우 턴 → null, 선생님의 아는 값은 그대로(키는 늘 있음)",
+    JSON.stringify(normalized.turns.map((t) => t.origin)) === JSON.stringify([null, "nudge", null, null]) && normalized.turns.every((t) => "origin" in t),
+    JSON.stringify(normalized.turns.map((t) => t.origin)),
+  );
+  return results;
+}
+
+/**
+ * §12-7 "§12-6 이어 말하기 경로가 사라졌는지(정적 점검)" — 세션 설정·AI 상수·컨트롤러(lib/talk-realtime.ts, 2026-09-27 app-builder가
+ * 걷어 냄 → `TALK_CONTROLLER_TOOL_PATH_REMOVED = true`)와 호출 J 라우트(`/api/english/talk/cards`)의 배선 모양을 소스로 본다.
+ * 컨트롤러의 **동작**(은우 한 번 대답에 앱 response.create 0·줄마다 카드 1회·철 지난 도움·출처 청)은 "자유대화 컨트롤러"가 합성 이벤트로 본다.
+ */
+const TALK_CONTROLLER_TOOL_PATH_REMOVED = true;
+const talkPendingNotes: string[] = [];
+function runTalkToolPathStaticChecks(): CheckResult[] {
+  const results: CheckResult[] = [];
+  const add = talkAdder(results, "자유대화 정적");
+  const read = (rel: string) => readFileSync(new URL(`../${rel}`, import.meta.url), "utf-8");
+  const sessionSrc = read("lib/talk-session-config.ts");
+  add(
+    "세션 설정 조립에 도구·tool_choice·화면 카드 덧붙임이 없다(주석 밖 코드)",
+    !/^\s*(tools|tool_choice)\s*:/m.test(sessionSrc) && !/TALK_TOOLS|TALK_TOOL_CHOICE|TALK_CARDS_INSTRUCTIONS/.test(sessionSrc.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "")),
+  );
+  const aiSrc = read("lib/ai/english/talk-schemas.ts") + read("lib/ai/english/talk-prompts.ts");
+  add(
+    "AI 상수에 §12-6 도구 정의·도구 사용 안내가 남지 않았다(TALK_TOOLS·TALK_CARDS_INSTRUCTIONS export 없음)",
+    !/export const (TALK_TOOLS|TALK_TOOL_CHOICE|TALK_CARDS_INSTRUCTIONS)\b/.test(aiSrc),
+  );
+  runTalkCardsWiringStaticChecks(read, add);
+  const controllerSrc = read("lib/talk-realtime.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+  const leftovers = ["stepTalkContinue", "parseTalkToolCall", "buildTalkToolOutputEvent", "extractTalkFunctionCalls"].filter((n) => controllerSrc.includes(n));
+  if (TALK_CONTROLLER_TOOL_PATH_REMOVED) {
+    add("컨트롤러에 §12-6 이어 말하기·도구 호출 처리 경로가 없다", leftovers.length === 0, leftovers.join(",") || "없음");
+    add(
+      "컨트롤러에 function_call_output·도구 호출 꺼내기가 없다(도구 결과를 보내지 않는다)",
+      !/function_call_output|function_call\b|app_out/.test(controllerSrc),
+    );
+    const creates = controllerSrc.split("buildTalkResponseCreateEvent()").length - 1;
+    const createCalls = [...controllerSrc.matchAll(/this\.sendResponseCreate\(("[a-z]+")?\)/g)].map((m) => m[1] ?? "(출처 없음)");
+    add(
+      "컨트롤러의 response.create는 한 곳(sendResponseCreate)이고, 부르는 곳은 greeting·nudge·wrapup 셋뿐(출처 청 필수)",
+      creates === 1 && JSON.stringify([...createCalls].sort()) === JSON.stringify(['"greeting"', '"nudge"', '"wrapup"']) && /requestTalkResponseOrigin\(this\.transcript, origin\)/.test(controllerSrc),
+      `create ${creates}곳 · 부르는 곳 ${createCalls.join(",")}`,
+    );
+    const routeSrc = read("app/api/english/talk/cards/route.ts").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    const keyAt = routeSrc.indexOf("if (!hasTalkApiKey())");
+    const callAt = routeSrc.indexOf("await generateTalkCards(");
+    add(
+      "카드 라우트: zod 뒤 키 검사(501)가 generateTalkCards보다 먼저, req.signal을 넘기고, 폭은 TALK_CARDS_REQUEST_LIMITS를 import, 저장하지 않음",
+      keyAt > 0 && callAt > keyAt && routeSrc.indexOf("bodySchema.safeParse") < keyAt &&
+        /\{ signal: req\.signal \}/.test(routeSrc) &&
+        /import \{ TALK_CARDS_REQUEST_LIMITS \} from "@\/lib\/talk-cards"/.test(routeSrc) &&
+        !/getStore|@\/lib\/store/.test(routeSrc),
+      `key@${keyAt} call@${callAt}`,
+    );
+  } else {
+    talkPendingNotes.push(
+      `보류(app-builder 단계): lib/talk-realtime.ts가 아직 ${leftovers.join("·") || "(없음)"}를 부른다 — 걷어 낸 뒤 scripts/eval-english.ts의 TALK_CONTROLLER_TOOL_PATH_REMOVED를 true로 바꾼다.`,
+    );
+  }
+  return results;
+}
+
+/**
+ * 호출 J 진입 함수 배선(QA talk-cards-j P2-A) — `generateTalkCards`가 부품을 **실제로 끼우는지** 소스로 잠근다.
+ * 오프라인 게이트가 fetch를 막아 진입 함수를 태울 수 없고 §12-7에는 호출 J 실호출 게이트도 없어, 후처리 호출·6초 신호·모델 인자를
+ * 한 줄 지워도 부품 행(조립·zod·후처리·신호 합성·모델 해석)은 전부 통과했다(변이 M12·M13·M19). 행위 점검(eval 안 루프백 스텁)은
+ * 캐시된 클라이언트와 전역 fetch 차단을 흔들어 게이트의 보장을 약하게 하므로 쓰지 않는다. 주석을 걷고 공백을 한 칸으로 줄여 본다
+ * (줄바꿈·들여쓰기가 바뀌어도 통과, 인자를 빼거나 바꾸면 실패).
+ */
+function runTalkCardsWiringStaticChecks(read: (rel: string) => string, add: TalkAdd): void {
+  const flat = (src: string) => src.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "").replace(/\s+/g, " ");
+  const clientSrc = flat(read("lib/ai/client.ts"));
+  const sliceFn = (head: string) => {
+    const start = clientSrc.indexOf(head);
+    if (start < 0) return "";
+    const next = clientSrc.indexOf(" export ", start + head.length);
+    return clientSrc.slice(start, next < 0 ? undefined : next);
+  };
+  const fn = sliceFn("export async function generateTalkCards(");
+  const callAt = fn.indexOf("await callWithSchema({");
+  const callEnd = callAt < 0 ? -1 : fn.indexOf("});", callAt);
+  const callArgs = callAt < 0 || callEnd < 0 ? "" : fn.slice(callAt, callEnd + 3);
+  const has = (needle: string) => callArgs.includes(needle);
+  add("호출 J 배선: generateTalkCards 본문과 callWithSchema 인자를 찾음(못 찾으면 아래 행이 헛돈다)", fn !== "" && callArgs !== "", `본문 ${fn.length}자 · 인자 ${callArgs.length}자`);
+
+  const outVar = /const (\w+) = await callWithSchema\(\{/.exec(fn)?.[1] ?? null;
+  const ret = /return sanitizeTalkScreenCards\( ?(\w+) ?, ?\{ ?([^}]*?) ?,? ?\} ?\) ?;/.exec(fn);
+  const ctxFields = ret ? ret[2].split(",").map((f) => f.trim()).filter(Boolean).sort() : [];
+  add(
+    "호출 J 배선: callWithSchema 결과를 후처리 sanitizeTalkScreenCards(…, {teacherLine: input.teacherLine, words: input.words, shown: input.shown})에 넘겨 반환(근거 검사 생략 금지)",
+    outVar !== null && ret !== null && ret[1] === outVar &&
+      JSON.stringify(ctxFields) === JSON.stringify(["shown: input.shown", "teacherLine: input.teacherLine", "words: input.words"]) &&
+      !new RegExp(`return ${outVar ?? "\\u0000"} ?;`).test(fn),
+    ret ? `return sanitizeTalkScreenCards(${ret[1]}, {${ctxFields.join(", ")}})` : "후처리 반환 없음",
+  );
+  add("호출 J 배선: 6초·요청 취소 신호 signal: talkCardsAbortSignal(options.signal)", has("signal: talkCardsAbortSignal(options.signal)"));
+  add(
+    `호출 J 배선: SDK 재시도 maxRetries: TALK_CARDS_SDK_MAX_RETRIES(= ${TALK_CARDS_SDK_MAX_RETRIES}) — retry-after 대기가 신호를 보지 않아 6초 상한을 뚫는다(QA P3-A)`,
+    has("maxRetries: TALK_CARDS_SDK_MAX_RETRIES") && TALK_CARDS_SDK_MAX_RETRIES === 0,
+  );
+  add("호출 J 배선: 모델 model: resolveTalkCardsModel()(빼면 OPENAI_MODEL — 추론형이면 temperature 거부·숨은 토큰이 600 한도를 먹는다)", has("model: resolveTalkCardsModel()"));
+  add(
+    "호출 J 배선: jsonSchema: TALK_SCREEN_CARDS_JSON_SCHEMA · zodSchema: talkScreenCardsSchema · system: TALK_CARDS_SYSTEM_PROMPT · user: buildTalkCardsUserMessage(input)",
+    has("jsonSchema: TALK_SCREEN_CARDS_JSON_SCHEMA") &&
+      has("zodSchema: talkScreenCardsSchema") &&
+      has("system: TALK_CARDS_SYSTEM_PROMPT") &&
+      has("user: [textPart(buildTalkCardsUserMessage(input))]"),
+  );
+  add(
+    "호출 J 배선: 옵션 TALK_CARDS_CALL_OPTIONS.call · .temperature · .maxOutputTokens",
+    has("call: TALK_CARDS_CALL_OPTIONS.call") &&
+      has("temperature: TALK_CARDS_CALL_OPTIONS.temperature") &&
+      has("maxOutputTokens: TALK_CARDS_CALL_OPTIONS.maxOutputTokens"),
+  );
+  const earlyAt = fn.indexOf('if (input.teacherLine.trim() === "") return { answers: [], words: [], picture: null };');
+  add("호출 J 배선: 빈 선생님 말은 callWithSchema 전에 빈 카드로 return(과금 0)", earlyAt >= 0 && callAt >= 0 && earlyAt < callAt);
+
+  // 공유 래퍼 — 두 인자가 요청 옵션까지 실제로 가는지(첫 요청·temperature 재시도 두 곳 모두 같은 옵션). 생략하면 옵션 없음(기존 동작).
+  // 옵션 **조립 규칙**(0을 싣는지·둘 다 없으면 undefined인지)은 순수 함수 buildCallRequestOptions를 행동으로 본다
+  // (runTalkCardsRequestOptionChecks — QA P3-E: 부분 문자열만 보던 옛 행은 `args.maxRetries ?` 참거짓 변이를 놓쳤다).
+  // 여기서는 래퍼가 **그 함수의 결과**를 두 요청에 그대로 넘기는지만 본다.
+  const wrapper = sliceFn("export async function callWithSchema<T>(");
+  const optsAt = wrapper.indexOf("const requestOptions =");
+  const opts = optsAt < 0 ? "" : wrapper.slice(optsAt, wrapper.indexOf(";", optsAt) + 1);
+  add(
+    "공유 래퍼: callWithSchema가 요청 옵션을 buildCallRequestOptions(args)로 만들고, 첫 요청·temperature 재시도가 같은 옵션을 넘긴다",
+    opts === "const requestOptions = buildCallRequestOptions(args);" &&
+      wrapper.split("responses.create(params, requestOptions)").length - 1 === 2 &&
+      wrapper.split("responses.create(").length - 1 === 2,
+    opts.slice(0, 160) || "requestOptions 조립 없음",
+  );
+}
+
+/** 호출 J 시간 상한 신호(talkCardsAbortSignal) — 요청 취소·시간 초과가 호출 전체를 끊는다. 타이머를 기다려야 해서 비동기다(수십 ms). */
+async function runTalkCardsSignalChecks(): Promise<CheckResult[]> {
+  const results: CheckResult[] = [];
+  const add = talkAdder(results, "자유대화 호출J");
+  const external = new AbortController();
+  const composed = talkCardsAbortSignal(external.signal, 60_000);
+  const before = composed.aborted;
+  external.abort();
+  add("요청 취소(req.signal) → 호출 신호가 곧바로 끊김", !before && composed.aborted);
+  const pre = new AbortController();
+  pre.abort();
+  add("이미 끊긴 요청이면 호출 신호도 처음부터 끊김", talkCardsAbortSignal(pre.signal, 60_000).aborted);
+  // 시간 상한 두 모양을 같은 60ms 안에서 함께 본다 — 외부 신호 없음, 그리고 **운영 모양**(라우트는 늘 req.signal을 넘긴다).
+  // 운영 모양 행이 없으면 `external ?? timeout`·`AbortSignal.any([external])`처럼 외부 신호가 있을 때 상한을 버리는 변이가
+  // 전 항목을 통과하고, 9초 늦는 상류가 6초가 아니라 18초(zod 재요청 2요청)에 끝난다(QA talk-cards-j P2-B, 변이 N1·N20).
+  const timed = talkCardsAbortSignal(undefined, 15);
+  const early = timed.aborted;
+  const live = new AbortController(); // 라우트 req.signal 모양 — 끊기지 않는 외부 신호
+  const both = talkCardsAbortSignal(live.signal, 15);
+  const bothEarly = both.aborted;
+  await new Promise((r) => setTimeout(r, 60));
+  add("시간 상한이 지나면 끊김(짧은 값으로 확인 — 운영은 TALK_CARDS_TIMEOUT_MS)", !early && timed.aborted);
+  add(
+    "외부 신호(req.signal)가 살아 있어도 시간 상한이 지나면 끊김(운영 모양 — 6초가 외부 신호에 가려지지 않게)",
+    !bothEarly && both.aborted && !live.signal.aborted,
+    `만들 때 ${bothEarly ? "끊김" : "살아 있음"} · 60ms 뒤 ${both.aborted ? "끊김" : "살아 있음"} · 외부 신호 ${live.signal.aborted ? "끊김" : "살아 있음"}`,
+  );
+  const def = talkCardsAbortSignal(undefined);
+  add("기본 상한 신호는 만들자마자 끊기지 않음", !def.aborted);
+  // 운영 상한은 기본 인자에 산다 — 호출부(generateTalkCards)는 ms를 넘기지 않는다. 위 행들은 ms를 명시하므로 기본값을 60초로 바꾼
+  // 변이(QA talk-cards-j P2-C, Q26·Q26b)가 전부 통과했다. AbortSignal.timeout을 잠깐 감싸 기본값이 곧 TALK_CARDS_TIMEOUT_MS인지 본다(기다림 없음).
+  const origTimeout = AbortSignal.timeout;
+  const seenMs: number[] = [];
+  AbortSignal.timeout = ((ms: number) => {
+    seenMs.push(ms);
+    return origTimeout.call(AbortSignal, ms);
+  }) as typeof AbortSignal.timeout;
+  try {
+    talkCardsAbortSignal(new AbortController().signal); // 라우트 모양 — 호출부처럼 ms 없이
+    talkCardsAbortSignal();
+  } finally {
+    AbortSignal.timeout = origTimeout;
+  }
+  add(
+    "호출 J 기본 시간 상한 = TALK_CARDS_TIMEOUT_MS(호출부는 ms를 넘기지 않는다 — 기본값이 곧 운영 상한)",
+    seenMs.length === 2 && seenMs.every((ms) => ms === TALK_CARDS_TIMEOUT_MS),
+    JSON.stringify(seenMs),
+  );
+  runTalkCardsRequestOptionChecks(add);
+  return results;
+}
+
+/**
+ * 공유 래퍼의 요청 옵션 조립(`buildCallRequestOptions`) — 호출 J가 넘기는 **SDK 재시도 0**이 실제 요청 옵션까지 가는지 행동으로 본다
+ * (QA talk-cards-j P3-E). 조건을 참거짓(`args.maxRetries ?`)으로 "단순화"하면 0이 빠져 SDK 기본 재시도가 돌아오고,
+ * 429 + `retry-after: 12`에 12초가 걸린다(P3-A 재발). 다른 과목 호출(두 인자 생략)은 옵션 없이(`undefined`) 나가야 기존 모양 그대로다.
+ */
+function runTalkCardsRequestOptionChecks(add: TalkAdd): void {
+  const sig = new AbortController().signal;
+  const show = (v: CallRequestOptionsView) => (v === undefined ? "undefined" : `{${Object.keys(v).sort().join(",")}}`);
+  const zero = buildCallRequestOptions({ maxRetries: 0 });
+  add(
+    "공유 래퍼 요청 옵션: {maxRetries: 0} → {maxRetries: 0}(0을 빠뜨리면 SDK 기본 재시도가 돌아와 6초 상한을 뚫는다)",
+    zero !== undefined && Object.keys(zero).join(",") === "maxRetries" && zero.maxRetries === 0,
+    show(zero),
+  );
+  const none = buildCallRequestOptions({});
+  add("공유 래퍼 요청 옵션: {} → undefined(다른 과목 호출은 옵션 없이 — SDK 기본 그대로)", none === undefined, show(none));
+  const undef = buildCallRequestOptions({ signal: undefined, maxRetries: undefined });
+  add("공유 래퍼 요청 옵션: 두 키가 undefined로 와도 → undefined", undef === undefined, show(undef));
+  const onlySig = buildCallRequestOptions({ signal: sig });
+  add(
+    "공유 래퍼 요청 옵션: {signal} → {signal}(같은 신호, maxRetries 키 없음)",
+    onlySig !== undefined && Object.keys(onlySig).join(",") === "signal" && onlySig.signal === sig,
+    show(onlySig),
+  );
+  const talkJ = buildCallRequestOptions({ signal: sig, maxRetries: TALK_CARDS_SDK_MAX_RETRIES });
+  add(
+    "공유 래퍼 요청 옵션: 호출 J 모양 {signal, maxRetries: TALK_CARDS_SDK_MAX_RETRIES} → 두 키 그대로",
+    talkJ !== undefined && Object.keys(talkJ).sort().join(",") === "maxRetries,signal" && talkJ.signal === sig && talkJ.maxRetries === TALK_CARDS_SDK_MAX_RETRIES,
+    show(talkJ),
+  );
+  const two = buildCallRequestOptions({ maxRetries: 2 });
+  add("공유 래퍼 요청 옵션: {maxRetries: 2} → {maxRetries: 2}", two !== undefined && Object.keys(two).join(",") === "maxRetries" && two.maxRetries === 2, show(two));
+  // 래퍼는 CallWithSchemaArgs 전체를 넘긴다 — 다른 인자(call·model·temperature…)가 SDK 요청 옵션으로 새지 않아야 한다.
+  const wide: Parameters<typeof buildCallRequestOptions>[0] & Record<string, unknown> = {
+    call: "talk_cards",
+    model: "gpt-x",
+    temperature: 0.3,
+    maxOutputTokens: 600,
+    maxRetries: 0,
+  };
+  const narrowed = buildCallRequestOptions(wide);
+  add("공유 래퍼 요청 옵션: 다른 인자는 옵션에 싣지 않음(signal·maxRetries만)", narrowed !== undefined && Object.keys(narrowed).join(",") === "maxRetries", show(narrowed));
+}
+type CallRequestOptionsView = ReturnType<typeof buildCallRequestOptions>;
+
 function runTalkChecks(): CheckResult[] {
   return [
     ...runTalkSpecChecks(),
@@ -4539,6 +6113,10 @@ function runTalkChecks(): CheckResult[] {
     ...runTalkHintsChecks(),
     ...runTalkSaveBodyChecks(),
     ...runTalkSceneChecks(),
+    ...runTalkCardsCallChecks(),
+    ...runTalkCardsRequestChecks(),
+    ...runTalkOriginChecks(),
+    ...runTalkToolPathStaticChecks(),
   ];
 }
 
@@ -4714,14 +6292,30 @@ const SPEC_SYNC_TARGETS: readonly SpecSyncTarget[] = [
     text: TALK_EXPLAIN_USER_TEMPLATE,
     mode: "block-exact",
   },
-  // §12-6 화면 카드 — 지시문 덧붙임·도움 요청·일러스트 안내·사진 프롬프트
+  // §12-7 차례 규칙 — 세션 지시문 덧붙임(§12-6 TALK_CARDS_INSTRUCTIONS를 대체, 2026-09-27)
   {
-    constName: "TALK_CARDS_INSTRUCTIONS",
+    constName: "TALK_TURN_RULES",
     source: "lib/ai/english/talk-prompts.ts",
-    specLabel: "§12-6 지시문 덧붙임(화면 카드)",
-    text: TALK_CARDS_INSTRUCTIONS,
+    specLabel: "§12-7 차례 규칙(세션 지시문 덧붙임)",
+    text: TALK_TURN_RULES,
     mode: "block-exact",
   },
+  // §12-7 호출 J — 화면 카드 생성 시스템 프롬프트·사용자 메시지 템플릿(치환 결과는 runTalkCardsCallChecks가 값으로 본다)
+  {
+    constName: "TALK_CARDS_SYSTEM_PROMPT",
+    source: "lib/ai/english/talk-prompts.ts",
+    specLabel: "§12-7 호출 J 시스템 프롬프트",
+    text: TALK_CARDS_SYSTEM_PROMPT,
+    mode: "block-exact",
+  },
+  {
+    constName: "TALK_CARDS_USER_TEMPLATE",
+    source: "lib/ai/english/talk-prompts.ts",
+    specLabel: "§12-7 호출 J 사용자 메시지 템플릿",
+    text: TALK_CARDS_USER_TEMPLATE,
+    mode: "block-exact",
+  },
+  // §12-6 화면 카드 — 도움 요청·일러스트 안내·사진 프롬프트
   {
     constName: "TALK_NUDGE_NOTE",
     source: "lib/ai/english/talk-prompts.ts",
@@ -4791,6 +6385,9 @@ async function main(): Promise<void> {
   allResults.push(...runVocabbookChecks());
   // 자유대화(§12) — 스펙 대조(스키마·옵션·세션 표)·지시문 조립·세션 설정·리듀서·문장 나누기·호출 I zod·낭독 대본·스트릭 입력 (실호출 0회)
   allResults.push(...runTalkChecks());
+  allResults.push(...(await runTalkCardsSignalChecks()));
+  // §12-7 컨트롤러 동작 — 합성 이벤트 전송 + 함수 안에서만 갈아 끼운 fetch 대역(네트워크 0)
+  allResults.push(...(await runTalkControllerChecks()));
   // 프롬프트 원문이 스펙 문서와 같은지 — 파일을 읽어서 대조한다 (실호출 0회)
   allResults.push(...runSpecSyncChecks());
 
@@ -4799,6 +6396,7 @@ async function main(): Promise<void> {
   if (process.env.EVAL_OFFLINE_ONLY === "1") {
     printTable(allResults);
     printSpecSyncDetails(specSyncOutcomes);
+    for (const note of talkPendingNotes) console.log(`NOTE — ${note}`);
     const offlineFailed = allResults.filter((r) => !r.pass);
     console.log("EVAL_OFFLINE_ONLY=1 — 실호출 0회. 모델 출력 품질은 검증하지 않았습니다.");
     if (offlineFailed.length > 0) {
@@ -5067,10 +6665,10 @@ async function main(): Promise<void> {
     const talkResults: CheckResult[] = [];
     const book = "호출 I 실호출";
     const probeTurns: TalkTurn[] = [
-      { speaker: "teacher", text: "Hello! I am Sunny. Do you like animals?", interrupted: false },
-      { speaker: "child", text: "Yes. I like dog.", interrupted: false },
-      { speaker: "teacher", text: "Oh, you like dogs! Me too! What color is your favorite dog?", interrupted: false },
-      { speaker: "child", text: "Brown. 갈색 강아지.", interrupted: false },
+      { speaker: "teacher", text: "Hello! I am Sunny. Do you like animals?", interrupted: false, origin: "greeting" },
+      { speaker: "child", text: "Yes. I like dog.", interrupted: false, origin: null },
+      { speaker: "teacher", text: "Oh, you like dogs! Me too! What color is your favorite dog?", interrupted: false, origin: "reply" },
+      { speaker: "child", text: "Brown. 갈색 강아지.", interrupted: false, origin: null },
     ];
     const probes: { turnIndex: number; sentenceIndex: number }[] = [
       { turnIndex: 2, sentenceIndex: 2 }, // 선생님: What color is your favorite dog?

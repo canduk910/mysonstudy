@@ -13,9 +13,9 @@ description: "qa-inspector 에이전트가 검증 작업을 수행할 때 로드
 
 | subject | references | 핵심 검증 축 |
 |---|---|---|
-| `english` (북카드·단어장·챕터 리더·자유대화) | `references/english.md` | 4중 정의 매트릭스, 카드 구조 개수·비율, grounding 가드, 단어장 병합·보강, 자유대화(§8 — 리듀서 순서·도구 호출 검사·도움 상태 기계 참조 모델·system 메시지 방식·키 노출·가짜 전송 무력화·뒤로가기 끝내기·저장 멱등·iPhone 목록) |
+| `english` (북카드·단어장·챕터 리더·자유대화) | `references/english.md` | 4중 정의 매트릭스, 카드 구조 개수·비율, grounding 가드, 단어장 병합·보강, 자유대화(§8 — 리듀서 순서·화면 카드 호출 J 후처리·도착 판정·앱 `response.create` 경로(은우 차례 가드·"선생님 두 명")·도움 상태 기계 참조 모델(리듀서·컨트롤러 수준, 셈 = 보낸 요청)·system 메시지 방식·키 노출·가짜 전송 무력화·뒤로가기 끝내기·저장 멱등·넓은 가로 배치·iPhone 목록) |
 | `math` (수학코치) | `references/math.md` | 답 정확성(심판 2겹), 장면 검산, iframe 격리 |
-| `japanese` (아빠의 일본어) | `references/japanese.md` | 후리가나 토큰 무결성, 제외·포함·레벨 후처리, 시험 모드별 숙련도 분리, 대화 병합 |
+| `japanese` (아빠의 일본어) | `references/japanese.md` | 후리가나 토큰 무결성, 제외·포함·레벨 후처리(같은 단어 판정 배터리·한계 행), 한국어 꼭 넣을 단어(`fromKo` zod·줄 판정 경계·매핑 보고), 시험 모드별 숙련도 분리, 대화 병합 |
 | `toeic` (아빠의 영어 · 토익스피킹) | `references/toeic.md` | 환각 차단 zod(exampleSpan·index·chunks·said), 모드별 숙련도·보기 거르기, 원자적 저장(재완료 409·동시 채점·빈 파트·사진), 응시 화면 오디오 세션 순서, 비용 가드(버튼·501·전사 prompt 없음), 공개 저장소 오염 스캔, iPhone 실기기 목록 |
 | `common` (과목 공통 기능·아빠의 운동) | `references/common.md` | 발음 폴백·캐시 지문, 스트릭 KST·사람/트랙 분리, 해설 낭독 대본·큐, 운동 엔진·원자적 저장·`rev` |
 

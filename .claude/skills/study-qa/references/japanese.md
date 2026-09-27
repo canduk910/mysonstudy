@@ -1,7 +1,7 @@
 # 일본어(아빠의 일본어) 정합성 매트릭스·체크리스트
 
 > `study-qa` 스킬에서 subject가 `japanese`일 때 읽는다. 영어는 `english.md`, 수학은 `math.md`를 본다. 클라우드 발음·재생 큐·스트릭 같은 과목 공통 기능은 `common.md`가 맡는다.
-> 원문 스펙은 `docs/harness/japanese.md`다. 이 문서의 값은 2026-09-24에 코드를 열어 확인한 것이다. 검증할 때는 다시 열어 대조하라.
+> 원문 스펙은 `docs/harness/japanese.md`다. 이 문서의 값은 2026-09-24에 코드를 열어 확인한 것이다(한국어 꼭 넣을 단어·같은 단어 판정 관련은 2026-09-27). 검증할 때는 다시 열어 대조하라.
 
 ## 목차
 
@@ -45,11 +45,13 @@
 | definitionTokens 짝 | "definitionJa가 null이면 null" | `["array","null"]` | 정의 있으면 토큰 필수·무결성, 정의 null이면 토큰 null | 무결성·고아·누락 거부 |
 | 이모지 1개 | `[이모지]` | `["string","null"]` | 자소 1 + 그림문자, `JA_IMAGE_EMOJI_MAX` 32 | 3 통과, 4 거부 |
 | 레벨 | `[레벨]` 서술 | **필드 없음** | **필드 없음** | 레벨 태깅(코드가 붙임) |
+| `fromKo`(2026-09-27) — 한국어 꼭 넣을 단어에서 바꾼 항목만 받은 한국어 그대로, 아니면 null | `[꼭 넣을 단어]` 한국어 줄 규칙·§2-1 14번 | **첫 필드**·`["string","null"]`·required | `makeJaVocabGenerationSchema({ includeKo })`(입력을 아는 zod): null 또는 받은 `includeKo` 중 하나와 정확히 같음(공백은 `normalizeKoInclude`로 흡수, `""`는 null)·같은 `fromKo` 두 항목 거부·`includeKo` 없는 호출이면 전부 null·`fromKo` 항목의 word에 일본 문자 필수 | "한국어 include zod" 10 — 입력에 없음·중복·include 없는데 fromKo·word 한글·라틴 word(passport) + fromKo |
+| word 한글 금지(2026-09-27) | "word에는 일본어 표기만" | — | **모든 항목** | 위 묶음 |
 
 zod 밖에서 정의되는 값도 있다.
 - 호출 옵션: temperature 0.4, max 8,000(`JA_VOCAB_CALL_OPTIONS`). 스펙 §1-1 표의 temperature와 대조한다.
 - 제외 상한: `JA_EXCLUDE_PROMPT_MAX` 200.
-- include 상한: `JA_INCLUDE_MAX` = `JA_VOCAB_DEFAULT_COUNT`, `JA_INCLUDE_WORD_MAX` 20.
+- include 상한: `JA_INCLUDE_MAX` = `JA_VOCAB_DEFAULT_COUNT`(일본어·한국어 줄 **합산**), `JA_INCLUDE_WORD_MAX` 20(정의처는 `lib/japanese-include.ts`, `schemas.ts`가 재수출 — 정규화 뒤 길이로 잰다).
 
 스펙과 코드가 어긋난 칸이 두 개 있다. 어느 쪽을 고칠지는 판정하지 말고 양쪽 위치만 적어 올린다.
 - **일일정의 하한(§2-1 13번 ↔ `JA_DEFINITION_JA_MIN`).** 스펙은 "짧을수록 좋다 — 하한을 두지 않는다"고 적었다. 코드는 `JA_DEFINITION_JA_MIN` 4이고, `scripts/eval-japanese.ts`는 `みず`(2자)를 "3자 이하(너무 짧음)" 거부 케이스로 잠갔다. 하한을 올리는 변경은 P0 재발이라 어느 쪽으로 정리하든 막아야 한다.
@@ -122,15 +124,20 @@ eval의 "프롬프트 ↔ 스펙" 영역은 10건이다. 문자열 6건은 A 시
 
 **조인키는 kana다.** 영어의 `toLowerCase()` 조인키가 일본어 코드에 들어왔는지 grep하라. kana 비교는 세 곳에 있고 정규화가 서로 다르다.
 
-- `applyVocabPostprocess`(`lib/ai/japanese/vocab.ts`): `normalizeJaWord`(NFKC + 공백 제거)로 제외 재적용, 중복 접기, 포함 이행을 판정한다.
+- `applyVocabPostprocess`(`lib/ai/japanese/vocab.ts`): 제외 재적용·중복 접기·한국어 매핑 보고는 **같은 단어 판정 `isSameJaWord`**(2026-09-27 — 표기가 같거나, 읽기가 같으면서 한쪽이 가나로만 됐거나 한자 뼈대로 보아 표기 변형일 때만 같은 단어. `normalizeJaWord` — NFKC + 공백 제거 — 위에서 본다)로, 포함 이행과 `include` 예외는 **표기 일치**(없으면 kana 일치)로 판정한다.
 - `appendJaVocabEntry`(`lib/store.ts`·`lib/store-firestore.ts`): `kana.trim()` 완전 일치로 collected 담기 중복을 판정한다.
 - generate 라우트의 exclude 조립: `${word} ${kana}` 원문 키로 중복을 뺀다.
 
 kana는 zod가 히라가나 전용으로 막으므로 지금은 차이가 드러날 입력이 좁다. 그래도 정규화가 세 벌이라는 것 자체가 "정의처가 하나인가" 점검 대상이다(P2 후보).
 
-**포함 이행 판정의 한계(스펙 ↔ 코드 불일치).** §2-4 2번은 "모델이 활용형을 사전형으로 바꿔 냈으면 그것도 이행으로 본다"고 적었다. 코드는 정규화한 word나 kana의 완전 일치만 본다. 반례는 이렇다. include `食べた`가 결과 `食べる`/`たべる`로 오면 `missingIncludes`에 남는다. `食べる`가 제외 목록에 있으면 include 예외도 못 받아 버려진다. 확인하고 ai-engineer 담당으로 올린다.
+**같은 단어 판정 배터리**(2026-09-27 — `qa_report_japanese_korean-include_2~4.md`, eval "같은 단어 판정" 25항목이 잠근다). 같은 단어 판정을 건드린 변경이면 아래 배터리를 **판정·누적 제외·같은 배치 접기** 세 경로에서 다시 돈다. 선례 스크립트는 scratchpad `qa3ki/battery.mts`·`qa4ki/*`.
+- **H**(동음이의어 30쌍 — 暑い/熱い·箸/橋·雨/飴 …): 0/30 접힘(다른 단어). **D**(異字同訓 10쌍 — 見る/観る …): 0 접힘. **X**(부분열 동음이의어 탐침 9쌍 — 風/風邪·ご本/五本·ご用/誤用·ご入力/誤入力·見方/味方 …): 0 접힘. **NH**(QA 3회차가 새로 모은 동음이의어·異字同訓 59쌍): 0 접힘. **V**(표기 변형 20쌍 — 子ども/子供·申し込む/申込む·受付/受け付け …): 18/20 접힘(綺麗/奇麗·分かる/解る 2쌍은 한계). **NV**(QA 3회차의 새 표기 변형 55쌍): 접혀야 할 47쌍 47/47, 한계 8쌍 0/8.
+- **"한계" 3행**(p3b): 오쿠리가나 ↔ 덧붙은 한자 동음이의어 4쌍(長い/長居·赤み/赤身·白み/白身·黄み/黄身)은 **지금 동작대로 같은 단어**로 보고, 같은 모양의 참 변형 대조군 8쌍(甘み/甘味·苦み/苦味·寿し/寿司·住まい/住居 …)도 같은 단어, 한국어 경로(가진 赤み + 살코기→赤身 → `koExcluded`) 결과를 그대로 잠근다. 판정을 "고치는" 변경이 한계 행과 대조군 행을 **함께** 깨면 참 변형을 잃은 것이다 — 4개 표기만 막는 목록 같은 변이는 한계 행만 깨야 한다(QA 4 변이 M3).
+- 독립 참조 모델(구현을 import하지 않고 스펙 §2-4 문장만으로 짠 판정)과 무작위 20,000회 차분, HEAD 후처리와의 차분(읽기 잃음 0·설명 안 되는 차이 0)이 선례다.
 
-**제외 재필터 범위(스펙 ↔ 코드 불일치).** §2-2는 "상한을 넘겨 잘린 경우에도 저장 단계에서 코드가 다시 걸러낸다"고 적었다. generate 라우트는 최근 200개로 자른 **같은** `exclude`를 프롬프트와 `applyVocabPostprocess` 양쪽에 넘긴다. 반례로 확인하라. 201번째로 오래된 단어는 프롬프트에도 재필터에도 없다.
+**포함 이행 판정의 한계(스펙에 명시됨).** §2-4 2번은 "모델이 활용형을 사전형으로 바꿔 냈으면 그것도 이행으로 본다"고 적었고, 코드는 정규화한 word나 kana의 완전 일치만 본다. 반례는 이렇다. include `食べた`가 결과 `食べる`/`たべる`로 오면 `missingIncludes`에 남는다. `食べる`가 제외 목록에 있으면 include 예외도 못 받아 버려진다. 2026-09-27부터 스펙 §2-4 "알려진 한계"가 이것(포함 이행·include 예외는 표기 일치 — リンゴ → りんご, 申し込む → 申込む, 가나로 넣은 やくそく → 約束)을 사실로 적는다 — 새 결함으로 올리지 말고, 동작이 이 문장과 어긋날 때만 올린다.
+
+**제외 재필터 범위(스펙에 명시됨).** §2-2는 "상한을 넘겨 잘린 경우에도 저장 단계에서 코드가 다시 걸러낸다"고 적었다. generate 라우트는 최근 200개로 자른 **같은** `exclude`를 프롬프트와 `applyVocabPostprocess` 양쪽에 넘긴다. 반례로 확인하라. 201번째로 오래된 단어는 프롬프트에도 재필터에도 없다. 스펙 §7-4가 이 틈을 사실로 적는다(상한 밖의 오래된 단어로 바뀐 한국어 줄도 걸러지지 않는다).
 
 ## 3. 모드별 숙련도 분리
 
@@ -182,7 +189,12 @@ extract 라우트는 여기에 두 가지를 더한다. `Promise.allSettled`로 
 
 **단어장**
 - [ ] **저장 라우트가 `JaVocabEntry`의 모든 필드를 선언하는가.** zod 4의 `z.object`는 모르는 키를 조용히 버린다. 2026-09-24에 확인한 사실이 있다. `POST /api/japanese/vocab`의 `jaEntrySchema`에 `imageEmoji`·`definitionJa`·`definitionTokens`가 없다. 그래서 생성 응답에 있던 세 값이 저장본에서 null이 된다(`normalizeJaVocabEntry` 폴백). 확인 방법은 7절의 스크래치 cwd 방식이다. 결과는 두 가지다. 새로 저장한 단어장에서 `def-to-word`가 출제되지 않고, 이모지가 첫 글자 배지로 떨어진다. `as JaVocabEntry[]` 캐스팅 때문에 tsc가 못 잡는다. **스키마에 필드가 늘 때마다 이 라우트를 같이 본다.** 회귀 테스트는 이렇다. 세 필드가 채워진 entry를 저장하고, `getJaVocabBook`으로 읽어 값이 남았는지 본다.
-- [ ] generate 응답의 `perLevel[]`(`failed`·`missingIncludes`·`filteredCount`)가 검토 화면(`components/ja-vocab-new-flow.tsx`)에 사실대로 표시되는가. 지어낸 성공을 보여주지 않아야 한다(§8).
+- [ ] generate 응답의 `perLevel[]`(`failed`·`missingIncludes`·`filteredCount`·`koConverted`·`koExcluded`)가 검토 화면(`components/ja-vocab-new-flow.tsx`)에 사실대로 표시되는가. 지어낸 성공을 보여주지 않아야 한다(§8). 200 응답의 `perLevel[]` 키 집합은 늘 {level, filteredCount, missingIncludes, koConverted, koExcluded, failed}이고, `entries`에는 `fromKo`가 없다(저장본에도 없어야 한다 — 저장 뒤 `data/db.json`에서 `fromKo` 0건).
+- [ ] **한국어 꼭 넣을 단어 경계**(2026-09-27 — `qa_report_japanese_korean-include_1~4.md`가 선례):
+  - 줄 판정은 `classifyJaIncludeLine`(`lib/japanese-include.ts`, import 0 — 화면 칩과 라우트 zod가 같은 함수를 값으로 쓴다) 하나다. 라우트 400의 통과 조건은 `classifyJaIncludeLine(s) !== null` 하나이고, `issues[].message`와 화면 칩 표식은 `jaIncludeRejectReason`이 고른다(빈 단어·"한 줄에 하나씩"·20자·섞임). 불변식 **reason === null ⇔ classify !== null**을 고정 줄 + 무작위 줄(선례 200,000줄)로 본다. 칩 ↔ 라우트 400 문구가 같은 이유를 가리키는지 줄마다 대조한다. 400·501에서는 상류(스텁) 호출이 0이어야 한다.
+  - 한국어 줄은 칩 "한국어 → 일본어로"가 붙고 "이미 있어요" 칩은 없다. 검토 화면: `koConverted` → "여권 → パスポート", `koExcluded` → "이미 있어서 뺐어요: 여권 → パスポート", 모델이 바꾸지 못한 한국어 줄 → "이 단어는 못 넣었어요"(한국어 그대로). `filteredCount`에 `koExcluded`가 이미 들어 있으니 "걸러진 N개"와 **두 번 세지 않는지** 본다.
+  - **첫 레벨 실패**(꼭 넣을 단어는 첫 레벨에만 실린다): 실패 레벨 `perLevel`이 `{failed:true, filteredCount:0, missingIncludes:[배분됐던 꼭 넣을 단어 — 정규화값, 일본어 다음 한국어], koConverted:[], koExcluded:[]}`이고, 화면은 실패 경고 안에 "꼭 넣을 단어 N개는 N3 레벨이 실패해 넣지 못했어요 …"로 알리며 "이번엔 못 넣은 것"에는 성공 레벨 것만 모아 두 번 적지 않는다. 되돌아가면 입력이 그대로다. 레벨 하나만 고르고 실패하면 500(재요청 1회 = 상류 2).
+  - 생성 성공 → 검토 화면은 **맨 위부터**(scrollY 0, 첫 프레임부터 — rAF로 기록, 헤딩 포커스 `preventScroll`) 보여 요약 상자가 스트릭 헤더 뒤에 숨지 않는다. 저장 실패로 돌아올 때는 스크롤하지 않는다(오류 문구가 저장 버튼 위에 있다). 폰 세 크기(390×844 두 엔진·375×667)와 iPad 가로에서 본다.
 - [ ] 레벨 간 중복. generate 라우트는 레벨별 후처리 결과를 이어 붙이기만 한다. N2와 N3가 같은 단어를 내면 검토 화면과 저장본에 둘 다 들어간다. 의도인지 확인한다.
 - [ ] 키 검사(501 `no_api_key`)가 store 조회·AI 호출보다 앞에 있는가(generate·extract·coach·enrich).
 - [ ] 화면 상수(`JLPT_LEVELS`·`JA_VOCAB_TOPIC_PRESETS`·`JA_VOCAB_DEFAULT_COUNT`·`JA_INCLUDE_MAX`)는 서버 페이지(`app/japanese/vocab/new/page.tsx`)가 props로 내려주는가. 화면이 자기 목록을 따로 가지면 결함이다.
@@ -211,7 +223,8 @@ extract 라우트는 여기에 두 가지를 더한다. `Promise.allSettled`로 
 - [ ] 한자 시험 저장에 `scope: "kanji"`가 서버에서 붙는가. `jaQuizzes`에 섞이지 않아야 한다.
 
 **공통**
-- [ ] 클라 번들 경계. `"use client"`인 `components/ja-*.tsx`가 `@/lib/ai`를 값으로 import하지 않는가. 타입은 contract의 `export type` 통로로만 받는다. `.next/static`에 프롬프트 원문이 0건이어야 한다.
+- [ ] 클라 번들 경계. `"use client"`인 `components/ja-*.tsx`가 `@/lib/ai`를 값으로 import하지 않는가. 타입은 contract의 `export type` 통로로만 받는다. `.next/static`에 프롬프트 원문이 0건이어야 한다. 예외로 값 import가 허용되는 것은 import 0인 순수 모듈 `lib/japanese-include.ts`뿐이다(이 파일에 zod·openai·`lib/ai` import가 생기면 결함).
+- [ ] 화면 e2e는 **`http://localhost:<포트>`**로 연다 — Next 16 dev는 `127.0.0.1` 출처의 `/_next` 리소스를 403으로 막아 hydration이 안 된다(버튼이 먹지 않는다). 스텁이 필요하면 `OPENAI_API_KEY=sk-stub OPENAI_BASE_URL=http://127.0.0.1:<스텁 포트>/v1`을 dev 서버에 함께 준다(스텁 자체는 127.0.0.1 루프백).
 - [ ] 후리가나 렌더는 `components/ja-ruby.tsx` 한 곳에서만 하는가. TTS는 reading이 아니라 surface 원문을 읽는가.
 
 ## 6. 재사용 경계(§10) — 영어를 고치지 않았는가
@@ -242,7 +255,7 @@ client.ts에는 일본어 호출 함수만 **추가**됐다: `generateJapaneseVo
 
 ## 7. 검증 시 지킬 것
 
-- **이 과목은 eval에도 실호출이 없다.** `EVAL_JAPANESE=1`도 안내만 찍는다. 오프라인 eval은 2026-09-24 기준 112항목이다. 항목 수가 줄었으면 가드가 지워진 것인지부터 본다.
+- **이 과목은 eval에도 실호출이 없다.** `EVAL_JAPANESE=1`도 안내만 찍는다. 오프라인 eval은 2026-09-27 기준 **220항목**이다(2026-09-24 112 — 한국어 include 판별 40·zod 10·후처리 19, 같은 단어 판정 25가 더해졌다). 항목 수가 줄었으면 가드가 지워진 것인지부터 본다.
 - 모든 명령에 SKILL.md의 접두어(키·GCP 신호 비우기, `STORE_BACKEND=file`)를 붙인다.
 - **라우트 왕복을 저장소 데이터 없이 확인하는 법.** 파일 스토어는 `process.cwd()/data/db.json`에 쓴다(`lib/store.ts`의 `DB_DIR`). 절차는 이렇다.
   1. 스크래치 디렉터리를 cwd로 둔다.
@@ -255,7 +268,7 @@ client.ts에는 일본어 호출 함수만 **추가**됐다: `generateJapaneseVo
 
 ## 8. 리포트 형식
 
-`_workspace/qa_report_japanese_{tag}_{n}.md`. SKILL.md의 공통 형식을 따른다. 기존 회차로 `j1`·`j2`·`jk`·`final`이 있다. 일본어 회차에는 아래 절을 더한다.
+`_workspace/qa_report_japanese_{tag}_{n}.md`. SKILL.md의 공통 형식을 따른다. 기존 회차로 `j1`·`j2`·`jk`·`final`·`ruby-wrap`·`korean-include`(1~4 — 한국어 꼭 넣을 단어·같은 단어 판정)가 있다. 일본어 회차에는 아래 절을 더한다.
 
 ```
 ## 호출 A~D 매트릭스 — 위치별 실제 값(프롬프트 / zod 상수 / eval 항목), 여유 폭 칸 표시

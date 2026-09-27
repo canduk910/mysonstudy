@@ -19,6 +19,21 @@
 
 import { z } from "zod";
 import type { StrictJsonSchema } from "../english/schemas";
+import { normalizeKoInclude } from "../../japanese-include";
+
+// 꼭 넣을 단어 한 줄 판별(일본어 표기/한국어 뜻)·길이 상한의 단일 정의처는 클라이언트 안전 모듈
+// `lib/japanese-include.ts`다(만들기 화면도 같은 판정을 써야 해서 zod 없는 파일에 둔다). 여기서는 재수출만 한다.
+export {
+  JA_INCLUDE_WORD_MAX,
+  JA_INCLUDE_JA_PATTERN,
+  JA_INCLUDE_KO_PATTERN,
+  classifyJaIncludeLine,
+  isJapaneseIncludeLine,
+  isKoreanIncludeLine,
+  normalizeJaIncludeLine,
+  normalizeKoInclude,
+  type JaIncludeLang,
+} from "../../japanese-include";
 
 // ---------------------------------------------------------------------------
 // 후리가나 토큰 (§5) — 단일 정의처. ja-ruby.tsx(클라이언트)는 japanese-ruby-contract.ts를 거쳐 타입만 본다.
@@ -62,10 +77,9 @@ export type JaVocabTopicPreset = (typeof JA_VOCAB_TOPIC_PRESETS)[number];
 export const JA_VOCAB_DEFAULT_COUNT = 10;
 /** 한 호출(레벨 1개)의 entries 상한 (§2-4 "entries 1~10"). */
 export const JA_ENTRIES_MAX = 10;
-/** 꼭 넣을 단어(include) 개수 상한 — 전체 개수를 넘을 수 없다(§2-2 "최대 count개"). */
+/** 꼭 넣을 단어(include) 개수 상한 — 일본어 줄·한국어 줄을 **합쳐** 전체 개수를 넘을 수 없다(§2-2 "최대 count개"). */
 export const JA_INCLUDE_MAX = JA_VOCAB_DEFAULT_COUNT;
-/** include 한 단어의 길이 상한 (§2-2 "1~20자"). 라우트가 먼저 검증하지만 상수는 여기 단일 정의. */
-export const JA_INCLUDE_WORD_MAX = 20;
+// include 한 줄의 길이 상한 JA_INCLUDE_WORD_MAX(§2-2 "1~20자")는 lib/japanese-include.ts가 단일 정의 — 위에서 재수출한다.
 /** 프롬프트로 넘기는 exclude 개수 상한 — 넘으면 최근 것 우선으로 자른다(§2-2). 진짜 방어선은 저장 재필터(§2-4). */
 export const JA_EXCLUDE_PROMPT_MAX = 200;
 
@@ -106,6 +120,12 @@ export interface JaExample {
  * 레벨은 모델이 스스로 적게 하지 않고 코드가 붙인다(§2-4 4번) — 그래서 이 타입엔 level이 없다.
  */
 export interface JaVocabGenEntry {
+  /**
+   * 한국어로 받은 꼭 넣을 단어에서 바꾼 항목이면 받은 한국어(정규화값, 예: "여권"), 아니면 null (§2-1 [꼭 넣을 단어]·2026-09-27).
+   * zod(makeJaVocabGenerationSchema)가 "받은 한국어 중 하나·중복 없음"을 강제하고, 후처리가 이 값으로
+   * 한국어 → 일본어 매핑(koConverted)과 "이미 있어서 뺐어요"(koExcluded)를 보고한다. 저장 레코드(JaVocabEntry)에는 싣지 않는다.
+   */
+  fromKo: string | null;
   word: string;
   kana: string;
   pos: JaPos[];
@@ -145,6 +165,19 @@ export interface JaVocabEntry {
   level: JlptLevel | null;
 }
 
+/**
+ * 한국어 꼭 넣을 단어 한 줄이 무엇으로 바뀌었는지 (§2-4·§8 — 검토 화면의 "여권 → パスポート").
+ * 후처리(applyVocabPostprocess)가 koConverted(들어감)·koExcluded(이미 있어서 뺌)로 나눠 보고한다.
+ */
+export interface JaKoIncludeMapping {
+  /** 받은 한국어 줄(정규화값) */
+  ko: string;
+  /** 바뀐 일본어 표기 — koConverted면 결과에 남은 항목의 표기, koExcluded면 모델이 낸(그리고 뺀) 표기 */
+  word: string;
+  /** 그 표기의 읽기(히라가나) */
+  kana: string;
+}
+
 // ---------------------------------------------------------------------------
 // 호출 A — ja_vocab_generation JSON Schema (스펙 §2-3 원문)
 // 전 필드 required + additionalProperties:false. 개수 제약은 넣지 않는다(§1 공통 규칙).
@@ -164,8 +197,9 @@ export const JA_VOCAB_GENERATION_JSON_SCHEMA: StrictJsonSchema = {
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["word", "kana", "pos", "meaningsKo", "example", "wordTokens", "imageEmoji", "definitionJa", "definitionTokens"],
+          required: ["fromKo", "word", "kana", "pos", "meaningsKo", "example", "wordTokens", "imageEmoji", "definitionJa", "definitionTokens"],
           properties: {
+            fromKo: { type: ["string", "null"], description: "한국어로 받은 꼭 넣을 단어에서 바꾼 항목이면 받은 한국어 그대로. 아니면 null" },
             word: { type: "string", description: "표기(한자가 있으면 한자)" },
             kana: { type: "string", description: "전체 읽기 — 히라가나만" },
             imageEmoji: { type: ["string", "null"], description: "그 단어를 나타내는 이모지 1개. 추상어·문법어면 null" },
@@ -314,6 +348,16 @@ const jaExampleSchema = z.object({
 
 const jaVocabGenEntrySchema = z
   .object({
+    // 한국어 꼭 넣을 단어에서 온 항목 표시. 공백 차이는 흡수하고(정규화), 빈 문자열은 null로 본다 —
+    // "받은 한국어 중 하나인가·중복 없나"는 입력을 아는 makeJaVocabGenerationSchema가 판정한다.
+    fromKo: z
+      .string()
+      .nullable()
+      .transform((v): string | null => {
+        if (v === null) return null;
+        const n = normalizeKoInclude(v);
+        return n === "" ? null : n;
+      }),
     word: z.string().trim().min(1).max(JA_WORD_MAX),
     kana: z.string().trim().min(1).max(JA_KANA_MAX),
     pos: z.array(z.enum(JA_POS)).min(1).max(JA_POS_MAX),
@@ -325,6 +369,10 @@ const jaVocabGenEntrySchema = z
     definitionTokens: z.array(jaTokenSchema).nullable(),
   })
   .superRefine((e, ctx) => {
+    // 표제어(word)에 한글이 섞이면 거부 — 한국어 꼭 넣을 단어를 일본어로 바꾸지 않고 그대로 되받아 적는 실패를 막는다(2026-09-27)
+    if (hasHangul(e.word)) {
+      ctx.addIssue({ code: "custom", path: ["word"], message: "word(일본어 표기)에 한글을 쓸 수 없습니다 — 한국어로 받은 것은 일본어 단어로 바꿔 넣으세요" });
+    }
     // kana는 히라가나만
     if (!isHiraganaOnly(e.kana)) {
       ctx.addIssue({ code: "custom", path: ["kana"], message: "kana는 히라가나만 (가타카나·한자·로마자 거부)" });
@@ -375,25 +423,72 @@ const jaVocabGenEntrySchema = z
     }
   });
 
+/** makeJaVocabGenerationSchema 입력 — 이 호출에 실은 한국어 꼭 넣을 단어(배분 계획의 includeKo). */
+export interface JaVocabGenerationZodInput {
+  /** 한국어 뜻으로 받은 꼭 넣을 단어. 비교 전에 normalizeKoInclude로 정규화한다. 없으면 빈 배열 */
+  includeKo: readonly string[];
+}
+
 /**
- * 호출 A 결과의 zod 스키마 (§2-4). JSON Schema와 필드·타입이 1:1이고, 그 위에 개수·중복·무결성 검증을 얹는다.
+ * 호출 A 결과의 zod 스키마 팩토리 (§2-4). JSON Schema와 필드·타입이 1:1이고, 그 위에 개수·중복·무결성 검증을 얹는다.
  * 출력은 레벨이 없는 GenEntry 배열이다(레벨 태깅은 후처리 vocab.ts가 코드로 붙인다).
+ *
+ * 입력을 알아야 하는 규칙(fromKo)이 있어 팩토리다(영어 makeLearningCardSchema·토익 buildPointsZod 관용구):
+ * - fromKo는 null이거나 **받은 한국어 꼭 넣을 단어 중 하나**(정규화 후 일치)여야 한다 — 받지 않은 한국어를 지어내면 거부.
+ * - 같은 fromKo를 두 항목이 쓰면 거부 — 한국어 한 줄은 일본어 단어 하나로만 바꾼다.
+ * - 한국어 꼭 넣을 단어를 받지 않았으면 fromKo는 전부 null이어야 한다.
+ * - fromKo가 있는 항목의 word에는 일본 문자가 있어야 한다(한국어를 그대로 되받아 적는 실패 거부 — word 한글 금지와 두 겹).
+ * 생산 시점(callWithSchema)에 걸어 1회 재요청이 그 자리에서 교정하게 한다.
  */
-export const jaVocabGenerationSchema = z
-  .object({
-    entries: z.array(jaVocabGenEntrySchema).min(1).max(JA_ENTRIES_MAX),
-  })
-  .superRefine((data, ctx) => {
-    // 표제어(word) 중복 거부 — 같은 배치에서 같은 표기를 두 번 내면 거부
-    const seen = new Set<string>();
-    data.entries.forEach((e, i) => {
-      const key = e.word.trim();
-      if (seen.has(key)) {
-        ctx.addIssue({ code: "custom", path: ["entries", i, "word"], message: `표제어 중복 금지: ${e.word}` });
-      }
-      seen.add(key);
+export function makeJaVocabGenerationSchema(input: JaVocabGenerationZodInput) {
+  const koSet = new Set(input.includeKo.map(normalizeKoInclude).filter((k) => k !== ""));
+  return z
+    .object({
+      entries: z.array(jaVocabGenEntrySchema).min(1).max(JA_ENTRIES_MAX),
+    })
+    .superRefine((data, ctx) => {
+      // 표제어(word) 중복 거부 — 같은 배치에서 같은 표기를 두 번 내면 거부
+      const seen = new Set<string>();
+      data.entries.forEach((e, i) => {
+        const key = e.word.trim();
+        if (seen.has(key)) {
+          ctx.addIssue({ code: "custom", path: ["entries", i, "word"], message: `표제어 중복 금지: ${e.word}` });
+        }
+        seen.add(key);
+      });
+
+      // fromKo — 받은 한국어 꼭 넣을 단어와 대조(2026-09-27)
+      const seenKo = new Set<string>();
+      data.entries.forEach((e, i) => {
+        if (e.fromKo === null) return;
+        if (koSet.size === 0) {
+          ctx.addIssue({ code: "custom", path: ["entries", i, "fromKo"], message: "한국어 꼭 넣을 단어를 받지 않았으면 fromKo는 null이어야 합니다" });
+          return;
+        }
+        if (!koSet.has(e.fromKo)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["entries", i, "fromKo"],
+            message: `fromKo는 받은 한국어 꼭 넣을 단어 중 하나를 글자 그대로 적어야 합니다(받은 것: ${[...koSet].join(", ")}): ${e.fromKo}`,
+          });
+          return;
+        }
+        if (seenKo.has(e.fromKo)) {
+          ctx.addIssue({ code: "custom", path: ["entries", i, "fromKo"], message: `fromKo 중복 금지 — 한국어 한 줄은 일본어 단어 하나로만 바꿉니다: ${e.fromKo}` });
+        }
+        seenKo.add(e.fromKo);
+        if (!hasJapanese(e.word)) {
+          ctx.addIssue({ code: "custom", path: ["entries", i, "word"], message: "한국어에서 바꾼 항목의 word에는 일본 문자가 있어야 합니다" });
+        }
+      });
     });
-  });
+}
+
+/**
+ * 한국어 꼭 넣을 단어가 **없는** 호출의 zod(= fromKo 전부 null). 기존 소비자(eval 픽스처 등) 호환용.
+ * 생성 경로(generateJapaneseVocab)는 includeKo를 알고 있으므로 팩토리를 직접 부른다.
+ */
+export const jaVocabGenerationSchema = makeJaVocabGenerationSchema({ includeKo: [] });
 
 // ---------------------------------------------------------------------------
 // 그림 우선순위 — resolveJaGlyph (영어 resolveVocabImage 관용구)

@@ -3,12 +3,14 @@
  *
  * 저장된 대화를 읽어 말풍선(문장 탭 → 선생님 설명 시트)·주제 일러스트·오늘 본 그림 카드를 화면에 넘긴다. 렌더 판정은 목록·설명
  * 라우트와 같은 함수(isRenderableTalkSession) — 없거나 깨진 기록은 notFound(). AI 없음(설명은 문장을 탭할 때만 — 자동 비용 0).
+ * 주소에 `?debug=1`이면 선생님 말풍선에 저장된 출처 칩(english.md §12-7)을 보인다 — 평소에는 숨긴다.
  */
 
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import TalkReviewView from "@/components/talk-review-view";
+import talkStyles from "@/components/talk.module.css";
 import { formatKstDate } from "@/lib/kst";
 import { isFirestoreDocId } from "@/lib/reorder-contract";
 import { getStore } from "@/lib/store";
@@ -18,6 +20,7 @@ export const dynamic = "force-dynamic";
 
 interface DetailProps {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }
 
 async function load(id: string) {
@@ -33,13 +36,15 @@ export async function generateMetadata({ params }: DetailProps): Promise<Metadat
   return { title: `${record.titleKo} — 자유대화` };
 }
 
-export default async function TalkDetailPage({ params }: DetailProps) {
+export default async function TalkDetailPage({ params, searchParams }: DetailProps) {
   const { id } = await params;
   const record = await load(id);
   if (!record) notFound();
+  const debug = (await searchParams).debug === "1";
 
   return (
-    <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
+    // 넓은 가로 화면에서는 폭을 넓혀 그림·카드 | 스크립트 두 칸으로(talk.module.css reviewMain·reviewGrid)
+    <main className={`mx-auto max-w-2xl px-4 pb-16 pt-6 ${talkStyles.reviewMain}`}>
       <header className="mb-4">
         <div className="flex items-center justify-between gap-3">
           <Link href="/english/talk" className="u-navbtn">
@@ -59,6 +64,7 @@ export default async function TalkDetailPage({ params }: DetailProps) {
         cards={record.cards}
         turns={record.turns}
         explanations={record.explanations}
+        debug={debug}
       />
     </main>
   );

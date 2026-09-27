@@ -78,6 +78,8 @@
 .textarea {
   resize: vertical;
   line-height: 1.6;
+  /* 여러 줄 입력이라 알약 모서리(--radius-chip)면 첫·끝 줄 글자가 모서리에 잘린다 — 상자 모서리로 둔다 */
+  border-radius: var(--radius-box);
 }
 
 .actions {
@@ -104,6 +106,17 @@
   background: var(--danger-soft);
   color: var(--danger);
   font-size: var(--fs-vocab-example);
+}
+/* 실패 경고 안의 줄들(레벨 실패 + 그 레벨에 실렸던 꼭 넣을 단어, QA 3회차 P3-C) */
+.warnLine {
+  margin: 0;
+}
+.warnLine + .warnLine {
+  margin-top: 6px;
+}
+/* 검토 헤딩 — 생성 성공 뒤 화면 읽기용으로 포커스만 받는다(tabIndex -1). 조작 요소가 아니라 포커스 테두리는 그리지 않는다 */
+.reviewHead:focus {
+  outline: none;
 }
 .note {
   margin: 0;
@@ -206,4 +219,47 @@
   color: var(--ink);
   font-size: 18px;
   font-weight: 700;
+}
+
+/* 한국어로 넣은 꼭 넣을 단어 (2026-09-27, §8) — 입력 칩·검토 매핑·카드 표식 */
+.includeKo {
+  border-color: var(--accent-soft);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.noteHead {
+  margin: 0;
+  font-weight: var(--fw-bold);
+  color: var(--ink);
+}
+.noteSub {
+  margin: 6px 0 0;
+  color: var(--ink-3);
+  font-size: var(--fs-caption);
+}
+.mapList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.mapItem {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px;
+  color: var(--ink);
+}
+.mapArrow {
+  color: var(--accent);
+  font-weight: var(--fw-bold);
+}
+.mapKana {
+  color: var(--ink-3);
+  font-size: var(--fs-meta-chip);
+}
+.fromKo {
+  flex: 0 0 auto;
 }

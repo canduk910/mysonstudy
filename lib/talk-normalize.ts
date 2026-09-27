@@ -24,8 +24,17 @@
  * `import type`만 한다. 서버 전용으로 쓴다(talk-schemas가 zod를 싣는다) — 클라이언트 컴포넌트에서 값으로 import하지 말 것.
  */
 
-import type { TalkCard, TalkExplanation, TalkKeyWord, TalkScriptPiece, TalkTopic, TalkTopicWord, TalkTurn } from "./ai/english/talk-schemas";
-import { TALK_LIMITS, TALK_SCRIPT_LANGS, TALK_SPEAKERS, TALK_TOPIC_KINDS } from "./ai/english/talk-schemas";
+import type {
+  TalkCard,
+  TalkExplanation,
+  TalkKeyWord,
+  TalkScriptPiece,
+  TalkTopic,
+  TalkTopicWord,
+  TalkTurn,
+  TalkTurnOrigin,
+} from "./ai/english/talk-schemas";
+import { TALK_LIMITS, TALK_SCRIPT_LANGS, TALK_SPEAKERS, TALK_TOPIC_KINDS, TALK_TURN_ORIGINS } from "./ai/english/talk-schemas";
 import { childTurnCount } from "./talk-transcript";
 import type { TalkImageRecord, TalkSessionRecord } from "./store";
 
@@ -35,9 +44,11 @@ const strOr = (v: unknown, fallback: string): string => (typeof v === "string" ?
 const strOrNull = (v: unknown): string | null => (typeof v === "string" ? v : null);
 const intOr = (v: unknown, fallback: number): number => (typeof v === "number" && Number.isFinite(v) ? Math.trunc(v) : fallback);
 
+/** 주제 단어 한 개 방어 — emoji가 생기기 전(2026-09-27)의 스냅샷·빈 문자열은 emoji null로 읽는다(없는 것을 없음으로) */
 function normalizeTopicWord(w: unknown): TalkTopicWord | null {
   if (!isRec(w) || typeof w.en !== "string" || w.en.trim() === "") return null;
-  return { en: w.en, ko: strOrNull(w.ko) };
+  const emoji = typeof w.emoji === "string" && w.emoji.trim() !== "" ? w.emoji : null;
+  return { en: w.en, ko: strOrNull(w.ko), emoji };
 }
 
 /** 주제 스냅샷 방어 — 모르는 kind는 custom(글자만 보이는 주제)으로 읽는다(라벨이 곧 표시). */
@@ -55,12 +66,18 @@ export function normalizeTalkTopic(t: unknown): TalkTopic {
   };
 }
 
+/**
+ * 턴 하나 방어. origin(§12-7 선생님 턴의 출처, 2026-09-27)은 아는 값이고 선생님 턴일 때만 그대로, 그 밖(은우 턴·옛 기록·모르는 값)은
+ * null — 키는 늘 싣는다(undefined 없음).
+ */
 function normalizeTurn(t: unknown): TalkTurn | null {
   if (!isRec(t)) return null;
   if (!(TALK_SPEAKERS as readonly string[]).includes(t.speaker as string)) return null;
   if (typeof t.text !== "string") return null;
   const speaker = t.speaker as TalkTurn["speaker"];
-  return { speaker, text: t.text, interrupted: speaker === "teacher" && t.interrupted === true };
+  const origin =
+    speaker === "teacher" && (TALK_TURN_ORIGINS as readonly string[]).includes(t.origin as string) ? (t.origin as TalkTurnOrigin) : null;
+  return { speaker, text: t.text, interrupted: speaker === "teacher" && t.interrupted === true, origin };
 }
 
 function normalizeScriptPiece(p: unknown): TalkScriptPiece | null {

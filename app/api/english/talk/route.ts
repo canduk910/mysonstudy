@@ -5,6 +5,8 @@
  * 한 번에 보낸다. AI를 부르지 않는다 — **키 검사 없음**(키가 없어도 저장은 된다).
  *
  * - 저장 조건: 은우 발화 ≥ 1(`childTurnCount` — 서버가 turns에서 다시 센다). 0이면 400 no_child_turn(화면은 애초에 부르지 않는다).
+ * - 턴의 출처(§12-7 `origin` — reply·greeting·nudge·wrapup): 턴 zod는 `talkSaveTurnSchema`(옛 번들이 빼고 보내면 null, 모르는 값은 400).
+ *   선생님 턴만 저장하고 은우 턴은 null로 되돌린다. 대화 보기 `?debug=1`의 칩이 읽는다("선생님이 두 명" 같은 신고의 증거).
  * - 상한(QA talk-ai P2-6): 턴 200개·턴 글자 1,000자(`TALK_LIMITS`)를 넘으면 **거부하지 않고 앞에서부터 잘라** 저장한다(trimmed) —
  *   5분 대화 전체를 400으로 잃지 않게. 설명 키가 앞 턴부터라 앞쪽을 남기면 번호가 보존된다.
  * - 주제 스냅샷: connect가 돌려준 값을 그대로 받되 다시 확인한다 — 프리셋·직접 입력은 서버 해석 함수로 **다시 만든 값**을 저장하고
@@ -25,10 +27,10 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { TALK_LIMITS, TALK_SPEAKERS, TALK_TOPIC_KINDS, type TalkTopic, type TalkTurn } from "@/lib/ai/english/talk-schemas";
+import { TALK_LIMITS, TALK_TOPIC_KINDS, talkSaveTurnSchema, type TalkTopic, type TalkTurn } from "@/lib/ai/english/talk-schemas";
 import { isZonedIsoTimestamp } from "@/lib/kst";
 import { getStore } from "@/lib/store";
-import { sanitizeTalkCards } from "@/lib/talk-cards";
+import { sanitizeTalkCards, sanitizeTalkEmoji } from "@/lib/talk-cards";
 import {
   TALK_MODEL_NAME_RE,
   TALK_SAVE_ID_RE,
@@ -54,16 +56,24 @@ const topicSchema = z.object({
   labelKo: z.string().min(1).max(200),
   labelEn: z.string().max(200).nullable(),
   vocabBookId: z.string().max(200).nullable(),
-  words: z.array(z.object({ en: z.string().min(1).max(200), ko: z.string().max(200).nullable() })).max(TALK_LIMITS.vocabWords),
+  words: z
+    .array(
+      z.object({
+        en: z.string().min(1).max(200),
+        ko: z.string().max(200).nullable(),
+        // 화면 표시용 단어장 이모지(2026-09-27). 이 필드 전에 연결한 화면(배포 직후의 옛 번들)이 빼고 보내도 대화를 잃지 않게 null 기본값
+        emoji: z.string().max(64).nullable().default(null),
+      }),
+    )
+    .max(TALK_LIMITS.vocabWords),
 });
 
 const bodySchema = z.object({
   clientSessionId: z.string().regex(TALK_SAVE_ID_RE, "저장 키 형식이 아니에요"),
   topic: topicSchema,
-  // 넉넉한 방어선 — 실제 상한(TALK_LIMITS)은 아래에서 잘라 맞춘다(거부하지 않는다)
-  turns: z
-    .array(z.object({ speaker: z.enum(TALK_SPEAKERS), text: z.string().max(20_000), interrupted: z.boolean() }))
-    .max(2_000),
+  // 넉넉한 방어선 — 실제 상한(TALK_LIMITS)은 아래에서 잘라 맞춘다(거부하지 않는다). 턴 하나는 talkSaveTurnSchema(§12-7 출처 수용 —
+  // origin이 빠진 옛 번들은 null, 모르는 값은 400)
+  turns: z.array(talkSaveTurnSchema).max(2_000),
   cards: z.array(z.object({ emoji: z.string(), en: z.string(), ko: z.string() })).max(500),
   scene: z
     .object({ dataUrl: z.string().max(TALK_SCENE_DATA_URL_MAX * 2), sceneEn: z.string().max(2_000) })
@@ -89,12 +99,16 @@ function clampChars(text: string, max: number): string {
   return chars.length <= max ? text : chars.slice(0, max).join("");
 }
 
-/** 받은 주제 스냅샷을 다시 확인한다 — 프리셋·직접 입력은 서버 해석 함수가 다시 만든 값, 단어장은 모양 그대로. 어긋나면 null */
+/**
+ * 받은 주제 스냅샷을 다시 확인한다 — 프리셋·직접 입력은 서버 해석 함수가 다시 만든 값, 단어장은 모양 그대로(단어 이모지만
+ * 카드와 같은 판정 `sanitizeTalkEmoji`를 다시 지나 — 떨어지면 그 이모지만 null, 대화는 저장). 어긋나면 null
+ */
 function verifyTopic(t: z.infer<typeof topicSchema>): TalkTopic | null {
   if (t.kind === "preset") return resolvePresetTalkTopic(t.key);
   if (t.kind === "custom") return resolveCustomTalkTopic(t.labelKo);
   if (t.vocabBookId === null || t.words.length === 0) return null;
-  return { kind: "vocab", key: null, labelKo: t.labelKo, labelEn: null, vocabBookId: t.vocabBookId, words: t.words };
+  const words = t.words.map((w) => ({ en: w.en, ko: w.ko, emoji: sanitizeTalkEmoji(w.emoji) }));
+  return { kind: "vocab", key: null, labelKo: t.labelKo, labelEn: null, vocabBookId: t.vocabBookId, words };
 }
 
 export async function POST(req: Request) {
@@ -121,9 +135,13 @@ export async function POST(req: Request) {
   const topic = verifyTopic(body.topic);
   if (!topic) return json({ ok: false, error: "invalid_input", messageKo: "대화 주제를 확인하지 못했어요." }, 400);
 
-  // 턴 — 빈 글자 제외, 앞에서부터 상한까지(설명 키가 앞 턴부터라 번호 보존), 글자 상한으로 자르기
+  // 턴 — 빈 글자 제외, 앞에서부터 상한까지(설명 키가 앞 턴부터라 번호 보존), 글자 상한으로 자르기.
+  // 출처(§12-7)는 선생님 턴만 — 은우 턴은 null로 되돌린다(선생님 턴의 null = 출처를 모르는 옛 번들)
   const cleaned: TalkTurn[] = body.turns
-    .map((t) => ({ speaker: t.speaker, text: t.text.trim(), interrupted: t.speaker === "teacher" && t.interrupted }))
+    .map((t) => {
+      const teacher = t.speaker === "teacher";
+      return { speaker: t.speaker, text: t.text.trim(), interrupted: teacher && t.interrupted, origin: teacher ? t.origin : null };
+    })
     .filter((t) => t.text !== "");
   let trimmed = cleaned.length > TALK_LIMITS.turns;
   const turns: TalkTurn[] = cleaned.slice(0, TALK_LIMITS.turns).map((t) => {

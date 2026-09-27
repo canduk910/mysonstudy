@@ -24,3 +24,5 @@ firebase-debug.log
 
 # 교재 사진(저작권) — PUBLIC 저장소에 올리지 않는다 (docs/harness/toeic.md §0-2). 전사본은 data/private/(위 data/ 규칙)
 design/*_o.jpeg
+# 토익스피킹 유형별 공략 교재 사진(2026-09-27) — 같은 이유로 git 밖. 전사본은 data/private/
+design/toeicspeaking/

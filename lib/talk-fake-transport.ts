@@ -1,5 +1,5 @@
 /**
- * lib/talk-fake-transport.ts — 은우 자유대화 **개발 빌드 전용 가짜 전송** (docs/SPEC.md §21-6, docs/harness/english.md §12-2·§12-6)
+ * lib/talk-fake-transport.ts — 은우 자유대화 **개발 빌드 전용 가짜 전송** (docs/SPEC.md §21-6, docs/harness/english.md §12-2·§12-7)
  *
  * 실제 연결(WebRTC·음성)은 오프라인으로 검증할 수 없어서, 화면 흐름을 **합성 이벤트**로 돌리는 대역이다. `lib/talk-realtime.ts`의
  * `createTalkTransport`가 `process.env.NODE_ENV !== "production"` + localStorage `talk-debug-fake`="1"일 때만 **동적 import**한다 —
@@ -10,17 +10,18 @@
  *   `/v1/realtime/calls`에 가짜 SDP·Location을 준다). 키가 없거나(501) 연결이 거부되면(500) 화면 확인용 로컬 스냅샷으로 이어 간다.
  *   ⚠️ 실제 키가 있는 dev 서버에서 켜면 OpenAI에 통화 생성 요청 1회가 나간다(미디어·응답은 없고 끝낼 때 hangup) — e2e는 스텁으로.
  * - 앱이 보내는 이벤트에 반응한다: `conversation.item.create` → `conversation.item.added` 되돌림(숨은 `app_` 항목 포함),
- *   `response.create` → 선생님 응답(마지막 숨은 안내에 따라 인사·도움·마무리·이어 말하기) — 오디오 전사 delta·도구 호출(show_hints·
- *   show_picture)·`output_audio_buffer.started/stopped`·`response.done`(사용량 포함). 응답 진행 중 두 번째 response.create는 error 이벤트.
+ *   `response.create` → 선생님 응답(마지막 숨은 안내에 따라 인사·도움·마무리) — 오디오 전사 delta·`.done`·`output_audio_buffer.started/
+ *   stopped`·`response.done`(사용량 포함). 응답 진행 중 두 번째 response.create는 error 이벤트. **도구 호출은 내지 않는다**(§12-7 — 세션에
+ *   도구가 없다). 선생님 응답은 한 차례를 한 번에 말하고(글자 확정 → response.done → 소리 멈춤 — 실서버 순서), 은우가 한 번 말하면
+ *   VAD 자동 응답이 **하나** 나간다.
  * - 은우 발화는 조종 손잡이 `window.__talkFake`(개발 전용)로 흘린다: `childSays(text, {late, lateMs, fail, durationMs, commitNewId})` —
  *   speech_started → stopped → committed → item.added(user) → 전사 delta/completed(late면 선생님 응답이 끝난 **뒤에** 도착 — 기본
  *   2.6초, `lateMs`로 바꾼다) → VAD 자동 응답. 선생님이 말하는 중이면 끼어들기(speech_started 뒤 output_audio_buffer.cleared +
- *   response.done cancelled — 실서버 순서). `drop()`은 연결 끊김. 첫 은우 발화 뒤 응답은 **도구만 부르는 응답**
- *   (오디오 없음) — 앱의 function_call_output + 이어 말하기 경로를 태운다.
- * - **말만 하고 질문 없이 도구로 끝나는 응답**(2026-09-26 실연결에서 본 모양 — "Nice, that's a lovely choice." + show_hints로 응답 끝):
- *   `childSays(text, {noQuestionReplies: n})`이면 그 발화의 VAD 자동 응답부터 **n개 응답**(자동 응답 + 앱이 보낸 이어 말하기)이
- *   이 모양이다. 앱은 질문이 없으니 이어 말하기(response.create)를 보내고, 연속 상한(2)에 닿으면 멈춘다 — n=1이면 이어 말하기 응답이
- *   질문하는 보통 차례, n=3이면 이어 말하기 2번 뒤 앱이 더 보내지 않는다(도움 카드·12초 요청 경로로). 기본(옵션 없음) 흐름은 그대로다.
+ *   response.done cancelled — 실서버 순서). `drop()`은 연결 끊김.
+ * - **화면 카드 흉내**(호출 J — `setCards(mode)`, 컨트롤러가 `fetchCards`로 묻는다): `route`(기본 — 가로채지 않고 실제
+ *   `/api/english/talk/cards`로. 키가 없으면 501 → 기본 문구, 루프백 스텁이면 스텁 결과) · `local`(이 모듈이 선생님 대사마다 적어 둔 답
+ *   예시·핵심 단어·그림을 호출 J 후처리 `sanitizeTalkScreenCards`에 통과시켜 돌려준다 — 말에 없는 그림은 버려진다) · `slow`(local을
+ *   2.5초 늦게 — 은우가 먼저 말하면 철 지난 도움이 된다) · `fail`(500 cards_failed). `cardsCalls`에 요청 본문이 쌓인다(e2e).
  * - 끝내기 전 전사 기다림(lib/talk-realtime.ts `finish`)을 태우는 이벤트: `session.update`의 `turn_detection: null` → 턴 감지 끔
  *   (session.updated, 이후 은우 발화·자동 응답 없음 — 다만 끄기 전에 커밋된 발화의 자동 응답은 그대로 나가 앱의 취소 경로를 태운다),
  *   `input_audio_buffer.commit` → 말하는 중인 발화를 그 자리에서 커밋·전사(응답 없음. `commitNewId`면 speech_started와 다른 항목 id로 —
@@ -30,7 +31,8 @@
  */
 
 import type { TalkTopic } from "./ai/english/talk-schemas";
-import type { TalkConnectSuccess, TalkTopicRequest } from "./talk-contract";
+import { sanitizeTalkScreenCards } from "./talk-cards";
+import type { TalkCardsRequest, TalkCardsResponse, TalkConnectSuccess, TalkTopicRequest } from "./talk-contract";
 import { findTalkTopicPreset } from "./talk-topics";
 import { TalkConnectError, postTalkConnect, type TalkConnectArgs, type TalkTransport, type TalkTransportHandlers } from "./talk-realtime";
 
@@ -54,17 +56,19 @@ interface FakeHints {
   answers: string[];
   words: FakeCard[];
 }
+/** 선생님 응답 하나 — 말(늘 있다)과, 카드 흉내(local)에 쓸 답 예시·그림(호출 J가 이 말에서 만들 법한 값) */
 interface FakePlan {
-  text: string | null; // null = 오디오 없음(도구만)
+  text: string;
   picture: FakeCard | null;
   hints: FakeHints | null;
-  /** 도움 도구를 오디오 전에 부를지(순서 두 가지를 다 태운다) */
-  hintsFirst: boolean;
-  /** 그림 도구도 말한 **뒤에** 부른다(실연결 순서 — noQuestionReplies). 없으면 그림은 말하기 전 */
-  toolsAfterSpeech?: boolean;
 }
 
-type Kind = "greet" | "nudge" | "wrapup" | "continue" | "reply";
+type Kind = "greet" | "nudge" | "wrapup" | "reply";
+
+/** 화면 카드 흉내 방식(`setCards`) — route = 가로채지 않음(실제 라우트) */
+export type FakeCardsMode = "route" | "local" | "slow" | "fail";
+/** slow 모드의 지연(ms) — 배율 없음 */
+const FAKE_CARDS_SLOW_MS = 2_500;
 
 /** 가짜 은우 발화 옵션 */
 export interface FakeChildOpts {
@@ -78,22 +82,34 @@ export interface FakeChildOpts {
   durationMs?: number;
   /** 수동 커밋(input_audio_buffer.commit)이 speech_started와 **다른** 항목 id로 커밋한다 */
   commitNewId?: boolean;
-  /**
-   * 이 발화의 VAD 자동 응답부터 n개 응답(자동 응답 + 앱이 보낸 이어 말하기)을 **말만 하고 질문 없이 도구로 끝나는 응답**으로 한다
-   * (도구는 말한 뒤에 — 실연결 순서). 앱의 이어 말하기·연속 상한 경로를 태운다.
-   */
-  noQuestionReplies?: number;
 }
 
 export interface FakeTalkControls {
   readonly mark: string;
   childSays(text: string, opts?: FakeChildOpts): void;
   drop(): void;
+  /** 화면 카드 흉내 방식(기본 route) */
+  setCards(mode: FakeCardsMode): void;
   /** 앱이 보낸 클라이언트 이벤트(모양 그대로) */
   readonly sent: readonly Record<string, unknown>[];
   /** 흘려보낸 서버 이벤트 */
   readonly emitted: readonly Record<string, unknown>[];
-  state(): { open: boolean; teacherSpeaking: boolean; responseActive: boolean; teacherTurns: number; topicKind: string | null };
+  /** 컨트롤러가 물은 카드 요청(본문 그대로 + 그때의 방식) — route 모드여도 쌓인다 */
+  readonly cardsCalls: readonly { mode: FakeCardsMode; body: TalkCardsRequest }[];
+  state(): {
+    open: boolean;
+    teacherSpeaking: boolean;
+    responseActive: boolean;
+    /** 은우 발화가 아직 말하는 중(커밋 전) */
+    childSpeaking: boolean;
+    teacherTurns: number;
+    topicKind: string | null;
+    cardsMode: FakeCardsMode;
+    /** 앱이 보낸 response.create 수(인사·도움 요청·마무리뿐이어야 한다) */
+    appResponseCreates: number;
+    /** 은우 발화 뒤 서버 자동 응답 수 */
+    autoReplies: number;
+  };
 }
 
 declare global {
@@ -102,26 +118,11 @@ declare global {
   }
 }
 
-/** 말만 하고 질문 없이 도구로 끝나는 응답의 대사(질문 표시 `?` 없음) — noQuestionReplies */
-const NO_QUESTION_LINES: { text: string; picture: FakeCard | null; hints: FakeHints }[] = [
-  {
-    text: "Nice, that is a lovely answer.",
-    picture: null,
-    hints: { answers: ["Yes, I do.", "No, I don't."], words: [{ emoji: "👍", en: "yes", ko: "네" }] },
-  },
-  {
-    text: "Great sentence! You are doing so well.",
-    picture: { emoji: "⭐", en: "star", ko: "별" },
-    hints: { answers: ["Thank you!", "I like it."], words: [{ emoji: "⭐", en: "star", ko: "별" }] },
-  },
-  {
-    text: "Wow, good job. Let's keep going.",
-    picture: null,
-    hints: { answers: ["Okay!", "Yes!"], words: [] },
-  },
-];
-
-const NORMAL_LINES: { text: string; picture: FakeCard | null; hints: FakeHints }[] = [
+/**
+ * 보통 차례 대사(한 차례를 한 번에 — 반응 한 마디 + 질문 하나, §12-7 차례 규칙). picture·hints는 카드 흉내(local)용 —
+ * 셋째 줄의 pizza는 말에 없어서 호출 J 후처리가 버린다(근거 없는 그림 카드).
+ */
+const NORMAL_LINES: FakePlan[] = [
   {
     text: "A cat! Cats are so cute. What color is your cat?",
     picture: null,
@@ -172,11 +173,12 @@ class FakeTalkTransport implements TalkTransport {
   private lastNoteId: string | null = null;
   private teacherTurns = 0;
   private normalTurns = 0;
-  private replies = 0;
-  /** 남은 '말만 하고 질문 없이 도구로 끝나는 응답' 수(noQuestionReplies) · 지금까지 낸 수(대사 순환) */
-  private noQuestionLeft = 0;
-  private noQuestionSeq = 0;
+  private autoReplies = 0;
+  private appResponseCreates = 0;
   private topic: TalkTopic | null = null;
+  private cardsMode: FakeCardsMode = "route";
+  /** 선생님 대사 → 그 대사의 카드 흉내 값(local) */
+  private cardsByText = new Map<string, FakePlan>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
   /** 진행 중 응답(선생님 오디오 포함) — 끼어들기·취소가 이것을 끊는다 */
   private active: { id: string; itemId: string | null; timers: Set<ReturnType<typeof setTimeout>>; audio: boolean; done: boolean } | null = null;
@@ -187,6 +189,7 @@ class FakeTalkTransport implements TalkTransport {
   private utterance: { itemId: string; text: string; opts: FakeChildOpts; bucket: Set<ReturnType<typeof setTimeout>> } | null = null;
   readonly sent: Record<string, unknown>[] = [];
   readonly emitted: Record<string, unknown>[] = [];
+  readonly cardsCalls: { mode: FakeCardsMode; body: TalkCardsRequest }[] = [];
 
   async connect(args: TalkConnectArgs, handlers: TalkTransportHandlers): Promise<TalkConnectSuccess> {
     this.handlers = handlers;
@@ -218,16 +221,51 @@ class FakeTalkTransport implements TalkTransport {
         this.clearAll();
         this.handlers?.onDisconnect("fake_drop");
       },
+      setCards: (mode) => {
+        this.cardsMode = mode;
+      },
       sent: this.sent,
       emitted: this.emitted,
+      cardsCalls: this.cardsCalls,
       state: () => ({
         open: this.open,
         teacherSpeaking: this.speakingResponseId !== null,
         responseActive: this.active !== null && !this.active.done,
+        childSpeaking: this.utterance !== null,
         teacherTurns: this.teacherTurns,
         topicKind: this.topic?.kind ?? null,
+        cardsMode: this.cardsMode,
+        appResponseCreates: this.appResponseCreates,
+        autoReplies: this.autoReplies,
       }),
     };
+  }
+
+  // ---- 화면 카드 흉내(호출 J) ----
+
+  /**
+   * 컨트롤러가 카드를 청할 때 묻는다(TalkTransport.fetchCards). route면 null(실제 라우트). 닫힌 뒤에도 기록은 남긴다.
+   * local·slow는 그 대사에 적어 둔 값을 호출 J 후처리(sanitizeTalkScreenCards)에 통과시킨다 — 실제 라우트가 주는 모양 그대로.
+   */
+  fetchCards(body: TalkCardsRequest, signal: AbortSignal): Promise<TalkCardsResponse> | null {
+    const mode = this.cardsMode;
+    this.cardsCalls.push({ mode, body });
+    if (mode === "route") return null;
+    if (mode === "fail") return Promise.resolve({ ok: false, error: "cards_failed", messageKo: "가짜 전송: 카드 실패" });
+    const plan = this.cardsByText.get(body.teacherLine) ?? null;
+    const cards = sanitizeTalkScreenCards(
+      { answers: plan?.hints?.answers ?? [], words: plan?.hints?.words ?? [], picture: plan?.picture ?? null },
+      { teacherLine: body.teacherLine, words: body.words, shown: body.shown },
+    );
+    const result: TalkCardsResponse = { ok: true, ...cards };
+    if (mode === "local") return Promise.resolve(result);
+    return new Promise<TalkCardsResponse>((resolve, reject) => {
+      const t = setTimeout(() => resolve(result), FAKE_CARDS_SLOW_MS);
+      signal.addEventListener("abort", () => {
+        clearTimeout(t);
+        reject(new DOMException("aborted", "AbortError"));
+      });
+    });
   }
 
   // ---- 도우미 ----
@@ -270,19 +308,15 @@ class FakeTalkTransport implements TalkTransport {
       return;
     }
     if (ev.type === "response.create") {
+      this.appResponseCreates += 1;
       if (this.active && !this.active.done) {
         this.emit({ type: "error", error: { type: "invalid_request_error", code: "conversation_already_has_active_response", message: "fake: active response" } });
         return;
       }
       const note = this.lastNoteId ?? "";
       this.lastNoteId = null;
-      const kind: Kind = note.startsWith("app_greet")
-        ? "greet"
-        : note.startsWith("app_wrapup")
-          ? "wrapup"
-          : note.startsWith("app_nudge")
-            ? "nudge"
-            : "continue";
+      // 앱이 response.create를 보내는 경우는 인사·도움 요청·마무리뿐이다(§12-7). 안내 없는 create는 보통 차례로 답한다
+      const kind: Kind = note.startsWith("app_greet") ? "greet" : note.startsWith("app_wrapup") ? "wrapup" : note.startsWith("app_nudge") ? "nudge" : "reply";
       this.startResponse(kind);
       return;
     }
@@ -319,60 +353,43 @@ class FakeTalkTransport implements TalkTransport {
     const words = this.topic?.kind === "vocab" ? this.topic.words : [];
     if (words.length === 0) return null;
     const w = words[i % words.length];
-    // 두 번째 단어부터는 복수형으로 — ✓ 매칭(끝의 s)까지 태운다
-    return { emoji: "⭐", en: i === 0 ? w.en : `${w.en}s`, ko: koOrDefault(w.ko) };
+    // 두 번째 단어부터는 복수형으로 — ✓ 매칭(끝의 s)까지 태운다. 이모지는 단어장 이모지(스냅샷 emoji), 없으면 ⭐
+    return { emoji: w.emoji ?? "⭐", en: i === 0 ? w.en : `${w.en}s`, ko: koOrDefault(w.ko) };
   }
 
   private plan(kind: Kind): FakePlan {
     const label = this.topic?.labelEn ?? "today's topic";
     if (kind === "greet") {
       const vocab = this.vocabCard(0);
-      return {
-        text: vocab
-          ? `Hi! I'm Sunny. Let's play with some words. Do you know ${vocab.en}?`
-          : `Hi! I'm Sunny. Let's talk about ${label}. Do you like animals?`,
-        picture: vocab ?? { emoji: "🐶", en: "dog", ko: "강아지" },
-        hints: { answers: ["Yes, I do.", "I like dogs."], words: [{ emoji: "🐶", en: "dog", ko: "강아지" }] },
-        hintsFirst: false,
-      };
+      return vocab
+        ? {
+            text: `Hi! I'm Sunny. Let's play with some words. Do you know ${vocab.en}?`,
+            picture: vocab,
+            hints: { answers: ["Yes, I do.", "No, I don't."], words: [vocab] },
+          }
+        : {
+            text: `Hi! I'm Sunny. Let's talk about ${label}. Do you like dogs?`,
+            picture: { emoji: "🐶", en: "dog", ko: "강아지" },
+            hints: { answers: ["Yes, I do.", "I like dogs."], words: [{ emoji: "🐶", en: "dog", ko: "강아지" }] },
+          };
     }
     if (kind === "nudge") {
-      return { text: "You can say: Yes, I do. Can you say it with me?", picture: null, hints: null, hintsFirst: false };
+      return {
+        text: "You can say: Yes, I do. Can you say it with me?",
+        picture: null,
+        hints: { answers: ["Yes, I do.", "I can say it."], words: [] },
+      };
     }
     if (kind === "wrapup") {
-      // 마무리 응답에도 도구 호출을 하나 섞는다 — 앱이 무시하는지(§12-6)
-      return { text: "You did so well today! Goodbye, my friend!", picture: { emoji: "👋", en: "bye", ko: "안녕" }, hints: null, hintsFirst: false };
-    }
-    if ((kind === "reply" || kind === "continue") && this.noQuestionLeft > 0) {
-      // 말만 하고 질문 없이 도구로 끝나는 응답 — 도구는 말한 뒤에(hintsFirst false)
-      this.noQuestionLeft -= 1;
-      const line = NO_QUESTION_LINES[this.noQuestionSeq % NO_QUESTION_LINES.length];
-      this.noQuestionSeq += 1;
-      return { text: line.text, picture: line.picture, hints: line.hints, hintsFirst: false, toolsAfterSpeech: true };
-    }
-    if (kind === "reply" && this.replies === 1) {
-      // 첫 은우 발화 뒤: 오디오 없이 도구만 부르는 응답(이어 말하기 경로)
-      const vocab = this.vocabCard(1);
-      return { text: null, picture: vocab ?? { emoji: "🐱", en: "cat", ko: "고양이" }, hints: null, hintsFirst: false };
+      // 마무리 응답에도 그림 값을 둔다 — 앱이 마무리 중에는 카드를 청하지 않는지(§12-7) 보려고
+      return { text: "You did so well today! Goodbye, my friend!", picture: { emoji: "👋", en: "friend", ko: "친구" }, hints: null };
     }
     // 보통 차례 — 대사는 순서대로(도움 요청 응답·인사는 세지 않는다 → 첫 보통 차례는 늘 "A cat!")
     const idx = this.normalTurns;
     this.normalTurns += 1;
     const line = NORMAL_LINES[idx % NORMAL_LINES.length];
-    const vocab = this.vocabCard(idx + 2);
-    return { text: line.text, picture: vocab ?? line.picture, hints: line.hints, hintsFirst: idx % 2 === 1 };
-  }
-
-  private fcItem(name: string, args: unknown): Record<string, unknown> {
-    this.itemSeq += 1;
-    return {
-      id: `item_fc${this.itemSeq}`,
-      type: "function_call",
-      status: "completed",
-      name,
-      call_id: `call_fake_${this.itemSeq}`,
-      arguments: JSON.stringify(args),
-    };
+    const vocab = this.vocabCard(idx + 1);
+    return { text: line.text, picture: vocab ?? line.picture, hints: line.hints };
   }
 
   private startResponse(kind: Kind): void {
@@ -380,71 +397,47 @@ class FakeTalkTransport implements TalkTransport {
     const id = `resp_fake_${this.respSeq}`;
     const bucket = new Set<ReturnType<typeof setTimeout>>();
     const p = this.plan(kind);
-    if (p.text !== null) this.teacherTurns += 1;
-    const itemId = p.text !== null ? `item_t${++this.itemSeq}` : null;
-    this.active = { id, itemId, timers: bucket, audio: p.text !== null, done: false };
+    this.teacherTurns += 1;
+    this.cardsByText.set(p.text, p);
+    const itemId = `item_t${++this.itemSeq}`;
+    this.active = { id, itemId, timers: bucket, audio: true, done: false };
     const output: Record<string, unknown>[] = [];
     const mine = this.active;
     this.emit({ type: "response.created", response: { id, status: "in_progress", output: [] } });
     // 앱이 created를 받자마자(같은 호출 안에서) 취소했으면(끝내기 전 기다림) 더 흘리지 않는다
     if (this.active !== mine || mine.done) return;
 
+    // 한 차례를 한 번에: 항목·소리 시작 → 전사 delta → 전사 .done → response.done → (재생이 늦게 끝나) 소리 멈춤 — 실서버 순서
     let t = 60;
-    const addTool = (name: string, args: unknown) => {
-      const fc = this.fcItem(name, args);
-      output.push(fc);
-      const at = t;
-      this.later(
-        at,
-        () => {
-          this.emit({ type: "conversation.item.added", previous_item_id: this.lastItemId, item: fc });
-          this.lastItemId = fc.id as string;
-          this.emit({ type: "response.output_item.done", response_id: id, output_index: output.indexOf(fc), item: fc });
-        },
-        bucket,
-      );
-      t += 40;
-    };
-
-    if (p.picture && !(p.toolsAfterSpeech && p.text !== null)) addTool("show_picture", p.picture);
-    if (p.hints && p.hintsFirst) addTool("show_hints", p.hints);
-
-    if (p.text !== null && itemId) {
-      const text = p.text;
-      const msg = { id: itemId, type: "message", role: "assistant", status: "completed", content: [{ type: "output_audio", transcript: text }] };
-      this.later(
-        t,
-        () => {
-          this.emit({ type: "conversation.item.added", previous_item_id: this.lastItemId, item: { ...msg, status: "in_progress", content: [] } });
-          this.lastItemId = itemId;
-          this.speakingResponseId = id; // 먼저 세운다 — 앱이 started를 받자마자 output_audio_buffer.clear를 보내도 비울 소리가 있게
-          this.emit({ type: "output_audio_buffer.started", response_id: id });
-        },
-        bucket,
-      );
-      t += 60;
-      const words = text.split(/(\s+)/).filter((w) => w !== "");
-      for (const w of words) {
-        this.later(t, () => this.emit({ type: "response.output_audio_transcript.delta", response_id: id, item_id: itemId, delta: w }), bucket);
-        t += DELTA_GAP_MS;
-      }
-      this.later(t, () => this.emit({ type: "response.output_audio_transcript.done", response_id: id, item_id: itemId, transcript: text }), bucket);
-      output.unshift(msg);
-      if (p.picture && p.toolsAfterSpeech) addTool("show_picture", p.picture);
-      if (p.hints && !p.hintsFirst) addTool("show_hints", p.hints);
-      t += 40;
-      this.later(t, () => this.finishResponse(id, output), bucket);
-      // 오디오 재생은 글자보다 늦게 끝난다(버퍼 비움) — stopped는 response.done 뒤
-      const audioMs = Math.max(600, text.length * MS_PER_CHAR);
-      this.later(Math.max(t + AUDIO_TAIL_MS, audioMs), () => {
-        if (this.speakingResponseId !== id) return;
-        this.speakingResponseId = null;
-        this.emit({ type: "output_audio_buffer.stopped", response_id: id });
-      }, bucket);
-    } else {
-      if (p.hints && !p.hintsFirst) addTool("show_hints", p.hints);
-      this.later(t + 40, () => this.finishResponse(id, output), bucket);
+    const text = p.text;
+    const msg = { id: itemId, type: "message", role: "assistant", status: "completed", content: [{ type: "output_audio", transcript: text }] };
+    this.later(
+      t,
+      () => {
+        this.emit({ type: "conversation.item.added", previous_item_id: this.lastItemId, item: { ...msg, status: "in_progress", content: [] } });
+        this.lastItemId = itemId;
+        this.speakingResponseId = id; // 먼저 세운다 — 앱이 started를 받자마자 output_audio_buffer.clear를 보내도 비울 소리가 있게
+        this.emit({ type: "output_audio_buffer.started", response_id: id });
+      },
+      bucket,
+    );
+    t += 60;
+    const words = text.split(/(\s+)/).filter((w) => w !== "");
+    for (const w of words) {
+      this.later(t, () => this.emit({ type: "response.output_audio_transcript.delta", response_id: id, item_id: itemId, delta: w }), bucket);
+      t += DELTA_GAP_MS;
     }
+    this.later(t, () => this.emit({ type: "response.output_audio_transcript.done", response_id: id, item_id: itemId, transcript: text }), bucket);
+    output.push(msg);
+    t += 40;
+    this.later(t, () => this.finishResponse(id, output), bucket);
+    // 오디오 재생은 글자보다 늦게 끝난다(버퍼 비움) — stopped는 response.done 뒤
+    const audioMs = Math.max(600, text.length * MS_PER_CHAR);
+    this.later(Math.max(t + AUDIO_TAIL_MS, audioMs), () => {
+      if (this.speakingResponseId !== id) return;
+      this.speakingResponseId = null;
+      this.emit({ type: "output_audio_buffer.stopped", response_id: id });
+    }, bucket);
   }
 
   private finishResponse(id: string, output: Record<string, unknown>[]): void {
@@ -537,11 +530,11 @@ class FakeTalkTransport implements TalkTransport {
 
     if (how === "manual" || this.vadOff) return; // 수동 커밋은 응답을 만들지 않는다(SDK 주석) · 턴 감지가 꺼졌으면 자동 응답 없음
     if (text.trim() === "" && !opts.fail) return; // 잡음 커밋 — 응답을 만들지 않는다
-    // VAD 자동 응답(create_response: true) — 커밋 순간 정해진다(그 뒤에 턴 감지를 꺼도 나간다 → 앱이 취소해야 한다)
+    // VAD 자동 응답(create_response: true) — 커밋 순간 정해진다(그 뒤에 턴 감지를 꺼도 나간다 → 앱이 취소해야 한다).
+    // 은우의 한 번 대답에 선생님 응답은 이것 **하나**다(§12-7 — 앱은 이어 말하기를 보내지 않는다)
     this.later(200, () => {
       if (this.active && !this.active.done) return;
-      this.replies += 1;
-      if (typeof opts.noQuestionReplies === "number" && opts.noQuestionReplies > 0) this.noQuestionLeft = Math.floor(opts.noQuestionReplies);
+      this.autoReplies += 1;
       this.startResponse("reply");
     });
   }

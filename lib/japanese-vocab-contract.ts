@@ -11,13 +11,15 @@
  * props로 내려보낸다 — 이 파일에 값 import를 넣지 않는다.
  */
 
-import type { JlptLevel, JaPos, JaVocabEntry, JaToken, JaGlyph } from "@/lib/ai/japanese/schemas";
+import type { JlptLevel, JaPos, JaVocabEntry, JaToken, JaGlyph, JaKoIncludeMapping } from "@/lib/ai/japanese/schemas";
 import type { JaQuizMode, JaQuizContentMode, JaQuizQuestion } from "@/lib/ai/japanese/quiz";
 
 // 타입 전용 재수출 — 화면(클라)이 lib/ai를 직접 import하지 않고 이 통로로 타입만 본다.
 // JaGlyph는 서버(page.tsx)가 resolveJaGlyph(값)로 계산해 props로 내려주고, 화면은 이 타입으로 받아 그린다
 // (값 resolveJaGlyph는 lib/ai에 남는다 — 클라 번들 경계 유지). JaQuiz* 타입도 같은 통로로 화면에 준다.
 export type { JlptLevel, JaPos, JaVocabEntry, JaToken, JaGlyph };
+// 한국어 꼭 넣을 단어 매핑 {ko, word, kana}(2026-09-27, §2-4 6번) — 검토 화면의 "여권 → パスポート".
+export type { JaKoIncludeMapping };
 export type { JaQuizMode, JaQuizContentMode, JaQuizQuestion };
 
 // ===========================================================================
@@ -58,21 +60,43 @@ export type JaQuizSubmitResponse =
 // 생성 — `POST /api/japanese/vocab/generate` (호출 A, 레벨별 병렬)
 // ===========================================================================
 
-/** 생성 요청 — 고른 레벨들·주제(없으면 null)·꼭 넣을 단어(표기). exclude는 서버가 조립한다(§7-4). */
+/** 생성 요청 — 고른 레벨들·주제(없으면 null)·꼭 넣을 단어. exclude는 서버가 조립한다(§7-4). */
 export interface JaVocabGenerateRequest {
   levels: JlptLevel[];
   topic: string | null;
+  /**
+   * 꼭 넣을 단어 줄 — 줄마다 **일본어 표기 또는 한국어 뜻**(2026-09-27, §2-2). 두 종류를 **섞인 그대로** 보낸다
+   * (가르는 일은 서버의 배분 계획이 `classifyJaIncludeLine`으로 한다). 합쳐 최대 count개, 한 줄은 정규화 뒤 1~20자.
+   * 한 줄 안에 일본 문자와 한글이 섞이거나 라틴·숫자가 들면 400이다 — 화면도 같은 함수로 먼저 막는다. 400 `issues`의
+   * 문구는 화면 칩과 같은 `jaIncludeRejectReason`이 고른다(여러 단어를 한 줄에 이어 쓴 줄은 "한 줄에 하나씩").
+   */
   include: string[];
 }
 
 /** 레벨 한 개의 생성 결과 보고(§2-4) — 화면이 "못 넣은 포함 단어·걸러진 중복"을 사실대로 알린다. */
 export interface JaVocabPerLevelResult {
   level: JlptLevel;
-  /** 제외 재적용+중복 접기로 버려진 개수 */
+  /** 제외 재적용+중복 접기로 버려진 개수 — koExcluded로 뺀 항목도 여기에 들어 있다 */
   filteredCount: number;
-  /** include 중 결과에 못 들어간 표기(오류 아님, 보고용) */
+  /**
+   * 꼭 넣을 단어 중 결과에 못 들어간 것(오류 아님, 보고용). 일본어 표기 먼저, 이어서 한국어 뜻(모델이 일본어로
+   * 바꿔 내지 못한 줄 — **한국어 그대로**). koExcluded로 뺀 줄은 여기에 없다(못 넣은 게 아니라 이미 있어서 뺀 것).
+   * **실패 레벨이면 그 레벨에 배분됐던 꼭 넣을 단어 전부**다(같은 순서 — 배분은 첫 레벨에만 하므로 대개 첫 레벨).
+   * 화면은 `failed`와 함께 "꼭 넣을 단어 N개는 이 레벨이 실패해 넣지 못했어요"로 알린다(QA 3회차 P3-C).
+   */
   missingIncludes: string[];
-  /** 이 레벨 호출이 실패(격리)했는가 — true면 이 레벨 단어는 entries에 없다 */
+  /**
+   * 한국어 줄이 일본어 단어로 바뀌어 **결과에 들어간** 매핑(한국어 입력 순서). 화면은 "여권 → パスポート"로 보여 준다
+   * — 뜻이 갈리는 말은 원하는 단어가 아닐 수 있어 확인하게 한다. word는 entries에 실제로 남은 항목의 표기다
+   * (같은 단어로 접혔으면 남은 쪽). 실패 레벨이면 []
+   */
+  koConverted: JaKoIncludeMapping[];
+  /**
+   * 한국어 줄이 바뀐 단어가 이미 가진 단어라 **뺀** 매핑 — 화면은 "이미 있어서 뺐어요: 여권 → パスポート"로 알린다
+   * (실패 아님). 이 항목 수는 filteredCount에도 **이미 들어 있다**(화면은 두 번 세지 않는다). 실패 레벨이면 []
+   */
+  koExcluded: JaKoIncludeMapping[];
+  /** 이 레벨 호출이 실패(격리)했는가 — true면 이 레벨 단어는 entries에 없고 filteredCount 0·매핑 둘은 []다 */
   failed: boolean;
 }
 

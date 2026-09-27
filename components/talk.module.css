@@ -96,6 +96,13 @@
 }
 
 /* ───────────── 대화 오버레이 (z 20 — 스트릭 헤드라인·셸을 덮는다) ───────────── */
+/* 배치는 세 가지 — 같은 DOM을 미디어쿼리로만 바꾼다(화면을 돌려도 리마운트 없음, 대화·마이크 그대로):
+   ① 기본(폰·iPad 세로): 한 줄로 쌓기 — 머리 · 주제 일러스트(가로 전체 폭) · 그림 카드 한 줄 · 오늘의 단어(접이식) · 스크립트 · 아래.
+      일러스트는 화면 높이로 정한 자기 크기(38dvh 상한)를 갖고, 스크립트가 남는 높이를 다 가진다 — 도움 카드가 뜨면 **스크립트가 먼저**
+      줄고(64px까지), 그래도 모자라면 일러스트가 변경 전 크기까지만 준다(QA english_talk-ipad_1 P2-2).
+   ② 세로가 짧은 폰(높이 ≤ 620px — SE급·폰 가로): 예전 배치(작은 정사각 그림 + 옆 그림 카드, QA english_talk_1 P2-2).
+   ③ 넓은 가로 화면(가로 > 세로, 폭 ≥ 900px, 높이 ≥ 600px — iPad 가로·데스크톱): 왼쪽 메인(그림·카드·단어 타일·도움 카드·조작) +
+      오른쪽 끝 스크립트 좁은 칸. 2026-09-27 사용자 요청 — "화면구성의 대부분을 그림과 단어에, 스크립트는 오른쪽 끝". */
 
 .overlay {
   position: fixed;
@@ -107,8 +114,8 @@
   background: var(--bg);
   overscroll-behavior: contain;
 }
-/* 세로가 모자라면(작은 폰 — QA english_talk_1 P2-2) 스크립트가 먼저 줄고(최소 64px), 다음으로 "오늘의 단어"가 제목 줄까지 준다.
-   그래도 넘치는 극단(가로 모드 등)에서만 프레임이 스크롤된다 — 끝내기가 화면 밖에 갇히지 않게. */
+/* 세로가 모자라면(작은 폰 — QA english_talk_1 P2-2) 일러스트·스크립트가 먼저 줄고(각자 최소 높이까지), 다음으로 "오늘의 단어"가
+   제목 줄까지 준다. 그래도 넘치는 극단에서만 프레임이 스크롤된다 — 끝내기가 화면 밖에 갇히지 않게. */
 .frame {
   box-sizing: border-box;
   width: 100%;
@@ -175,17 +182,23 @@
   }
 }
 
-/* 위쪽: 주제 일러스트 + 그림 카드 */
+/* 위쪽: 주제 일러스트 + 그림 카드. ① 기본은 상자를 없애(display: contents) 둘이 프레임의 줄이 된다 — 일러스트가 스크립트와 남는
+   높이를 나눠 갖게. ②·③은 아래 미디어쿼리가 다시 상자로 만든다. */
 .top {
-  flex: none;
-  display: flex;
-  gap: 8px;
-  min-width: 0;
+  display: contents;
 }
 .sceneBox {
-  flex: none;
-  width: clamp(96px, 30vw, 168px);
-  aspect-ratio: 1 / 1;
+  box-sizing: border-box;
+  /* 바닥 = 변경 전 정사각 그림 한 변(clamp(96px, 30vw, 168px)) + 테두리 2px — 도움 카드가 떠도 이보다 작아지지 않는다(P2-2) */
+  --scene-floor: calc(clamp(96px, 30vw, 168px) + 2px);
+  /* 자기 크기 = 머리·카드 줄·단어 줄·조작(약 250px)을 뺀 높이의 47%(도움 카드와 무관 — 예전 0.9 : 1 나누기의 도움 카드 없을 때 값과
+     거의 같다). 스크립트는 flex-basis 0이라 남는 높이만 받는다 — 도움 카드가 뜨면 스크립트가 먼저 줄고, 스크립트가 바닥(64px)에 닿은
+     뒤에야 이 상자가 줄어든다(flex-shrink, 바닥까지). */
+  flex: 0 1 auto;
+  width: 100%;
+  height: clamp(var(--scene-floor), calc((100dvh - 250px) * 0.47), 38dvh);
+  min-height: var(--scene-floor);
+  max-height: 38dvh;
   border: 1px solid var(--line);
   border-radius: var(--radius-box);
   background: var(--surface);
@@ -198,36 +211,39 @@
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain; /* 정사각 그림을 자르지 않는다 — 남는 폭은 상자 배경 */
 }
 .scenePending {
   padding: 8px;
   color: var(--ink-3);
-  font-size: 12px;
+  font-size: 13px;
   text-align: center;
   line-height: 1.4;
   animation: talkPulse 1.6s ease-in-out infinite;
 }
+/* 그림 카드 한 줄 — 큰 카드 + 지난 카드 칩(가로 스크롤) */
 .pictureCol {
-  flex: 1;
+  flex: none;
   min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  align-items: center;
+  gap: 8px;
 }
 .bigCard {
-  flex: 1;
-  min-height: 88px;
+  flex: 0 1 auto;
+  box-sizing: border-box;
+  min-height: 64px;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 12px;
+  padding: 8px 14px 8px 10px;
   border: 1px solid var(--accent);
   border-radius: var(--radius-card);
   background: var(--accent-soft);
   min-width: 0;
 }
 .bigCardEmpty {
+  flex: 1;
   border-style: dashed;
   border-color: var(--line);
   background: var(--surface);
@@ -237,7 +253,7 @@
 }
 .bigEmoji {
   flex: none;
-  font-size: clamp(36px, 11vw, 52px);
+  font-size: clamp(38px, 11vw, 54px);
   line-height: 1;
 }
 .bigText {
@@ -261,12 +277,18 @@
 .chips {
   display: flex;
   gap: 6px;
+  margin: 0;
+  padding: 0 0 1px;
+  list-style: none;
   overflow-x: auto;
   scrollbar-width: none;
-  padding-bottom: 1px;
 }
 .chips::-webkit-scrollbar {
   display: none;
+}
+.pictureCol .chips {
+  flex: 1 1 0;
+  min-width: 5.5rem;
 }
 .chip {
   flex: none;
@@ -285,20 +307,7 @@
   text-overflow: ellipsis;
 }
 
-/* 세로가 짧은 폰(SE급 — 높이 620px 이하): 위쪽 칸을 조금 줄여 스크립트 자리를 만든다(P2-2) */
-@media (max-height: 620px) {
-  .sceneBox {
-    width: clamp(80px, 24vw, 132px);
-  }
-  .bigCard {
-    min-height: 72px;
-  }
-  .bigEmoji {
-    font-size: clamp(30px, 9vw, 44px);
-  }
-}
-
-/* 단어장 모드 "오늘의 단어" 접이식 — 세로가 모자라면 제목 줄 높이까지 줄고 안에서 스크롤한다(P2-2) */
+/* 단어장 모드 "오늘의 단어" 접이식(①·②) — 세로가 모자라면 제목 줄 높이까지 줄고 안에서 스크롤한다(P2-2) */
 .words {
   flex: 0 1 auto;
   min-height: 42px;
@@ -337,7 +346,7 @@
 .wordItem {
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
   font-size: 15px;
   color: var(--ink-2);
@@ -346,10 +355,19 @@
   color: var(--accent-ink);
   font-weight: var(--fw-bold);
 }
+.wordNow .wordEn {
+  text-decoration: underline 2px var(--accent);
+  text-underline-offset: 3px;
+}
 .wordMark {
   flex: none;
   width: 1.1em;
   text-align: center;
+}
+.wordEmoji {
+  flex: none;
+  font-size: 16px;
+  line-height: 1;
 }
 .wordEn {
   min-width: 0;
@@ -360,10 +378,145 @@
   font-size: 13px;
   overflow-wrap: anywhere;
 }
+/* 이모지가 없는 단어(옛 스냅샷·판정 탈락) — 영어 첫 글자 배지 */
+.wordBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5em;
+  height: 1.5em;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: var(--fw-bold);
+  line-height: 1;
+}
+
+/* 단어장 모드 "오늘의 단어" 늘 펼친 타일(③ 넓은 가로 화면에서만 보인다).
+   타일 폭은 낱말 길이를 따르고 줄 단위로 흘려 채운다 — 낱말을 하이픈이나 글자 단위로 자르지 않는다(아이가 철자를 익히는 화면 —
+   QA english_talk-ipad_1 P2-1: "grasshop-per"·"hip-popota-mus"). 같은 폭 칸 격자는 긴 낱말 때문에 칸을 넓혀 열이 줄거나 낱말을 쪼갠다.
+   흘려 채우면 짧은 낱말은 좁은 타일이 되어 같은 20개가 더 낮은 칸에 든다(1024 가로 긴 낱말 단어장: 타일 칸 354px → 257px). */
+.wordTiles {
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.wordTilesHead {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: var(--fw-medium);
+  line-height: 1.2;
+}
+.wordTileGrid {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+/* 마지막 줄의 타일은 늘리지 않는다 — 남는 폭은 이 빈 칸이 가져간다(앞 줄들만 양끝을 맞춘다). 음수 여백이 간격(gap)을 되돌려
+   빈 칸 때문에 새 줄이 생기지 않는다. */
+.wordTileGrid::after {
+  content: "";
+  flex: 1000 1 0;
+  margin-left: -5px;
+}
+.wordTile {
+  position: relative;
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 10px 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+}
+.wordTileDone {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+/* 지금 큰 그림 카드의 단어 — 테두리를 안쪽으로 한 겹 더(색은 accent 그대로). 바깥 그림자는 타일 칸(overflow)에서 잘린다 */
+.wordTileNow {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.wordTileEmoji {
+  flex: none;
+  width: 1.1em;
+  font-size: 22px;
+  line-height: 1;
+  text-align: center;
+}
+.wordTileEmoji.wordBadge {
+  /* 이모지 글자 높이(22px)와 같게 — 배지가 있는 줄만 더 높아지지 않게 */
+  width: 22px;
+  height: 22px;
+  font-size: 13px;
+}
+.wordTileText {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* 낱말은 한 덩어리 — 하이픈 없음(manual: 낱말 안에 &shy;를 넣지 않는 한 나누지 않는다). 타일이 낱말 폭을 따르므로 보통은 줄바꿈이
+   없다. 구(ice cream)는 줄 폭보다 길 때만 띄어쓰기에서 나뉘고, 줄 폭(600px~)보다 긴 한 낱말만 최후 수단으로 넘치지 않게 끊는다.
+   글자는 화면이 클수록 조금 크게(16~19px, 높이가 짧으면 16px 쪽 — 줄 수를 늘리지 않게) */
+.wordTileEn {
+  color: var(--ink);
+  font-size: clamp(16px, min(1.6vw, 2.4vh), 19px);
+  font-weight: var(--fw-bold);
+  line-height: 1.15;
+  overflow-wrap: break-word;
+  hyphens: manual;
+  -webkit-hyphens: manual;
+}
+/* 뜻은 한 줄 — 타일 폭에는 8em(한글 8자 안팎)까지만 보탠다(긴 뜻이 타일을 넓혀 줄을 늘리지 않게, 넘치면 말줄임) */
+.wordTileKo {
+  max-width: 8em;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wordTileDone .wordTileKo {
+  color: var(--accent-ink);
+}
+/* 연습한 단어 ✓ — 그림(이모지·첫 글자 배지)의 오른쪽 위 모서리에 작은 배지로. 타일 오른쪽에 ✓ 자리를 비워 두면 20개 타일이 모두
+   그만큼 넓어져 줄이 는다(예전 18px 여백). 연습한 타일은 테두리·바탕으로도 구분된다 */
+.wordTileCheck {
+  position: absolute;
+  top: 1px;
+  left: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--accent-ink);
+  font-size: 10px;
+  font-weight: var(--fw-bold);
+  line-height: 1;
+}
 
 /* 가운데: 실시간 스크립트 — 늘 몇 줄은 보이게(P2-2) */
 .script {
-  flex: 1;
+  flex: 1 1 0;
   min-height: 64px;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -409,6 +562,20 @@
   font-size: var(--fs-meta-chip);
   font-weight: var(--fw-bold);
   color: var(--ink-3);
+}
+/* 출처 칩(english.md §12-7) — `?debug=1`일 때만 그린다. 말풍선 이름 옆의 작은 글자, 배치에 영향 없음 */
+.originChip {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 16px;
+  color: var(--ink-3);
+  vertical-align: 1px;
 }
 .bubbleText {
   margin: 0;
@@ -596,6 +763,253 @@
   cursor: pointer;
 }
 
+
+/* ② 세로가 짧은 폰(SE급 — 높이 620px 이하, 폰 가로 포함): 예전 배치 — 작은 정사각 그림 + 옆 그림 카드(P2-2) */
+@media (max-height: 620px) {
+  .top {
+    flex: none;
+    display: flex;
+    gap: 8px;
+    min-width: 0;
+  }
+  .sceneBox {
+    flex: none;
+    width: clamp(80px, 24vw, 132px);
+    height: auto;
+    aspect-ratio: 1 / 1;
+    min-height: 0;
+    max-height: none;
+  }
+  .sceneImg {
+    object-fit: cover;
+  }
+  .scenePending {
+    font-size: 12px;
+  }
+  .pictureCol {
+    flex: 1;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+  .bigCard {
+    flex: 1;
+    min-height: 72px;
+  }
+  .bigEmoji {
+    font-size: clamp(30px, 9vw, 44px);
+  }
+  .pictureCol .chips {
+    flex: none;
+    min-width: 0;
+  }
+}
+
+/* ③ 넓은 가로 화면(iPad 가로 1024×768·1180×820·1366×1024, 데스크톱): 왼쪽 메인은 그림과 단어, 오른쪽 끝은 스크립트 좁은 칸.
+   ②와 겹치는 높이(600~620px)에서도 이 규칙이 이긴다(뒤에 오고, ②가 바꾼 속성을 모두 다시 정한다). */
+@media (orientation: landscape) and (min-width: 900px) and (min-height: 600px) {
+  /* 높이 배분: 머리·단어 타일·아래(도움 카드·조작)가 필요한 만큼 갖고, 그림 무대가 나머지를 다 가진다(1fr) — 타일이 늘면 무대가
+     흡수한다. 무대에는 바닥(--stage-min — 변경 전 그림 168px보다 크게)이 있어 그 아래로는 무대 대신 타일 칸이 안에서 스크롤한다.
+     iPad 가로 여섯 크기에서 긴 낱말 단어장 + 보통·긴 도움 카드는 바닥에 닿지 않는다. 닿는 것은 극단뿐 — 도움 카드 답이 3개 × 60자
+     (상한)이거나 20개가 전부 10자 넘는 단어장이 짧은 화면을 만날 때(리포트 english-talk-ipad-p2 §2). */
+  .frame {
+    --stage-min: 200px;
+    max-width: 100rem;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) clamp(300px, 28vw, 360px);
+    grid-template-rows: auto minmax(var(--stage-min), 1fr) auto;
+    grid-template-areas:
+      "head script"
+      "top script"
+      "bottom script";
+    column-gap: 18px;
+    row-gap: 6px;
+    padding: 10px max(16px, env(safe-area-inset-right, 0px)) calc(10px + env(safe-area-inset-bottom, 0px))
+      max(16px, env(safe-area-inset-left, 0px));
+  }
+  .frameVocab {
+    grid-template-rows: auto minmax(var(--stage-min), 1fr) minmax(0, auto) auto;
+    grid-template-areas:
+      "head script"
+      "top script"
+      "words script"
+      "bottom script";
+  }
+  .head {
+    grid-area: head;
+    min-height: 32px;
+  }
+  .headTitle {
+    font-size: 19px;
+  }
+  .status {
+    font-size: 14px;
+  }
+
+  /* 그림 무대 — 크기 컨테이너(안의 cqh·cqw가 무대 크기를 따른다) */
+  .top {
+    grid-area: top;
+    display: flex;
+    gap: 14px;
+    min-width: 0;
+    min-height: 0;
+    container-type: size;
+  }
+  /* 주제 일러스트 — 무대 높이만큼 큰 정사각(폭은 무대의 64%까지 — 나머지는 그림 카드) */
+  .sceneBox {
+    flex: none;
+    align-self: center;
+    width: 58%;
+    height: auto;
+    aspect-ratio: 1 / 1;
+    min-height: 0;
+    max-height: 100%;
+    width: min(100cqh, 64cqw);
+    height: min(100cqh, 64cqw);
+    border-radius: var(--radius-card);
+  }
+  .sceneImg {
+    object-fit: contain;
+  }
+  .scenePending {
+    font-size: 17px;
+  }
+  /* 지금 그림 카드(크게) + 지난 카드 칩 */
+  .pictureCol {
+    flex: 1 1 0;
+    min-width: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .bigCard {
+    flex: 1 1 0;
+    min-height: 0;
+    flex-direction: column;
+    justify-content: center;
+    gap: 8px;
+    padding: 14px;
+    text-align: center;
+    overflow: hidden;
+  }
+  .bigCardEmpty {
+    font-size: 17px;
+    line-height: 1.5;
+  }
+  .bigEmoji {
+    max-width: 100%;
+    font-size: clamp(56px, min(26cqh, 12cqw), 150px);
+    overflow-wrap: anywhere;
+  }
+  .bigText {
+    align-items: center;
+    gap: 2px;
+  }
+  .bigEn {
+    font-size: clamp(26px, min(9cqh, 5cqw), 48px);
+  }
+  .bigKo {
+    font-size: clamp(18px, min(5cqh, 3cqw), 28px);
+  }
+  .pictureCol .chips {
+    flex: none;
+    min-width: 0;
+    flex-wrap: wrap;
+    overflow: hidden;
+  }
+  .chip {
+    max-width: 100%;
+    padding: 4px 11px;
+    font-size: 15px;
+  }
+
+  /* 오늘의 단어 — 접이식 대신 늘 펼친 타일. 높이 상한 없이 필요한 만큼(예전 40dvh 상한이 20개를 잘랐다 — P2-1). 안쪽 스크롤은
+     무대 바닥에 닿은 극단에서만 생긴다(min-height 0 — 줄 minmax(0, auto)) */
+  .words {
+    display: none;
+  }
+  .wordTiles {
+    grid-area: words;
+    display: flex;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  /* 오른쪽 끝 스크립트 칸 — 전체 높이·자체 스크롤, 말풍선 글자는 조금 작게 */
+  .script {
+    grid-area: script;
+    min-height: 0;
+    padding: 4px 2px 4px 14px;
+    border-left: 1px solid var(--line);
+  }
+  .script .bubbles {
+    gap: 8px;
+  }
+  .script .bubble {
+    max-width: 94%;
+    padding: 7px 11px;
+  }
+  .script .bubbleText {
+    font-size: 16px;
+    line-height: 1.45;
+  }
+
+  /* 아래: 도움 카드(큰 글씨 — 그림을 가리지 않고 무대 아래에) + 조작 */
+  .bottom {
+    grid-area: bottom;
+    gap: 6px;
+  }
+  /* 제목·답 예시·단어를 한 흐름으로 이어 쓴다(줄이 차면 다음 줄) — 답 목록 상자를 없애(display: contents) 답 하나하나가 제목·단어
+     칩과 같은 줄에 설 수 있게. 보통 도움 카드(짧은 답 2개 + 단어 1개)는 한 줄, 답 3개 × 20자 남짓(현실적인 긴 쪽)도 세 줄이다 —
+     예전 모양(제목 한 줄 + 답마다 한 줄)은 이 경우 카드가 32dvh 상한까지 커져 그림 무대를 바닥으로 밀었다. 답 글자는 22~30px. */
+  .hintCard {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 24px;
+    max-height: 32dvh;
+    padding: 7px 16px 8px;
+  }
+  .hintTitle {
+    flex: none;
+    margin: 0;
+  }
+  .hintWords {
+    margin: 0;
+  }
+  .hintAnswers,
+  .hintAnswersFallback {
+    display: contents;
+  }
+  .hintAnswer {
+    font-size: clamp(22px, 2.2vw, 30px);
+  }
+  .hintAnswersFallback .hintAnswer {
+    font-size: clamp(20px, 2vw, 26px);
+  }
+  .hintAnswerKo {
+    font-size: 15px;
+  }
+  .hintWord {
+    font-size: 18px;
+  }
+  .hintWordKo {
+    font-size: 15px;
+  }
+}
+
+/* ③의 높이 800px 미만(1024×768, iPad Safari 가로의 실제 보이는 높이 1180×740·1024×690·1133×670급): 도움 카드가 떠 있는 동안만
+   타일의 뜻 줄을 접는다(QA english_talk-ipad_1 O2 — 유지, 높이 조건을 더했다). 도움 카드가 이미 답 예시·단어의 뜻을 보여 주고
+   타일에는 그림(이모지)·영어가 남는다. 이 높이에서 뜻을 남기면 긴 낱말 단어장 + 긴 도움 카드에서 타일이 안에서 스크롤하고 그림이
+   무대 바닥까지 준다. 800px 이상(1180×820·1366×1024)은 뜻을 남겨도 타일 20개와 큰 그림이 함께 들어가므로 접지 않는다 — 막혔을 때
+   뜻이 사라지지 않고, 도움 카드가 뜨고 질 때 타일이 들썩이지 않게. 수치는 리포트 english-talk-ipad-p2 §4. */
+@media (orientation: landscape) and (min-width: 900px) and (min-height: 600px) and (max-height: 799.98px) {
+  .frameHint .wordTileKo {
+    display: none;
+  }
+}
+
 /* ───────────── 대화 보기 ───────────── */
 
 .sceneFigure {
@@ -769,4 +1183,39 @@
   font-size: 19px;
   font-weight: var(--fw-bold);
   overflow-wrap: anywhere;
+}
+
+/* 대화 보기 — 넓은 가로 화면(iPad 가로·데스크톱): 그림·카드를 왼쪽에 크게, 스크립트를 오른쪽 칸에(대화 화면과 같은 방향).
+   문장 탭 → 설명 시트 동작은 그대로다. 그림·카드가 없는 대화는 한 줄 그대로(reviewGrid를 붙이지 않는다). */
+@media (orientation: landscape) and (min-width: 900px) {
+  .reviewMain {
+    max-width: 80rem;
+  }
+  .reviewGrid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) clamp(300px, 38%, 440px);
+    column-gap: 28px;
+    align-items: start;
+  }
+  .reviewGrid .sceneFigureImg {
+    max-width: min(100%, 64dvh);
+  }
+  .reviewGrid .cardGrid {
+    grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  }
+  .reviewGrid .cardTileEmoji {
+    font-size: 40px;
+  }
+  .reviewGrid .cardTileEn {
+    font-size: 18px;
+  }
+  .reviewGrid .cardTileKo {
+    font-size: 14px;
+  }
+  .reviewScript .bubble {
+    max-width: 94%;
+  }
+  .reviewScript .bubbleText {
+    font-size: 17px;
+  }
 }

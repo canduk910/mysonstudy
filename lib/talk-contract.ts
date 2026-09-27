@@ -10,6 +10,7 @@
  * - POST   /api/english/talk/connect          SDP offer + 주제 선택 → SDP answer·callId·주제 스냅샷 (관문 R, 키 없으면 호출 전 501)
  * - POST   /api/english/talk/scene            주제 선택 → 장면 문장 → 주제 일러스트 1장(저장하지 않는다 — 대화 저장 때 함께 보낸다)
  * - POST   /api/english/talk/hangup           callId → 서버 hangup(과금 이중 안전장치, sendBeacon 본문 허용, 실패해도 200)
+ * - POST   /api/english/talk/cards            선생님 줄 하나 → 화면 카드(도움 답 예시·핵심 단어·그림 카드, 호출 J — §12-7). 저장하지 않는다
  * - POST   /api/english/talk                  대화 저장(은우 발화 ≥ 1) + 주제 일러스트(talkImages) — clientSessionId 멱등
  * - POST   /api/english/talk/reorder          목록 순서(범용 lib/reorder-contract.ts)
  * - POST   /api/english/talk/[id]/explain     문장 설명(호출 I) — 서버가 문장·문맥을 꺼낸다, 같은 문장은 저장된 설명 재사용(AI 0)
@@ -28,9 +29,10 @@ import type {
   TalkTopicWord,
   TalkTurn,
 } from "./ai/english/talk-schemas";
+import type { TalkScreenCards } from "./talk-cards";
 import type { TalkSpeed } from "./talk-topics";
 
-export type { TalkCard, TalkExplanation, TalkKeyWord, TalkScriptPiece, TalkSpeaker, TalkTopic, TalkTopicWord, TalkTurn, TalkSpeed };
+export type { TalkCard, TalkExplanation, TalkKeyWord, TalkScriptPiece, TalkSpeaker, TalkTopic, TalkTopicWord, TalkTurn, TalkSpeed, TalkScreenCards };
 
 // ===========================================================================
 // 상한·키 — 화면과 라우트가 같은 값을 본다
@@ -119,7 +121,7 @@ export function newTalkSaveId(): string {
 }
 
 /**
- * **개발 빌드 전용** 가짜 전송(localStorage 키, 값 `"1"`) — 합성 이벤트(인사·도구 호출·은우 발화·늦은 전사·침묵·끊김)를 흘려
+ * **개발 빌드 전용** 가짜 전송(localStorage 키, 값 `"1"`) — 합성 이벤트(인사·선생님 말·은우 발화·늦은 전사·침묵·끊김)를 흘려
  * 화면 흐름을 실호출 없이 e2e로 돌린다(SPEC §21-6). production 번들에서는 읽지 않는다(`process.env.NODE_ENV === "production"`이면
  * localStorage를 읽기 **전에** false — 컴파일 때 상수로 접히고, 가짜 전송 모듈은 동적 import라 번들에서 빠진다).
  */
@@ -244,6 +246,33 @@ export interface TalkHangupSuccess {
 }
 
 export type TalkHangupResponse = TalkHangupSuccess | TalkFailure<"invalid_input" | "no_api_key">;
+
+// ===========================================================================
+// POST /api/english/talk/cards — 화면 카드(호출 J, english.md §12-7). 선생님 줄이 끝날 때마다 화면이 한 번 부른다. 저장하지 않는다.
+//  200 TalkCardsSuccess — {ok:true, answers, words, picture}(서버가 후처리 `sanitizeTalkScreenCards`까지 끝낸 값)
+//  400 invalid_input(모양·폭 — 폭은 lib/talk-cards.ts TALK_CARDS_REQUEST_LIMITS 한 곳. 화면은 buildTalkCardsRequest로 미리 자르므로
+//      정상 경로에서는 나지 않는다 — 화면 버그를 드러내려고 자르지 않고 거부한다)
+//  501 no_api_key(AI를 부르지 않는다)
+//  500 cards_failed(실패·서버 시간 상한 6초 초과·요청 취소 — 재시도 가치가 낮다: 다음 선생님 줄이 곧 새 요청을 만든다)
+//  화면은 200이 아니면 아무것도 하지 않는다 — 도움 카드는 기본 문구(TALK_FALLBACK_HINTS), 그림 카드는 없음.
+// ===========================================================================
+
+export interface TalkCardsRequest {
+  /** 주제 한국어 라벨(대화 시작 때 받은 스냅샷 `TalkTopic.labelKo` — 호출 I의 {topicLabel}과 같은 값) */
+  topic: string;
+  /** 오늘의 단어(단어장 모드 스냅샷 — 책 순서, 최대 TALK_CARDS_REQUEST_LIMITS.words). 단어장이 아니면 [] */
+  words: { en: string; ko: string | null }[];
+  /** 이번 대화에서 띄운 그림 카드 영어(보인 순서의 최근 TALK_CARDS_REQUEST_LIMITS.shown개) */
+  shown: string[];
+  /** 선생님 줄 앞의 최근 줄(오래된 것부터, 최대 TALK_CARDS_REQUEST_LIMITS.context줄) */
+  context: { speaker: TalkSpeaker; text: string }[];
+  /** 선생님이 방금 한 말(그 줄의 확정 글자) */
+  teacherLine: string;
+}
+
+export type TalkCardsSuccess = { ok: true } & TalkScreenCards;
+export type TalkCardsErrorCode = "invalid_input" | "no_api_key" | "cards_failed";
+export type TalkCardsResponse = TalkCardsSuccess | TalkFailure<TalkCardsErrorCode>;
 
 // ===========================================================================
 // POST /api/english/talk — 대화 저장(끝난 뒤 1회, 키 검사 없음) — clientSessionId로 멱등

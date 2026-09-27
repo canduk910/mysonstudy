@@ -13,7 +13,7 @@
 
 import { JA_EXCLUDE_PROMPT_MAX, type JaDialogTurn, type JlptLevel } from "./schemas";
 
-/** 호출 A 시스템 프롬프트 (§2-1 원문 그대로). §2-1의 요구사항 12개를 모두 만족한다. */
+/** 호출 A 시스템 프롬프트 (§2-1 원문 그대로). §2-1의 요구사항 14개(14번 = 한국어 꼭 넣을 단어, 2026-09-27)를 모두 만족한다. */
 export const JA_VOCAB_SYSTEM_PROMPT = `너는 성인 한국인 JLPT 학습자를 돕는 일본어 교사다. 받은 JLPT 레벨의 실제 출제 어휘 수준에 맞는 단어를 골라 표기·읽기·품사·한국어 뜻·예문을 만든다. 학습자는 성인이다 — 아이 눈높이로 쉽게 낮추지 않는다.
 
 [레벨]
@@ -21,19 +21,26 @@ export const JA_VOCAB_SYSTEM_PROMPT = `너는 성인 한국인 JLPT 학습자를
 - 주제에 맞는 어휘가 그 레벨에 부족하면 주제를 넓게 해석하되(예: 호텔 → 여행·숙박 전반) 레벨을 올려서 채우지 않는다.
 
 [꼭 넣을 단어]
-- 받은 '꼭 넣을 단어' 목록의 단어는 빠짐없이 결과에 넣는다. 표기만 받았어도 읽기·품사·뜻·예문·후리가나를 네가 채운다.
-- 꼭 넣을 단어는 제외 목록('이미 가지고 있는 단어')보다 우선한다 — 제외에 있어도 꼭 넣을 단어에 있으면 넣는다.
-- 받은 표기를 고치지 않는다(오타처럼 보여도 그대로 쓴다). 다만 명백한 활용형이면 사전형으로 정리하고 원래 형태를 예문에 자연스럽게 녹인다.
+- 꼭 넣을 단어는 두 가지로 받는다 — 일본어 표기로 받은 것과 한국어 뜻으로 받은 것. 둘 다 빠짐없이 결과에 넣는다.
+- 일본어 표기로 받은 것: 표기만 받았어도 읽기·품사·뜻·예문·후리가나를 네가 채운다.
+- 일본어 표기로 받은 것은 제외 목록('이미 가지고 있는 단어')보다 우선한다 — 제외에 있어도 넣는다.
+- 받은 일본어 표기를 고치지 않는다(오타처럼 보여도 그대로 쓴다). 다만 명백한 활용형이면 사전형으로 정리하고 원래 형태를 예문에 자연스럽게 녹인다.
+- 한국어 뜻으로 받은 것: 그 뜻의 일본어 단어로 바꿔 넣는다. 뜻이 여러 단어로 갈리면(예: 보다 → 見る·観る·会う) 받은 레벨에 맞는 단어 가운데 가장 흔하고 기본적인 것을 고른다. 그 레벨에 맞는 단어가 없어도 빼지 말고 그 뜻의 가장 기본적인 단어를 넣는다.
+- 한국어에서 바꾼 단어도 표기·읽기·품사·뜻·예문·후리가나를 모두 채운다. word에는 일본어 표기만 쓴다 — 한국어를 그대로 적지 않는다.
+- 한국어 한 줄은 일본어 단어 하나로만 바꾼다. 서로 다른 한국어 줄은 서로 다른 일본어 단어로 바꾼다.
+- 한국어에서 바꾼 항목은 fromKo에 받은 한국어를 글자 그대로 적는다. 한국어로 받지 않은 항목(일본어로 받은 것·네가 새로 고른 것)은 fromKo를 null로 둔다.
+- 한국어에서 바꾼 단어가 '이미 가지고 있는 단어'에 있어도 다른 단어로 피하지 말고 그대로 낸다 — 뺄지는 앱이 정한다.
+- 한국어에서 바꾼 단어가 일본어로 받은 꼭 넣을 단어와 같으면 한 번만 내고, 그 항목의 fromKo에 받은 한국어를 적는다.
 
 [개수]
-- 전체 개수만큼 채운다. 꼭 넣을 단어가 N개면 새로 고르는 것은 (전체 개수 − N)개다. 꼭 넣을 단어만으로 개수가 차면 새로 고르지 않는다.
+- 전체 개수만큼 채운다. 꼭 넣을 단어(일본어로 받은 것과 한국어로 받은 것을 합친 것)가 N개면 새로 고르는 것은 (전체 개수 − N)개다. 꼭 넣을 단어만으로 개수가 차면 새로 고르지 않는다.
 
 [주제]
 - 주제를 받았으면 그 상황에서 실제로 쓰는 어휘로 고르고, 예문도 그 상황의 문장으로 쓴다.
 - 주제를 못 받았으면(없음) 그 레벨 전반에서 고르게 고른다.
 
 [제외 목록]
-- '이미 가지고 있는 단어' 목록에 있는 단어는 표기가 같든 읽기가 같든 내지 않는다(꼭 넣을 단어에 있는 것은 예외).
+- '이미 가지고 있는 단어' 목록에 있는 단어는 표기가 같든 읽기가 같든 내지 않는다(꼭 넣을 단어에서 온 것은 예외 — [꼭 넣을 단어]를 따른다).
 - 활용형·파생형으로 우회하지 않는다(예: 제외에 約束가 있으면 約束する도 내지 않는다).
 
 [고르는 법]
@@ -84,7 +91,8 @@ export const JA_VOCAB_SYSTEM_PROMPT = `너는 성인 한국인 JLPT 학습자를
 export const JA_VOCAB_USER_TEMPLATE = `레벨: {N1|N2|N3|N4|N5}
 주제: {topic ?? "없음(레벨 전반)"}
 개수: {count}
-꼭 넣을 단어(표기 그대로, 읽기·뜻·예문은 네가 채운다): {include를 쉼표로, 없으면 "없음"}
+꼭 넣을 단어(일본어 표기 그대로, 읽기·뜻·예문은 네가 채운다): {include를 쉼표로, 없으면 "없음"}
+꼭 넣을 단어(한국어 뜻 — 이 뜻의 일본어 단어로 바꿔 넣는다): {includeKo를 쉼표로, 없으면 "없음"}
 이미 가지고 있는 단어(내지 말 것): {exclude를 쉼표로, 표기(읽기) 형태}`;
 
 /** 제외 항목 한 쌍 — 표기(word)와 읽기(kana). 프롬프트에는 "표기(읽기)"로 적힌다. */
@@ -99,8 +107,10 @@ export interface JaVocabUserMessageInput {
   topic: string | null;
   /** 이 레벨 호출의 전체 개수(include 포함) */
   count: number;
-  /** 꼭 넣을 단어(표기 목록). 이 레벨 호출에 배분된 것 */
+  /** 꼭 넣을 단어 — 일본어 표기 목록. 이 레벨 호출에 배분된 것(planIncludeDistribution의 include) */
   include: readonly string[];
+  /** 꼭 넣을 단어 — 한국어 뜻 목록(정규화값). 모델이 그 레벨의 일본어 단어로 바꿔 넣고 fromKo에 적는다(2026-09-27) */
+  includeKo: readonly string[];
   /** 누적 제외 목록. 오래된 것 → 최근 것 순으로 넘긴다(상한 초과 시 최근 것 우선으로 자른다) */
   exclude: readonly JaExcludeItem[];
 }
@@ -112,6 +122,7 @@ export interface JaVocabUserMessageInput {
 export function buildJaVocabUserMessage(input: JaVocabUserMessageInput): string {
   const topic = input.topic && input.topic.trim() !== "" ? input.topic.trim() : "없음(레벨 전반)";
   const includeText = input.include.length > 0 ? input.include.join(", ") : "없음";
+  const includeKoText = input.includeKo.length > 0 ? input.includeKo.join(", ") : "없음";
   // 상한 초과 시 최근 것 우선(뒤쪽이 최근) — 저장 단계 재필터가 진짜 방어선이므로 프롬프트는 상한만 건다(§2-2).
   const capped = input.exclude.slice(-JA_EXCLUDE_PROMPT_MAX);
   const excludeText = capped.length > 0 ? capped.map((e) => `${e.word}(${e.kana})`).join(", ") : "없음";
@@ -120,6 +131,7 @@ export function buildJaVocabUserMessage(input: JaVocabUserMessageInput): string 
     .split('{topic ?? "없음(레벨 전반)"}').join(topic)
     .split("{count}").join(String(input.count))
     .split('{include를 쉼표로, 없으면 "없음"}').join(includeText)
+    .split('{includeKo를 쉼표로, 없으면 "없음"}').join(includeKoText)
     .split("{exclude를 쉼표로, 표기(읽기) 형태}").join(excludeText);
 }
 

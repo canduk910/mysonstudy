@@ -62,7 +62,7 @@ description: "prompt-tuner 에이전트가 프롬프트 품질을 튜닝할 때 
 |---|---|---|
 | 영어 | 판독 프롬프트 — 호출 A(표지)·A′(본문·목차)·C(단어장 원문 전사) | 보이는 것만 옮기는 호출이다. 표현을 다듬으면 창작이 새어 든다 |
 | 영어 | grounding 가드 — `groundChapters`·`isGroundedInTranscript`(자막에 없는 en 문장을 저장 전에 잘라낸다), `resolveAllowedStorySource`(넘긴 근거보다 높은 storySource를 zod가 거부) | 프롬프트 지시로 끝내지 않은 "자막 밖 창작 금지"의 최종 강제다. 느슨해지면 지어낸 문장이 원문처럼 저장된다 |
-| 영어 | 자유대화 — 선생님 지시문 `# Safety`(개인정보를 묻지 않고 되풀이하지 않음), 전사에 단어장 prompt·language 없음, 호출 I keyWords ⊂ 문장·ko/en 조각 분리·선생님 문장 betterEn null, 1학년 눈높이 | 아이 데이터·안전의 1차 장치이고, 하지 않은 말이 맞게 적히거나 문장에 없는 단어를 짚는 환각을 막는다(`english-dials.md` §10-4) |
+| 영어 | 자유대화 — 선생님 지시문 `# Safety`(개인정보를 묻지 않고 되풀이하지 않음), 전사는 language en 고정·단어장 prompt·keywords 없음, 호출 I keyWords ⊂ 문장·ko/en 조각 분리·선생님 문장 betterEn null, 1학년 눈높이 | 아이 데이터·안전의 1차 장치이고, 하지 않은 말이 맞게 적히거나 문장에 없는 단어를 짚는 환각을 막는다(`english-dials.md` §10-4) |
 | 수학 | 호출 C(검산)·`verifyScene`·`held` 판정 | 보류가 줄어드는 대신 틀린 답이 아이에게 간다 |
 | 일본어 | 호출 B(대화 전사, temperature 0) 프롬프트 | 사진에 있는 것만 옮긴다. 해설은 호출 C가 따로 한다 |
 | 일본어 | 토큰 무결성 zod — `surface`를 이으면 원문(`word`·`example.ja`·`definitionJa`)과 정확히 같아야 한다 | 어긋나면 후리가나가 본문을 왜곡한 것이다 |

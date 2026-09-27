@@ -70,17 +70,26 @@ import {
 } from "./english/vocabbook-schemas";
 import { buildEnrichRequestItems } from "./english/vocabbook-enrich";
 import {
+  TALK_CARDS_CALL_OPTIONS,
+  TALK_CARDS_SDK_MAX_RETRIES,
+  TALK_CARDS_SYSTEM_PROMPT,
+  TALK_CARDS_TIMEOUT_MS,
   TALK_EXPLAIN_CALL_OPTIONS,
   TALK_EXPLAIN_SYSTEM_PROMPT,
+  buildTalkCardsUserMessage,
   buildTalkExplainUserMessage,
 } from "./english/talk-prompts";
 import {
+  TALK_SCREEN_CARDS_JSON_SCHEMA,
   TALK_SENTENCE_EXPLANATION_JSON_SCHEMA,
   buildTalkExplainZod,
+  talkScreenCardsSchema,
+  type TalkCardsInput,
   type TalkExplainInput,
   type TalkExplainResult,
 } from "./english/talk-schemas";
 import { pickTalkSentence } from "../talk-transcript";
+import { sanitizeTalkScreenCards, type TalkScreenCards } from "../talk-cards";
 import {
   JA_DIALOG_COACH_CALL_OPTIONS,
   JA_DIALOG_COACH_SYSTEM_PROMPT,
@@ -104,7 +113,7 @@ import {
   jaDialogCoachingSchema,
   jaDialogExtractionSchema,
   jaKanjiInfoGenerationSchema,
-  jaVocabGenerationSchema,
+  makeJaVocabGenerationSchema,
   type JaDialogCoaching,
   type JaDialogExtraction,
   type JaDialogTurn,
@@ -136,6 +145,21 @@ export function resolveModel(): string {
  */
 export function resolveVerifyModel(): string {
   return process.env.OPENAI_MODEL_VERIFY?.trim() || resolveModel();
+}
+
+/**
+ * 영어 자유대화 호출 J(화면 카드, english.md §12-7)의 기본 모델 — **빠른 비추론 소형 모델**.
+ * gpt-4.1-mini: 설치된 SDK(openai 7.4.0)의 모델 목록(`ChatModel`)에 있고, Structured Outputs(strict json_schema)를 지원하며,
+ * 추론 토큰을 쓰지 않는다. 그래서 (1) 스펙의 temperature 0.3이 그대로 적용되고(추론 계열은 temperature를 400으로 거부해
+ * 한 번 헛돈다) (2) max_output_tokens 600을 숨은 추론 토큰이 먹지 않으며(incomplete → 재요청 → 6초 상한 초과 위험)
+ * (3) 선생님 줄마다 부르는 짧은 텍스트 호출의 지연이 작다. 목록의 gpt-5.x mini/nano는 추론 계열이라 고르지 않았다.
+ * env `OPENAI_TALK_CARDS_MODEL`로 바꾼다(빈 값·공백이면 이 값 — SPEC §11 빈 값 폴백 관용구).
+ */
+export const DEFAULT_TALK_CARDS_MODEL = "gpt-4.1-mini" satisfies OpenAI.ChatModel;
+
+/** 호출 J 모델 — env `OPENAI_TALK_CARDS_MODEL`(앞뒤 공백 무시), 비면 DEFAULT_TALK_CARDS_MODEL(`||` — 빈 문자열도 미설정) */
+export function resolveTalkCardsModel(): string {
+  return process.env.OPENAI_TALK_CARDS_MODEL?.trim() || DEFAULT_TALK_CARDS_MODEL;
 }
 
 let cachedClient: OpenAI | null = null;
@@ -211,6 +235,38 @@ export interface CallWithSchemaArgs<T> {
    * 수학 호출 C(검산)가 `resolveVerifyModel()`을 넘겨 심판만 다른 모델로 돌리는 데 쓴다(수학 §1).
    */
   model?: string;
+  /**
+   * 이 호출 전체(첫 요청 + zod 재요청 + temperature 재시도)를 끊는 신호. 생략하면 SDK 기본(상한 없음에 가깝다) 그대로다.
+   * 시간 상한이 스펙에 있는 호출이 호출부에서 `AbortSignal.timeout`(과 요청 취소 신호)을 합쳐 넘긴다 — 영어 호출 J(화면 카드 6초).
+   * 끊기면 SDK가 `APIUserAbortError`를 던지고, 래퍼는 삼키지 않는다(로그는 finally에서 남는다). 과목 분기가 아니라 일반 파라미터다.
+   */
+  signal?: AbortSignal;
+  /**
+   * 이 호출의 **SDK 자동 재시도** 횟수(요청 단위 `maxRetries`). 생략하면 SDK 기본(2회) 그대로다 — 기존 호출 모양 불변.
+   * SDK는 429·503의 `retry-after`를 따르며 그 대기가 `signal`을 보지 않는다. 그래서 시간 상한이 있는 호출은 0을 넘겨야 상한이 지켜진다
+   * — 영어 호출 J(`TALK_CARDS_SDK_MAX_RETRIES`). zod 재요청(아래 1회)과는 별개다. 과목 분기가 아니라 일반 파라미터다.
+   */
+  maxRetries?: number;
+}
+
+/** `callWithSchema`가 SDK에 넘기는 요청 옵션(`responses.create`의 둘째 인자) 중 이 래퍼가 싣는 두 키. */
+export type CallRequestOptions = { signal?: AbortSignal; maxRetries?: number };
+
+/**
+ * `callWithSchema`의 요청 옵션 조립 — **과목 분기 없는 순수 함수**. `args`에서 `signal`·`maxRetries` 두 키만 옮긴다.
+ * - 둘 다 없으면 `undefined` → 옵션 없이 부른다(수학·일본어·토익·영어 다른 호출의 기존 모양 그대로 — SDK 기본 재시도 2회).
+ * - `maxRetries`는 **값이 있는지(`!== undefined`)**로 판정한다. 참거짓으로 보면 0이 빠져 SDK 기본 재시도가 되살아나고,
+ *   429·503의 `retry-after` 대기(신호를 보지 않는다)가 호출 J의 6초 상한을 뚫는다(QA talk-cards-j P3-A·P3-E).
+ * - 다른 인자(call·model·temperature…)는 옵션에 싣지 않는다.
+ * eval "자유대화 호출J"가 입력별 결과를 행으로 잠근다(`{maxRetries:0}`→`{maxRetries:0}`, `{}`→`undefined`, `{signal}`→`{signal}` 등).
+ */
+export function buildCallRequestOptions(args: CallRequestOptions): CallRequestOptions | undefined {
+  return args.signal || args.maxRetries !== undefined
+    ? {
+        ...(args.signal ? { signal: args.signal } : {}),
+        ...(args.maxRetries !== undefined ? { maxRetries: args.maxRetries } : {}),
+      }
+    : undefined;
 }
 
 type ValidationOutcome<T> =
@@ -295,17 +351,20 @@ export async function callWithSchema<T>(args: CallWithSchemaArgs<T>): Promise<T>
       max_output_tokens: maxOutputTokens,
     };
     if (!modelsRejectingTemperature.has(model)) params.temperature = temperature;
+    // 끊는 신호·SDK 재시도 횟수가 있으면 요청마다 넘긴다(재요청·temperature 재시도까지 같은 값 — 호출 전체 상한).
+    // 둘 다 없으면 옵션 없이(기존 동작 그대로). 조립 규칙은 순수 함수 하나(buildCallRequestOptions)에 있고 eval이 행동으로 잠근다.
+    const requestOptions = buildCallRequestOptions(args);
 
     let res: OpenAI.Responses.Response;
     try {
-      res = await getOpenAIClient().responses.create(params);
+      res = await getOpenAIClient().responses.create(params, requestOptions);
     } catch (err) {
       // 스펙(HARNESS §1)의 temperature 다이얼은 이 계열 모델에는 적용 자체가 불가하므로,
       // 파라미터를 빼는 것이 스펙 의도를 유지하는 최소 변형이다.
       if (params.temperature === undefined || !isTemperatureUnsupportedError(err)) throw err;
       modelsRejectingTemperature.add(model);
       delete params.temperature;
-      res = await getOpenAIClient().responses.create(params);
+      res = await getOpenAIClient().responses.create(params, requestOptions);
     }
     // 재요청이 발생하면 두 호출의 토큰을 합산해 기록한다
     inputTokens += res.usage?.input_tokens ?? 0;
@@ -443,14 +502,18 @@ export async function suggestRelatedWords(input: {
  * (레벨 여러 개면 app-builder가 planIncludeDistribution으로 나눠 이 함수를 병렬로 부른다 — client에 과목/레벨 분기 없음).
  * 반환은 레벨 태깅 전의 모델 출력(JaVocabGeneration)이다. 제외 재필터·중복 접기·레벨 태깅·부분 성공은
  * app-builder가 lib/ai/japanese/vocab.ts의 applyVocabPostprocess로 수행한다(그 단계가 exclude·include·level을 안다).
+ * includeKo(한국어 꼭 넣을 단어, 2026-09-27)는 계획의 plan.includeKo를 그대로 넘긴다 — 생략하면 빈 배열.
+ * zod가 fromKo를 이 목록과 대조해야 해서 스키마를 호출마다 팩토리로 만든다(makeJaVocabGenerationSchema).
  */
 export async function generateJapaneseVocab(input: {
   level: JlptLevel;
   topic: string | null;
   include: readonly string[];
+  includeKo?: readonly string[];
   exclude: readonly JaExcludeItem[];
   count: number;
 }): Promise<JaVocabGeneration> {
+  const includeKo = input.includeKo ?? [];
   return callWithSchema({
     call: JA_VOCAB_CALL_OPTIONS.call,
     system: JA_VOCAB_SYSTEM_PROMPT,
@@ -461,12 +524,13 @@ export async function generateJapaneseVocab(input: {
           topic: input.topic,
           count: input.count,
           include: input.include,
+          includeKo,
           exclude: input.exclude,
         }),
       ),
     ],
     jsonSchema: JA_VOCAB_GENERATION_JSON_SCHEMA,
-    zodSchema: jaVocabGenerationSchema,
+    zodSchema: makeJaVocabGenerationSchema({ includeKo }),
     temperature: JA_VOCAB_CALL_OPTIONS.temperature,
     maxOutputTokens: JA_VOCAB_CALL_OPTIONS.maxOutputTokens,
   });
@@ -887,4 +951,46 @@ export async function explainTalkSentence(input: TalkExplainInput): Promise<Talk
     keyWords: out.keyWords,
     model,
   };
+}
+
+/**
+ * 호출 J의 끊는 신호 — 서버 시간 상한(TALK_CARDS_TIMEOUT_MS, §12-7 "6초")과 요청 취소 신호(라우트의 `req.signal` — 앱이 더 새 선생님
+ * 줄의 카드를 청하며 앞선 요청을 끊을 때)를 하나로 합친다. 둘 중 먼저 온 쪽이 호출 전체(재요청 포함)를 끊는다.
+ * `ms`는 eval이 짧은 값으로 동작을 보려고 받는다(운영은 기본값).
+ */
+export function talkCardsAbortSignal(external?: AbortSignal | null, ms: number = TALK_CARDS_TIMEOUT_MS): AbortSignal {
+  const timeout = AbortSignal.timeout(ms);
+  return external ? AbortSignal.any([external, timeout]) : timeout;
+}
+
+/**
+ * 호출 J — 자유대화 화면 카드 생성(english.md §12-7). 선생님 줄이 끝날 때마다 라우트(`POST /api/english/talk/cards`)가 부른다.
+ * 과목 분기 없이 `callWithSchema`만 부르고(로그 라벨 `talk_cards`), 결과는 **후처리(`sanitizeTalkScreenCards`)를 지난 값**이다 —
+ * 라우트는 그대로 200 본문으로 내리면 된다. zod는 타입·폭만(재요청으로 카드를 늦추지 않게), 근거 검사는 후처리가 항목 단위로 거른다.
+ *
+ * - 모델: `resolveTalkCardsModel()`(env `OPENAI_TALK_CARDS_MODEL`, 빈 값이면 DEFAULT_TALK_CARDS_MODEL).
+ * - 시간 상한: 6초(재요청 포함 전체). `options.signal`(라우트의 req.signal)이 끊겨도 멈춘다 — 둘 다 `APIUserAbortError`로 던진다.
+ *   SDK 자동 재시도는 끈다(`TALK_CARDS_SDK_MAX_RETRIES` = 0) — `retry-after` 대기가 신호를 보지 않아 상한을 뚫기 때문이다(QA P3-A).
+ *   그래서 상류 429·5xx는 곧바로 던진다(라우트 500).
+ * - 이 배선(후처리·신호·모델·스키마·옵션·빈 말 조기 return)은 eval "자유대화 정적"이 소스로 잠근다 — 오프라인 게이트가 fetch를 막아
+ *   이 함수를 태울 수 없어서다(QA P2-A). 줄을 바꾸면 그 행도 함께 본다.
+ * - 선생님 말이 비었으면 부르지 않고 빈 카드를 돌려준다(과금 0 — 라우트 zod가 먼저 400으로 거르지만 방어).
+ * - 실패는 전부 throw다: 키 없음(getOpenAIClient) → 라우트 501(라우트가 먼저 키를 본다), 재요청 2회 실패·시간 초과·취소 → 라우트 500.
+ *   화면은 실패·시간 초과면 도움은 기본 문구(TALK_FALLBACK_HINTS), 그림 카드는 없음.
+ */
+export async function generateTalkCards(input: TalkCardsInput, options: { signal?: AbortSignal | null } = {}): Promise<TalkScreenCards> {
+  if (input.teacherLine.trim() === "") return { answers: [], words: [], picture: null };
+  const out = await callWithSchema({
+    call: TALK_CARDS_CALL_OPTIONS.call,
+    system: TALK_CARDS_SYSTEM_PROMPT,
+    user: [textPart(buildTalkCardsUserMessage(input))],
+    jsonSchema: TALK_SCREEN_CARDS_JSON_SCHEMA,
+    zodSchema: talkScreenCardsSchema,
+    temperature: TALK_CARDS_CALL_OPTIONS.temperature,
+    maxOutputTokens: TALK_CARDS_CALL_OPTIONS.maxOutputTokens,
+    model: resolveTalkCardsModel(),
+    signal: talkCardsAbortSignal(options.signal),
+    maxRetries: TALK_CARDS_SDK_MAX_RETRIES,
+  });
+  return sanitizeTalkScreenCards(out, { teacherLine: input.teacherLine, words: input.words, shown: input.shown });
 }

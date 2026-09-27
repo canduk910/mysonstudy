@@ -9,19 +9,21 @@
  *   단어 경계로 실제로 있어야 한다(문장에 없는 단어를 짚으면 환각). 폭은 프롬프트보다 넓게 잡는다(§12-3).
  * - 저장 레코드(`TalkSessionRecord`, lib/store.ts — app-builder)가 import하는 하위 타입(TalkTopic·TalkTurn·TalkExplanation)과
  *   자유대화 상한(`TALK_LIMITS`)의 단일 정의처다. 화면이 알아야 하는 값(직접 입력 글자 상한·5분)은 클라이언트 안전 모듈
- *   lib/talk-topics.ts에 있고, 여기서는 그 값을 가져다 묶기만 한다(두 번 정의하지 않는다).
+ *   lib/talk-topics.ts에, 호출 J 입력 폭과 같은 값(단어 수·줄 글자)과 카드 보관 수는 lib/talk-cards.ts에 있고, 여기서는 그 값을
+ *   가져다 묶기만 한다(두 번 정의하지 않는다).
  *
- * - §12-6 화면 카드의 도구 정의 `TALK_TOOLS`(show_hints·show_picture)도 여기 둔다 — 세션 설정(서버 전용 lib/talk-session-config.ts)만
- *   쓰고, 스펙 JSON과 **의미 동치**로 eval이 잠근다. 도구 호출 검사·기본 문구·폭은 클라이언트 안전 모듈 lib/talk-cards.ts에 있다.
+ * - §12-7 호출 J(화면 카드 생성) JSON Schema `TALK_SCREEN_CARDS_JSON_SCHEMA`(스펙 원문과 **의미 동치** — eval이 잠근다)와 zod
+ *   `talkScreenCardsSchema`(타입·폭만), 입력 타입 `TalkCardsInput`. 근거 검사 후처리·입력 폭·기본 문구는 클라이언트 안전 모듈
+ *   lib/talk-cards.ts에 있다. §12-6의 도구 정의 `TALK_TOOLS`·`tool_choice`는 세션에서 도구를 뺀 2026-09-27에 지웠다.
+ * - 선생님 턴의 출처 `TALK_TURN_ORIGINS`(§12-7 — reply·greeting·nudge·wrapup)와 저장 요청 턴 zod `talkSaveTurnSchema`(출처 수용).
  *
  * ⚠️ zod 런타임을 import한다 — 클라이언트 컴포넌트는 이 파일에서 **값**을 import하지 말고 `import type`만(계약 파일 관용구).
  */
 
 import { z } from "zod";
-import type { RealtimeFunctionTool, RealtimeToolChoiceConfig } from "openai/resources/realtime/realtime";
 import { containsHangul, type StrictJsonSchema } from "./schemas";
 import { TALK_CUSTOM_TOPIC_MAX_CHARS, TALK_MAX_DURATION_SEC } from "../../talk-topics";
-import { TALK_CARD_LIMITS, TALK_TOOL_NAMES, containsLatin } from "../../talk-cards";
+import { TALK_CARDS_REQUEST_LIMITS, TALK_CARD_LIMITS, containsLatin, type TalkScreenCards } from "../../talk-cards";
 
 // ---------------------------------------------------------------------------
 // 타입 — 저장 모델(§12-4)의 하위 타입. 선택 키(`?`) 없이 전부 필수(nullable)다(Firestore가 undefined를 거부).
@@ -34,10 +36,16 @@ export type TalkSpeaker = (typeof TALK_SPEAKERS)[number];
 export const TALK_TOPIC_KINDS = ["preset", "custom", "vocab"] as const;
 export type TalkTopicKind = (typeof TALK_TOPIC_KINDS)[number];
 
-/** 단어장 모드에서 선생님에게 실제로 넘긴 단어 한 개(스냅샷). 뜻이 없으면 ko=null(지시문에서 뜻 생략). */
+/**
+ * 단어장 모드에서 선생님에게 실제로 넘긴 단어 한 개(스냅샷). 뜻이 없으면 ko=null(지시문에서 뜻 생략).
+ * emoji = 단어장 항목의 이모지(`VocabEntry.imageEmoji`) — **화면 표시용**이다(그림·단어 영역). 지시문 수업 블록에는 넣지 않는다
+ * (`TALK_LESSON_WORDS`의 `{words}` 줄 형식 불변 — spec-sync). 없거나 그림 문자 판정(`sanitizeTalkEmoji`)에 떨어지면 null,
+ * 이 필드가 생기기 전(2026-09-27)의 스냅샷도 null로 읽는다(normalizeTalkTopic).
+ */
 export interface TalkTopicWord {
   en: string;
   ko: string | null;
+  emoji: string | null;
 }
 
 /** 대화 주제 스냅샷 — 서버가 해석해 지시문에 넣은 **그대로** 저장한다(나중에 단어장이 바뀌어도 기록은 그대로, §12-1). */
@@ -54,13 +62,42 @@ export interface TalkTopic {
   words: TalkTopicWord[];
 }
 
+/**
+ * 선생님 줄의 출처(§12-7, 2026-09-27) — 어떤 `response.create`가 그 말을 낳았는가.
+ * reply = 은우 발화 뒤 서버의 자동 응답(앱이 청하지 않은 응답 전부) · greeting = 첫 인사 · nudge = 도움 요청(12초·🙋) · wrapup = 마무리.
+ * 앱이 보낸 response.create에 이어 온 response.created면 그 출처, 아니면 reply(판정은 lib/talk-transcript.ts 리듀서).
+ * "선생님이 두 명처럼 답한다" 같은 신고를 대화 기록으로 가르는 증거다(대화 보기 `?debug=1` 칩).
+ */
+export const TALK_TURN_ORIGINS = ["reply", "greeting", "nudge", "wrapup"] as const;
+export type TalkTurnOrigin = (typeof TALK_TURN_ORIGINS)[number];
+/** 앱이 response.create를 보낼 때 다는 출처(reply 빼고 셋 — §12-7 "앱이 response.create를 보내는 경우는 첫 인사·도움 요청·마무리 셋뿐") */
+export type TalkAppOrigin = Exclude<TalkTurnOrigin, "reply">;
+
 /** 저장용 턴 — toTalkTurns(lib/talk-transcript.ts)가 실시간 줄에서 만든다 */
 export interface TalkTurn {
   speaker: TalkSpeaker;
   text: string;
   /** 선생님 말이 끊겼는가(response.done cancelled). 은우 턴은 늘 false */
   interrupted: boolean;
+  /**
+   * 선생님 턴의 출처(§12-7). 은우 턴·옛 기록(2026-09-27 전)·출처를 모르는 옛 번들의 선생님 턴은 null(normalizeTalkSessionRecord가
+   * 채운다). 필수 nullable이다(선택 키 금지 규약 — Firestore undefined). 저장 라우트는 `talkSaveTurnSchema`로 받아 은우 턴을 null로 되돌린다.
+   */
+  origin: TalkTurnOrigin | null;
 }
+
+/**
+ * 저장 요청(`POST /api/english/talk`)의 턴 하나 zod — **출처 수용**(§12-7). origin은 옛 번들(이 필드 전의 화면)이 빼고 보내도
+ * 대화를 잃지 않게 null 기본값이고, 은우 턴의 값은 라우트가 null로 되돌린다. 글자 폭(20,000자)은 저장 라우트의 "넉넉한 방어선" 그대로다
+ * (실제 상한 TALK_LIMITS.turnChars로는 라우트가 자른다 — 거부하지 않는다). 저장 라우트(app/api/english/talk/route.ts)가 이것으로 받는다.
+ */
+export const TALK_SAVE_TURN_TEXT_MAX = 20_000;
+export const talkSaveTurnSchema = z.object({
+  speaker: z.enum(TALK_SPEAKERS),
+  text: z.string().max(TALK_SAVE_TURN_TEXT_MAX),
+  interrupted: z.boolean(),
+  origin: z.enum(TALK_TURN_ORIGINS).nullable().default(null),
+});
 
 export const TALK_SCRIPT_LANGS = ["ko", "en"] as const;
 export type TalkScriptLang = (typeof TALK_SCRIPT_LANGS)[number];
@@ -125,12 +162,12 @@ export type TalkExplainResult = Omit<TalkExplanation, "createdAt">;
 export const TALK_LIMITS = {
   /** 저장 턴 수 상한 */
   turns: 200,
-  /** 턴 하나의 글자 상한 */
-  turnChars: 1000,
+  /** 턴 하나의 글자 상한 — 정의처는 lib/talk-cards.ts(호출 J 줄 폭과 한 값 — 클라이언트 안전 모듈이라 거기에 둔다) */
+  turnChars: TALK_CARDS_REQUEST_LIMITS.lineMaxChars,
   /** 대화 하나에 붙는 설명 수 상한 */
   explanations: 200,
-  /** 단어장 모드에서 선생님에게 넘기는 단어 수 상한(책 순서) */
-  vocabWords: 20,
+  /** 단어장 모드에서 선생님에게 넘기는 단어 수 상한(책 순서) — 정의처는 lib/talk-cards.ts(호출 J `{words}` 폭과 한 값) */
+  vocabWords: TALK_CARDS_REQUEST_LIMITS.words,
   /** 직접 입력 주제 글자 상한 — 정의처는 lib/talk-topics.ts(화면 입력창이 같은 값을 본다) */
   customTopicChars: TALK_CUSTOM_TOPIC_MAX_CHARS,
   /** 대화 한 번의 시간 상한(초) — 정의처는 lib/talk-topics.ts */
@@ -193,65 +230,96 @@ export const TALK_SENTENCE_EXPLANATION_JSON_SCHEMA: StrictJsonSchema = {
 };
 
 // ---------------------------------------------------------------------------
-// §12-6 화면 카드 — 도구 정의 (스펙 JSON과 의미 동치, 세션 설정 `tools`)
+// §12-7 호출 J — talk_screen_cards JSON Schema (스펙 원문, 의미 동치) + zod(타입·폭만)
 // ---------------------------------------------------------------------------
 
 /**
- * 선생님이 화면 카드를 보내는 도구 두 개(english.md §12-6 원문 JSON). 배열 개수·글자 제약은 스키마에 넣지 않는다(스펙 원문 그대로) —
- * 도착한 인자는 lib/talk-cards.ts `parseTalkToolCall`이 항목 단위로 검사한다(모델 출력이라 믿지 않는다).
+ * 호출 J 출력 JSON Schema(english.md §12-7 원문). 배열 개수·글자 제약은 넣지 않는다(§1 공통 규칙) — zod가 폭을,
+ * 후처리(lib/talk-cards.ts `sanitizeTalkScreenCards`)가 근거·항목 검사를 맡는다. `picture`는 카드 한 장 또는 null(anyOf).
+ * (§12-6의 도구 정의 `TALK_TOOLS`·`tool_choice`는 2026-09-27 세션에서 빠지며 지웠다 — 음성 모델에는 도구가 없다.)
  */
-export const TALK_TOOLS: readonly RealtimeFunctionTool[] = [
-  {
-    type: "function",
-    name: TALK_TOOL_NAMES.hints,
-    description:
-      "Silently prepare answer help for the question you just asked. The app shows it on the child's screen only if the child gets stuck.",
-    parameters: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        answers: {
-          type: "array",
-          description: "2 or 3 short English answers the child could say (2 to 6 easy words each).",
-          items: { type: "string" },
+export const TALK_SCREEN_CARDS_JSON_SCHEMA: StrictJsonSchema = {
+  name: "talk_screen_cards",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["answers", "words", "picture"],
+    properties: {
+      answers: { type: "array", items: { type: "string" } },
+      words: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["emoji", "en", "ko"],
+          properties: {
+            emoji: { type: "string" },
+            en: { type: "string" },
+            ko: { type: "string" },
+          },
         },
-        words: {
-          type: "array",
-          description: "Up to 3 key words for the answers.",
-          items: {
+      },
+      picture: {
+        anyOf: [
+          {
             type: "object",
             additionalProperties: false,
+            required: ["emoji", "en", "ko"],
             properties: {
               emoji: { type: "string" },
               en: { type: "string" },
               ko: { type: "string" },
             },
-            required: ["emoji", "en", "ko"],
           },
-        },
+          { type: "null" },
+        ],
       },
-      required: ["answers", "words"],
     },
   },
-  {
-    type: "function",
-    name: TALK_TOOL_NAMES.picture,
-    description: "Silently show a picture card on the child's screen for a thing, animal, food, color, or action you are talking about.",
-    parameters: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        emoji: { type: "string", description: "One to three emoji that show the word." },
-        en: { type: "string", description: "The English word or short phrase." },
-        ko: { type: "string", description: "Its easy Korean meaning." },
-      },
-      required: ["emoji", "en", "ko"],
-    },
-  },
-];
+  strict: true,
+};
 
-/** 도구 선택(§12-6 `tool_choice: "auto"`) */
-export const TALK_TOOL_CHOICE: RealtimeToolChoiceConfig = "auto";
+/**
+ * 호출 J zod 폭(§12-7 "zod: `answers` 0~4, `words` 0~4, 문자열 길이 상한"). **타입·폭만** 본다 — 근거 검사(그림 카드가 선생님 말에
+ * 있는가·한글 섞인 답)는 후처리가 항목 단위로 거른다. zod가 거부하면 callWithSchema가 1회 재요청하는데, 카드는 지연에 민감해
+ * (6초 상한) 폭을 후처리 폭(TALK_CARD_LIMITS — 답 60자·이모지 16자·영어 30자·뜻 20자)의 두 배로 넉넉히 잡았다. 글자 수는 zod 기본
+ * (UTF-16 길이)이다 — 이모지 16 코드 포인트는 32 안에 든다.
+ */
+export const TALK_SCREEN_CARDS_ZOD_LIMITS = {
+  answersMax: 4,
+  wordsMax: 4,
+  answerMaxChars: 120,
+  emojiMaxChars: 32,
+  enMaxChars: 60,
+  koMaxChars: 40,
+} as const;
+
+const talkScreenCardZod = z.object({
+  emoji: z.string().max(TALK_SCREEN_CARDS_ZOD_LIMITS.emojiMaxChars),
+  en: z.string().max(TALK_SCREEN_CARDS_ZOD_LIMITS.enMaxChars),
+  ko: z.string().max(TALK_SCREEN_CARDS_ZOD_LIMITS.koMaxChars),
+});
+
+/** 호출 J zod — 모양·개수·글자 상한만(§12-7). 통과한 값은 반드시 `sanitizeTalkScreenCards`를 지난 뒤 화면에 간다. */
+export const talkScreenCardsSchema: z.ZodType<TalkScreenCards> = z.object({
+  answers: z.array(z.string().max(TALK_SCREEN_CARDS_ZOD_LIMITS.answerMaxChars)).max(TALK_SCREEN_CARDS_ZOD_LIMITS.answersMax),
+  words: z.array(talkScreenCardZod).max(TALK_SCREEN_CARDS_ZOD_LIMITS.wordsMax),
+  picture: talkScreenCardZod.nullable(),
+});
+
+/** 호출 J 입력(lib/ai/client.ts `generateTalkCards`) — 라우트가 요청 본문에서 만든다(폭은 lib/talk-cards.ts TALK_CARDS_REQUEST_LIMITS) */
+export interface TalkCardsInput {
+  /** 주제 한국어 라벨(TalkTopic.labelKo — 단어장이면 단어장 이름) */
+  topicLabel: string;
+  /** 오늘의 단어(단어장 모드 스냅샷, 책 순서 — 최대 20). 단어장이 아니면 [] */
+  words: readonly { en: string; ko: string | null }[];
+  /** 이번 대화에서 이미 띄운 그림 카드 영어(보인 순서 — 최근 12개) */
+  shown: readonly string[];
+  /** 선생님 줄 앞의 최근 줄(최대 4, 오래된 것부터) */
+  context: readonly { speaker: TalkSpeaker; text: string }[];
+  /** 선생님이 방금 한 말(그 줄 글자) */
+  teacherLine: string;
+}
 
 // ---------------------------------------------------------------------------
 // 글자 판정 — zod와 eval이 같은 함수를 본다

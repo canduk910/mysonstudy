@@ -1,5 +1,5 @@
 /**
- * lib/talk-realtime.ts — 은우 자유대화 **실시간 클라이언트**(관문 R 브라우저 쪽) (docs/harness/english.md §12-1·§12-2·§12-6,
+ * lib/talk-realtime.ts — 은우 자유대화 **실시간 클라이언트**(관문 R 브라우저 쪽) (docs/harness/english.md §12-1·§12-2·§12-6·§12-7,
  * SPEC §21-2·§21-5·§21-7)
  *
  * 대화 한 번을 맡는 컨트롤러(`TalkCallController`)와 전송 인터페이스(`TalkTransport`)다. 화면(components/talk-call-overlay.tsx)은
@@ -9,13 +9,16 @@
  * - 실제: WebRTC(`WebRtcTalkTransport`) — RTCPeerConnection에 마이크 트랙(lib/mic-session.ts `acquireMicStream`이 잡은 것)을 싣고,
  *   원격 트랙은 `<audio autoplay playsinline>` 요소로, JSON 이벤트는 데이터 채널 `oai-events`로. offer SDP는 우리 서버
  *   `/api/english/talk/connect`(PIN 게이트 안)가 표준 키로 OpenAI에 넘긴다 — 브라우저에는 키가 없다.
- * - **개발 빌드 전용 가짜 전송**(localStorage `talk-debug-fake`="1", lib/talk-fake-transport.ts): 합성 이벤트로 인사·도구 호출·
- *   은우 발화(늦은 전사 포함)·침묵·끊김을 흘린다. production에서는 localStorage를 읽기 **전에** false이고(컴파일 때 접힌다),
+ * - **개발 빌드 전용 가짜 전송**(localStorage `talk-debug-fake`="1", lib/talk-fake-transport.ts): 합성 이벤트로 인사·선생님 말·
+ *   은우 발화(늦은 전사 포함)·침묵·끊김을 흘린다(도구 호출은 없다 — 세션에 도구가 없다, §12-7). production에서는 localStorage를 읽기 **전에** false이고(컴파일 때 접힌다),
  *   가짜 전송 모듈은 그 분기 안의 동적 import라 production 번들에 실리지 않는다.
  * - **개발 전용 시간 배율**(`talk-debug-timescale`, 0.01~1): 5분 상한·마무리 대기 8초·25초·도움 5초·12초를 곱한다. production은 1.
  *
  * ── 앱이 선생님에게 넣는 안내 — 전부 숨은 system 메시지(`app_` id) + `response.create`(인자 없음) ─────────────────
  *   첫 인사(데이터 채널이 열리면)·마무리(5분)·도움 요청(12초·🙋)은 `buildTalkSystemNoteEvent` + `buildTalkResponseCreateEvent`.
+ *   **앱이 response.create를 보내는 경우는 이 셋뿐이다**(§12-7) — 은우가 한 번 대답하면 선생님 응답은 서버의 자동 응답(턴 감지
+ *   create_response) 하나다. 보내기 **직전에** `requestTalkResponseOrigin(transcript, "greeting"|"nudge"|"wrapup")`로 출처 청을 적는다
+ *   (다음 response.created가 소비, 청 없는 응답은 reply — 5초 안에 created가 안 오면 청을 거둔다). 줄의 출처는 저장 턴에 실린다.
  *   응답 단위 instructions는 쓰지 않는다 — 세션 지시문(성격·안전 규칙)을 덮어쓴다(§12-1 2026-09-26 정정).
  *   주제 일러스트 안내(TALK_SCENE_NOTE)는 system 메시지**만**(response.create 없음 — 선생님이 다음 차례에 자연스럽게 쓴다).
  *   안내 글 원문은 이 모듈이 import하지 않는다(프롬프트 원문을 폰 번들에 싣지 않는다) — 서버 컴포넌트가 props로 내린 것
@@ -23,22 +26,29 @@
  *
  * ── 응답이 진행 중일 때 response.create를 보내지 않는다(QA talk-cards P2-3) ─────────────────────────
  *   "한 번에 한 응답만 대화에 쓸 수 있다"(SDK 주석). `response.created` → 진행 중, `response.done` → 끝으로 따라가며, 진행 중에
- *   생긴 도움 요청은 보류했다가 그 응답이 **오디오 없이** 끝나면 보낸다(오디오가 있었으면 선생님이 방금 새 차례를 말한 것이라 버린다 —
- *   그 응답 뒤에 이어 말하기를 보내도 버린다).
+ *   생긴 도움 요청은 보류했다가 그 응답이 **오디오 없이** 끝나면 보낸다(오디오가 있었으면 선생님이 방금 새 차례를 말한 것이라 버린다).
  *   마무리도 진행 중 응답이 끝나기를 기다린다(오래 끌면 response.cancel 뒤에 보낸다).
+ *   **은우 차례가 열려 있을 때도 보내지 않는다**(QA talk-cards-j full_1 P2-A) — 은우가 말하는 중(speech_started ~ speech_stopped)이거나
+ *   막 말을 마쳐 서버 자동 응답(response.created)이 곧 올 틈(TALK_AUTO_REPLY_WAIT_MS)이면, 그 말에 대한 선생님 대답은 서버가 한다.
+ *   여기서 보내면 은우 말 위로 선생님 응답이 하나 더 나가 "선생님 두 명"이 된다. 도움 요청(🙋·보류 🙋 해제)은 버리고(카드는 뜬다),
+ *   마무리는 기다린다(선생님과 같은 8초 상한). **버린 도움 요청은 도움 상태 기계에 `nudge_withheld`로 알려 셈에서 뺀다** — 연속 2번·
+ *   차례 하나에 한 번은 보낸 요청을 센다(QA talk-cards-j full_2 P3-A — `requestNudge`·`dropPendingNudge`).
  *
- * ── 도구 호출(§12-6) ───────────────────────────────────────────────────────────
- *   `response.output_item.done`·`response.done`에서 function_call을 꺼내 callId로 **한 번만** `parseTalkToolCall`(모델 출력을 믿지
- *   않는다) → show_hints는 도움 상태 기계로, show_picture는 큰 그림 카드(+ 단어장 모드 ✓). `response.done`에서 호출마다
- *   function_call_output(`{"shown":true}`, id `app_out_n`)을 보내고, **도구를 부르고 말한 글자에 질문 없이 끝난 응답**(오디오가
- *   없던 응답 포함 — 2026-09-26 실연결: 선생님이 한두 마디 하다 도구를 부르고 질문 없이 응답을 끝내 은우가 기다리던 것)이면
- *   response.create로 이어 말하게 한다. 판정·연속 상한 2회는 lib/talk-cards.ts `stepTalkContinue` 한 곳 — 셈은 **은우 발화로만** 0
- *   (말만 하고 질문 없는 응답이 끝없이 이어 말하기를 부르지 않게. 매 응답이 대화 전체를 되풀이 과금한다). 질문을 했으면 은우 차례라
- *   보내지 않는다. 마무리 중 도구 호출은 표시도 이어 말하기도 하지 않는다. 카드는 **소리를 내지 않는다**(마이크가 열려 있다).
+ * ── 화면 카드 — 호출 J(§12-7) ─────────────────────────────────────────────────────
+ *   선생님 줄 하나가 끝나면(그 줄의 `response.output_audio_transcript.done` + 그 응답의 `response.done` completed — 순서 무관)
+ *   `POST /api/english/talk/cards`를 **한 번** 부른다(본문은 lib/talk-cards.ts `buildTalkCardsRequest` 한 곳). 앞선 카드 요청이 아직
+ *   진행 중이면 끊고 새로(최신 줄만). 대화 중(live)일 때만 — 마무리·끝내기 기다림 중에는 부르지 않고, 진행 중이던 요청도 끊는다.
+ *   도착하면 `decideTalkCardsArrival` 한 곳이 가른다: 도움(답 예시·핵심 단어)은 도움 상태 기계에 `hints_received`로, 그림 카드는 큰
+ *   카드(+ 단어장 모드 ✓). 그 줄 뒤에 은우가 이미 말을 시작했거나 새 줄이 생겼으면 도움만 버리고(철 지난 도움) 그림은 띄운다.
+ *   실패·501·시간 초과면 아무것도 하지 않는다 — 도움 카드는 기본 문구(TALK_FALLBACK_HINTS), 그림 카드는 없음. 선생님 소리가 다시
+ *   시작되면 도움 상태 기계가 앞 줄의 도움을 늘 버린다(lib/talk-hints.ts). 카드는 **소리를 내지 않는다**(마이크가 열려 있다).
+ *   §12-6의 도구 호출 처리·이어 말하기(질문 없는 도구 응답 → response.create)는 2026-09-27 걷어 냈다 — 그 이어 말하기가 앞말을 잇지
+ *   않는 새 응답을 만들어 선생님이 두 명처럼 답했다(보호자 iPhone 신고).
  *
  * ── 5분 상한 ───────────────────────────────────────────────────────────────────
- *   닿으면 도움 상태 기계에 wrapup_started(카드·요청 중지) → 선생님이 말하는 중이면 최대 8초 기다린 뒤 마무리 안내 → 그 응답의
- *   소리가 멈추면(또는 오디오 없이 끝나면, 또는 25초 상한) 종료.
+ *   닿으면 도움 상태 기계에 wrapup_started(카드·요청 중지) → 선생님이나 은우가 말하는 중이면 최대 8초 기다린 뒤(은우 말이 끝나면 그
+ *   말에 대한 자동 응답이 먼저 나가고, 그 응답이 끝난 뒤) 마무리 안내 → 그 응답의 소리가 멈추면(또는 오디오 없이 끝나면, 또는 25초
+ *   상한) 종료.
  *
  * ── 주제 일러스트 ─────────────────────────────────────────────────────────────────
  *   요청은 마이크를 얻은 **뒤**에 연결과 병렬로 시작한다(QA english_talk_1 P2-4 — 마이크 거부·대화 전 끝에는 생성 요청 0).
@@ -69,21 +79,15 @@ import type {
   ResponseCancelEvent,
   SessionUpdateEvent,
 } from "openai/resources/realtime/realtime";
-import type { TalkCard } from "./ai/english/talk-schemas";
+import type { TalkAppOrigin, TalkCard, TalkTopicWord } from "./ai/english/talk-schemas";
 import { MicError, type MicStreamHandle } from "./mic-session";
-import {
-  TALK_CARD_LIMITS,
-  buildTalkToolOutputEvent,
-  extractTalkFunctionCalls,
-  matchTalkWord,
-  parseTalkToolCall,
-  stepTalkContinue,
-  type TalkResponseDoneSummary,
-} from "./talk-cards";
+import { TALK_CARD_LIMITS, buildTalkCardsRequest, decideTalkCardsArrival, matchTalkWord, sanitizeTalkScreenCards } from "./talk-cards";
 import {
   TALK_DEBUG_FAKE_KEY,
   TALK_DEBUG_TIMESCALE_KEY,
   newTalkSaveId,
+  type TalkCardsRequest,
+  type TalkCardsResponse,
   type TalkConnectRequest,
   type TalkConnectResponse,
   type TalkConnectSuccess,
@@ -108,6 +112,7 @@ import {
   childTurnCount,
   createTalkTranscript,
   reduceTalkTranscript,
+  requestTalkResponseOrigin,
   toTalkTurns,
   type TalkLine,
   type TalkTranscriptState,
@@ -117,7 +122,7 @@ import {
 // 상수 — 한 곳
 // ===========================================================================
 
-/** 마무리 때 선생님이 말하는 중이면 기다리는 최대 시간(ms, §21-2 "최대 8초") */
+/** 마무리 때 선생님이나 은우가 말하는 중이면 기다리는 최대 시간(ms, §21-2 "최대 8초" — 은우 쪽은 QA full_1 P2-A. 둘이 같은 시계) */
 export const TALK_WRAPUP_WAIT_MS = 8_000;
 /** 마무리 안내를 보낸 뒤 그 응답이 끝나기를 기다리는 최대 시간(ms — 넘으면 그냥 끝낸다) */
 export const TALK_WRAPUP_END_MS = 25_000;
@@ -128,12 +133,27 @@ export const TALK_CONNECT_CLIENT_TIMEOUT_MS = 25_000;
 /** 우리가 보낸 response.create에 response.created가 이만큼 안 오면 거부된 것으로 본다(ms) */
 const RESPONSE_CREATED_WAIT_MS = 5_000;
 /**
+ * 은우 말이 끝난 뒤(`input_audio_buffer.speech_stopped`) 서버 자동 응답(`response.created`)을 기다리는 최대 시간(ms). 이 틈에
+ * 앱이 response.create(도움 요청·마무리)를 보내면 자동 응답과 부딪쳐 선생님 응답이 둘이 되거나, 거부된 우리 요청의 출처 청을 자동
+ * 응답이 가져간다(QA talk-cards-j full_1 P2-A — 마무리는 은우 말이 끝나기를 기다리므로 바로 이 틈의 첫 tick에 걸린다). 자동 응답은
+ * speech_stopped 직후 같은 서버가 보내므로 보통 수십 ms 안에 오고, 이 값은 오지 않을 때의 상한이다. 개발 시간 배율을 곱하지 않는다
+ * — 대화 규칙이 아니라 실제 서버 지연이다.
+ */
+export const TALK_AUTO_REPLY_WAIT_MS = 1_500;
+/**
  * 끝내기(버튼·5분 마무리 뒤) 때 아직 전사 중인 은우 줄을 기다리는 최대 시간(ms). 개발 시간 배율을 곱하지 않는다 — 5분·8초 같은
  * 대화 규칙이 아니라 실제 전사 지연(네트워크)을 기다리는 값이다. 숨김·뒤로가기는 기다리지 않는다.
  */
 export const TALK_FINISH_TRANSCRIPT_WAIT_MS = 2_500;
 /** 서버 hangup 주소(sendBeacon) */
 export const TALK_HANGUP_URL = "/api/english/talk/hangup";
+/** 화면 카드(호출 J) 주소 */
+export const TALK_CARDS_URL = "/api/english/talk/cards";
+/**
+ * 화면 카드 요청의 클라이언트 쪽 상한(ms) — 서버 시간 상한 6초(TALK_CARDS_TIMEOUT_MS, 서버 전용 상수)에 네트워크 여유를 더했다.
+ * 서버가 6초에 끊으므로 정상이면 닿지 않는다(연결이 멈춘 경우의 방어선). 개발 시간 배율을 곱하지 않는다 — 실제 네트워크 대기다.
+ */
+export const TALK_CARDS_CLIENT_TIMEOUT_MS = 9_000;
 
 // ===========================================================================
 // 개발 전용 스위치 — production에서는 localStorage를 읽기 **전에** 고정값(컴파일 때 접힌다)
@@ -199,6 +219,11 @@ export interface TalkTransport {
   send(event: object): void;
   /** 닫기(멱등) */
   close(): void;
+  /**
+   * **개발 빌드 전용**(가짜 전송만): 화면 카드 요청을 가로채 흉내 낸다(로컬 카드·실패·지연). null을 돌려주면 컨트롤러가 실제 라우트
+   * (`/api/english/talk/cards`)를 부른다. 실제 전송(WebRTC)에는 없다.
+   */
+  fetchCards?(body: TalkCardsRequest, signal: AbortSignal): Promise<TalkCardsResponse> | null;
 }
 
 /** 연결 실패 — 화면에 보일 한국어와 상태 코드 */
@@ -369,6 +394,20 @@ export interface TalkUsage {
   cachedTokens: number;
 }
 
+/** 화면 카드(호출 J) 요청 셈 — 결과 패널 "진단"(실기기에서 카드가 왜 안 떴는지 가르는 창) */
+export interface TalkCardsStats {
+  /** 보낸 요청 */
+  sent: number;
+  /** 200으로 온 결과 */
+  ok: number;
+  /** 실패·501·400·시간 초과(도움 카드는 기본 문구) */
+  failed: number;
+  /** 새 줄의 요청이 끊은 앞 요청(최신 줄만) */
+  superseded: number;
+  /** 도착했지만 철 지나 버린 도움(그 줄 뒤에 은우 말·새 줄이 이미 있었다 — 그림은 띄웠다) */
+  staleHints: number;
+}
+
 export interface TalkSnapshot {
   phase: TalkPhase;
   lines: readonly TalkLine[];
@@ -377,12 +416,12 @@ export interface TalkSnapshot {
   childSpeaking: boolean;
   /** 선생님 응답을 만드는 중(소리가 나기 전) — "선생님이 생각하는 중…" */
   responding: boolean;
-  /** 큰 그림 카드(가장 최근 show_picture) */
+  /** 큰 그림 카드(가장 최근 호출 J 그림 카드) */
   picture: TalkCard | null;
   /** 작은 칩 — 지난 카드(최근 것부터, 최대 TALK_CARD_LIMITS.recentChips) */
   recentCards: readonly TalkCard[];
-  /** 단어장 모드 "오늘의 단어" — 주제 스냅샷 단어(연결 뒤에만) */
-  todayWords: readonly { en: string; ko: string | null }[];
+  /** 단어장 모드 "오늘의 단어" — 주제 스냅샷 단어(연결 뒤에만). `emoji`는 단어장 이모지(없거나 판정 탈락이면 null — 화면이 첫 글자 배지로) */
+  todayWords: readonly TalkTopicWord[];
   /** 연습한(그림 카드로 나온) 오늘의 단어 — 목록에 적힌 en 그대로 */
   practiced: readonly string[];
   scene: TalkSceneView;
@@ -393,6 +432,7 @@ export interface TalkSnapshot {
   /** 연결 정보(모델·음성·주제) — 연결 성공 뒤 */
   topicLabelKo: string | null;
   usage: TalkUsage;
+  cards: TalkCardsStats;
   fake: boolean;
   timescale: number;
 }
@@ -411,6 +451,8 @@ export interface TalkCallOptions {
   audio: HTMLAudioElement;
   /** 시작 화면이 고른 주제의 한국어 라벨(연결 전 헤더 표시용) */
   labelKo: string;
+  /** 전송 만들기(기본 createTalkTransport). eval이 합성 이벤트 전송을 넣으려고 둔 주입점이다 — 화면은 넘기지 않는다 */
+  createTransport?: (mic: MediaStream, audio: HTMLAudioElement) => Promise<TalkTransport>;
 }
 
 /** 마이크 실패 → 대화 화면 안내(녹음 문구 대신 전화 문구로) */
@@ -451,6 +493,35 @@ const TALK_AUDIO_CLEAR_EVENT = { type: "output_audio_buffer.clear" } as const sa
 /** 시각(epoch ms) — 테스트가 바꾸지 않는다(화면 시계와 같은 기준) */
 const nowMs = () => Date.now();
 
+/** response.done에서 컨트롤러가 쓰는 것 — 응답 id·상태·선생님 말(assistant 메시지 항목)이 있었는가·그 항목 id들 */
+interface TalkResponseDoneInfo {
+  responseId: string | null;
+  status: string | null;
+  /** assistant 메시지 항목이 있었다(오디오 모드라 메시지 = 선생님 소리) */
+  hadAudio: boolean;
+  assistantItemIds: string[];
+}
+
+/** response.done 이벤트 읽기(모양이 틀리면 null) — 네트워크 JSON이라 필드를 다시 확인한다 */
+function readTalkResponseDone(ev: Rec): TalkResponseDoneInfo | null {
+  if (ev.type !== "response.done" || !isRec(ev.response)) return null;
+  const resp = ev.response;
+  const output = Array.isArray(resp.output) ? resp.output : [];
+  const assistantItemIds: string[] = [];
+  let hadAudio = false;
+  for (const it of output) {
+    if (!isRec(it) || it.type !== "message" || it.role !== "assistant") continue;
+    hadAudio = true;
+    if (typeof it.id === "string" && it.id !== "") assistantItemIds.push(it.id);
+  }
+  return {
+    responseId: typeof resp.id === "string" ? resp.id : null,
+    status: typeof resp.status === "string" ? resp.status : null,
+    hadAudio,
+    assistantItemIds,
+  };
+}
+
 export class TalkCallController {
   private readonly opts: TalkCallOptions;
   /** 저장 멱등 키(QA english_talk_1 P2-1) — 대화 한 번에 하나. 저장 본문의 clientSessionId(스토어가 문서 id로 쓴다) */
@@ -476,18 +547,23 @@ export class TalkCallController {
   // 선생님 소리·응답 진행 상태
   private teacherSpeaking = false;
   private childSpeaking = false;
+  /** 은우 말이 끝난 시각(speech_stopped) — 서버 자동 응답이 시작되면(response.created)·은우가 다시 말하면 비운다(TALK_AUTO_REPLY_WAIT_MS) */
+  private childTurnEndedAt: number | null = null;
   private responseActive = false;
   /** 우리가 response.create를 보냈고 아직 response.created를 못 받았다(보낸 시각) */
   private awaitingCreatedSince: number | null = null;
   private pendingNudge = false;
   private pendingSceneNote = false;
-  /** 이어 말하기 연속 셈(lib/talk-cards.ts `stepTalkContinue` — 은우 발화로만 0, 상한 TALK_CONTINUE_CHAIN_MAX) */
-  private continueChain = 0;
   private noteSeq = 0;
 
-  // 도구 호출
-  private shownCallIds = new Set<string>();
-  private answeredCallIds = new Set<string>();
+  // 화면 카드(호출 J, §12-7)
+  /** 진행 중인 카드 요청(최신 줄 하나) — 새 줄의 요청·마무리·끝내기가 끊는다 */
+  private cardsInflight: { itemId: string; abort: AbortController } | null = null;
+  /** 카드를 이미 요청한 선생님 줄(줄마다 한 번) */
+  private cardsRequested = new Set<string>();
+  /** response.done이 completed로 온 응답 id — 전사 .done이 response.done보다 늦게 와도 그때 요청한다(순서 무관) */
+  private completedResponses = new Set<string>();
+  private cardsStats: TalkCardsStats = { sent: 0, ok: 0, failed: 0, superseded: 0, staleHints: 0 };
   private picture: TalkCard | null = null;
   private recentCards: TalkCard[] = [];
   private shownCards: TalkCard[] = [];
@@ -574,6 +650,7 @@ export class TalkCallController {
       errorKo: this.errorKo,
       topicLabelKo: this.info?.topic.labelKo ?? this.opts.labelKo,
       usage: this.usage,
+      cards: this.cardsStats,
       fake: this.fake,
       timescale: this.timescale,
     };
@@ -606,7 +683,7 @@ export class TalkCallController {
     this.mic = mic;
     void this.loadScene();
     try {
-      this.transport = await createTalkTransport(mic.stream, this.opts.audio);
+      this.transport = await (this.opts.createTransport ?? createTalkTransport)(mic.stream, this.opts.audio);
     } catch {
       this.fail("대화 연결을 준비하지 못했어요.");
       return;
@@ -677,9 +754,9 @@ export class TalkCallController {
     this.startedAtIso = new Date(now).toISOString();
     this.capAtMs = now + TALK_MAX_DURATION_SEC * 1000 * this.timescale;
     this.tickTimer = setInterval(() => this.onTick(), TALK_TICK_MS);
-    // 선생님이 먼저 말한다 — 숨은 system 메시지 + response.create(인자 없음, §12-1)
+    // 선생님이 먼저 말한다 — 숨은 system 메시지 + response.create(인자 없음, §12-1). 출처 = greeting(§12-7)
     this.sendNote("app_greet", this.opts.notes.greeting);
-    this.sendResponseCreate();
+    this.sendResponseCreate("greeting");
     if (this.scene.status === "ready") this.sendSceneNote();
     this.emit();
   }
@@ -710,7 +787,12 @@ export class TalkCallController {
     this.send(buildTalkSystemNoteEvent(id, text));
   }
 
-  private sendResponseCreate(): void {
+  /**
+   * 앱이 보내는 response.create — 첫 인사·도움 요청·마무리 **셋뿐**(§12-7). 보내기 **직전에** 출처 청을 적는다(다음 response.created가
+   * 소비 — 전송이 created를 같은 호출 안에서 되돌려도(개발용 가짜 전송) 청이 먼저 서 있게).
+   */
+  private sendResponseCreate(origin: TalkAppOrigin): void {
+    this.transcript = requestTalkResponseOrigin(this.transcript, origin);
     // 진행 중 응답 표시는 response.created가 켠다 — 여기서 미리 켜 두면 created가 오기 전 두 번째 요청을 막는다.
     // 서버가 요청을 거부해(error 이벤트) created가 끝내 안 오면 tick이 RESPONSE_CREATED_WAIT_MS 뒤에 푼다(영영 보류되지 않게).
     this.responseActive = true;
@@ -729,19 +811,60 @@ export class TalkCallController {
     this.sendNote("app_scene", this.sceneNote); // response.create 없음(§12-6)
   }
 
+  /**
+   * 은우 차례가 열려 있다 — 은우가 말하는 중이거나, 막 말을 마쳐 서버 자동 응답(그 말에 대한 선생님 대답)이 곧 시작될 틈이다.
+   * 이때 앱이 response.create를 보내면 은우 말 위로(또는 자동 응답과 겹쳐) 선생님 응답이 하나 더 나간다 — "선생님 두 명"(QA full_1 P2-A).
+   */
+  private childTurnOpen(now: number): boolean {
+    return this.childSpeaking || this.autoReplyPending(now);
+  }
+
+  /** 은우 말이 막 끝나(speech_stopped) 서버 자동 응답(response.created)을 기다리는 틈인가 — 최대 TALK_AUTO_REPLY_WAIT_MS */
+  private autoReplyPending(now: number): boolean {
+    return this.childTurnEndedAt !== null && now - this.childTurnEndedAt < TALK_AUTO_REPLY_WAIT_MS;
+  }
+
+  /**
+   * 도움 상태 기계의 요청 신호(`shouldNudge`) 하나를 받는다 — `applyHints`만 부른다(신호 하나에 한 번). 보내거나, 응답 진행 중이면
+   * 보류하거나, 버린다. **버리면 상태 기계에 `nudge_withheld`로 알린다** — 상태 기계는 신호를 내는 순간 셈(차례 하나에 한 번·연속 2번)에
+   * 넣는데, 스펙이 세는 것은 보낸 요청이다(§12-6). 알리지 않으면 은우 차례에 버린 🙋가 상한을 먹어 연속 2번이 1번이 되고, 자동 응답이
+   * 끝내 오지 않는 차례에는 12초 요청이 영영 나가지 않는다(QA talk-cards-j full_2 P3-A).
+   */
   private requestNudge(): void {
-    if (this.phase !== "live") return;
+    // 은우 차례가 열려 있으면 보내지도 보류하지도 않는다(카드는 상태 기계가 이미 띄웠다). 상태 기계(lib/talk-hints.ts)가 은우 말하는 중
+    // 요청을 내지 않는 것이 첫 겹, 이 판정이 둘째 겹이다 — 상태 기계가 틀려도 create가 은우 말 위로 나가지 않는다(QA full_1 P2-A).
+    // 말 끝 틈(TALK_AUTO_REPLY_WAIT_MS)은 상태 기계가 모르므로 여기서만 걸린다. 은우가 말을 마치면 그 말에 대한 서버 자동 응답이 온다.
+    if (this.childTurnOpen(nowMs())) {
+      this.dropPendingNudge();
+      this.withholdNudge(); // 이 신호
+      return;
+    }
+    if (this.phase !== "live") return; // 끝내기 기다림(finishing) — 대화가 끝나는 중이라 셈이 더 쓰이지 않는다
     if (this.responseActive) {
+      // 이미 보류한 요청이 있으면 이 신호는 그것과 합쳐진다(요청은 많아야 하나 나간다) — 이 신호의 셈은 되돌린다
+      if (this.pendingNudge) this.withholdNudge();
       this.pendingNudge = true;
       return;
     }
     this.sendNudgeNow();
   }
 
+  /** 보류한 도움 요청을 버린다(은우 끼어들기·소리 있는 응답·은우 차례) — 보내지 않았으니 상태 기계의 셈도 되돌린다 */
+  private dropPendingNudge(): void {
+    if (!this.pendingNudge) return;
+    this.pendingNudge = false;
+    this.withholdNudge();
+  }
+
+  /** 요청 신호 하나를 보내지 않았다 — 상태 기계의 셈에서 뺀다. 요청 신호를 내지 않는 이벤트라 `applyHints`(→ requestNudge)를 거치지 않는다 */
+  private withholdNudge(): void {
+    this.hints = reduceTalkHints(this.hints, { type: "nudge_withheld", now: nowMs() });
+  }
+
   private sendNudgeNow(): void {
     this.pendingNudge = false;
     this.sendNote(this.nextNoteId("app_nudge"), this.opts.notes.nudge);
-    this.sendResponseCreate();
+    this.sendResponseCreate("nudge");
   }
 
   // ---- 도움 상태 기계 ----
@@ -767,13 +890,8 @@ export class TalkCallController {
     const now = nowMs();
     const type = typeof ev.type === "string" ? ev.type : "";
 
-    // 1) 스크립트 리듀서(순수 — 모르는 이벤트는 같은 상태)
+    // 1) 스크립트 리듀서(순수 — 모르는 이벤트는 같은 상태). 선생님 줄의 출처(§12-7)도 여기서 정해진다(response.created가 청을 소비)
     this.transcript = reduceTalkTranscript(this.transcript, ev);
-
-    // 이어 말하기 셈(§12-6 — 판정은 lib/talk-cards.ts 한 곳): 은우 발화 → 0, response.done → 보낼지. 말한 글자가 response.done에
-    // 없으면 방금 리듀서가 모은 선생님 줄로 대신 본다
-    const cont = stepTalkContinue(this.continueChain, ev, this.phase === "live", (itemId) => this.teacherLineText(itemId));
-    this.continueChain = cont.chain;
 
     // 2) 소리·말하기 상태
     if (type === "output_audio_buffer.started") this.teacherSpeaking = true;
@@ -783,11 +901,13 @@ export class TalkCallController {
     }
     if (type === "input_audio_buffer.speech_started") {
       this.childSpeaking = true;
+      this.childTurnEndedAt = null;
       this.childSpeechItemId = typeof ev.item_id === "string" ? ev.item_id : null;
-      this.pendingNudge = false; // 은우가 말을 시작했다 — 보류한 도움 요청은 버린다
+      this.dropPendingNudge(); // 은우가 말을 시작했다 — 보류한 도움 요청은 버린다(셈도 되돌린다 — 곧 child_speech_started가 연속 셈을 0으로)
     }
     if (type === "input_audio_buffer.speech_stopped") {
       this.childSpeaking = false;
+      this.childTurnEndedAt = now; // 서버 자동 응답이 곧 시작된다(response.created가 비운다) — 그 틈에는 앱이 response.create를 보내지 않는다
       this.childSpeechItemId = null;
     }
     if (type === "input_audio_buffer.committed" && typeof ev.item_id === "string") this.onCommitted(ev.item_id);
@@ -806,22 +926,20 @@ export class TalkCallController {
     if (type === "response.created") {
       this.responseActive = true;
       this.awaitingCreatedSince = null;
+      this.childTurnEndedAt = null; // 자동 응답(또는 우리 요청의 응답)이 시작됐다 — 이제는 진행 중 응답 판정이 막는다
       const rid = isRec(ev.response) && typeof ev.response.id === "string" ? ev.response.id : null;
       if (this.wrapupSentAt !== null && this.wrapupResponseId === null && rid) this.wrapupResponseId = rid;
     }
 
-    // 5) 도구 호출 표시(callId로 한 번만)
-    for (const ref of extractTalkFunctionCalls(ev)) {
-      if (this.shownCallIds.has(ref.callId)) continue;
-      this.shownCallIds.add(ref.callId);
-      if (this.phase !== "live") continue; // 마무리 중 도구 호출은 무시(§12-6)
-      const call = parseTalkToolCall(ref.name, ref.argumentsJson);
-      if (!call) continue;
-      if (call.name === "show_hints") this.applyHints({ type: "hints_received", now, hints: call.hints });
-      else this.showPicture(call.card);
+    // 5) 선생님 줄의 글자가 확정됐다 — 그 응답이 이미 completed로 끝났으면 지금 카드를 청한다(전사 .done이 response.done보다 늦은 경우)
+    if (type === "response.output_audio_transcript.done" && typeof ev.item_id === "string" && typeof ev.response_id === "string") {
+      if (this.completedResponses.has(ev.response_id)) this.maybeRequestCards(ev.item_id);
     }
 
-    if (type === "response.done" && cont.summary) this.onResponseDone(ev, cont.summary, cont.send);
+    if (type === "response.done") {
+      const done = readTalkResponseDone(ev);
+      if (done) this.onResponseDone(ev, done);
+    }
 
     // 기다리던 은우 줄의 전사가 다 왔으면 지금 끝낸다(end가 스냅숏을 알린다)
     const fin = this.finishing;
@@ -877,14 +995,93 @@ export class TalkCallController {
     if (hit && !this.practiced.includes(hit)) this.practiced = [...this.practiced, hit];
   }
 
-  /** 선생님 줄의 글자(스크립트 리듀서가 모은 것) — 없거나 비었으면 null */
-  private teacherLineText(itemId: string): string | null {
-    const line = this.transcript.lines.find((l) => l.itemId === itemId && l.speaker === "teacher");
-    return line && line.text !== "" ? line.text : null;
+  // ---- 화면 카드(호출 J, §12-7) ----
+
+  /**
+   * 선생님 줄 하나의 카드를 청한다 — 대화 중(live)이고, 그 줄에 아직 청하지 않았고, 글자가 확정된(final) 선생님 줄일 때만. 줄마다 한 번.
+   * 앞선 요청이 아직 진행 중이면 끊는다(최신 줄만 — §12-7 앱 배선).
+   */
+  private maybeRequestCards(itemId: string): void {
+    if (this.phase !== "live" || this.cardsRequested.has(itemId)) return;
+    const line = this.transcript.lines.find((l) => l.itemId === itemId);
+    if (!line || line.speaker !== "teacher" || line.status !== "final") return;
+    const topic = this.info?.topic ?? null;
+    const body = buildTalkCardsRequest({
+      topicLabel: topic?.labelKo ?? this.opts.labelKo,
+      words: topic?.kind === "vocab" ? topic.words : [],
+      shownCards: this.shownCards,
+      lines: this.transcript.lines,
+      teacherItemId: itemId,
+    });
+    if (!body) return; // 글자가 빈 줄 — 청할 말이 없다
+    this.cardsRequested.add(itemId);
+    void this.requestCards(itemId, body);
   }
 
-  /** `continueSend` = stepTalkContinue의 판정(대화 중·도구·정상 완료·질문 없음·연속 상한 아래) */
-  private onResponseDone(ev: Rec, summary: TalkResponseDoneSummary, continueSend: boolean): void {
+  /** 진행 중인 카드 요청을 끊는다(새 줄의 요청이 앞 요청을 대신할 때 superseded로 센다) */
+  private abortCards(superseded: boolean): void {
+    const cur = this.cardsInflight;
+    if (!cur) return;
+    this.cardsInflight = null;
+    if (superseded) this.cardsStats = { ...this.cardsStats, superseded: this.cardsStats.superseded + 1 };
+    cur.abort.abort();
+  }
+
+  /**
+   * 카드 요청 한 번 — 결과는 `decideTalkCardsArrival` 한 곳이 가른다. 실패·501·400·시간 초과는 아무것도 하지 않는다(도움 카드는
+   * 기본 문구, 그림 카드는 없음). 끊긴 요청(새 줄·마무리·끝내기)의 결과는 버린다. 던지지 않는다.
+   */
+  private async requestCards(itemId: string, body: TalkCardsRequest): Promise<void> {
+    this.abortCards(true);
+    const abort = new AbortController();
+    const mine = { itemId, abort };
+    this.cardsInflight = mine;
+    this.cardsStats = { ...this.cardsStats, sent: this.cardsStats.sent + 1 };
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      abort.abort();
+    }, TALK_CARDS_CLIENT_TIMEOUT_MS);
+    let data: TalkCardsResponse | null = null;
+    try {
+      const override = this.transport?.fetchCards?.(body, abort.signal) ?? null;
+      if (override) {
+        data = await override;
+      } else {
+        const res = await fetch(TALK_CARDS_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: abort.signal,
+        });
+        data = (await res.json().catch(() => null)) as TalkCardsResponse | null;
+      }
+    } catch {
+      data = null;
+    } finally {
+      clearTimeout(timer);
+      if (this.cardsInflight === mine) this.cardsInflight = null;
+    }
+    if (this.disposed || this.phase === "ended") return;
+    // 새 줄의 요청·마무리·끝내기 기다림이 끊은 요청 — 결과를 쓰지 않는다(시간 초과는 실패로 센다)
+    if (abort.signal.aborted && !timedOut) return;
+    if (!data || !data.ok) {
+      this.cardsStats = { ...this.cardsStats, failed: this.cardsStats.failed + 1 };
+      this.emit();
+      return;
+    }
+    this.cardsStats = { ...this.cardsStats, ok: this.cardsStats.ok + 1 };
+    // 서버가 이미 후처리했지만 같은 순수 함수로 한 번 더 — 스텁·옛 서버가 모양이 틀린 값을 줘도 화면이 깨지지 않게(같은 입력이면 같은 결과)
+    const cards = sanitizeTalkScreenCards(data, { teacherLine: body.teacherLine, words: body.words, shown: body.shown });
+    const arrival = decideTalkCardsArrival({ cards, lines: this.transcript.lines, teacherItemId: itemId, live: this.phase === "live" });
+    if (arrival.hints) this.applyHints({ type: "hints_received", now: nowMs(), hints: arrival.hints });
+    else if (cards.answers.length > 0 && this.phase === "live") this.cardsStats = { ...this.cardsStats, staleHints: this.cardsStats.staleHints + 1 };
+    if (arrival.picture) this.showPicture(arrival.picture);
+    this.emit();
+  }
+
+  /** response.done 하나 — 진행 표시 해제·사용량·마무리 판정·보류한 도움 요청·일러스트 안내·**카드 요청**(completed인 선생님 줄) */
+  private onResponseDone(ev: Rec, done: TalkResponseDoneInfo): void {
     this.responseActive = false;
     this.awaitingCreatedSince = null;
 
@@ -905,36 +1102,29 @@ export class TalkCallController {
 
     // 마무리 응답이 오디오 없이 끝났으면 바로 끝낸다
     if (this.phase === "wrapping") {
-      if (this.wrapupSentAt !== null && summary.responseId !== null && summary.responseId === this.wrapupResponseId && !summary.hadAudio) {
+      if (this.wrapupSentAt !== null && done.responseId !== null && done.responseId === this.wrapupResponseId && !done.hadAudio) {
         this.finish("time");
       }
-      return; // 마무리 중에는 도구 결과·이어 말하기·도움 요청 없음
+      return; // 마무리 중에는 도움 요청·카드 요청 없음
     }
     if (this.phase !== "live") return;
 
-    // 호출 결과(호출마다 한 번, id app_out_n)
-    for (const call of summary.functionCalls) {
-      if (this.answeredCallIds.has(call.callId)) continue;
-      this.answeredCallIds.add(call.callId);
-      this.send(buildTalkToolOutputEvent(call.callId, this.nextNoteId("app_out")));
-    }
-
     if (this.pendingSceneNote) this.sendSceneNote();
 
-    // 선생님이 방금 말했다(새 차례) — 지난 차례의 도움 요청은 버린다(이어 말하기와 상관없이)
-    if (this.pendingNudge && summary.hadAudio) this.pendingNudge = false;
-
-    if (continueSend) {
-      // 도구를 부르고 질문 없이 끝났다 — 이어 말하게(질문을 했으면 은우 차례라 보내지 않는다). 셈은 stepTalkContinue가 이미 올렸다.
-      // 보류한 도움 요청(오디오 없는 응답일 때만 남아 있다)은 같은 응답에 싣는다
-      if (this.pendingNudge) {
-        this.pendingNudge = false;
-        this.sendNote(this.nextNoteId("app_nudge"), this.opts.notes.nudge);
-      }
-      this.sendResponseCreate();
-      return;
-    }
+    // 선생님이 방금 말했다(새 차례) — 지난 차례의 도움 요청은 버린다. 오디오 없이 끝난 응답이면 보류한 요청을 지금 보낸다.
+    // (앱이 여기서 response.create를 보내는 경우는 이 보류한 도움 요청뿐이다 — §12-6의 "질문 없는 응답 → 이어 말하기"는 없다, §12-7)
+    // 은우 차례가 열려 있어도 버린다(requestNudge·speech_started가 이미 비우지만 — 보내는 곳마다 같은 판정). 버린 요청은 셈에서도 뺀다
+    // (소리 있는 응답으로 버려도 — 보내지 않은 요청이 연속 2번을 먹지 않게, QA full_2 P3-A)
+    if (this.pendingNudge && (done.hadAudio || this.childTurnOpen(nowMs()))) this.dropPendingNudge();
     if (this.pendingNudge) this.sendNudgeNow();
+
+    // 화면 카드 — completed인 응답의 선생님 줄마다 한 번(전사 .done이 아직이면 그때 청한다 — onServerEvent 5)
+    if (done.status === "completed" && done.responseId !== null) {
+      this.completedResponses.add(done.responseId);
+      for (const itemId of done.assistantItemIds) {
+        if (this.transcript.textDone[itemId]) this.maybeRequestCards(itemId);
+      }
+    }
   }
 
   private onTeacherAudioStopped(responseId: string | null): void {
@@ -949,9 +1139,11 @@ export class TalkCallController {
     if (this.phase === "ended") return;
     const now = nowMs();
     if (this.awaitingCreatedSince !== null && now - this.awaitingCreatedSince >= RESPONSE_CREATED_WAIT_MS) {
-      // 보낸 response.create에 응답이 시작되지 않았다(거부·유실) — 진행 중 표시를 푼다
+      // 보낸 response.create에 응답이 시작되지 않았다(거부·유실) — 진행 중 표시를 풀고, 적어 둔 출처 청을 거둔다
+      // (다음 자동 응답이 greeting·nudge·wrapup으로 잘못 태깅되지 않게, §12-7)
       this.awaitingCreatedSince = null;
       this.responseActive = false;
+      this.transcript = requestTalkResponseOrigin(this.transcript, null);
     }
     this.applyHints({ type: "tick", now });
 
@@ -962,12 +1154,18 @@ export class TalkCallController {
         const waited = now - (this.wrapRequestedAt ?? now);
         const waitMax = TALK_WRAPUP_WAIT_MS * this.timescale;
         const teacherDone = !this.teacherSpeaking || waited >= waitMax;
-        if (teacherDone && !this.responseActive) {
+        // 은우가 말하는 중이면 선생님과 같은 8초 상한 안에서 기다린다(QA full_1 P2-A) — 은우 차례가 닫히면 서버 자동 응답(그 말에 대한
+        // 대답)이 오고, 그 응답이 끝난 뒤 작별 인사가 나간다. 8초가 지나도 말하는 중이면(잡음 등) 더 기다리지 않는다(대화가 끝나지 않는
+        // 일이 없게). 말이 막 끝나 자동 응답을 기다리는 틈(TALK_AUTO_REPLY_WAIT_MS)은 상한과 무관하게 기다린다 — 그 틈에 보내면 자동
+        // 응답과 부딪치고, 틈 자체가 짧게 묶여 있다.
+        const childDone = !this.childSpeaking || waited >= waitMax;
+        const replyPending = this.autoReplyPending(now);
+        if (teacherDone && childDone && !replyPending && !this.responseActive) {
           // 보내기 **전에** 표시한다 — response.created가 곧바로(같은 호출 안에서) 되돌아와도(개발용 가짜 전송) 그 응답을 마무리 응답으로
           // 알아보게(wrapupResponseId). 늦게 세우면 작별 인사 소리가 멈춰도 끝나지 않고 25초 상한까지 간다.
           this.wrapupSentAt = now;
           this.sendNote("app_wrapup", this.opts.notes.wrapup);
-          this.sendResponseCreate();
+          this.sendResponseCreate("wrapup");
         } else if (teacherDone && this.responseActive && waited >= waitMax && !this.wrapupCancelSent) {
           // 진행 중 응답이 오래 끈다 — 끊고(response.done cancelled가 오면) 다음 tick에 마무리를 보낸다
           this.wrapupCancelSent = true;
@@ -987,6 +1185,7 @@ export class TalkCallController {
     this.phase = "wrapping";
     this.wrapRequestedAt = now;
     this.pendingNudge = false;
+    this.abortCards(false); // 작별 인사 뒤에 카드를 띄우지 않는다 — 진행 중이던 카드 요청도 끊는다
     this.applyHints({ type: "wrapup_started", now });
   }
 
@@ -1024,6 +1223,7 @@ export class TalkCallController {
     this.endedAtIso = new Date().toISOString(); // 대화가 끝난 시각은 끝내기를 누른 때다(기다린 시간은 대화가 아니다)
     this.pendingNudge = false;
     this.pendingSceneNote = false;
+    this.abortCards(false);
     try {
       for (const t of this.mic?.stream.getAudioTracks() ?? []) t.enabled = false;
     } catch {
@@ -1070,6 +1270,7 @@ export class TalkCallController {
       this.sceneAbort.abort(); // 대화가 먼저 끝났다 — 그림 생성도 멈춘다(그림 없이 저장)
       this.scene = { status: "failed", shown: false, dataUrl: null, sceneEn: null };
     }
+    this.abortCards(false); // 진행 중인 카드 요청도 끊는다(상류 호출 J도 req.signal로 멈춘다)
     try {
       this.transport?.close();
     } catch {

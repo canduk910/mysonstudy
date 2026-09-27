@@ -18,7 +18,10 @@
  * 5. 앱이 넣은 숨은 항목(아이디 접두사 `app_` — 첫 인사·마무리·도움 요청·일러스트 안내 system 메시지, 도구 호출 결과)과
  *    **선생님의 도구 호출 항목(`function_call`, §12-6)**은 줄로 만들지 않는다 — 그 항목을 가리키는 연결은 건너 이어 준다
  *    (도구 호출이 선생님 말 앞뒤에 끼어도 스크립트 순서가 흔들리지 않게).
- * 6. 같은 이벤트가 두 번 와도 결과가 같다(멱등): 연결은 한 번 적용한 것을 기억하고, delta는 event_id로 한 번만 붙인다
+ * 6. 선생님 줄의 **출처**(§12-7, 2026-09-27): 앱이 `response.create`를 보내기 직전에 `requestTalkResponseOrigin(state, 출처)`로
+ *    청을 적어 두면, 그다음 `response.created`의 응답이 그 출처(greeting·nudge·wrapup)가 되고 청은 소비된다. 청 없이 온 응답은
+ *    `reply`(은우 발화 뒤 자동 응답). 줄은 자기 응답 id(transcript 이벤트의 response_id)로 출처를 받는다 — `toTalkTurns`가 저장 턴에 싣는다.
+ * 7. 같은 이벤트가 두 번 와도 결과가 같다(멱등): 연결은 한 번 적용한 것을 기억하고, delta는 event_id로 한 번만 붙인다
  *    (실서버 이벤트는 늘 event_id를 준다 — 개발용 가짜 전송도 event_id를 넣어야 delta 멱등이 성립한다).
  *    모르는 이벤트·모양이 틀린 이벤트는 무시한다(상태 객체를 그대로 돌려준다 — 화면이 다시 그리지 않는다).
  *
@@ -29,7 +32,7 @@
  */
 
 import type { ConversationItemCreateEvent, RealtimeServerEvent, ResponseCreateEvent } from "openai/resources/realtime/realtime";
-import type { TalkSpeaker, TalkTurn } from "./ai/english/talk-schemas";
+import type { TalkAppOrigin, TalkSpeaker, TalkTurn, TalkTurnOrigin } from "./ai/english/talk-schemas";
 
 // ---------------------------------------------------------------------------
 // 모양
@@ -50,6 +53,11 @@ export interface TalkLine {
   status: TalkLineStatus;
   /** 선생님 응답이 안전 필터로 잘렸다(response.done incomplete + content_filter) — 화면이 흐리게 그린다 */
   filtered: boolean;
+  /**
+   * 선생님 줄의 출처(§12-7 — reply·greeting·nudge·wrapup). 은우 줄은 늘 null. 선생님 줄은 응답 id를 알게 되면(글자 이벤트) 정해지고,
+   * 그 전에는 null이다(`toTalkTurns`는 선생님 줄의 null을 reply로 싣는다 — 앱이 청하지 않은 응답이다).
+   */
+  origin: TalkTurnOrigin | null;
 }
 
 /** 리듀서 상태. 화면은 `lines`만 읽는다(나머지는 멱등·연결을 위한 기억). */
@@ -65,6 +73,10 @@ export interface TalkTranscriptState {
   textDone: Readonly<Record<string, true>>;
   /** 이미 붙인 delta의 event_id — 같은 delta가 두 번 와도 한 번만 붙인다 */
   seenDeltas: Readonly<Record<string, true>>;
+  /** 앱이 response.create를 보내며 적어 둔 출처(§12-7) — 다음 response.created가 소비한다. 없으면 null */
+  pendingOrigin: TalkAppOrigin | null;
+  /** 응답 id → 출처(response.created 때 정한다). 같은 created가 두 번 와도 다시 정하지 않는다(멱등) */
+  originOfResponse: Readonly<Record<string, TalkTurnOrigin>>;
 }
 
 /** 앱이 `conversation.item.create`로 넣는 숨은 항목의 아이디 접두사(§12-2 5). 앱은 이 상수로 id를 만든다. */
@@ -90,12 +102,13 @@ export const TALK_REALTIME_EVENTS = {
   inputFailed: "conversation.item.input_audio_transcription.failed",
   outputDelta: "response.output_audio_transcript.delta",
   outputDone: "response.output_audio_transcript.done",
+  responseCreated: "response.created",
   responseDone: "response.done",
 } as const satisfies Record<string, RealtimeServerEvent["type"]>;
 
 /** 빈 스크립트(대화 시작 상태) */
 export function createTalkTranscript(): TalkTranscriptState {
-  return { lines: [], placedAfter: {}, hidden: {}, responseOf: {}, textDone: {}, seenDeltas: {} };
+  return { lines: [], placedAfter: {}, hidden: {}, responseOf: {}, textDone: {}, seenDeltas: {}, pendingOrigin: null, originOfResponse: {} };
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +133,7 @@ function ensureLine(s: TalkTranscriptState, itemId: string, speaker: TalkSpeaker
     text: "",
     status: speaker === "child" ? "listening" : "partial",
     filtered: false,
+    origin: null,
   };
   return { ...s, lines: [...s.lines, line] };
 }
@@ -130,7 +144,15 @@ function patchLine(s: TalkTranscriptState, itemId: string, patch: Partial<Omit<T
   if (i < 0) return s;
   const cur = s.lines[i];
   const next: TalkLine = { ...cur, ...patch };
-  if (next.speaker === cur.speaker && next.text === cur.text && next.status === cur.status && next.filtered === cur.filtered) return s;
+  if (
+    next.speaker === cur.speaker &&
+    next.text === cur.text &&
+    next.status === cur.status &&
+    next.filtered === cur.filtered &&
+    next.origin === cur.origin
+  ) {
+    return s;
+  }
   const lines = s.lines.slice();
   lines[i] = next;
   return { ...s, lines };
@@ -233,9 +255,36 @@ function onInputFailed(s: TalkTranscriptState, ev: Rec): TalkTranscriptState {
   return patchLine(next, id, { status: "failed" });
 }
 
+/**
+ * 선생님 줄 ↔ 응답 id를 기억하고, 그 줄의 출처를 응답의 출처로 둔다(§12-7). response.created를 못 봤으면 reply —
+ * 앱이 청한 응답은 늘 created를 먼저 받으므로(서버 이벤트 순서), 모르는 응답은 앱이 청하지 않은 자동 응답이다.
+ */
 function rememberResponse(s: TalkTranscriptState, itemId: string, responseId: string | null): TalkTranscriptState {
-  if (responseId === null || s.responseOf[itemId] === responseId) return s;
-  return { ...s, responseOf: { ...s.responseOf, [itemId]: responseId } };
+  if (responseId === null) return s;
+  let next = s.responseOf[itemId] === responseId ? s : { ...s, responseOf: { ...s.responseOf, [itemId]: responseId } };
+  const line = next.lines[findIndex(next.lines, itemId)];
+  if (line && line.speaker === "teacher") {
+    const origin = Object.prototype.hasOwnProperty.call(next.originOfResponse, responseId) ? next.originOfResponse[responseId] : "reply";
+    next = patchLine(next, itemId, { origin });
+  }
+  return next;
+}
+
+/**
+ * response.created(§12-7 출처) — 처음 보는 응답이면 앱이 적어 둔 청(pendingOrigin)을 그 응답의 출처로 삼고 청을 비운다(없으면 reply).
+ * 이미 본 응답이면 그대로(멱등 — 같은 created가 다시 와도 새 청을 소비하지 않는다). 그 응답의 줄이 이미 있으면(순서가 뒤바뀐 경우) 고친다.
+ */
+function onResponseCreated(s: TalkTranscriptState, ev: Rec): TalkTranscriptState {
+  const resp = ev.response;
+  if (!isRec(resp)) return s;
+  const responseId = str(resp.id);
+  if (responseId === null || Object.prototype.hasOwnProperty.call(s.originOfResponse, responseId)) return s;
+  const origin: TalkTurnOrigin = s.pendingOrigin ?? "reply";
+  let next: TalkTranscriptState = { ...s, pendingOrigin: null, originOfResponse: { ...s.originOfResponse, [responseId]: origin } };
+  for (const line of s.lines) {
+    if (line.speaker === "teacher" && s.responseOf[line.itemId] === responseId) next = patchLine(next, line.itemId, { origin });
+  }
+  return next;
 }
 
 function onOutputDelta(s: TalkTranscriptState, ev: Rec): TalkTranscriptState {
@@ -322,11 +371,22 @@ export function reduceTalkTranscript(state: TalkTranscriptState, event: unknown)
       return onOutputDelta(state, event);
     case E.outputDone:
       return onOutputDone(state, event);
+    case E.responseCreated:
+      return onResponseCreated(state, event);
     case E.responseDone:
       return onResponseDone(state, event);
     default:
       return state;
   }
+}
+
+/**
+ * 앱이 `response.create`를 보내기 **직전에** 부른다(§12-7 출처) — 다음 `response.created`가 이 출처(greeting·nudge·wrapup)를 받는다.
+ * null이면 적어 둔 청을 거둔다(우리가 보낸 response.create가 거부돼 created가 오지 않은 때 — 다음 자동 응답이 잘못 태깅되지 않게).
+ * 같은 값이면 같은 상태 객체를 돌려준다. 서버 이벤트가 아니라 앱의 행동이라 리듀서 밖의 함수다.
+ */
+export function requestTalkResponseOrigin(state: TalkTranscriptState, origin: TalkAppOrigin | null): TalkTranscriptState {
+  return state.pendingOrigin === origin ? state : { ...state, pendingOrigin: origin };
 }
 
 /** 여러 이벤트를 차례로 접는다(eval·개발용 가짜 전송·재생 공용) */
@@ -365,7 +425,11 @@ export function buildTalkSystemNoteEvent(itemId: string, text: string): Conversa
   };
 }
 
-/** 선생님이 말하게 하는 `response.create` — **인자 없음**(세션 지시문·도구가 그대로 적용된다). 첫 인사·마무리·도움 요청·질문 없이 끝난 도구 응답 뒤 이어 말하기에 쓴다. */
+/**
+ * 선생님이 말하게 하는 `response.create` — **인자 없음**(세션 지시문이 그대로 적용된다). §12-7부터 앱이 보내는 경우는 첫 인사·
+ * 도움 요청(12초·🙋)·마무리 셋뿐이고, 보내기 직전에 `requestTalkResponseOrigin(상태, "greeting"|"nudge"|"wrapup")`로 출처를 적는다.
+ * (§12-6의 "질문 없이 끝난 도구 응답 뒤 이어 말하기"는 세션에 도구가 없어져 더는 일어나지 않는다 — 컨트롤러에서 걷어 낼 경로.)
+ */
 export function buildTalkResponseCreateEvent(): ResponseCreateEvent {
   return { type: "response.create" };
 }
@@ -374,14 +438,18 @@ export function buildTalkResponseCreateEvent(): ResponseCreateEvent {
 // 저장용 변환 (§12-2 7)
 // ---------------------------------------------------------------------------
 
-/** 줄 → 저장용 턴. `empty`·`failed`·글자 없는 줄을 뺀다. 은우 턴의 interrupted는 늘 false. */
+/**
+ * 줄 → 저장용 턴. `empty`·`failed`·글자 없는 줄을 뺀다. 은우 턴의 interrupted는 늘 false.
+ * origin(§12-7): 선생님 턴은 줄의 출처(모르면 reply), 은우 턴은 null — 키는 늘 싣는다(undefined 없음).
+ */
 export function toTalkTurns(lines: readonly TalkLine[]): TalkTurn[] {
   const out: TalkTurn[] = [];
   for (const l of lines) {
     if (l.status === "empty" || l.status === "failed") continue;
     const text = l.text.trim();
     if (text === "") continue;
-    out.push({ speaker: l.speaker, text, interrupted: l.speaker === "teacher" && l.status === "interrupted" });
+    const teacher = l.speaker === "teacher";
+    out.push({ speaker: l.speaker, text, interrupted: teacher && l.status === "interrupted", origin: teacher ? (l.origin ?? "reply") : null });
   }
   return out;
 }

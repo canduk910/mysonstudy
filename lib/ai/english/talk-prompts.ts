@@ -1,10 +1,14 @@
 /**
- * lib/ai/english/talk-prompts.ts — 은우 자유대화 원문 상수 (docs/harness/english.md §12-1·§12-3·§12-6, SPEC §21)
+ * lib/ai/english/talk-prompts.ts — 은우 자유대화 원문 상수 (docs/harness/english.md §12-1·§12-3·§12-6·§12-7, SPEC §21)
  *
  * - §12-1 관문 R(실시간 음성, OpenAI Realtime): 선생님 지시문·수업 블록 2종·첫 인사·마무리 지시. 관문 R은 하네스 밖
  *   (callWithSchema를 지나지 않는다)이지만 **지시문 원문은 spec-sync 대상**이다 — 1학년 눈높이·안전 규칙이 이 문장들에 있다.
- * - §12-6 화면 카드: 지시문 덧붙임(도구 사용 안내)·말문 막힘 도움 요청·주제 일러스트 안내·사진 생성 프롬프트.
- *   도구 정의(TALK_TOOLS, JSON)는 세션 설정과 함께 서버만 쓰므로 lib/ai/english/talk-schemas.ts에 있다.
+ * - §12-7 차례 규칙(`TALK_TURN_RULES`): 세션 지시문 = 교사 지시문 + "\n\n" + 차례 규칙. §12-6의 지시문 덧붙임(도구 사용 안내
+ *   `TALK_CARDS_INSTRUCTIONS`)을 대체한다 — 음성 모델에서 도구를 없앴다(2026-09-27, 선생님이 두 명처럼 연달아 답하던 현상).
+ * - §12-6 화면 카드: 말문 막힘 도움 요청·주제 일러스트 안내·사진 생성 프롬프트.
+ * - §12-7 호출 J(화면 카드 생성, 하네스 안): 시스템 프롬프트·사용자 메시지 템플릿·호출 옵션·시간 상한. 선생님 줄이 끝날 때마다
+ *   앱이 부르고(`POST /api/english/talk/cards`), 도움(답 예시·핵심 단어)과 그림 카드를 만든다. 후처리는 lib/talk-cards.ts
+ *   `sanitizeTalkScreenCards`(클라이언트 안전 순수 함수), 스키마·zod는 lib/ai/english/talk-schemas.ts.
  * - §12-3 호출 I(문장 설명, 하네스 안): 시스템 프롬프트·사용자 메시지 템플릿·호출 옵션.
  *
  * 앱이 대화 중에 넣는 안내(첫 인사·마무리·도움 요청·일러스트 안내)는 전부 **숨은 system 메시지 항목**(`conversation.item.create`,
@@ -13,13 +17,15 @@
  *
  * 모든 상수는 스펙 코드블록과 **바이트 단위로 같다**(scripts/eval-english.ts의 SPEC_SYNC_TARGETS가 대조한다). 문구를
  * 다듬지 말고, 고치려면 스펙부터 고친다(스펙 수정은 사용자 결정). 치환은 `fillTalkTemplate`의 **한 번 훑기**로만 한다 —
- * 넣은 값 안의 `{…}`·`$&`가 다시 치환되지 않는다(직접 입력 주제·단어장 이름이 템플릿을 흔들지 못하게).
+ * 넣은 값 안의 `{…}`·`$&`가 다시 치환되지 않는다(직접 입력 주제·단어장 이름·선생님 말이 템플릿을 흔들지 못하게).
  *
  * 지시문 조립(주제·단어 → {lesson})과 Realtime 세션 설정은 서버 전용 lib/talk-session-config.ts가 한다.
- * 이 파일은 문자열과 순수 함수뿐이다(런타임 import 0 — 타입만). 아이 이름은 어디에도 넣지 않는다(§12 눈높이 문단).
+ * 이 파일은 문자열과 순수 함수뿐이다 — 런타임 import는 클라이언트 안전 순수 모듈 lib/talk-cards.ts(호출 J 입력 폭 한 곳)뿐이고
+ * 나머지는 타입만. 아이 이름은 어디에도 넣지 않는다(§12 눈높이 문단).
  */
 
-import type { TalkTurn } from "./talk-schemas";
+import type { TalkCardsInput, TalkTurn } from "./talk-schemas";
+import { TALK_CARDS_REQUEST_LIMITS } from "../../talk-cards";
 
 // ---------------------------------------------------------------------------
 // §12-1 관문 R — 선생님 지시문(원문). `{lesson}` 한 자리만 치환한다.
@@ -79,24 +85,27 @@ export const TALK_GREETING_INSTRUCTIONS = `Start the call now: say hello warmly,
 export const TALK_WRAPUP_INSTRUCTIONS = `Our time is almost up. Finish the call now: praise one thing the child did well today in one short sentence, then say a warm goodbye. Do not ask any more questions.`;
 
 // ---------------------------------------------------------------------------
-// §12-6 화면 카드 — 지시문 덧붙임·도움 요청·주제 일러스트
+// §12-7 차례 규칙 — 세션 지시문 덧붙임(§12-6 도구 사용 안내를 대체)
 // ---------------------------------------------------------------------------
 
 /**
- * 지시문 덧붙임 (english.md §12-6 원문). 세션 지시문 = TALK_TEACHER_INSTRUCTIONS(`{lesson}` 치환) + "\n\n" + 이 블록
- * (lib/talk-session-config.ts `buildTalkInstructions`). 도구(show_hints·show_picture) 사용 안내다 — 카드는 조용하다.
- * 첫 항목("말을 다 한 뒤에 도구")은 2026-09-26 실연결에서 선생님이 한두 마디 하다 도구를 부르고 질문 없이 응답을 끝내던 것을 막는다
- * (앱 쪽 두 번째 겹은 lib/talk-cards.ts `decideTalkContinue` — 질문 없이 끝난 도구 응답 뒤 이어 말하기).
+ * 차례 규칙 (english.md §12-7 원문). 세션 지시문 = TALK_TEACHER_INSTRUCTIONS(`{lesson}` 치환) + "\n\n" + 이 블록
+ * (lib/talk-session-config.ts `buildTalkInstructions`). 선생님이 한 차례를 **한 번에** 말하게 한다 — 도구가 없어졌으므로
+ * 응답이 도구에서 끊기지 않고, 앱이 "이어 말하기" response.create를 보낼 일도 없다(2026-09-27 — §12-6에서 질문 없는 연결 멘트 +
+ * 도구 호출로 응답이 끝나면 이어 말하기가 새 응답을 만들어 선생님이 은우 말에 처음부터 다시 답하던 현상, "선생님이 두 명").
+ * 세션 설정에는 `tools`·`tool_choice`를 싣지 않는다. 화면 카드는 앱이 호출 J로 따로 만든다.
  */
-export const TALK_CARDS_INSTRUCTIONS = `# Screen cards
-The child also sees a screen during the call. You can put helpful cards on it with your tools. Cards are silent: keep talking as usual, and never say that you are showing a card.
-- Speak your whole turn first, including your question, and call your tools only after you have finished speaking. Never talk about thinking or preparing, and never say things like "let me think".
-- Every time you ask the child a question, also call show_hints with 2 or 3 short answers the child could say (2 to 6 easy words each, like "I like apples." or "It is red.") and up to 3 key words with an emoji and the Korean meaning. The app shows them only if the child gets stuck.
-- When you talk about a new thing, animal, food, color, or action, call show_picture with one to three emoji that show it, the English word, and its easy Korean meaning.
-- If a message says that a picture is on the child's screen, you may ask one easy question about it, like "What do you see in the picture?"`;
+export const TALK_TURN_RULES = `# Your turns
+- Say your whole turn at once: react to the child in one short sentence, then ask one easy question.
+- Never talk about thinking, planning, or preparing. Never say things like "let me think" or "let's practice one more sentence" without asking the question in the same turn.
+- End every turn with one easy question to the child, except when you say goodbye.`;
 
-/** 교사 지시문(`{lesson}` 치환 결과)과 TALK_CARDS_INSTRUCTIONS 사이의 이음(§12-6 `"\n\n"`) */
-export const TALK_CARDS_INSTRUCTIONS_JOINER = "\n\n";
+/** 교사 지시문(`{lesson}` 치환 결과)과 TALK_TURN_RULES 사이의 이음(§12-7 `"\n\n"`) */
+export const TALK_TURN_RULES_JOINER = "\n\n";
+
+// ---------------------------------------------------------------------------
+// §12-6 화면 카드 — 도움 요청·주제 일러스트
+// ---------------------------------------------------------------------------
 
 /**
  * 말문 막힘 도움 요청 (english.md §12-6 원문). 은우가 12초 넘게 조용하거나 🙋를 누르면(lib/talk-hints.ts가 정한다) 앱이
@@ -192,6 +201,72 @@ export const TALK_CONTEXT_SPEAKER_LABELS: Record<TalkTurn["speaker"], string> = 
 export const TALK_CONTEXT_MARK = "▶ ";
 
 // ---------------------------------------------------------------------------
+// §12-7 호출 J — 화면 카드 생성(도움 답 예시·핵심 단어·그림 카드)
+// ---------------------------------------------------------------------------
+
+/** 호출 J 시스템 프롬프트 (english.md §12-7 원문) */
+export const TALK_CARDS_SYSTEM_PROMPT = `너는 초등학교 1학년 아이가 AI 영어 선생님과 전화로 대화하는 화면을 돕는 조교다. 선생님이 방금 한 말을 보고, 아이 화면에 띄울 카드를 만든다. 카드는 글자와 이모지로만 보인다.
+
+[answers — 말문이 막혔을 때 보여 줄 대답]
+- 선생님의 마지막 질문에 아이가 그대로 따라 말할 수 있는 아주 쉬운 영어 대답을 2~3개 쓴다. 한 대답은 2~6단어다(예: "I like dogs.", "It is red.").
+- 서로 다른 대답으로 고른다. 오늘의 단어가 있으면 대답에 자연스럽게 넣는다.
+- 선생님 말에 질문이 없으면 빈 배열로 둔다.
+
+[words — 대답에 쓰는 핵심 단어]
+- 대답에 쓰인 핵심 영어 단어 0~3개를 고르고, 단어마다 그 뜻을 보여 주는 이모지 하나와 쉬운 우리말 뜻을 쓴다.
+
+[picture — 그림 카드]
+- 선생님 말에 나온 사물·동물·음식·색·동작 가운데 아이에게 그림으로 보여 주면 좋은 것 하나를 고른다. 오늘의 단어가 선생님 말에 있으면 그것을 먼저 고른다.
+- 이미 보여 준 그림 카드와 같은 단어는 고르지 않는다. 고를 것이 없으면 null로 둔다.
+- emoji에는 그 단어를 나타내는 이모지 1~3개, en에는 선생님 말에 나온 영어 단어나 짧은 구, ko에는 쉬운 우리말 뜻을 쓴다.
+
+[금지]
+- 선생님 말에 없는 것을 그림 카드로 만들지 않는다.
+- 영어 칸에 한글을, 우리말 칸에 영어 글자를 쓰지 않는다.
+- 출력은 지정된 JSON 스키마로만. 스키마 밖 텍스트 금지.`;
+
+/** 호출 J 사용자 메시지 템플릿 (english.md §12-7 원문) — `{…}` 자리만 치환한다(buildTalkCardsUserMessage) */
+export const TALK_CARDS_USER_TEMPLATE = `주제: {topicLabel}
+오늘의 단어: {words}
+이미 보여 준 그림 카드: {shown}
+최근 대화:
+{context}
+선생님이 방금 한 말: {teacherLine}`;
+
+/**
+ * 호출 J 파라미터 (english.md §12-7 "호출 옵션").
+ * temperature 0.3 — 답 예시·그림 고르기는 약간의 변주만(같은 줄은 한 번만 부른다).
+ * maxOutputTokens 600 — 답 3개 + 단어 3개 + 그림 1장이면 충분하다. 비추론 소형 모델 기준(추론형으로 바꾸면 내부 토큰이 이 한도를
+ * 먹어 incomplete → 재요청 경로로 가고, 6초 상한에 걸리기 쉽다 — DEFAULT_TALK_CARDS_MODEL 주석).
+ * 모델은 env `OPENAI_TALK_CARDS_MODEL`(빈 값이면 DEFAULT_TALK_CARDS_MODEL — lib/ai/client.ts `resolveTalkCardsModel`).
+ */
+export const TALK_CARDS_CALL_OPTIONS = {
+  call: "talk_cards",
+  temperature: 0.3,
+  maxOutputTokens: 600,
+} as const;
+
+/**
+ * 호출 J 서버 시간 상한(§12-7 "서버 시간 상한 6초", ms). 재요청(zod 1회)까지 합친 **전체** 상한이다 — 카드는 지연에 민감하다
+ * (늦게 온 도움은 철 지난 도움이 된다). 넘으면 호출을 끊고 던진다(라우트 500 → 화면은 기본 문구, 그림 카드 없음).
+ */
+export const TALK_CARDS_TIMEOUT_MS = 6_000;
+
+/**
+ * 호출 J의 SDK 자동 재시도 횟수 — **0**(QA talk-cards-j P3-A). SDK는 429·503의 `retry-after`(최대 60초)를 그대로 따르는데 그 대기
+ * (`setTimeout`)는 끊는 신호를 보지 않는다. 그래서 재시도를 켜 두면 `retry-after: 12`에 6초 상한이 12초로 뚫렸다(스텁 실측 12,017ms).
+ * 끄면 상류 오류는 곧바로 던지고(라우트 500 → 화면은 기본 문구), 신호를 보는 요청만 남아 6초 상한이 늘 지켜진다.
+ * 잃는 것: 상류 500·연결 끊김 한 번을 SDK가 대신 다시 해 주던 것 — 다음 선생님 줄이 곧 새 요청을 만들므로 가치가 낮다.
+ * zod 재요청(callWithSchema의 1회)은 SDK 재시도와 별개라 그대로 남는다(같은 신호 안에서).
+ */
+export const TALK_CARDS_SDK_MAX_RETRIES = 0;
+
+/** 호출 J `{words}`·`{shown}`·`{context}`가 비었을 때 넣는 글(§12-7 "없으면 `없음`") */
+export const TALK_CARDS_NONE = "없음";
+/** 호출 J `{words}` 항목 이음(§12-7 `apple(사과), dog(강아지)…`)과 `{shown}` 이음 */
+export const TALK_CARDS_LIST_JOINER = ", ";
+
+// ---------------------------------------------------------------------------
 // 치환 — 한 번 훑기(single pass)
 // ---------------------------------------------------------------------------
 
@@ -256,12 +331,59 @@ export function buildTalkExplainUserMessage(input: {
 }
 
 // ---------------------------------------------------------------------------
+// §12-7 호출 J 사용자 메시지
+// ---------------------------------------------------------------------------
+
+/** 코드 포인트 기준 앞에서부터 자르기(라우트 zod가 먼저 거르지만 조립도 폭을 넘기지 않는다) */
+function clipChars(text: string, max: number): string {
+  const chars = Array.from(text);
+  return chars.length <= max ? text : chars.slice(0, max).join("");
+}
+
+/**
+ * 호출 J 사용자 메시지(§12-7 템플릿 치환). 값은 전부 한 줄로 평탄화하고(줄 구조를 깨지 않게) 폭(TALK_CARDS_REQUEST_LIMITS)으로 자른다.
+ * - `{topicLabel}` = 주제 한국어 라벨(TalkTopic.labelKo — 호출 I와 같은 값, 단어장이면 단어장 이름).
+ * - `{words}` = 단어장 모드면 `apple(사과), dog(강아지)` — 책 순서 앞 **최대 20개**, 뜻이 없으면 단어만. 아니면 `없음`.
+ * - `{shown}` = 이번 대화에서 띄운 그림 카드 영어 — 보인 순서의 **최근 12개**, 없으면 `없음`.
+ * - `{context}` = 선생님 줄 앞의 **최근 4줄**, 줄마다 `선생님: …`/`아이: …`(아이 이름 없음). 없으면(첫 인사) `없음`.
+ * - `{teacherLine}` = 선생님이 방금 한 말(그 줄 글자 그대로, 한 줄로).
+ * 빈 글자 항목(단어·보인 카드·문맥 줄)은 건너뛴다. 값을 보간하므로 spec-sync 대상은 템플릿(TALK_CARDS_USER_TEMPLATE)이고,
+ * 이 함수의 출력은 eval이 값으로 본다.
+ */
+export function buildTalkCardsUserMessage(input: TalkCardsInput): string {
+  const L = TALK_CARDS_REQUEST_LIMITS;
+  const words = input.words
+    .map((w) => ({ en: clipChars(oneLine(w.en), L.wordMaxChars), ko: w.ko === null ? "" : clipChars(oneLine(w.ko), L.wordMaxChars) }))
+    .filter((w) => w.en !== "")
+    .slice(0, L.words)
+    .map((w) => (w.ko ? `${w.en}(${w.ko})` : w.en));
+  const shown = input.shown
+    .map((en) => clipChars(oneLine(en), L.shownMaxChars))
+    .filter((en) => en !== "")
+    .slice(-L.shown);
+  const context = input.context
+    .map((t) => ({ speaker: t.speaker, text: clipChars(oneLine(t.text), L.lineMaxChars) }))
+    .filter((t) => t.text !== "")
+    .slice(-L.context)
+    .map((t) => `${TALK_CONTEXT_SPEAKER_LABELS[t.speaker]}: ${t.text}`);
+  return fillTalkTemplate(TALK_CARDS_USER_TEMPLATE, {
+    topicLabel: clipChars(oneLine(input.topicLabel), L.topicLabelMaxChars),
+    words: words.length > 0 ? words.join(TALK_CARDS_LIST_JOINER) : TALK_CARDS_NONE,
+    shown: shown.length > 0 ? shown.join(TALK_CARDS_LIST_JOINER) : TALK_CARDS_NONE,
+    context: context.length > 0 ? context.join("\n") : TALK_CARDS_NONE,
+    teacherLine: clipChars(oneLine(input.teacherLine), L.lineMaxChars),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // §12-6 치환 — 장면 문장을 넣는 두 템플릿
 // ---------------------------------------------------------------------------
 
 /**
  * 주제 일러스트 안내 완성본 — TALK_SCENE_NOTE의 `{scene}` 한 자리. 장면 문장은 한 줄로 평탄화한다(줄바꿈이 안내 줄 구조를
- * 깨지 않게). 앱(클라이언트)이 그림 도착 뒤 숨은 system 메시지로 넣는다 — 이 파일은 런타임 import 0이라 화면에서 불러도 된다.
+ * 깨지 않게). **서버의 장면 라우트**(`POST /api/english/talk/scene`)가 조립해 응답 `note`로 내리고, 앱은 그림 도착 뒤 그 글을
+ * 숨은 system 메시지로 넣는다. 화면에서 이 파일을 값으로 import하지 않는다 — 원문 상수가 클라이언트 번들에 딸려 간다
+ * (런타임 import는 머리 주석대로 lib/talk-cards.ts 하나뿐이지만, 문제는 이 파일 자신의 원문이다).
  */
 export function buildTalkSceneNote(scene: string): string {
   return fillTalkTemplate(TALK_SCENE_NOTE, { scene: oneLine(scene) });

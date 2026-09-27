@@ -18,7 +18,7 @@
 
 | 호출 | 진입 함수 | 한 번에 만드는 것 | 로그 라벨 · 옵션 상수(`prompts.ts`) | 라우트가 앞뒤로 붙이는 순수 함수 |
 |---|---|---|---|---|
-| A JLPT 단어 생성 | `generateJapaneseVocab({level, topic, include, exclude, count})` | **레벨 1개분** | `ja-vocab` · `JA_VOCAB_CALL_OPTIONS`(temp 0.4, 8,000) | 앞 `planIncludeDistribution` → 뒤 `applyVocabPostprocess`(`vocab.ts`) |
+| A JLPT 단어 생성 | `generateJapaneseVocab({level, topic, include, includeKo?, exclude, count})` — zod는 호출마다 `makeJaVocabGenerationSchema({ includeKo })`로 만든다(받은 한국어를 알아야 `fromKo`를 대조한다) | **레벨 1개분** | `ja-vocab` · `JA_VOCAB_CALL_OPTIONS`(temp 0.4, 8,000) | 앞 `planIncludeDistribution`(줄을 `include`·`includeKo`로 가른다) → 뒤 `applyVocabPostprocess`(`vocab.ts`, `includeKo`를 받아 `koConverted`·`koExcluded`를 돌려준다) |
 | B 대화문 전사 (vision) | `extractJaDialog({images})` — 이미지 파트를 텍스트보다 먼저 | **배치 1개분** | `ja-dialog-extract` · `JA_DIALOG_EXTRACT_CALL_OPTIONS`(0, 8,000) | 앞 `planJaDialogBatches` → 뒤 `mergeJaDialogBatches`(`dialog.ts`) |
 | C 대화 학습 해설 | `coachJaDialog({focusKo, turns})` | 대화 1개 | `ja-dialog-coach` · `JA_DIALOG_COACH_CALL_OPTIONS`(0.5, 8,000) | 없음(실패해도 전사는 남는다) |
 | D 한자 정보 생성 | `generateKanjiInfo({items})` | **10자 배치 1개분** | `ja-kanji` · `JA_KANJI_CALL_OPTIONS`(0.2, 3,000) | 앞 `collectKanjiFromBooks`·`selectKanjiToEnrich` → 뒤 `applyKanjiPostprocess`(`kanji.ts`) |
@@ -31,7 +31,8 @@
 |---|---|---|
 | `lib/ai/japanese/prompts.ts` | 호출 A~D 시스템 프롬프트(§2-1·§3-1·§4-1·§12-2-1 원문), 사용자 메시지 빌더(`buildJaVocabUserMessage`·`buildJaDialogCoachUserMessage`·`buildJaKanjiUserMessage`), 호출 옵션 | client.ts, eval |
 | `lib/ai/japanese/schemas.ts` | JSON Schema(strict) 4종 + zod + 타입(`JaToken`·`JaVocabEntry`·`JaDialogTurn`…) + 상수(`JLPT_LEVELS`·`JA_VOCAB_TOPIC_PRESETS`·`JA_*_MAX`·`JA_DIALOG_BATCH_SIZE`(4)·`JA_KANJI_BATCH_SIZE`(10)·`JA_EXCLUDE_PROMPT_MAX`(200)) — 4중 정의의 뿌리 | 전부 |
-| `lib/ai/japanese/vocab.ts` | `normalizeJaWord`·`planIncludeDistribution`·`applyVocabPostprocess`·`normalizeJaVocabEntry` | 생성 라우트, 저장소, 만들기 페이지, eval |
+| `lib/ai/japanese/vocab.ts` | `normalizeJaWord`·**같은 단어 판정 `isSameJaWord`**(가나 표기·한자 뼈대 — 누적 제외·중복 접기·매핑 보고가 공유)·`normalizeKoIncludeList`·`planIncludeDistribution`·`applyVocabPostprocess`·`normalizeJaVocabEntry` | 생성 라우트, 저장소, 만들기 페이지, eval |
+| `lib/japanese-include.ts` (2026-09-27) | 꼭 넣을 단어 **한 줄 판별의 단일 정의처** — `classifyJaIncludeLine`(일본어 표기 / 한국어 뜻 / null=섞임·라틴·숫자·빈 줄·20자 초과)·`jaIncludeRejectReason`(거부 이유 `empty`·`listed`·`too_long`·`mixed` — 판정은 그대로, 문구만 가른다)·`normalizeKoInclude`·`normalizeJaIncludeLine`·`JA_INCLUDE_WORD_MAX`(20, `schemas.ts`가 재수출). **import 0개 — 클라이언트 안전**(화면 칩과 라우트 zod가 같은 함수를 값으로 쓴다) | 생성 라우트, 만들기 화면, `schemas.ts`, eval |
 | `lib/ai/japanese/dialog.ts` | `planJaDialogBatches`·`mergeJaDialogBatches` | 전사 라우트, eval |
 | `lib/ai/japanese/kanji.ts` | `collectKanjiFromBooks`·`selectKanjiToEnrich`·`applyKanjiPostprocess` | 한자 라우트·페이지, eval |
 | `lib/ai/japanese/quiz.ts` | 시험 문항·보기 생성(`buildJaQuizQuestions`·`buildJaKanjiQuizQuestions`), 모드 상수(`JA_QUIZ_CONTENT_MODES` 5종·`JA_QUIZ_MODES`(+`wrong-review`)·`JA_KANJI_QUIZ_MODES` 2종), 모드별 집계(`aggregateJaStatsByMode`·`buildJaReviewCandidatesByMode`) — **AI 0** | 서버 페이지, 시험 라우트, eval |
@@ -52,7 +53,8 @@
 영어의 `toLowerCase()` 조인키를 그대로 쓰면 표기 흔들림(같은 단어의 한자/가나 표기, 활용형)을 못 잡는다. 일본어는 **표기(word)+읽기(kana) 2축**이고 같은 단어 판정은 kana가 기준이다.
 
 - 비교 전 정규화는 `normalizeJaWord`(`vocab.ts` — NFKC로 전각/반각 통일 + 공백 전부 제거)를 쓴다. 새 비교 코드도 이 함수를 쓴다.
-- `applyVocabPostprocess`: 누적 제외는 **word 또는 kana**가 같으면 버리고(단 include는 예외), 같은 배치 안 중복은 **kana로 접으며** include 쪽을 남긴다. 포함 이행 확인은 word 일치, 없으면 kana 일치로 한 번 더 본다.
+- `applyVocabPostprocess`(2026-09-27 정정 — 스펙 §2-4 "같은 단어 판정"): 누적 제외·같은 배치 중복 접기·한국어 매핑 보고가 **같은 단어 판정 `isSameJaWord` 하나**를 쓴다. 표기가 같으면 같은 단어, 읽기만 같으면 ① 한쪽 표기가 가나로만 돼 있거나 ② 둘 다 한자를 포함하고 한자 뼈대(표기에서 한자만 뽑은 열)가 같거나 한쪽이 다른 쪽의 순서 있는 부분열이며 빠진 한자 자리마다 가나가 적혀 있을 때(머리는 御만 — ご本/五本 방지)만 같은 단어다. 그 밖의 동음이의어(暑い/熱い·箸/橋·風/風邪)는 **접지도 제외하지도 않는다**. 전에는 "word 또는 kana가 같으면 버리고, 중복은 kana로 접는다"였는데, 그러면 가진 箸 때문에 한국어 "다리"에서 온 橋가 "이미 있어요"로 빠졌다. 중복 접기의 남기는 우선순위는 일본어 `include` > 한국어에서 온 것 > 새로 고른 것(같으면 첫 등장). 누적 제외 예외는 **일본어 `include`에만** 있다 — 한국어에서 온 항목은 바뀐 단어로 제외를 판정해 걸리면 버리고 `koExcluded`로 보고한다. 포함 이행 확인과 `include` 예외는 여전히 **표기 일치**(없으면 kana 일치)로 본다 — include에는 읽기가 없어 같은 단어 판정을 쓸 수 없다(스펙 §2-4 "알려진 한계").
+- 알려진 한계(스펙 §2-4 끝, eval "같은 단어 판정"의 "한계" 3행이 지금 동작을 잠근다): 한자 자체가 다른 표기 변형(綺麗/奇麗)은 다른 단어로 보고, 오쿠리가나가 덧붙은 한자의 읽기와 같은 쌍(長い/長居·赤み/赤身·白み/白身·黄み/黄身)은 같은 단어로 본다. 이 판정을 고치면 한계 행과 대조군(甘み/甘味 등 참 변형 8쌍) 행이 함께 움직이는지 본다 — 한계만 고치고 참 변형을 잃는 변경을 막으려고 둘을 함께 잠갔다.
 - 누적 제외 목록 조립(`/api/japanese/vocab/generate`): 저장된 모든 단어장의 `{word, kana}`를 최신 단어장부터 모아 `JA_EXCLUDE_PROMPT_MAX`(200)개에서 끊고, 프롬프트에는 오래된 것 → 최근 것 순으로 뒤집어 넣는다. 프롬프트로 넘기는 개수에는 상한이 있으므로 **저장 전 코드 재필터가 진짜 방어선**이다(§7-4).
 - "대화에서 모은 단어" 담기 중복 판정은 스토어 `appendJaVocabEntry`가 kana로 한다(파일·Firestore 두 백엔드 모두 `kana.trim()` 비교 — 12절 참고).
 
@@ -60,7 +62,7 @@
 
 세 판독/생성 라우트가 같은 모양이다: 입력을 나눠 `Promise.allSettled`로 병렬 호출 → 성공분만 모아 후처리 → **실패분은 사실대로 보고** → **전부 실패일 때만 500**.
 
-- **레벨 병렬 (호출 A).** `planIncludeDistribution(levels, include, JA_VOCAB_DEFAULT_COUNT)`가 레벨마다 계획을 만든다 — include는 **첫 레벨에만** 싣고 그 레벨의 새 단어 수를 그만큼 줄인다(레벨마다 쪼개 넣으면 같은 단어가 여러 번 나온다). 레벨 태깅은 모델이 아니라 코드가 호출 인자로 붙인다(검증할 수 없는 값을 모델에 맡기지 않는다). 응답 `perLevel[]`이 레벨별 `{filteredCount, missingIncludes, failed}`를 알린다. 10개보다 적게 남아도, 못 넣은 include가 있어도 성공이다 — 검토 화면이 "이 단어는 못 넣었어요"를 사실대로 보여준다.
+- **레벨 병렬 (호출 A).** `planIncludeDistribution(levels, include, JA_VOCAB_DEFAULT_COUNT)`가 레벨마다 계획을 만든다 — 섞인 줄을 판별해 `include`(일본어)·`includeKo`(한국어, 2026-09-27)로 가르고(판별이 안 되는 줄은 버린다 — 라우트가 이미 400으로 막는다), 둘을 **합쳐** 상한을 건 뒤 **첫 레벨에만** 싣고 그 레벨의 새 단어 수를 그만큼 줄인다(레벨마다 쪼개 넣으면 같은 단어가 여러 번 나온다). 레벨 태깅은 모델이 아니라 코드가 호출 인자로 붙인다(검증할 수 없는 값을 모델에 맡기지 않는다). 응답 `perLevel[]`이 레벨별 `{filteredCount, missingIncludes, koConverted, koExcluded, failed}`를 알린다 — `koConverted`는 "여권 → パスポート" 매핑(결과에 남음, 접혔으면 실제로 남은 항목의 표기), `koExcluded`는 바뀐 단어를 이미 가져서 뺀 매핑("이미 있어서 뺐어요"), `filteredCount`에는 `koExcluded`도 들어 있다(화면이 두 번 세지 않게), `missingIncludes`는 일본어 다음 한국어 순이다(모델이 바꿔 내지 못한 한국어 줄은 한국어 그대로). **꼭 넣을 단어가 실린 레벨이 실패하면** 그 레벨의 `missingIncludes`에 배분됐던 꼭 넣을 단어 전부(정규화값, 일본어 다음 한국어)를 싣고 `failed: true`로 보낸다(키 집합은 그대로 — 화면이 실패 경고 안에 "꼭 넣을 단어 N개는 N3 레벨이 실패해 넣지 못했어요"로 알린다, QA korean-include 3 P3-C). 10개보다 적게 남아도, 못 넣은 include가 있어도 성공이다 — 검토 화면이 "이 단어는 못 넣었어요"를 사실대로 보여준다. `fromKo`는 생성 응답 안에서만 쓰이고 저장 레코드(`JaVocabEntry`)에는 싣지 않는다.
 - **배치 병렬 (호출 B).** `planJaDialogBatches(imageCount)`가 `JA_DIALOG_BATCH_SIZE`(4)장씩 묶고, `mergeJaDialogBatches`가 경계에서 **표기(ja) 완전 일치·연속**인 발화만 하나로 접는다(유사도로 서로 다른 발화를 삼키지 않는다). 모델이 잘림을 보고했거나 배치가 하나라도 실패하면 `partial:true`로 정직하게 알린다. 장수 상한(20장)·전체 크기 상한은 이 라우트의 정책이고, 한 장의 형식·길이는 `lib/upload-limits.ts`를 import한다.
 - **배치 병렬 (호출 D).** 수집(`collectKanjiFromBooks`) → 정보 없는 한자만 선별(`selectKanjiToEnrich`) → `JA_KANJI_BATCH_SIZE`(10)자씩 병렬 → `applyKanjiPostprocess`(요청 밖·중복 버림, 빠진 한자 보고) → `store.saveJaKanji`는 **kanji 기준 insert-only**(이미 있는 한자는 덮어쓰지 않고, 실제로 새로 채운 수만 `filled`로 돌려준다). 채울 것이 없으면 호출 없이 `nothingToFill:true`.
 - **정보 불변.** 이미 채운 한자는 어떤 재생성 경로도 덮어쓰지 않는다 — 시험이 그 값에 매달린다(영어 "정의 불변"과 같은 자리). 선별(1차)과 insert-only 저장(2차, 동시 요청까지 막음) 두 겹이다.
@@ -73,7 +75,7 @@
 
 | 라우트 | 역할 | AI | 상태코드 | 계약 | 소비 화면 |
 |---|---|---|---|---|---|
-| `POST /vocab/generate` | 레벨별 병렬 생성 + 후처리. 저장 안 함 | A | 200 `{entries, perLevel, model}` · 400 · 501 · 500 `generate_failed` | `japanese-vocab-contract.ts` | `ja-vocab-new-flow.tsx` |
+| `POST /vocab/generate` | 레벨별 병렬 생성 + 후처리. 저장 안 함. 요청 `include`는 일본어 줄·한국어 줄이 **섞인 그대로**(최대 `JA_INCLUDE_MAX` — 두 종류 합산) | A | 200 `{entries, perLevel:[{level, filteredCount, missingIncludes, koConverted, koExcluded, failed}], model}` · 400 `invalid_input`(줄마다 `classifyJaIncludeLine !== null`이 통과 조건 하나, `issues[].message`는 `jaIncludeRejectReason`으로 고른 네 문구 — 빈 단어·한 줄에 하나씩·20자·섞임, 화면 칩과 같은 함수) · 501 · 500 `generate_failed`(모든 레벨 실패) | `japanese-vocab-contract.ts` | `ja-vocab-new-flow.tsx` |
 | `POST /vocab` | 검토한 단어장 저장. `kind:"jlpt"`는 서버가 붙인다 | 없음 | 200 `{id}` · 400 · 500 `save_failed` | 〃 | `ja-vocab-new-flow.tsx` |
 | `DELETE /vocab/[id]` | 단어장 삭제(그 단어장의 시험 세션 연쇄) | 없음 | 200 · 404 `vocabbook_not_found` · 403 `prod_guard` · 500 | 〃 | `ja-vocab-library-view.tsx` |
 | `POST /vocab/[id]/rename` | `titleKo`만 | 없음 | 200 · 400 · 404 · 500 | 〃 | `ja-vocab-detail-view.tsx` |
@@ -99,6 +101,8 @@
 - 계약 파일은 `lib/ai/japanese/*`에서 **`import type` / `export type`만** 한다. `isolatedModules`로 컴파일 시 완전히 지워져 런타임 import가 없다. 계약 파일에 값(`JA_TITLE_MAX`·`JA_DIALOG_TITLE_MAX`·모드 라벨)을 둘 수는 있지만 lib/ai 값에 기대면 안 된다.
 - 화면이 lib/ai의 **값**(`JLPT_LEVELS`·`JA_VOCAB_TOPIC_PRESETS`·개수 상한, 시험 문항)을 필요로 하면 **서버 컴포넌트(`app/japanese/**/page.tsx`)가 import해 계산하고 props로 내린다.** 예: 만들기 페이지가 프리셋·상한·기존 표제어를 내리고, 시험 페이지가 `buildJaQuizQuestions`로 세션을 조립해 `ja-quiz-runner.tsx`에 넘기고, 오답노트 페이지가 `aggregateJaStatsByMode`로 집계한다.
 - 확인: `grep -arl '"use client"' components app | xargs grep -an 'from "@/lib/ai/japanese'` — 지금은 결과가 없다. 결과가 나오면 그 import가 타입 전용인지 본다. 값 import면 경계가 깨진 것이다(`-a`는 SKILL.md "grep 함정" 참고).
+- **예외는 import 0인 순수 모듈** — 꼭 넣을 단어 줄 판별(`lib/japanese-include.ts`, 2026-09-27)은 화면 칩과 라우트 zod가 **같은 판정**을 써야 해서 `lib/ai` 밖에 두고(토익 `lib/toeic-text.ts` 선례) 화면이 값으로 import한다. `schemas.ts`는 이것을 재수출할 뿐이라 기존 import 경로도 그대로 동작한다. 이런 모듈에는 zod·openai·다른 `lib/ai` 파일을 import하지 않는다.
+- 생성 라우트(`app/api/japanese/vocab/generate/route.ts`)에는 제외 목록 키 `${e.word}\0${e.kana}`에 **NUL 문자**가 들어 있다 — 편집기에 따라 파일이 바이너리로 보이거나(`git diff`가 `Bin`) 치환이 NUL을 지울 수 있다. 고친 뒤 `od -c`로 NUL이 1개 남았는지 본다.
 
 ## 9. 재사용 경계 (§10)
 
@@ -129,7 +133,7 @@
 ## 11. eval-japanese.ts
 
 - **사실상 오프라인 전용이다.** `EVAL_JAPANESE=1` 게이트는 안내만 찍고 실호출하지 않는다(자리만 있다). 그래서 언제 돌려도 비용이 없지만, 안전 접두어는 그대로 붙인다: `OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npm run eval:japanese` (`EVAL_OFFLINE_ONLY=1`이면 `globalThis.fetch`도 막는다).
-- 점검 묶음(`main`): 상수 정합 · zod 거부 케이스(토큰 무결성 포함) · 오쿠리가나 분리 · 이모지 · 후처리(제외·include 우선·포함 보고·중복 접기·레벨 태깅) · include 배분 계획 · 호출 A 사용자 메시지 치환 · 시험 문항 · **모드 분리** · 한자(수집·선별·후처리·시험 2모드) · 대화(배치 계획·병합) · spec-sync · JSON Schema 의미 동치.
+- 점검 묶음(`main`): 상수 정합 · zod 거부 케이스(토큰 무결성 포함) · 오쿠리가나 분리 · 이모지 · 후처리(제외·include 우선·포함 보고·중복 접기·레벨 태깅) · include 배분 계획 · 호출 A 사용자 메시지 치환 · 시험 문항 · **모드 분리** · 한자(수집·선별·후처리·시험 2모드) · 대화(배치 계획·병합) · spec-sync · JSON Schema 의미 동치. 2026-09-27에 **한국어 include 판별**(40 — 줄 판별·거부 이유 18·"reason null ⇔ classify non-null" 불변식)·**한국어 include zod**(10 — `fromKo` 입력 대조·중복·include 없는데 fromKo·word 한글)·**한국어 include 후처리**(19 — `koExcluded`·`koConverted`·일본어 include와 겹침 접기·누락 보고)·**같은 단어 판정**(25 — 동음이의어·표기 흔들림·한자 뼈대 배터리, 참조 모델·무작위 불변식, "한계" 3행)이 더해져 오프라인 **220항목**이다(2026-09-24 112).
 - **spec-sync 대상**(`SPEC_SYNC_TARGETS`): `JA_VOCAB_SYSTEM_PROMPT`·`JA_VOCAB_USER_TEMPLATE`·`JA_KANJI_SYSTEM_PROMPT`·`JA_DIALOG_EXTRACT_SYSTEM_PROMPT`·`JA_DIALOG_EXTRACT_USER_TEXT`·`JA_DIALOG_COACH_SYSTEM_PROMPT` 바이트 대조, 그리고 JSON Schema 4종(`JA_VOCAB_GENERATION_JSON_SCHEMA`·`JA_KANJI_INFO_JSON_SCHEMA`·`JA_DIALOG_EXTRACTION_JSON_SCHEMA`·`JA_DIALOG_COACHING_JSON_SCHEMA`)을 스펙 코드블록을 파싱해 의미 동치로 대조한다. 새 프롬프트·스키마 상수를 만들면 여기에 등록해야 끝이다.
 - 해설 낭독 대본(`lib/ja-coaching-script.ts`의 `buildCoachingScript`)은 호출 C 스키마(§4-3) 필드를 섹션 순서대로 읽는다. 해설 스키마를 바꾸면 이 함수와 `scripts/eval-speech.ts`를 함께 맞춘다(§13) — 그 점검은 `eval:speech`에 있다.
 
@@ -142,4 +146,5 @@
   - `collectKanjiFromBooks`를 부르는 곳은 **둘**이다. 목록 페이지 `app/japanese/kanji/page.tsx`는 `listJaVocabBooks(LIST_LIMIT)`(500)를, `/api/japanese/kanji/enrich`는 **상한 없는** `listJaVocabBooks()`를 넘긴다(limit이 없으면 두 백엔드 모두 전부 읽는다). 단어장이 500개를 넘으면 목록에 안 보이는 한자를 enrich가 채울 수 있다.
   - 한자 카드 페이지 `app/japanese/kanji/[kanji]/page.tsx`는 `collectKanjiFromBooks`를 쓰지 않는다. 자체 `collectWordsFor(kanji)`가 `listJaVocabBooks(500)` 위에서 `entry.word.includes(kanji)`로 **수집 규칙을 한 번 더** 구현한다.
   - 그래서 범위(kind 필터·개수 상한)를 바꾸려면 세 곳을 함께 고친다. `collectKanjiFromBooks`만 고치면 카드 페이지의 "이 한자가 든 단어들"에는 반영되지 않는다.
-- **kana 비교 강도가 두 가지다.** 후처리는 `normalizeJaWord`(NFKC+공백 제거), 스토어의 담기 중복 판정은 `kana.trim()`이다. 반각 가나가 섞인 입력이면 둘의 판정이 갈릴 수 있다.
+- **kana 비교 강도가 두 가지다.** 후처리는 `normalizeJaWord`(NFKC+공백 제거) 위의 같은 단어 판정(`isSameJaWord`), 스토어의 담기 중복 판정은 `kana.trim()`이다. 반각 가나가 섞인 입력이면 둘의 판정이 갈릴 수 있다.
+- **(2026-09-27 한국어 include)** 누적 제외 재필터는 프롬프트에 넣은 것과 같은 상한 목록(`JA_EXCLUDE_PROMPT_MAX` 200)만 본다 — 그보다 오래된 단어로 바뀐 한국어 줄은 걸러지지 않는다(일본어 새 단어와 같은 기존 틈, 스펙 §7-4). 레벨 사이 중복은 접지 않는다(include가 첫 레벨에만 실리는 구조 그대로). 한국어 줄 판별은 한글 음절과 낱말 사이 공백만 받는다(숫자·문장부호·자모 단독 거부 — "3시"는 400). 모델이 `fromKo`를 실제로 채우는지·뜻이 갈리는 말에서 기본 단어를 고르는지는 실호출로 확인하지 않았다(`EVAL_JAPANESE=1`은 자리만 있다).

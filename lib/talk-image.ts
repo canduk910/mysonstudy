@@ -4,7 +4,8 @@
  * 대화를 시작할 때 연결과 **병렬로** 주제 장면 그림을 한 장 만든다(`POST /api/english/talk/scene`). 사진 생성 공용 코어
  * (lib/image-gen.ts — 토익 관문 P와 같은 모델·키 규약·크기 초과 재생성)를 대화용 설정으로 부른다:
  * - 모델 env `OPENAI_IMAGE_MODEL`(빈 값이면 gpt-image-2) — 토익과 같은 env
- * - **품질 low**(빠르게 — 대화가 시작된 뒤 수십 초 안에 도착해야 쓸모가 있다), 1024×1024
+ * - **품질 medium**(2026-09-27 — 처음엔 low였는데 넓은 가로 화면에 크게 띄우면 흐리다. 대화가 시작된 뒤 수십 초 안에 도착해야
+ *   쓸모가 있는 것은 그대로 — 장면 라우트 상한 55초), 1024×1024
  * - JPEG 압축 60, data URL이 TALK_SCENE_DATA_URL_MAX(900,000자)를 넘으면 압축 40으로 **1회** 다시 만든다
  * - 프롬프트 = TALK_SCENE_IMAGE_PROMPT의 `{scene}`에 장면 문장(buildTalkSceneImagePrompt — 한 번 훑기 치환, spec-sync 원문)
  *
@@ -17,8 +18,8 @@ import { buildTalkSceneImagePrompt } from "./ai/english/talk-prompts";
 import { generateJpegImage, resolveImageModel, type ImageQuality, type ImageSize, type JpegImageResult } from "./image-gen";
 import { TALK_SCENE_DATA_URL_MAX } from "./talk-contract";
 
-/** 대화용 품질(§12-6 "품질 low") — env로 바꾸지 않는다(토익 품질 env와 섞이지 않게) */
-export const TALK_IMAGE_QUALITY: ImageQuality = "low";
+/** 대화용 품질(§12-6 "품질 medium", 2026-09-27 low → medium) — env로 바꾸지 않는다(토익 품질 env와 섞이지 않게) */
+export const TALK_IMAGE_QUALITY: ImageQuality = "medium";
 /** 정사각형(§12-6 1024×1024) — 폰 화면 위쪽 그림 칸 */
 export const TALK_IMAGE_SIZE: ImageSize = "1024x1024";
 /** 첫 시도 JPEG 압축(§12-6) */

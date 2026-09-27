@@ -30,11 +30,12 @@
 | G 단어 뜻 | §10 | 문맥 뜻 | `WORD_MEANING_SYSTEM_PROMPT`·`buildWordMeaningUserMessage` (prompts.ts) | `WORD_MEANING_JSON_SCHEMA`·`wordMeaningSchema` (schemas.ts) | 0 / 600 — `WORD_MEANING_CALL_OPTIONS` (prompts.ts) | `word-meaning` |
 | H 유의어·반의어 추천 | §11 | 후보 창작 | `RELATED_SUGGEST_SYSTEM_PROMPT`·`buildRelatedSuggestUserMessage` (vocabbook-prompts.ts) | `RELATED_SUGGESTION_JSON_SCHEMA`·`relatedSuggestionSchema` + `postprocessRelatedCandidates` (vocabbook-schemas.ts) | 0.3 / 800 — `RELATED_SUGGEST_CALL_OPTIONS` (vocabbook-prompts.ts) | `related-suggest` |
 | I 자유대화 문장 설명 | §12-3 | 설명 창작(환각 방어 zod) | `TALK_EXPLAIN_SYSTEM_PROMPT`·`TALK_EXPLAIN_USER_TEMPLATE` (english/talk-prompts.ts) | `TALK_SENTENCE_EXPLANATION_JSON_SCHEMA`·`buildTalkExplainZod` (english/talk-schemas.ts) | 0.5 / 1,500 — `TALK_EXPLAIN_CALL_OPTIONS` (talk-prompts.ts) | `talk_explain` |
-| (관문 R 선생님) | §12-1·§12-6 | 실시간 음성 — **Structured Outputs 밖** | `TALK_TEACHER_INSTRUCTIONS`·`TALK_LESSON_*`·`TALK_GREETING_INSTRUCTIONS`·`TALK_WRAPUP_INSTRUCTIONS`·`TALK_CARDS_INSTRUCTIONS`·`TALK_NUDGE_NOTE`·`TALK_SCENE_NOTE` (talk-prompts.ts) | 도구 `TALK_TOOLS` + 클라이언트 검사 `parseTalkToolCall`(lib/talk-cards.ts) — zod·재요청 없음 | 세션 설정(`max_output_tokens` 1200 등, lib/talk-session-config.ts) | 없음(`[talk] connect`는 상태·ms만) |
+| J 자유대화 화면 카드 | §12-7 | 도움 답 예시·핵심 단어·그림 카드 창작(근거 후처리) | `TALK_CARDS_SYSTEM_PROMPT`·`TALK_CARDS_USER_TEMPLATE`·`buildTalkCardsUserMessage` (talk-prompts.ts) | `TALK_SCREEN_CARDS_JSON_SCHEMA`·`talkScreenCardsSchema`(타입·폭만, talk-schemas.ts) + 후처리 `sanitizeTalkScreenCards`(lib/talk-cards.ts) | 0.3 / 600 · 6초 — `TALK_CARDS_CALL_OPTIONS`·`TALK_CARDS_TIMEOUT_MS` (talk-prompts.ts), 모델 env `OPENAI_TALK_CARDS_MODEL`(빈 값 `gpt-4.1-mini`, client.ts) | `talk_cards` |
+| (관문 R 선생님) | §12-1·§12-7 | 실시간 음성 — **Structured Outputs 밖** | `TALK_TEACHER_INSTRUCTIONS`·`TALK_LESSON_*`·`TALK_GREETING_INSTRUCTIONS`·`TALK_WRAPUP_INSTRUCTIONS`·`TALK_TURN_RULES`·`TALK_NUDGE_NOTE`·`TALK_SCENE_NOTE` (talk-prompts.ts) | 없음 — **도구도 없다**(2026-09-27 §12-7, 화면 카드는 호출 J). zod·재요청 없음 | 세션 설정(`max_output_tokens` 1200 등, lib/talk-session-config.ts) | 없음(`[talk] connect`는 상태·ms만) |
 
-튜닝 대상은 B·D·G·H·I와 관문 R 선생님 지시문의 말투 다이얼(§10)이다. A·A′·C·F는 §4의 정확성 장치다.
+튜닝 대상은 B·D·G·H·I·J와 관문 R 선생님 지시문의 말투 다이얼(§10)이다. A·A′·C·F는 §4의 정확성 장치다.
 
-호출 옵션이 네 파일에 흩어져 있다 — A·A′·B·F는 `lib/ai/client.ts`, C·D·H는 `vocabbook-prompts.ts`, G는 `prompts.ts`, I는 `talk-prompts.ts`. 옵션을 바꾸면 스펙도 함께 고친다. 스펙 §1 표가 9개 호출 전부의 값과 옵션 상수를 싣는다(**해소 2026-09-25** — 전에는 A·A′·B·C만 실었다). 값을 고른 근거는 D §8-6, F §9-6, G §10-5, H §11-6, I §12-3에 있으니 옵션을 바꾸면 §1 표와 그 절을 함께 고친다(I는 §12-3의 호출 옵션 문장을 eval이 값으로 읽는다).
+호출 옵션이 네 파일에 흩어져 있다 — A·A′·B·F는 `lib/ai/client.ts`, C·D·H는 `vocabbook-prompts.ts`, G는 `prompts.ts`, I·J는 `talk-prompts.ts`(J의 모델 해석만 client.ts `resolveTalkCardsModel`). 옵션을 바꾸면 스펙도 함께 고친다. 스펙 §1 표가 10개 호출 전부의 값과 옵션 상수를 싣는다(**해소 2026-09-25** — 전에는 A·A′·B·C만 실었다. 2026-09-27 J 행이 더해졌다). 값을 고른 근거는 D §8-6, F §9-6, G §10-5, H §11-6, I §12-3에 있으니 옵션을 바꾸면 §1 표와 그 절을 함께 고친다(I는 §12-3의 호출 옵션 문장을 eval이 값으로 읽는다).
 
 **temperature 다이얼이 먹지 않을 수 있다.** `callWithSchema`는 모델이 temperature 파라미터를 400으로 거부하면 그 모델을 `modelsRejectingTemperature`에 기억해 두고, 파라미터를 뺀 채 다시 부른다. 추론형 모델을 쓰는 동안에는 temperature를 올려도 내려도 출력이 그대로다. 다양성이나 안정성을 temperature로 잡기 전에 지금 `OPENAI_MODEL`이 temperature를 받는 모델인지부터 확인하라. 받지 않는다면 그 조정은 프롬프트 문구로 해야 한다.
 
@@ -97,7 +98,7 @@
 - **storySource 랭크** — `STORY_SOURCE_RANK` + `<=` 비교(zod와 eval 점검 6이 같은 상수를 쓴다). 등호로 조이면 프롬프트가 허용한 "낮춰 적기"를 거부하게 된다. `resolveAllowedStorySource`는 sceneKind가 없으면 pages로 본다. 이 기본값은 `formatSceneDigestBlock`("본문 촬영")과 `/api/card`의 `sceneKind ?? "pages"`와 같아야 한다. eval 픽스처는 전부 sceneKind를 명시하므로 이 기본값 경로는 어느 점검도 밟지 않는다. 셋 중 하나를 고쳤다면 QA 반례(study-qa english.md §5)로 확인한다.
 - **D 정의 불변** — `entriesToEnrich`·`buildEnrichRequestItems`·`mergeEnrichment`·`isVocabBookEnriched` (vocabbook-enrich.ts).
 - **G·H 형식 방어** — G의 한글 필수·영어 연속 금지는 원어를 그대로 돌려주는 echo를 막는다. H의 낱말 정규식 `/^[A-Za-z][A-Za-z-]*$/`와 `postprocessRelatedCandidates`(표제어·중복·빈값을 거부하지 않고 거른다)도 마찬가지다.
-- **자유대화의 안전·환각 방어** — 선생님 지시문의 `# Safety` 블록, 전사 설정에 `language`·`prompt` 없음, 호출 I의 keyWords ⊂ 문장·ko/en 조각 분리·선생님 문장 betterEn null, 1학년 눈높이. 전부 §10-4에 이유와 함께 있다.
+- **자유대화의 안전·환각 방어** — 선생님 지시문의 `# Safety` 블록, 전사 설정은 `language: "en"` 고정·`prompt`·`keywords` 없음, 호출 I의 keyWords ⊂ 문장·ko/en 조각 분리·선생님 문장 betterEn null, 1학년 눈높이. 전부 §10-4에 이유와 함께 있다.
 - **낭독 영상은 사람이 고른다** — 프롬프트가 아니라 흐름에 있는 장치다. 후보 3개를 보여 주고 부모가 탭한다(SPEC §14-1, `components/home-create.tsx`의 `fireReadaloudSearch`). 첫 결과를 자동으로 채택하면 엉뚱한 책의 자막이 B와 F 전체를 조용히 오염시킨다.
 
 ## 5. 동기화 지점 — 4중 정의와 spec-sync
@@ -116,15 +117,15 @@
 ### 5-2. spec-sync가 보는 것과 안 보는 것
 
 - 대조 엔진은 `scripts/spec-sync.ts`의 `checkSpecSync`다. 스펙의 코드블록을 전부 후보로 두고 **내용으로** 같은 블록을 찾는다. 절 번호는 판정에 쓰지 않는다. 정규화는 NFC·CRLF·줄끝 공백·앞뒤 빈 줄 네 가지뿐이라, 줄 안쪽 공백과 빈 줄 개수까지 같아야 한다.
-- 대상 목록 `SPEC_SYNC_TARGETS`는 spec-sync.ts가 아니라 **`scripts/eval-english.ts`**에 있다. 현재 22개다 — 자유대화 원문 11개가 **`block-exact`**(조립 규칙 없이 블록 하나와 통째로 같아야 한다, §10-2)로 더해졌다. 나머지 11개 중 block 8개(`EXTRACT_SYSTEM_PROMPT`·`PAGES_SYSTEM_PROMPT`·`CARD_SYSTEM_PROMPT`·`VOCAB_EXTRACT_SYSTEM_PROMPT`·`VOCAB_ENRICH_SYSTEM_PROMPT`·`CHAPTERIZE_SYSTEM_PROMPT`·`WORD_MEANING_SYSTEM_PROMPT`·`RELATED_SUGGEST_SYSTEM_PROMPT`)는 스펙 코드블록과 같아야 하고, inline 3개(`EXTRACT_USER_TEXT`·`VOCAB_EXTRACT_USER_TEXT`·`VOCAB_ENRICH_USER_TEXT`)는 스펙 본문 어딘가에 그대로 있어야 한다.
-- **대조 밖에 있는 것** — 사용자 메시지 빌더 5개(`buildPagesUserMessage`·`buildCardUserMessage`·`buildChapterizeUserMessage`·`buildWordMeaningUserMessage`·`buildRelatedSuggestUserMessage`). 플레이스홀더가 든 서술이라 원문 대조가 성립하지 않는다. 오프라인 eval이 부분 점검하는 것은 세 가지뿐이다. (1) 카드 분량 값: `runStoryLengthDialChecks`의 "동기화." 3항목. (2) 자막 슬롯과 절단: `runTranscriptOfflineChecks`의 "transcript. 자막 슬롯 렌더…"·"transcript. 상한 초과 시…" 2항목. `buildCardUserMessage`를 거쳐 `formatTranscriptBlock`을 본다. (3) 목차가 없을 때의 한 줄: `runChapterizeChecks`의 "사용자 메시지: 목차 없으면 "1. 전체" 한 줄"이 `buildChapterizeUserMessage`를 본다. 그 밖의 문구, 그리고 A′·G·H 빌더(`buildPagesUserMessage`·`buildWordMeaningUserMessage`·`buildRelatedSuggestUserMessage`)의 템플릿은 아무도 대조하지 않는다. JSON Schema 원문도 대조 밖이다 — G·H만 구조 점검(strict·additionalProperties·required)이 있고, 나머지 6개는 스펙 §x-3과 손으로 비교한다. 예외는 자유대화다 — 호출 I 스키마와 도구 정의 `TALK_TOOLS`는 스펙 JSON과 **의미 동치**로 대조되고(도구 `description` 문장도 JSON의 일부라 대조된다), 호출 I 사용자 템플릿도 `block-exact` 대상이다(§10-2). `SIGHT_WORDS` 목록도 마찬가지다.
+- 대상 목록 `SPEC_SYNC_TARGETS`는 spec-sync.ts가 아니라 **`scripts/eval-english.ts`**에 있다. 현재 24개다 — 자유대화 원문 13개가 **`block-exact`**(조립 규칙 없이 블록 하나와 통째로 같아야 한다, §10-2)로 더해졌다(2026-09-27 §12-7 차례 규칙·호출 J 프롬프트·템플릿이 들고, §12-6 카드 덧붙임이 빠졌다). 나머지 11개 중 block 8개(`EXTRACT_SYSTEM_PROMPT`·`PAGES_SYSTEM_PROMPT`·`CARD_SYSTEM_PROMPT`·`VOCAB_EXTRACT_SYSTEM_PROMPT`·`VOCAB_ENRICH_SYSTEM_PROMPT`·`CHAPTERIZE_SYSTEM_PROMPT`·`WORD_MEANING_SYSTEM_PROMPT`·`RELATED_SUGGEST_SYSTEM_PROMPT`)는 스펙 코드블록과 같아야 하고, inline 3개(`EXTRACT_USER_TEXT`·`VOCAB_EXTRACT_USER_TEXT`·`VOCAB_ENRICH_USER_TEXT`)는 스펙 본문 어딘가에 그대로 있어야 한다.
+- **대조 밖에 있는 것** — 사용자 메시지 빌더 5개(`buildPagesUserMessage`·`buildCardUserMessage`·`buildChapterizeUserMessage`·`buildWordMeaningUserMessage`·`buildRelatedSuggestUserMessage`). 플레이스홀더가 든 서술이라 원문 대조가 성립하지 않는다. 오프라인 eval이 부분 점검하는 것은 세 가지뿐이다. (1) 카드 분량 값: `runStoryLengthDialChecks`의 "동기화." 3항목. (2) 자막 슬롯과 절단: `runTranscriptOfflineChecks`의 "transcript. 자막 슬롯 렌더…"·"transcript. 상한 초과 시…" 2항목. `buildCardUserMessage`를 거쳐 `formatTranscriptBlock`을 본다. (3) 목차가 없을 때의 한 줄: `runChapterizeChecks`의 "사용자 메시지: 목차 없으면 "1. 전체" 한 줄"이 `buildChapterizeUserMessage`를 본다. 그 밖의 문구, 그리고 A′·G·H 빌더(`buildPagesUserMessage`·`buildWordMeaningUserMessage`·`buildRelatedSuggestUserMessage`)의 템플릿은 아무도 대조하지 않는다. JSON Schema 원문도 대조 밖이다 — G·H만 구조 점검(strict·additionalProperties·required)이 있고, 나머지 6개는 스펙 §x-3과 손으로 비교한다. 예외는 자유대화다 — 호출 I·J 스키마(`talk_sentence_explanation`·`talk_screen_cards`)는 스펙 JSON과 **의미 동치**로 대조되고(§12-6 도구 정의 `TALK_TOOLS`는 세션에서 빠지며 지웠다), 호출 I·J 사용자 템플릿도 `block-exact` 대상이다(§10-2 — 호출 J 조립 결과 `buildTalkCardsUserMessage`는 eval "자유대화 호출J"가 값으로 본다). `SIGHT_WORDS` 목록도 마찬가지다.
 - 새 프롬프트 상수를 만들면 `SPEC_SYNC_TARGETS`에 등록하라. 등록하지 않은 상수는 대조에서 조용히 빠진다.
 
 ## 6. eval 실행 — 게이트별로 무엇이 켜지고 몇 번 부르나
 
 | 설정 | 켜지는 것 | 실호출 (`callWithSchema` 수) | 끝나는 방식 |
 |---|---|---|---|
-| `EVAL_OFFLINE_ONLY=1` | 오프라인 점검 전부. 2026-09-26 기준 **484항목**: 호출 A′ 스키마 15 · 분량 다이얼 9 · 낭독 자막 8 · 챕터화 30 · 목차 제목 준비(§9-2) 23 · 단어뜻 11 · 유의어추천 12 · 단어장 §7 57(병합·zod·보강·시험 보기·관계 문제·오답 집계·복습) · 자유대화 297(↔ 스펙 42 · 지시문 29 · 세션설정 24 · 리듀서 28 · 문장 12 · 호출I 44 · 낭독 3 · 스트릭 6 · 카드 42 · 도움 47 · 장면 8 · 저장 본문 12) · 프롬프트↔스펙 22 | 0 — `globalThis.fetch`까지 막는다 | 표 + spec-sync 상세 출력 후 return |
+| `EVAL_OFFLINE_ONLY=1` | 오프라인 점검 전부. 2026-09-27 기준 **639항목**: 호출 A′ 스키마 15 · 분량 다이얼 9 · 낭독 자막 8 · 챕터화 30 · 목차 제목 준비(§9-2) 23 · 단어뜻 11 · 유의어추천 12 · 단어장 §7 57(병합·zod·보강·시험 보기·관계 문제·오답 집계·복습) · 자유대화 450(↔ 스펙 54 · 지시문 35 · 세션설정 24 · 리듀서 28 · 문장 12 · 호출I 44 · 낭독 3 · 스트릭 6 · 카드 31 · 도움 55 · 저장 본문 12 · 장면 8 · 호출J 69 · 출처 14 · 정적 15 · 카드 요청 4 · 컨트롤러 36) · 프롬프트↔스펙 24 | 0 — `globalThis.fetch`까지 막는다 | 표 + spec-sync 상세 출력 후 return |
 | (게이트 없음) | 오프라인 전부 + 카드 3건(Wolves · Pooh · Pooh 장면 14)의 점검 1~9 | 3 | 전체 표. 하나라도 FAIL이면 exit 1 |
 | `EVAL_SKIP_PAGES=1` | 장면 변형을 뺀 카드 2건 | 2 | 위와 같다 |
 | `EVAL_THIN_PAGES=1` | 3번째 카드를 4장면(`POOH_SCENE_DIGEST_THIN`)으로 | 3 (그대로) | 위와 같다. `EVAL_SKIP_PAGES=1`과 함께 켜면 효과가 없다 |
@@ -213,38 +214,40 @@ STORE_BACKEND=file EVAL_TALK=1 npm run eval:english          # 호출 I 2건(자
 - 자유대화에서 선생님 차례 길이를 `max_output_tokens`(1200)로 줄이지 마라 — 상한은 응답을 끊는 안전망이지 말투를 짧게 만드는 다이얼이 아니다(닿으면 그 응답이 도중에 끝난다). 짧게 말하기는 지시문이 1차로 강제한다(스펙 §12-1 표 근거, §10-1).
 - eval을 CI에 넣지 마라. 실호출 비용이 든다. 스펙이 수동 실행용으로 정해 두었다(docs/harness/english.md §5 — "CI가 아니라 수동 실행용").
 
-## 10. 자유대화 다이얼 — 선생님 지시문(관문 R)·도움 카드·설명 대본(호출 I)
+## 10. 자유대화 다이얼 — 선생님 지시문(관문 R)·화면 카드(호출 J)·설명 대본(호출 I)
 
-> 스펙 `docs/harness/english.md` §12(원문 11블록·도구 JSON·호출 I 스키마), 제품 `docs/SPEC.md` §21. 구현·라우트는 `ai-harness-impl/references/english-routes.md` §7.
+> 스펙 `docs/harness/english.md` §12(원문 13블록·호출 I·J 스키마 — §12-7이 §12-6의 도구 방식을 대체), 제품 `docs/SPEC.md` §21. 구현·라우트는 `ai-harness-impl/references/english-routes.md` §7.
 
-자유대화는 튜닝 조건이 북카드와 다르다. **선생님(관문 R)의 출력은 zod도 eval도 보지 않는다** — 실시간 음성이라 Structured Outputs 밖이고, 오프라인 eval은 지시문 원문이 스펙과 같은지까지만 본다. 그래서 선생님 말투 다이얼은 바꿔도 자동 회귀가 없고, 효과는 사용자 동의 뒤 실연결로만 확인된다(§10-3). 반대로 **호출 I**(문장 설명)는 하네스 안이라 북카드와 같은 4중 정의 규칙이 선다. 눈높이는 은우(초등 **1학년**, 약 7세, 영어 초급) — 기존 은우 프롬프트("초등·저학년")보다 한 단계 구체적이다.
+자유대화는 튜닝 조건이 북카드와 다르다. **선생님(관문 R)의 출력은 zod도 eval도 보지 않는다** — 실시간 음성이라 Structured Outputs 밖이고, 오프라인 eval은 지시문 원문이 스펙과 같은지까지만 본다. 그래서 선생님 말투 다이얼은 바꿔도 자동 회귀가 없고, 효과는 사용자 동의 뒤 실연결로만 확인된다(§10-3). 반대로 **호출 I**(문장 설명)와 **호출 J**(선생님 줄마다 화면 카드, 2026-09-27)는 하네스 안이라 북카드와 같은 4중 정의 규칙이 선다 — 다만 J의 zod는 타입·폭만 보고 근거 검사는 후처리가 한다(재요청으로 카드를 늦추지 않게). 눈높이는 은우(초등 **1학년**, 약 7세, 영어 초급) — 기존 은우 프롬프트("초등·저학년")보다 한 단계 구체적이다.
 
 ### 10-1. 다이얼표
 
 | 다이얼 | 어디에 사는가 | 함께 바꿀 곳 | 자동 검증 |
 |---|---|---|---|
-| **선생님 차례 길이**(한 번에 몇 문장) | `TALK_TEACHER_INSTRUCTIONS` `# How you talk`의 "한두 문장 + 질문 하나"·"차례를 짧게" 줄, 첫 인사 `TALK_GREETING_INSTRUCTIONS`(두 문장·질문 하나 이내), 도움 요청 `TALK_NUDGE_NOTE`(한두 문장) | 스펙 §12-1·§12-6 코드블록 **먼저**, 그다음 상수에 글자 그대로(`block-exact`) | 원문 일치만. 출력 길이는 검증 없음. `max_output_tokens` 1200은 안전망이지 다이얼이 아니다(§9) |
+| **선생님 차례 길이**(한 번에 몇 문장) | `TALK_TEACHER_INSTRUCTIONS` `# How you talk`의 "한두 문장 + 질문 하나"·"차례를 짧게" 줄, **차례 규칙 `TALK_TURN_RULES`**(한 차례를 한 번에 — 한 문장 반응 + 쉬운 질문 하나, 작별 말고는 질문으로 끝냄, "let me think" 같은 준비 말 금지), 첫 인사 `TALK_GREETING_INSTRUCTIONS`(두 문장·질문 하나 이내), 도움 요청 `TALK_NUDGE_NOTE`(한두 문장) | 스펙 §12-1·§12-6·§12-7 코드블록 **먼저**, 그다음 상수에 글자 그대로(`block-exact`) | 원문 일치만. 출력 길이는 검증 없음. `max_output_tokens` 1200은 안전망이지 다이얼이 아니다(§9) |
 | **질문 수·질문 모양** | 같은 블록의 "한 번에 질문 하나"·"한두 단어로 답할 수 있는 질문(예/아니오·둘 중 하나·What is it?)" | 같다 | 원문 일치만 |
 | **한국어 사용량** | `# Korean` 블록 — 거의 영어, 아이가 한국어로 말하거나 못 알아들을 때만 아주 짧은 한국어 한마디 후 곧바로 영어로, 긴 한국어 설명 금지 | 같다 | 원문 일치만. **호출 I 설명과 방향이 반대다** — 설명은 한국어가 본체이고 영어를 en 조각으로 떼어 낸다. 두 다이얼을 섞지 않는다 |
 | 딴 얘기 되돌리기·다시 묻기 | `# Staying on track` | 같다 | 원문 일치만 |
-| **도움 카드 답 예시 수·길이** | `TALK_CARDS_INSTRUCTIONS`(질문마다 짧은 답 2~3개, 각 2~6단어, 핵심 단어 최대 3개) + 도구 `TALK_TOOLS` `show_hints`의 `description`(같은 숫자를 영어로 다시 적는다) | 스펙 §12-6 코드블록·**도구 JSON**(의미 동치 — description도 대조된다)·상수. **개수 상한을 바꾸면** `TALK_CARD_LIMITS`(`answersMax` 3·`answerMaxChars` 60·`wordsMax` 3)와 §12-6 "도구 호출 처리" 산문의 폭 문장(needle)도 같이 | 원문·도구 JSON 의미 동치·폭 needle·`parseTalkToolCall` 반례. 검사는 **거부가 아니라 앞에서부터 자르기**다 — 프롬프트만 "4개"로 올리면 넷째가 재요청 없이 조용히 버려진다(관문 R엔 재요청이 없다) |
-| 그림 카드 이모지 수 | `show_picture` `emoji` description(이모지 1~3개) | 도구 JSON + 스펙 | 이모지 칸 폭 1~16 코드 포인트·그림 문자 필수(코드 판정 — 튜닝 대상 아님) |
+| **도움 카드 답 예시 수·길이**(호출 J) | `TALK_CARDS_SYSTEM_PROMPT` `[answers]`(마지막 질문에 따라 말할 쉬운 답 2~3개, 각 2~6단어, 질문이 없으면 빈 배열)·`[words]`(핵심 단어 0~3개) | 스펙 §12-7 코드블록 + 상수. 폭: zod `TALK_SCREEN_CARDS_ZOD_LIMITS`(answers·words 0~4 — 넘으면 재요청), 후처리 `TALK_CARD_LIMITS.answersMax` 3·`TALK_SCREEN_ANSWER_WORDS` 2~8단어·`answerMaxChars` 60·`wordsMax` 3. **개수·단어 수를 바꾸면** §12-7 zod·후처리 불릿 문장(needle)과 상수를 함께 | 원문 `block-exact`·needle·후처리 반례. 후처리는 **거부가 아니라 항목 버리기·앞에서부터 자르기**다 — 프롬프트만 "4개"로 올리면 넷째가 조용히 버려지고, "1단어 답"을 허용하려면 후처리 하한(2단어)도 같이 바꿔야 한다 |
+| 그림 카드 고르기·이모지 수(호출 J) | `TALK_CARDS_SYSTEM_PROMPT` `[picture]`(선생님 말에 나온 사물·동물·음식·색·동작 하나, 오늘의 단어 먼저, 이미 보인 것 제외, 이모지 1~3개) | 스펙 §12-7 + 상수 | 근거 검사(선생님 말 단어 경계 또는 오늘의 단어·이미 보인 것 null)와 이모지 칸 판정은 **코드 장치**라 튜닝 대상이 아니다(§10-4) |
+| 호출 J temperature·출력 한도·시간 상한·모델 | `TALK_CARDS_CALL_OPTIONS` 0.3 / 600, `TALK_CARDS_TIMEOUT_MS` 6초, env `OPENAI_TALK_CARDS_MODEL`(빈 값 `gpt-4.1-mini`) | §12-7 "호출 옵션" 문장(eval이 needle로 읽는다) | needle. 추론형 모델로 바꾸면 temperature가 먹지 않고, 숨은 추론 토큰이 600을 먹어 incomplete → 재요청 → 6초 초과가 잦아진다(카드가 안 뜬다) |
 | **설명 대본 조각 수·길이**(호출 I) | `TALK_EXPLAIN_SYSTEM_PROMPT` `[script]` — 조각 3~8개, en 조각 12단어 이하, ko 조각 60자 이내, 소리 내어 20초 안팎 | 스펙 §12-3 코드블록 + 상수. zod 폭(`TALK_EXPLAIN_LIMITS` — 2~10조각·16단어·80자·ko 합 400)은 프롬프트보다 **넓다** — 폭 안에서만 움직이고, 폭을 넘기면 §12-3 zod 불릿(needle)과 상수를 함께 바꾼다 | zod 반례·needle 7. 프롬프트가 폭을 넘으면 zod 거부 → 재요청(+1 과금) |
 | 설명 말투·칭찬·교정 강도 | `[누가 한 말인가]`(선생님 문장: 뜻·단어 한두 개·짧은 대답 예시 / 은우 문장: 구체적 칭찬 → 더 자연스러운 문장 → 한 줄 이유, 이미 잘 말했으면 억지로 고치지 않음)·`[말투]` | 스펙 §12-3 + 상수 | 없음 — `EVAL_TALK=1` 출력을 사람이 읽는다 |
 | 호출 I temperature·출력 한도 | `TALK_EXPLAIN_CALL_OPTIONS` 0.5 / 1,500 | §12-3 "호출 옵션" 문장(eval이 값으로 읽는다) | 옵션 문장 대조. 추론형 모델이면 temperature가 먹지 않는다(§1) |
 
-**다이얼이 아닌 것(사용자 결정)**: 선생님 말 빠르기(화면에서 고른다 — 천천히 0.85·보통 1.0, `TALK_SPEED_VALUES`), 도움 카드 5초·도움 요청 12초·대화 5분(SPEC §21-1·§21-7 사용자 확정), 도움 요청의 은우 발화 전 **연속 2번** 상한(12초 자동·🙋 합산 — 2026-09-26 확정, `TALK_HINT_NUDGE_STREAK_MAX`·§12-6 needle), 이모지 칸 규칙(그림 문자 필수·도형 기호 블록 허용·라틴/한글 금지 — 2026-09-26 확정, §12-6), 모델(`gpt-realtime-2.1`, env), 주제 프리셋과 장면 문장(스펙 표), 1학년이라는 대상.
+**다이얼이 아닌 것(사용자 결정)**: 음성 모델에 도구를 다시 붙이는 것(2026-09-27 §12-7 — 도구 응답 뒤 이어 말하기가 "선생님 두 명"을 만들었다. "카드가 느려"를 도구로 되돌려 풀지 마라), 선생님 말 빠르기(화면에서 고른다 — 천천히 0.85·보통 1.0, `TALK_SPEED_VALUES`), 도움 카드 5초·도움 요청 12초·대화 5분(SPEC §21-1·§21-7 사용자 확정), 도움 요청의 은우 발화 전 **연속 2번** 상한(12초 자동·🙋 합산 — 2026-09-26 확정, `TALK_HINT_NUDGE_STREAK_MAX`·§12-6 needle — 2026-09-27부터 **보낸 요청만** 센다), 은우 차례(말하는 중·말 끝 1.5초 틈 `TALK_AUTO_REPLY_WAIT_MS`)에 앱이 응답을 부르지 않는 가드(대화 규칙이 아니라 실서버 지연의 상한 — "선생님이 굼떠"를 이 값으로 풀지 마라, 줄이면 은우 말 위로 도움 요청·작별이 나가 선생님 두 명이 된다), 화면 카드의 서버 6초·SDK 재시도 0·클라이언트 9초(지연 가드), 이모지 칸 규칙(그림 문자 필수·도형 기호 블록 허용·라틴/한글 금지 — 2026-09-26 확정, §12-6), 모델(`gpt-realtime-2.1`, env), 주제 프리셋과 장면 문장(스펙 표), 1학년이라는 대상.
 
 ### 10-2. 동기화 지점
 
-- 원문 11개(교사 지시문·수업 블록 2·인사·마무리·카드 덧붙임·도움 요청·일러스트 안내·사진 프롬프트·호출 I 프롬프트·사용자 템플릿)는 **`block-exact`**다. 스펙의 블록 하나와 통째로 같아야 한다 — 호출 B처럼 블록을 쪼개 조립하는 규칙이 꺼져 있어, 두 블록을 이어 붙인 상수나 한 블록의 앞 절반만 옮긴 상수는 FAIL이다. 스펙 블록을 **먼저** 고치고 상수에 글자 그대로 옮긴다.
+- 원문 13개(교사 지시문·수업 블록 2·인사·마무리·차례 규칙·도움 요청·일러스트 안내·사진 프롬프트·호출 I 프롬프트·사용자 템플릿·호출 J 프롬프트·사용자 템플릿)는 **`block-exact`**다. 스펙의 블록 하나와 통째로 같아야 한다 — 호출 B처럼 블록을 쪼개 조립하는 규칙이 꺼져 있어, 두 블록을 이어 붙인 상수나 한 블록의 앞 절반만 옮긴 상수는 FAIL이다. 스펙 블록을 **먼저** 고치고 상수에 글자 그대로 옮긴다.
 - 교사 지시문의 `{lesson}`은 치환 자리가 하나뿐이다(한 번 훑기 치환 — `{…}`·`$&`가 다시 치환되지 않는다). 수업 블록(`TALK_LESSON_TOPIC`·`TALK_LESSON_WORDS`)은 그 자리에 들어가므로, 수업 블록에 규칙을 옮기면 주제 모드와 단어장 모드 중 한쪽에만 걸린다.
-- 세션 지시문 = 교사 지시문 + `"\n\n"` + `TALK_CARDS_INSTRUCTIONS`. 이음 글자도 스펙 문장 needle로 대조된다.
-- english.md §12의 **산문 숫자**(zod 폭·카드 폭·5초·12초·도움 요청 연속 2번·30장·6장·tool_choice·기본 문구 4개·장면 앞머리·지시문 이음)는 eval "자유대화 ↔ 스펙"(42)이 문장을 읽어 코드 상수와 맞춘다. 숫자를 바꾸는 튜닝은 스펙 문장·상수·반례를 한 번에 바꾼다.
+- 세션 지시문 = 교사 지시문 + `"\n\n"` + `TALK_TURN_RULES`(§12-7). 이음 글자도 스펙 문장 needle로 대조되고, 세션에 `tools`·`tool_choice`가 없는지도 eval이 본다.
+- english.md §12의 **산문 숫자**(zod 폭·카드 폭·5초·12초·도움 요청 연속 2번·30장·6장·기본 문구 4개·장면 앞머리·지시문 이음·호출 J 옵션·6초·zod 개수·후처리 폭·`{words}` 20·`{shown}` 12·`{context}` 4줄)는 eval "자유대화 ↔ 스펙"(54)이 문장을 읽어 코드 상수와 맞춘다. 숫자를 바꾸는 튜닝은 스펙 문장·상수·반례를 한 번에 바꾼다.
 
 ### 10-3. 무엇으로 확인하나 — 비용
 
-- **무비용(몇 번이든)**: `EVAL_OFFLINE_ONLY=1` — spec-sync 22·도구 JSON·호출 I zod 반례·needle. 선생님 말투 다이얼은 여기서 "원문이 스펙과 같다"까지만 확인된다.
+- **무비용(몇 번이든)**: `EVAL_OFFLINE_ONLY=1` — spec-sync 24·호출 I·J JSON·호출 I zod 반례·호출 J 조립·후처리 반례·needle. 선생님 말투·카드 문구 다이얼은 여기서 "원문이 스펙과 같다"까지만 확인된다.
+- **호출 J 실호출**: 스펙에 eval 게이트가 없다 — 실연결 대화에서 도움 카드·그림 카드를 사람이 본다(선생님 줄마다 소형 텍스트 호출 1회, 대화 1회 약 1센트).
 - **호출 I 실호출**: `EVAL_TALK=1` 2건(재요청까지 최악 4요청) — 출력을 사람이 읽어 1학년 눈높이·다정한 말투·억지 교정 여부를 본다. 사용자 동의 뒤 오케스트레이터가 돌린다.
 - **선생님(관문 R)**: eval 게이트가 없다. 사용자 동의 뒤 실연결 대화 1회로 사람이 듣고 스크립트를 읽는다 — 5분 대화 대략 $0.3~2(SPEC §21-4, 응답마다 대화 전체를 다시 입력으로 과금해 뒤 턴일수록 비싸다) + 주제 일러스트 1장. 결과 패널 "진단"의 사용량(`response.done.usage` 누적)으로 턴당 입력 토큰을 본다. 키를 넣은 dev 서버에서는 다른 화면을 열지 않는다(발음 프리페치가 따라 돈다). 개발 전용 가짜 전송은 선생님을 흉내 낼 뿐이라 튜닝 확인이 되지 않는다.
 
@@ -253,13 +256,15 @@ STORE_BACKEND=file EVAL_TALK=1 npm run eval:english          # 호출 I 2건(자
 | 장치 | 어디 | 왜 건드리지 않나 |
 |---|---|---|
 | 개인정보·안전 규칙 | 교사 지시문 `# Safety` — 이름·학교·주소·전화·비밀번호·사진·지금 위치를 묻지 않고, 들어도 되풀이하지 않음 / 무섭거나 슬픈 이야기는 부드럽게 받고 엄마·아빠께 말하자 / 물으면 AI 선생님이라고 솔직히 | 아이 데이터·안전의 1차 장치다. 지시문은 "보장되지 않는다"(모델 문서)라 어른 동반이 전제지만(SPEC §21-3), 그렇다고 문구를 줄이면 1차 장치가 사라진다. "딱딱하다"는 피드백도 이 블록으로 풀지 않는다 — `# Your manner`에서 푼다 |
-| 전사에 단어장·언어 힌트 금지 | 세션 설정 `audio.input.transcription = {model}` — `language`·`prompt` 없음(eval이 키 목록으로 잠금) | "단어장 단어를 잘 못 알아들어"를 prompt에 단어를 넣어 풀면 **은우가 하지 않은 말이 맞게 적힌다**(토익 관문 T와 같은 원칙). 은우는 한국어를 섞으므로 영어 고정도 억지 전사를 만든다 |
+| 전사는 영어 고정, 단어장 힌트 금지 | 세션 설정 `audio.input.transcription = {model, language: "en"}` — `prompt`·`keywords` 없음(eval이 키 목록으로 잠금) | "단어장 단어를 잘 못 알아들어"를 prompt·keywords에 단어를 넣어 풀면 **은우가 하지 않은 말이 맞게 적힌다**(토익 관문 T와 같은 원칙). 언어는 영어로 고정한다(2026-09-27) — 자동 감지가 짧은 아이 영어를 다른 언어로 적었다("Pixelvak."). 한국어로 말하면 영어 글자로 적히지만 선생님은 음성을 직접 들어 대화에는 영향이 없다(스크립트·설명만). `language`를 빼는 "튜닝"은 이 회귀를 되살린다 |
 | keyWords ⊂ 고른 문장 | `buildTalkExplainZod` — `isKeyWordInSentence`(대소문자 무시·단어 경계) + en 라틴 포함·한글 금지 | 문장에 없는 단어를 짚었다면 환각이다. 한글 keyWord는 en-US로 읽혀 한국어를 영어 음성으로 읽는다 |
 | ko/en 조각 분리 | ko 조각 **라틴 금지**·en 조각 한글 금지 | 낭독이 조각 lang으로 엔진·음성을 고른다(ko-KR·en-US). 섞이면 한국어 음성이 영어를 한국어식으로 읽는다 |
 | 선생님 문장엔 betterEn 없음 | zod — speaker가 teacher면 null 강제 | 선생님(모델) 문장을 "고치는" 것은 의미가 없고, 아이에게 선생님이 틀렸다는 신호가 된다 |
 | 1학년 눈높이 | 교사 지시문 첫 단락·`# How you talk`, 호출 I 첫 줄·`[말투]` | 대상은 SPEC §21-0의 결정이다. "은우가 쉬워해"를 학년·어휘 수준 올리기로 번역하지 마라 — 질문의 열림 정도나 단어장 모드로 푼다. 대상 자체를 바꾸는 것은 사용자 결정이다 |
 | 아이 이름을 AI에 보내지 않음 | 지시문·호출 I 문맥(`선생님:`/`아이:` 라벨) | 다정함을 이유로 "은우야"를 넣지 마라 — 개인정보 원칙이다 |
-| 카드는 조용하다 | `TALK_CARDS_INSTRUCTIONS`("카드를 보여 준다고 말하지 않는다")·앱은 카드 소리를 내지 않음 | 마이크가 열려 있다. 카드를 말로 알리면 대화가 끊기고, 앱이 소리를 내면 선생님이 그 소리를 은우 말로 듣는다 |
+| 카드는 조용하다 | 선생님은 카드를 모른다(§12-7 — 도구가 없고 카드는 앱이 호출 J로 만든다)·앱은 카드 소리를 내지 않음 | 마이크가 열려 있다. 앱이 소리를 내면 선생님이 그 소리를 은우 말로 듣는다 |
+| 음성 모델에 도구 없음 | 세션 설정에 `tools`·`tool_choice` 없음(eval이 부재를 잠금)·차례 규칙 `TALK_TURN_RULES` | 도구 호출로 응답이 끊기면 이어 말하기가 새 응답을 만들어 선생님이 두 명처럼 답한다(2026-09-27 실사용) |
+| 호출 J 그림 카드 근거 | `sanitizeTalkScreenCards` — `en`이 선생님 말(단어 경계·s/es) 또는 오늘의 단어에 있어야, 이미 보인 것 null | 선생님 말에 없는 그림은 환각이다. 프롬프트 `[금지]`가 1차, 코드가 2차 — "그림 카드가 적어"를 이 검사를 느슨하게 해서 풀지 마라(`[picture]` 문구로 푼다) |
 | 안내 전달 방식 | 첫 인사·마무리·도움 요청은 숨은 system 메시지 + 인자 없는 `response.create` | 인사 문구를 바꾸고 싶으면 원문(`TALK_GREETING_INSTRUCTIONS`)을 고친다. 응답 단위 `instructions`로 보내면 세션 지시문을 덮어써 그 응답에서 안전 규칙이 빠진다 |
 
 해소된 결정(2026-09-26): 호출 I `[말투]` 예시 문장에 라틴 글자(복수형 s)가 있어 ko 조각 라틴 금지 zod와 부딪히던 것(QA talk-ai P2-5)은, 예시를 라틴 글자 없는 "이 말은 '나는 강아지를 좋아해요'라는 뜻이에요!"로 바꿔 풀었다(스펙 §12-3 블록과 상수를 함께 — QA 4 재검증). eval "호출 I [말투] 예시 인용문에 라틴 글자 없음"이 잠근다. 이 행은 `[말투]`의 따옴표 `"…"` 안만 보므로, `[말투]` 예시를 다시 고칠 때는 따옴표 밖에도 라틴 글자를 넣지 마라 — 모델이 예시를 따라 쓰면 재요청이 난다.
@@ -272,8 +277,9 @@ STORE_BACKEND=file EVAL_TALK=1 npm run eval:english          # 호출 I 2건(자
 | "선생님이 너무 빨라" | 화면 빠르기가 "천천히"(0.85)인가 | 다이얼 아님 — 사용자 선택. 그다음에야 `# Your manner`의 천천히·쉬어 가기 |
 | "질문을 한꺼번에 여러 개 해" | 스크립트의 물음표 수 | "한 번에 질문 하나" 줄 강조 |
 | "한국어를 너무 많이 써" / "은우가 못 알아듣는데 영어만 해" | 은우가 한국어로 말한 뒤의 차례 | `# Korean` 블록 |
-| "도움 카드 문장이 어려워/길어" | 저장된 대화의 카드가 아니라 실연결에서 본 도움 카드(도움 카드는 저장되지 않는다) | `TALK_CARDS_INSTRUCTIONS`의 단어 수 + `show_hints` description(같이) |
-| "도움 카드가 안 떠" | 먼저 QA로 가른다 — 모델이 `show_hints`를 부르는지(실연결), 5초 타이밍(사용자 확정), 버그(상태 기계·배선) | 모델이 안 부르면 카드 덧붙임의 "질문할 때마다" 줄 강조 |
+| "도움 카드 문장이 어려워/길어" | 저장된 대화의 카드가 아니라 실연결에서 본 도움 카드(도움 카드는 저장되지 않는다) | `TALK_CARDS_SYSTEM_PROMPT` `[answers]`의 단어 수(후처리 2~8단어 폭 안에서) |
+| "도움 카드가 안 떠" / "엉뚱한 질문의 도움이 떠" | 먼저 QA로 가른다 — 호출 J 실패·6초 초과(서버 로그 `talk_cards`의 ms), 은우가 먼저 말해 철 지난 도움으로 버려졌는지, 5초 타이밍(사용자 확정), 버그(도착 판정·상태 기계 — 앞 질문 도움이 남던 틈은 2026-09-27 선생님 재개 시 늘 버리기로 닫혔다, english-routes §7-9). 결과 패널 "진단"의 화면 카드 셈(보냄·받음·실패·새 줄로 끊음·철 지난 도움)이 첫 단서다 | 지연이면 다이얼이 아니다(모델·배선). 답이 비어 오면 `[answers]`의 "질문이 없으면 빈 배열" 줄이 과하게 먹는지 |
+| "선생님이 두 명처럼 연달아 말해" | 저장 턴 `origin`(대화 보기 `?debug=1`) — 은우 발화 뒤 `reply`가 연달아 둘인지, `nudge`가 끼었는지 | 도구·이어 말하기가 되살아났는지, 앱이 은우 차례(말하는 중·말 끝 틈)에 도움 요청·작별을 보냈는지 먼저(세션 설정·컨트롤러 — 버그, eval "자유대화 컨트롤러"·"정적"이 잡아야 한다), 아니면 `TALK_TURN_RULES`(한 차례를 한 번에) |
 | "설명이 너무 길어" | 조각 수·ko 글자 합 | `[script]` 조각 수·20초 문구(zod 폭 안에서) |
 | "설명이 자꾸 재요청돼 느려" | 서버 로그 `talk_explain` 줄의 zod 오류 요약 | ko 조각 라틴이면 `[script]`의 "한국어 조각에는 영어 글자를 넣지 않는다" 줄(`[말투]` 예시는 2026-09-26에 라틴 없는 문장으로 바뀌었다 — 예시에 라틴을 되살리지 마라), keyWords 밖이면 `[keyWords]` 줄 |
 | "은우 문장을 너무 고쳐" | 은우 문장 설명의 betterEn 빈도 | `[누가 한 말인가]` child 줄 — "이미 잘 말했으면 억지로 고치지 않는다" |

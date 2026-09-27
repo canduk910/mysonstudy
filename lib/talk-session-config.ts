@@ -7,12 +7,15 @@
  *
  * 하는 일:
  * 1. 입력 정리 — 주제 프리셋 키(lib/talk-topics.ts에 있는 것만), 직접 입력(줄바꿈·제어문자·따옴표·#·백틱 제거, 1~30자),
- *    단어장(책 순서로 최대 20 단어, 각 {en, 첫 우리말 뜻|null}) → `TalkTopic` 스냅샷. 저장 레코드는 이 스냅샷을 그대로 남긴다.
+ *    단어장(책 순서로 최대 20 단어, 각 {en, 첫 우리말 뜻|null, 단어장 이모지|null}) → `TalkTopic` 스냅샷. 저장 레코드는 이 스냅샷을
+ *    그대로 남긴다. 이모지는 화면 표시용이라 지시문에 넣지 않는다.
  * 2. 지시문 조립 — TALK_TEACHER_INSTRUCTIONS의 `{lesson}` 한 자리에 수업 블록(주제·단어장) 하나. 스냅샷만 보고 만든다
  *    (같은 스냅샷 = 같은 지시문). 지시문은 **서버만** 만든다 — 클라이언트는 주제 키·직접 입력 글자·단어장 id만 보낸다.
  * 3. Realtime 세션 설정 객체 — 필드 이름은 설치된 SDK(openai 7.4.0)의 GA 타입 `RealtimeSessionCreateRequest`로 타입 검사된다.
  *    모델·음성·전사 모델은 env(빈 값·공백이면 기본값 — `?.trim() ||`, SPEC §11 빈 값 폴백), 속도는 천천히 0.85 / 보통 1.0 두 값만.
- *    화면 카드(§12-6): 지시문 뒤에 TALK_CARDS_INSTRUCTIONS를 덧붙이고, 도구 TALK_TOOLS·`tool_choice: "auto"`를 싣는다.
+ *    전사 언어는 영어 고정(`language: "en"`, 2026-09-27) — prompt·keywords는 싣지 않는다.
+ *    지시문 뒤에 차례 규칙 TALK_TURN_RULES(§12-7)를 덧붙이고, **도구(`tools`·`tool_choice`)는 싣지 않는다** — 2026-09-27 화면 카드를
+ *    음성 모델에서 떼어 냈다(§12-7: 도구 호출로 응답이 끊기면 이어 말하기가 새 응답을 만들어 선생님이 두 명처럼 답했다). 카드는 호출 J.
  * 4. 주제 일러스트 장면 문장(§12-6) — 프리셋은 lib/talk-topics.ts의 sceneEn, 직접 입력은 `a cheerful scene about: {주제}`,
  *    단어장은 `a cheerful scene with: {앞 4개 단어}`. 장면 라우트가 연결과 **같은 해석 함수**로 주제를 만든 뒤 부른다.
  *
@@ -22,8 +25,6 @@
 
 import type { RealtimeSessionCreateRequest } from "openai/resources/realtime/realtime";
 import {
-  TALK_CARDS_INSTRUCTIONS,
-  TALK_CARDS_INSTRUCTIONS_JOINER,
   TALK_LESSON_TOPIC,
   TALK_LESSON_WORDS,
   TALK_SCENE_CUSTOM_PREFIX,
@@ -31,9 +32,12 @@ import {
   TALK_SCENE_WORDS_JOINER,
   TALK_SCENE_WORDS_PREFIX,
   TALK_TEACHER_INSTRUCTIONS,
+  TALK_TURN_RULES,
+  TALK_TURN_RULES_JOINER,
   fillTalkTemplate,
 } from "./ai/english/talk-prompts";
-import { TALK_LIMITS, TALK_TOOLS, TALK_TOOL_CHOICE, type TalkTopic, type TalkTopicWord } from "./ai/english/talk-schemas";
+import { TALK_LIMITS, type TalkTopic, type TalkTopicWord } from "./ai/english/talk-schemas";
+import { sanitizeTalkEmoji } from "./talk-cards";
 import { TALK_CUSTOM_TOPIC_MAX_CHARS, findTalkTopicPreset, isTalkSpeed, type TalkSpeed } from "./talk-topics";
 
 // ---------------------------------------------------------------------------
@@ -46,6 +50,12 @@ export const DEFAULT_TALK_REALTIME_MODEL = "gpt-realtime-2.1";
 export const DEFAULT_TALK_REALTIME_VOICE = "marin";
 /** 기본 은우 발화 전사 모델. env `OPENAI_REALTIME_TRANSCRIBE_MODEL`로 바꾼다. */
 export const DEFAULT_TALK_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe";
+/**
+ * 은우 발화 전사 언어(ISO-639-1) — **영어 고정**(§12-1, 2026-09-27). 자동 감지는 짧은 아이 영어를 다른 언어로 적었다
+ * (실사용 캡처 "Pixelvak."). 한국어로 말하면 영어 글자로 적히지만, 선생님은 음성을 직접 들으므로 대화에는 영향이 없다 —
+ * 표시·설명용 스크립트만 달라진다. env로 바꾸지 않는다.
+ */
+export const TALK_TRANSCRIBE_LANGUAGE = "en";
 
 /** 선생님 한 차례의 출력 토큰 상한(§12-1 — 오디오 1초 ≈ 20토큰. 짧게 말하기는 지시문이 1차로 강제한다) */
 export const TALK_REALTIME_MAX_OUTPUT_TOKENS = 1200;
@@ -113,17 +123,23 @@ export function cleanTalkCustomTopic(raw: unknown): string | null {
   return s;
 }
 
-/** 단어장 단어가 읽는 최소 모양 — VocabEntry·"모은 단어"의 단어가 모두 만족한다(word·meanings[].ko·definitionKo) */
+/**
+ * 단어장 단어가 읽는 최소 모양 — VocabEntry·"모은 단어"의 단어가 모두 만족한다(word·meanings[].ko·definitionKo·imageEmoji).
+ * imageEmoji는 읽기 방어로 선택(`?`)이다 — 입력 모양일 뿐 저장 레코드가 아니다(없으면 스냅샷 emoji null).
+ */
 export interface TalkVocabEntryLike {
   word: string;
   meanings: readonly { ko: string }[];
   definitionKo: string | null;
+  imageEmoji?: string | null;
 }
 
 /**
- * 단어장 → 선생님에게 넘길 단어(§12-1): 책 순서로 **최대 TALK_LIMITS.vocabWords(20)개**, 각 `{en: word, ko}`.
+ * 단어장 → 선생님에게 넘길 단어(§12-1): 책 순서로 **최대 TALK_LIMITS.vocabWords(20)개**, 각 `{en: word, ko, emoji}`.
  * ko = `meanings[0].ko`, 비었으면 `definitionKo`, 둘 다 없으면 null(지시문에서 뜻 생략). 빈 단어와 같은 단어(대소문자 무시)의
  * 되풀이는 건너뛴다(자리를 낭비하지 않게). 줄바꿈·제어문자는 공백으로 — 단어 목록의 줄 구조를 깨지 않게.
+ * emoji = `imageEmoji`를 카드 이모지 판정(`sanitizeTalkEmoji` — 그림 문자 포함·라틴/한글 금지·1~16자)에 통과시킨 값, 아니면 null.
+ * 화면 표시용이라 지시문(buildTalkLesson)에는 쓰지 않는다.
  */
 export function buildTalkVocabWords(entries: readonly TalkVocabEntryLike[]): TalkTopicWord[] {
   const out: TalkTopicWord[] = [];
@@ -136,7 +152,7 @@ export function buildTalkVocabWords(entries: readonly TalkVocabEntryLike[]): Tal
     if (seen.has(key)) continue;
     seen.add(key);
     const ko = cleanInline(e.meanings?.[0]?.ko) || cleanInline(e.definitionKo) || null;
-    out.push({ en, ko });
+    out.push({ en, ko, emoji: sanitizeTalkEmoji(e.imageEmoji) });
   }
   return out;
 }
@@ -177,7 +193,7 @@ export function resolveVocabTalkTopic(book: {
 // 지시문 조립 (§12-1)
 // ---------------------------------------------------------------------------
 
-/** 수업 블록 하나 — 프리셋 `{labelEn} ({labelKo})`, 직접 입력은 글자 그대로, 단어장은 `- word (뜻)` 줄 목록 */
+/** 수업 블록 하나 — 프리셋 `{labelEn} ({labelKo})`, 직접 입력은 글자 그대로, 단어장은 `- word (뜻)` 줄 목록(이모지는 넣지 않는다) */
 export function buildTalkLesson(topic: TalkTopic): string {
   if (topic.kind === "vocab") {
     const words = topic.words.map((w) => (w.ko ? `- ${w.en} (${w.ko})` : `- ${w.en}`)).join("\n");
@@ -188,12 +204,12 @@ export function buildTalkLesson(topic: TalkTopic): string {
 }
 
 /**
- * 세션 지시문 완성본 = 선생님 지시문(`{lesson}` 한 자리 치환 — 치환은 이 한 자리뿐) + `"\n\n"` + 화면 카드 덧붙임
- * (TALK_CARDS_INSTRUCTIONS, §12-6). 덧붙임은 치환하지 않는다(자리표시자가 없다).
+ * 세션 지시문 완성본 = 선생님 지시문(`{lesson}` 한 자리 치환 — 치환은 이 한 자리뿐) + `"\n\n"` + 차례 규칙
+ * (TALK_TURN_RULES, §12-7 — §12-6의 화면 카드 덧붙임을 대체). 덧붙임은 치환하지 않는다(자리표시자가 없다).
  */
 export function buildTalkInstructions(topic: TalkTopic): string {
   const teacher = fillTalkTemplate(TALK_TEACHER_INSTRUCTIONS, { lesson: buildTalkLesson(topic) });
-  return `${teacher}${TALK_CARDS_INSTRUCTIONS_JOINER}${TALK_CARDS_INSTRUCTIONS}`;
+  return `${teacher}${TALK_TURN_RULES_JOINER}${TALK_TURN_RULES}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -229,12 +245,14 @@ export function buildTalkSceneEn(topic: TalkTopic): string {
 
 /**
  * §12-1 표 그대로의 세션 설정. 라우트는 이것을 `JSON.stringify`해 multipart `session` 필드로 보낸다.
- * - 전사: 모델만 준다 — **language·prompt 지정 없음**(은우가 한국어를 섞는다; 단어장 단어를 prompt로 주면 하지 않은 말이 맞게
- *   적힐 위험 — 토익 관문 T와 같은 원칙). eval이 이 두 키가 없는지 본다.
+ * - 전사: 모델 + `language: "en"`(영어 고정 — 자동 감지가 아이 영어를 다른 언어로 적던 것, 2026-09-27). **prompt·keywords 지정
+ *   없음** — 단어장 단어를 넣으면 하지 않은 말이 맞게 적힐 위험(토익 관문 T와 같은 원칙 — 토익도 language en·prompt 없음).
+ *   eval이 키 목록이 정확히 {model, language}인지 본다.
  * - 턴 감지: semantic_vad, eagerness low(아이의 긴 쉼·"음…"에서 끊지 않게, 최대 약 8초), 응답 자동 생성·끼어들기 허용.
  * - 소음 억제: far_field(폰을 들고 스피커로 말하는 상황).
- * - 화면 카드(§12-6): 도구 TALK_TOOLS(show_hints·show_picture) + `tool_choice: "auto"`, 지시문 뒤 TALK_CARDS_INSTRUCTIONS.
- * 표에 없는 필드(tracing·truncation·include·prompt)는 싣지 않는다.
+ * - 도구 없음(§12-7): `tools`·`tool_choice`를 싣지 않는다 — 선생님은 한 차례를 한 번에 말하고(지시문 끝 TALK_TURN_RULES),
+ *   화면 카드는 앱이 선생님 줄마다 호출 J(`POST /api/english/talk/cards`)로 따로 만든다. eval이 두 키가 없는지 본다.
+ * 표에 없는 필드(tracing·truncation·include·prompt·tools·tool_choice)는 싣지 않는다.
  */
 export function buildTalkSessionConfig(args: { topic: TalkTopic; speed: TalkSpeed }): RealtimeSessionCreateRequest {
   if (!isTalkSpeed(args.speed)) throw new Error(`[talk] 알 수 없는 말 빠르기입니다: ${String(args.speed)}`);
@@ -245,11 +263,9 @@ export function buildTalkSessionConfig(args: { topic: TalkTopic; speed: TalkSpee
     instructions: buildTalkInstructions(args.topic),
     output_modalities: ["audio"],
     max_output_tokens: TALK_REALTIME_MAX_OUTPUT_TOKENS,
-    tools: [...TALK_TOOLS],
-    tool_choice: TALK_TOOL_CHOICE,
     audio: {
       input: {
-        transcription: { model: resolveTalkTranscribeModel() },
+        transcription: { model: resolveTalkTranscribeModel(), language: TALK_TRANSCRIBE_LANGUAGE },
         turn_detection: { type: "semantic_vad", eagerness: "low", create_response: true, interrupt_response: true },
         noise_reduction: { type: "far_field" },
       },

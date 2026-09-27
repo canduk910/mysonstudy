@@ -12,7 +12,11 @@
  * - 낭독 정지는 **큐가 돌려준 stop 함수만** 쓴다(stopSpeaking은 다른 🔊까지 죽인다 — SPEC §18 관용구). 시트를 닫거나 다른 문장을
  *   누르거나 화면을 떠나면 멈춘다.
  * - 제목 편집(TalkTitleEditor)·삭제(인라인 확인, 그림 연쇄). 긴 문장은 줄바꿈(min-width:0 + overflow-wrap).
+ * - 넓은 가로 화면(iPad 가로·데스크톱)에서는 그림·카드를 왼쪽에 크게, 스크립트를 오른쪽 칸에 둔다(대화 화면과 같은 방향 —
+ *   CSS `reviewGrid`만, 문장 탭 동작 불변). 그림·카드가 없는 대화는 한 줄 그대로.
  * - 자동으로 도는 비용은 없다(SPEC §21-4) — 프리페치하지 않는다(설명 낭독은 탭한 문장만 합성된다).
+ * - `debug`(주소 `?debug=1` — 페이지가 넘긴다)면 선생님 말풍선에 저장된 **출처 칩**(reply·greeting·nudge·wrapup — english.md §12-7)을
+ *   보인다. 평소에는 보이지 않는다. 옛 기록(출처 null)은 칩이 없다.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -64,6 +68,7 @@ export default function TalkReviewView({
   cards,
   turns,
   explanations,
+  debug = false,
 }: {
   id: string;
   titleKo: string;
@@ -75,6 +80,8 @@ export default function TalkReviewView({
   cards: TalkCard[];
   turns: TalkTurn[];
   explanations: TalkExplanation[];
+  /** 출처 칩을 보인다(`?debug=1`) */
+  debug?: boolean;
 }) {
   const router = useRouter();
   const sentencesByTurn = useMemo(() => turns.map((t) => splitTalkSentences(t.text)), [turns]);
@@ -206,6 +213,8 @@ export default function TalkReviewView({
   }
 
   const exp = sheet?.explanation ?? null;
+  const sceneSrc = sceneImageId !== null && !imageFailed ? talkImageHref(sceneImageId) : null;
+  const hasPictures = sceneSrc !== null || cards.length > 0;
 
   return (
     <>
@@ -216,85 +225,94 @@ export default function TalkReviewView({
         <span className="u-chip">{minutesKo(durationSec)}</span>
       </p>
 
-      {(sceneImageId && !imageFailed) || cards.length > 0 ? (
-        <section className="mt-6 flex flex-col gap-5" aria-label="대화에서 본 그림">
-          {sceneImageId && !imageFailed && (
-            <figure className={s.sceneFigure}>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                className={s.sceneFigureImg}
-                src={talkImageHref(sceneImageId)}
-                alt={sceneEn ? `주제 그림: ${sceneEn}` : "주제 그림"}
-                loading="lazy"
-                onError={() => setImageFailed(true)}
-              />
-              {sceneEn && (
-                <figcaption className={s.sceneCaption} lang="en">
-                  {sceneEn}
-                </figcaption>
-              )}
-            </figure>
-          )}
-          {cards.length > 0 && (
-            <div>
-              <h2 className="t-section-title mb-2">오늘 본 그림 카드</h2>
-              <ul className={s.cardGrid}>
-                {cards.map((c) => (
-                  <li key={c.en} className={s.cardTile}>
-                    <span className={s.cardTileEmoji} aria-hidden>
-                      {c.emoji}
-                    </span>
-                    <span className={s.cardTileEn} lang="en">
-                      {c.en}
-                    </span>
-                    <span className={s.cardTileKo} lang="ko">
-                      {c.ko}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </section>
-      ) : null}
+      <div className={hasPictures ? s.reviewGrid : undefined}>
+        {hasPictures ? (
+          <section className="mt-6 flex flex-col gap-5" aria-label="대화에서 본 그림">
+            {sceneSrc && (
+              <figure className={s.sceneFigure}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  className={s.sceneFigureImg}
+                  src={sceneSrc}
+                  alt={sceneEn ? `주제 그림: ${sceneEn}` : "주제 그림"}
+                  loading="lazy"
+                  onError={() => setImageFailed(true)}
+                />
+                {sceneEn && (
+                  <figcaption className={s.sceneCaption} lang="en">
+                    {sceneEn}
+                  </figcaption>
+                )}
+              </figure>
+            )}
+            {cards.length > 0 && (
+              <div>
+                <h2 className="t-section-title mb-2">오늘 본 그림 카드</h2>
+                <ul className={s.cardGrid}>
+                  {cards.map((c) => (
+                    <li key={c.en} className={s.cardTile}>
+                      <span className={s.cardTileEmoji} aria-hidden>
+                        {c.emoji}
+                      </span>
+                      <span className={s.cardTileEn} lang="en">
+                        {c.en}
+                      </span>
+                      <span className={s.cardTileKo} lang="ko">
+                        {c.ko}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </section>
+        ) : null}
 
-      <section className="mt-6" aria-label="대화 스크립트">
-        <h2 className="t-section-title">대화</h2>
-        <p className="t-caption mb-3 mt-1">문장을 누르면 선생님이 설명해 줘요. 💬 표시는 이미 들은 설명이에요.</p>
-        <ul className={s.bubbles}>
-          {turns.map((turn, ti) => {
-            const teacher = turn.speaker === "teacher";
-            const lang = teacher ? "en" : HANGUL_RE.test(turn.text) ? "ko" : "en";
-            return (
-              <li key={ti} className={`${s.row} ${teacher ? "" : s.rowChild}`}>
-                <div className={`${s.bubble} ${teacher ? s.bubbleTeacher : s.bubbleChild}`}>
-                  <span className={s.speaker}>{teacher ? "Sunny 선생님" : "은우"}</span>
-                  <p className={s.bubbleText} lang={lang}>
-                    {sentencesByTurn[ti].map((sent, si) => {
-                      const active = sheet?.turnIndex === ti && sheet.sentenceIndex === si;
-                      const done = cache[keyOf(ti, si)] !== undefined;
-                      return (
-                        <span key={si}>
-                          {si > 0 ? " " : ""}
-                          <button
-                            type="button"
-                            className={`${s.sentence} ${active ? s.sentenceActive : ""} ${done ? s.sentenceDone : ""}`}
-                            onClick={() => onSentenceTap(ti, si)}
-                            aria-label={`설명 듣기: ${sent}`}
-                          >
-                            {sent}
-                          </button>
+        <section className={`mt-6 ${s.reviewScript}`} aria-label="대화 스크립트">
+          <h2 className="t-section-title">대화</h2>
+          <p className="t-caption mb-3 mt-1">문장을 누르면 선생님이 설명해 줘요. 💬 표시는 이미 들은 설명이에요.</p>
+          <ul className={s.bubbles}>
+            {turns.map((turn, ti) => {
+              const teacher = turn.speaker === "teacher";
+              const lang = teacher ? "en" : HANGUL_RE.test(turn.text) ? "ko" : "en";
+              return (
+                <li key={ti} className={`${s.row} ${teacher ? "" : s.rowChild}`}>
+                  <div className={`${s.bubble} ${teacher ? s.bubbleTeacher : s.bubbleChild}`}>
+                    <span className={s.speaker}>
+                      {teacher ? "Sunny 선생님" : "은우"}
+                      {debug && teacher && turn.origin && (
+                        <span className={s.originChip} title="이 말을 낳은 응답의 출처(디버그)">
+                          {turn.origin}
                         </span>
-                      );
-                    })}
-                  </p>
-                  {turn.interrupted && <span className={s.bubbleNote}>끊김</span>}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      </section>
+                      )}
+                    </span>
+                    <p className={s.bubbleText} lang={lang}>
+                      {sentencesByTurn[ti].map((sent, si) => {
+                        const active = sheet?.turnIndex === ti && sheet.sentenceIndex === si;
+                        const done = cache[keyOf(ti, si)] !== undefined;
+                        return (
+                          <span key={si}>
+                            {si > 0 ? " " : ""}
+                            <button
+                              type="button"
+                              className={`${s.sentence} ${active ? s.sentenceActive : ""} ${done ? s.sentenceDone : ""}`}
+                              onClick={() => onSentenceTap(ti, si)}
+                              aria-label={`설명 듣기: ${sent}`}
+                            >
+                              {sent}
+                            </button>
+                          </span>
+                        );
+                      })}
+                    </p>
+                    {turn.interrupted && <span className={s.bubbleNote}>끊김</span>}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      </div>
 
       <section className="mt-10" aria-label="대화 지우기">
         {errorKo && (
