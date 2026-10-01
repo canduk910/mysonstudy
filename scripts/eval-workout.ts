@@ -9,6 +9,9 @@
  *   (store·AI 의존 없음 — "지킨 날" 집합이 스트릭 규칙을 거쳐 어떤 값이 되는지까지 잠근다).
  *   예외 둘: 총 운동 소요시간(§19-8)의 표시 문자열("14분 12초"·"약 13분"·섞인 합계의 "약")은 화면 보조 components/workout-shared.tsx의
  *   **순수 포맷 함수**로 확인한다(스펙이 문자열 정의처를 그 파일로 정했다 — store·AI·브라우저 의존 없음, React는 import만 된다).
+ *   예외 셋(2026-10-01, §19-7): 세션 음성 안내 계획 lib/workout-voice.ts(순수 — 런타임 의존은 lib/workout뿐)와, 미리 받기 상한·조각 길이
+ *   상한을 대조할 발음 관문 상수 PREFETCH_MAX_ITEMS(lib/speech — 브라우저 밖에서는 아무것도 하지 않는다)·TTS_TEXT_MAX_CHARS(lib/tts-shared)
+ *   — 값을 eval에 다시 적지 않는다.
  * 날짜는 전부 인자로 넘긴다("오늘"은 픽스처 상수) — 현재 시각에 의존하지 않는다.
  */
 
@@ -70,6 +73,33 @@ import {
   formatElapsedClock,
   formatKstTime,
 } from "../components/workout-shared";
+import {
+  encouragement,
+  exerciseKo,
+  isRestCueStale,
+  REST_CUE_LEAD_MS,
+  REST_CUE_STALE_MS,
+  restCuePlan,
+  sessionOpenEvent,
+  spokenDuration,
+  spokenSeconds,
+  stepName,
+  tomorrowLine,
+  VOICE_DONE,
+  VOICE_HALF,
+  VOICE_LAST_ROUND,
+  VOICE_LAST_SET,
+  WORKOUT_ENCOURAGEMENTS,
+  WORKOUT_REST_PRESET_SEC,
+  WORKOUT_VOICE_LANG,
+  workoutVoiceLines,
+  workoutVoicePrefetch,
+  type WorkoutVoiceContext,
+  type WorkoutVoiceEvent,
+} from "../lib/workout-voice";
+import { PREFETCH_MAX_ITEMS } from "../lib/speech";
+import { TTS_TEXT_MAX_CHARS } from "../lib/tts-shared";
+import { readFileSync } from "node:fs";
 
 interface CheckResult {
   book: string;
@@ -451,7 +481,8 @@ add(
   add("스텝·휴식", "휴식 앞 = 1~4세트 푸시업 · 휴식 뒤 = 2~5세트 풀업 · 휴식 4번", aligned, steps.map((st) => (restFollowsStep(st.step) ? `${st.step}|` : `${st.step}`)).join(" "));
 }
 {
-  // 음성 안내 프리페치 대상 — 휴식 끝에 읽히는 스텝 정확히 4개(2~5세트 풀업). 픽스처 4종(보통·Day 23·평평한 1RM·두 자리 수)
+  // 휴식 끝 안내(rest_end) 대상 — 휴식 끝에 읽히는 스텝 정확히 4개(2~5세트 풀업). 픽스처 4종(보통·Day 23·평평한 1RM·두 자리 수).
+  // 2026-10-01: 음성 안내 **전체**는 세트 시작마다 나므로(§19-6, 11절) 이 행은 "음성 안내 대상"이 아니라 "휴식 끝 안내 대상"이다.
   const fixtures: [string, SetPair][] = [
     ["Day 1 (10/18RM)", targetFor(BASE, 1)],
     ["Day 23 (10/18RM)", targetFor(BASE, 23)],
@@ -472,7 +503,7 @@ add(
   }
   add(
     "스텝·휴식",
-    "음성 안내 대상 stepsAfterRest = 정확히 4개(2~5세트 풀업, 목표 횟수 그대로) — 픽스처 4종",
+    "휴식 끝 안내(rest_end) 대상 stepsAfterRest = 정확히 4개(2~5세트 풀업, 목표 횟수 그대로) — 픽스처 4종",
     bad.length === 0,
     bad.length === 0 ? `Day1 → ${S(stepsAfterRest(targetFor(BASE, 1)).map((st) => `pu${st.setIndex + 1}x${st.reps}`))}` : bad.join(" "),
   );
@@ -2290,6 +2321,341 @@ scenario("소요시간", "표시 문자열·'약' 규칙", () => {
   );
 });
 
+
+// ===========================================================================
+// 11) 세션 음성 안내 (§19-6 — 2026-10-01 "풀업 시작할 때만 음성이 나와. 좀더 촘촘했으면") — lib/workout-voice 순수 계획
+//   기대 문구는 스펙 표에서 **손으로** 적는다(구현을 따라 계산하지 않는다). 픽스처 Day 1(10/18RM): 풀업 [6,5,4,3,2]=20, 푸시업 [9,8,7,6,5]=35.
+// ===========================================================================
+const W2 = { kind: "workout", day: 2, targetDay: 2 } as const;
+const V1: WorkoutVoiceContext = { day: 1, targetDay: 1, isRepeat: false, target: targetFor(BASE, 1), tomorrow: W2 };
+const voice = (ctx: WorkoutVoiceContext, ev: WorkoutVoiceEvent) => workoutVoiceLines(ctx, ev);
+const diffLines = (got: string[], want: string[]) => (eq(got, want) ? "" : `${S(got)} ≠ ${S(want)}`);
+
+scenario("음성 안내", "모듈 경계", () => {
+  // 클라이언트 번들·eval 안전 — 런타임 import는 순수 엔진 ./workout 하나뿐(store·speech·브라우저 금지)
+  const src = readFileSync(new URL("../lib/workout-voice.ts", import.meta.url), "utf8");
+  const froms = [...src.matchAll(/^import[\s\S]*?from\s+"([^"]+)";/gm)].map((m) => m[1]);
+  add("음성 안내", "lib/workout-voice.ts의 import는 ./workout 하나뿐(순수 — store·speech·브라우저 의존 없음)", eq(froms, ["./workout"]), S(froms));
+  add(
+    "음성 안내",
+    "상수 — 언어 ko-KR · 휴식 선택지 [120,180](첫 값 = DEFAULT_REST_SEC) · 격려 5개 · 큐 앞둠 4초 · 늦은 큐 1.5초",
+    WORKOUT_VOICE_LANG === "ko-KR" &&
+      eq(WORKOUT_REST_PRESET_SEC, [120, 180]) &&
+      WORKOUT_REST_PRESET_SEC[0] === DEFAULT_REST_SEC &&
+      eq(WORKOUT_ENCOURAGEMENTS, ["좋아요!", "잘했어요!", "훌륭해요!", "멋져요!", "깔끔해요!"]) &&
+      REST_CUE_LEAD_MS === 4000 &&
+      REST_CUE_STALE_MS === 1500,
+    S({ WORKOUT_VOICE_LANG, WORKOUT_REST_PRESET_SEC, REST_CUE_LEAD_MS, REST_CUE_STALE_MS }),
+  );
+  add(
+    "음성 안내",
+    "이름 — exerciseKo·stepName(화면 글자와 같은 정의처)",
+    exerciseKo("pullup") === "풀업" &&
+      exerciseKo("pushup") === "푸시업" &&
+      stepName({ step: 5, exercise: "pushup", setIndex: 2, reps: 7 }) === "푸시업 3세트",
+    stepName({ step: 0, exercise: "pullup", setIndex: 0, reps: 6 }),
+  );
+});
+
+scenario("음성 안내", "세션 시작", () => {
+  add(
+    "음성 안내",
+    "세션 시작(Day 1) = 요약 + 첫 세트",
+    eq(voice(V1, { kind: "session_start" }), ["Day 1, 풀업 5세트 총 20회, 푸시업 5세트 총 35회.", "풀업 1세트, 6회."]),
+    diffLines(voice(V1, { kind: "session_start" }), ["Day 1, 풀업 5세트 총 20회, 푸시업 5세트 총 35회.", "풀업 1세트, 6회."]) || "ok",
+  );
+  // 재부여 — Day 7 자리, Day 5 목표: 풀업 [6,6,5,4,3]=24, 푸시업 [9,9,8,7,6]=39
+  const rep: WorkoutVoiceContext = { day: 7, targetDay: 5, isRepeat: true, target: targetFor(BASE, 5), tomorrow: null };
+  const want = ["Day 7, Day 5 목표로 한 번. 풀업 5세트 총 24회, 푸시업 5세트 총 39회.", "풀업 1세트, 6회."];
+  add("음성 안내", "세션 시작(재부여 Day 7 ← Day 5 목표) = 재부여 요약 + 첫 세트", eq(voice(rep, { kind: "session_start" }), want), diffLines(voice(rep, { kind: "session_start" }), want) || "ok");
+  // 픽스처 4종 — 요약의 총합이 목표 합과 같다(엔진 setTotals가 아니라 배열 합으로 대조)
+  const fixtures: [string, SetPair, number][] = [
+    ["Day 1", targetFor(BASE, 1), 1],
+    ["Day 23", targetFor(BASE, 23), 23],
+    ["1/1RM", targetFor(makeBase({ pullup: 1, pushup: 1 }), 1), 1],
+    ["150/150RM", targetFor(makeBase({ pullup: 150, pushup: 150 }), 1), 1],
+  ];
+  const bad = fixtures.filter(([, t, d]) => {
+    const [head, first] = voice({ day: d, targetDay: d, isRepeat: false, target: t, tomorrow: null }, { kind: "session_start" });
+    return head !== `Day ${d}, 풀업 5세트 총 ${sum(t.pullup)}회, 푸시업 5세트 총 ${sum(t.pushup)}회.` || first !== `풀업 1세트, ${t.pullup[0]}회.`;
+  });
+  add("음성 안내", "세션 시작 요약의 총합 = 목표 배열 합 — 픽스처 4종(Day 23 39/54·평평한 1RM·150RM)", bad.length === 0, bad.map((b) => b[0]).join(",") || "ok");
+});
+
+scenario("음성 안내", "✓ 안내", () => {
+  // 스펙 표 그대로 — 격려 (day+step)%5, 풀업 ✓ → 같은 세트 푸시업 시작, 푸시업 ✓ → 휴식 시작, 스텝 4 = 절반, 스텝 8 → 마지막 세트
+  const want: string[][] = [
+    ["잘했어요!", "푸시업 1세트, 9회."],
+    ["훌륭해요!", "휴식 2분."],
+    ["멋져요!", "푸시업 2세트, 8회."],
+    ["깔끔해요!", "휴식 2분."],
+    ["좋아요!", "절반 끝났어요.", "푸시업 3세트, 7회."],
+    ["잘했어요!", "휴식 2분."],
+    ["훌륭해요!", "푸시업 4세트, 6회."],
+    ["멋져요!", "휴식 2분."],
+    ["깔끔해요!", "푸시업 5세트, 5회.", "마지막 세트예요."],
+  ];
+  const bad = want.map((w, k) => diffLines(voice(V1, { kind: "step_done", step: k, restSec: 120 }), w) && `k${k}:${diffLines(voice(V1, { kind: "step_done", step: k, restSec: 120 }), w)}`).filter(Boolean);
+  add("음성 안내", "✓ 스텝 0~8 전부(Day 1, 휴식 2분) — 격려 + 다음 세트 / 휴식 시작, 절반·마지막 세트 자리", bad.length === 0, bad.join(" ") || "9스텝 일치");
+  const empties = [9, -1, 10, 2.5, Number.NaN].every((k) => voice(V1, { kind: "step_done", step: k, restSec: 120 }).length === 0);
+  add("음성 안내", "마지막 스텝 ✓(오늘 완료가 대신한다)·범위 밖·정수 아님 → 빈 배열", empties, String(empties));
+  const rest = (sec: number) => voice(V1, { kind: "step_done", step: 3, restSec: sec })[1];
+  const restOk = rest(180) === "휴식 3분." && rest(150) === "휴식 2분 30초." && rest(45) === "휴식 45초." && rest(120.4) === "휴식 2분." && rest(210) === "휴식 3분 30초.";
+  add("음성 안내", "휴식 시작 길이 — 180 '3분'·150 '2분 30초'·45 '45초'·120.4 '2분'·210 '3분 30초'", restOk, [180, 150, 45, 120.4, 210].map(rest).join(" | "));
+  // 진행 조각의 자리 — 절반은 스텝 4의 ✓에서만, 마지막 라운드는 ✓에 없다(휴식 끝·이어서 하기의 5세트 풀업), 마지막 세트는 스텝 8의 ✓에서만
+  const at = (text: string) =>
+    Array.from({ length: 9 }, (_, k) => k).filter((k) => voice(V1, { kind: "step_done", step: k, restSec: 120 }).includes(text));
+  add(
+    "음성 안내",
+    "진행 조각 자리 — 절반 [4] · 마지막 라운드 ✓에 없음 · 마지막 세트 [8](한 스텝에 둘을 겹치지 않는다)",
+    eq(at(VOICE_HALF), [4]) && eq(at(VOICE_LAST_ROUND), []) && eq(at(VOICE_LAST_SET), [8]),
+    `절반${S(at(VOICE_HALF))} 라운드${S(at(VOICE_LAST_ROUND))} 세트${S(at(VOICE_LAST_SET))}`,
+  );
+});
+
+scenario("음성 안내", "휴식 끝·이어서 하기", () => {
+  // 휴식 끝 — 옛 문구 형식 그대로("다음, 풀업 2세트 5회", 마침표 없음 — 영속 캐시의 오디오를 다시 쓴다) + 5세트면 마지막 라운드
+  const want: [number, string[]][] = [
+    [2, ["다음, 풀업 2세트 5회"]],
+    [4, ["다음, 풀업 3세트 4회"]],
+    [6, ["다음, 풀업 4세트 3회"]],
+    [8, ["다음, 풀업 5세트 2회", "마지막 라운드예요."]],
+  ];
+  const bad = want.filter(([k, w]) => !eq(voice(V1, { kind: "rest_end", step: k }), w));
+  add("음성 안내", "휴식 끝 4개 — 옛 문구 그대로 + 스텝 8만 '마지막 라운드예요.'", bad.length === 0, bad.map(([k]) => `k${k}:${S(voice(V1, { kind: "rest_end", step: k }))}`).join(" ") || "ok");
+  const resumes: [WorkoutVoiceEvent, string[]][] = [
+    [{ kind: "session_resume", step: 4, resting: true }, ["이어서 할게요.", "휴식 중이에요."]],
+    [{ kind: "session_resume", step: 3, resting: false }, ["이어서 할게요.", "푸시업 2세트, 8회."]],
+    [{ kind: "session_resume", step: 2, resting: false }, ["이어서 할게요.", "풀업 2세트, 5회."]],
+    [{ kind: "session_resume", step: 8, resting: false }, ["이어서 할게요.", "풀업 5세트, 2회.", "마지막 라운드예요."]],
+    [{ kind: "session_resume", step: 9, resting: false }, ["이어서 할게요.", "푸시업 5세트, 5회.", "마지막 세트예요."]],
+  ];
+  const badR = resumes.filter(([ev, w]) => !eq(voice(V1, ev), w));
+  add("음성 안내", "이어서 하기 — 쉬는 중 '휴식 중이에요.' · 아니면 그 스텝의 세트 시작(5세트 풀업·푸시업 진행 조각)", badR.length === 0, badR.map(([ev]) => S(voice(V1, ev))).join(" ") || "5건 일치");
+  const open = [
+    eq(sessionOpenEvent(null), { kind: "session_start" }),
+    eq(sessionOpenEvent({ step: 0, resting: false }), { kind: "session_start" }),
+    eq(sessionOpenEvent({ step: 0, resting: true }), { kind: "session_resume", step: 0, resting: true }),
+    eq(sessionOpenEvent({ step: 3, resting: false }), { kind: "session_resume", step: 3, resting: false }),
+  ];
+  add("음성 안내", "▶ 탭 사건 — 저장 없음·0스텝 쉬는 중 아님 → 세션 시작, 1스텝 이상·쉬는 중 → 이어서 하기", open.every(Boolean), S(open));
+});
+
+scenario("음성 안내", "격려 결정성", () => {
+  const twice = Array.from({ length: 23 }, (_, d) => d + 1).every((d) =>
+    Array.from({ length: 9 }, (_, k) => k).every((k) => eq(voice({ ...V1, day: d }, { kind: "step_done", step: k, restSec: 120 }), voice({ ...V1, day: d }, { kind: "step_done", step: k, restSec: 120 }))),
+  );
+  const formula = Array.from({ length: 23 }, (_, d) => d + 1).every((d) =>
+    Array.from({ length: 9 }, (_, k) => k).every((k) => encouragement(d, k) === ["좋아요!", "잘했어요!", "훌륭해요!", "멋져요!", "깔끔해요!"][(d + k) % 5]),
+  );
+  const neighbors = Array.from({ length: 23 }, (_, d) => d + 1).every((d) =>
+    Array.from({ length: 8 }, (_, k) => k).every((k) => encouragement(d, k) !== encouragement(d, k + 1)),
+  );
+  const firstPiece = Array.from({ length: 9 }, (_, k) => voice(V1, { kind: "step_done", step: k, restSec: 120 })[0]);
+  add(
+    "음성 안내",
+    "격려 — 같은 입력 두 번 같음(Day 1~23 × 스텝 0~8) · (day+step)%5 · 이웃 스텝끼리 다름 · Day 1 하루에 5개 모두 쓰임",
+    twice && formula && neighbors && new Set(firstPiece).size === 5,
+    `${twice}/${formula}/${neighbors}/${new Set(firstPiece).size}`,
+  );
+  // 재부여 날 — 격려의 Day는 **슬롯 Day**(7)다, 목표 Day(5)가 아니다(§19-6 "슬롯 Day + 스텝 번호"). 7과 5는 5로 나눈 나머지가 달라
+  // 모든 스텝에서 두 기준이 갈린다 — 목표 Day로 돌리는 변이를 잡는다(QA 변이 M14).
+  const repCtx: WorkoutVoiceContext = { day: 7, targetDay: 5, isRepeat: true, target: targetFor(BASE, 5), tomorrow: null };
+  const enc = ["좋아요!", "잘했어요!", "훌륭해요!", "멋져요!", "깔끔해요!"];
+  const repFirst = Array.from({ length: 9 }, (_, k) => voice(repCtx, { kind: "step_done", step: k, restSec: 120 })[0]);
+  const repWant = Array.from({ length: 9 }, (_, k) => enc[(7 + k) % 5]);
+  add(
+    "음성 안내",
+    "격려 — 재부여 날(Day 7 ← Day 5 목표)은 슬롯 Day 기준: ✓ 첫 조각 = 격려[(7+k)%5](목표 Day 기준과 스텝마다 다름)",
+    eq(repFirst, repWant) && repFirst.every((x, k) => x !== enc[(5 + k) % 5]),
+    diffLines(repFirst, repWant) || "9스텝 일치",
+  );
+});
+
+scenario("음성 안내", "카운트다운", () => {
+  const plan = restCuePlan(120_000, 0);
+  add(
+    "음성 안내",
+    "120초 휴식 → 30·10·셋·둘·하나가 종료 30·10·3·2·1초 전(하나는 휴식 끝 1초 전 — 끝 안내와 안 겹침)",
+    eq(plan, [
+      { at: 90_000, sec: 30, text: "30초 남았어요." },
+      { at: 110_000, sec: 10, text: "10초." },
+      { at: 117_000, sec: 3, text: "셋" },
+      { at: 118_000, sec: 2, text: "둘" },
+      { at: 119_000, sec: 1, text: "하나" },
+    ]),
+    plan.map((c) => `${c.text}@${c.at}`).join(" "),
+  );
+  const texts = (remainingMs: number) => restCuePlan(1_000_000 + remainingMs, 1_000_000).map((c) => c.text);
+  const cases: [number, string[]][] = [
+    [34_000, ["30초 남았어요.", "10초.", "셋", "둘", "하나"]],
+    [33_900, ["10초.", "셋", "둘", "하나"]],
+    [14_000, ["10초.", "셋", "둘", "하나"]],
+    [13_999, ["셋", "둘", "하나"]],
+    [7_000, ["셋", "둘", "하나"]],
+    [6_900, []],
+    [5_500, []],
+    [0, []],
+    [-5_000, []],
+  ];
+  const bad = cases.filter(([ms, w]) => !eq(texts(ms), w));
+  add(
+    "음성 안내",
+    "생략 경계(앞둠 4초) — 남은 34초는 30초 큐 포함·33.9초 제외 · 14초/13.999초의 10초 큐 · 7초는 셋·둘·하나 포함·6.9초는 묶음째 제외 · 종료·지남 → 없음",
+    bad.length === 0,
+    bad.map(([ms]) => `${ms}:${S(texts(ms))}`).join(" ") || `${cases.length}경계 일치`,
+  );
+  const nan = restCuePlan(Number.NaN, 0).length === 0 && restCuePlan(120_000, Number.NaN).length === 0;
+  const stale = !isRestCueStale(1000, 2500) && isRestCueStale(1000, 2501) && !isRestCueStale(1000, 900) && isRestCueStale(1000, Number.NaN);
+  add("음성 안내", "늦은 큐 — 1.5초까지 냄·1.501초 버림·일찍 깬 것 냄·NaN 버림 / 비숫자 시각 → 계획 없음", nan && stale, `${nan}/${stale}`);
+  // 복원 — 새로고침으로 남은 휴식 75초에서 다시 짜면 30·10·셋·둘·하나가 같은 종료 시각 기준
+  const restored = restCuePlan(500_000, 425_000).map((c) => c.at);
+  add("음성 안내", "새로고침 복원(남은 75초) — 큐 시각은 종료 시각 기준(470·490·497·498·499초)", eq(restored, [470_000, 490_000, 497_000, 498_000, 499_000]), S(restored));
+});
+
+scenario("음성 안내", "오늘 완료", () => {
+  const done = (ctx: WorkoutVoiceContext, d: number | null) => voice(ctx, { kind: "session_done", durationSec: d });
+  const cases: [string, string[], string[]][] = [
+    ["실측 750초", done(V1, 750), ["오늘 운동 완료!", "총 55회.", "13분 걸렸어요.", "내일은 Day 2 운동이에요."]],
+    ["실측 없음", done(V1, null), ["오늘 운동 완료!", "총 55회.", "내일은 Day 2 운동이에요."]],
+    ["45초", done(V1, 45), ["오늘 운동 완료!", "총 55회.", "45초 걸렸어요.", "내일은 Day 2 운동이에요."]],
+    ["3900초", done(V1, 3900), ["오늘 운동 완료!", "총 55회.", "1시간 5분 걸렸어요.", "내일은 Day 2 운동이에요."]],
+    ["상한 초과 10801", done(V1, 10801), ["오늘 운동 완료!", "총 55회.", "내일은 Day 2 운동이에요."]],
+    ["소수 12.5", done(V1, 12.5), ["오늘 운동 완료!", "총 55회.", "내일은 Day 2 운동이에요."]],
+    ["내일 모름", done({ ...V1, tomorrow: null }, 600), ["오늘 운동 완료!", "총 55회.", "10분 걸렸어요."]],
+  ];
+  const bad = cases.filter(([, got, want]) => !eq(got, want));
+  add("음성 안내", "오늘 완료 — 실측·없음·1분 미만·1시간 넘음·상한 초과·소수 → 소요시간 조각 규칙, 내일 모름 → 그 조각 없음", bad.length === 0, bad.map(([n, g]) => `${n}:${S(g)}`).join(" ") || `${cases.length}건 일치`);
+  const tm = [
+    tomorrowLine({ day: 5, isRepeat: false }, { kind: "rest", day: 6, cycleEnd: false, index: 1, of: 1 }) === "내일은 휴식이에요.",
+    tomorrowLine({ day: 23, isRepeat: false }, { kind: "rest", day: 24, cycleEnd: true, index: 1, of: 3 }) === "내일은 사이클 마무리 휴식이에요.",
+    tomorrowLine({ day: 7, isRepeat: true }, { kind: "workout", day: 7, targetDay: 7 }) === "내일은 Day 7 재도전이에요.",
+    tomorrowLine({ day: 1, isRepeat: false }, { kind: "workout", day: 2, targetDay: 2 }) === "내일은 Day 2 운동이에요.",
+    // 스펙 밖 — 오늘 성공을 가정한 내일로는 나오지 않는다(실패 뒤에만 생긴다): null → 그 조각을 뺀다("모르면 뺀다"와 같은 규칙)
+    tomorrowLine({ day: 9, isRepeat: false }, { kind: "workout", day: 9, targetDay: 8 }) === null,
+    tomorrowLine({ day: 3, isRepeat: false }, { kind: "recovery", pendingDay: 3 }) === null,
+    tomorrowLine({ day: 23, isRepeat: false }, { kind: "retest" }) === null,
+    eq(done({ ...V1, tomorrow: { kind: "recovery", pendingDay: 1 } }, null), ["오늘 운동 완료!", "총 55회."]),
+  ];
+  add(
+    "음성 안내",
+    "내일 문구 — 스펙 4종(휴식·마무리 휴식·재부여 성공 뒤 재도전·운동) · 스펙 밖(재부여 목표 운동·회복·재측정) → null, 완료 안내에 그 조각 없음",
+    tm.every(Boolean),
+    S(tm),
+  );
+  // 1시간 경계(§19-6 오늘 완료 — 분 반올림, 반올림해 60분 이상이면 시간 단위): 3569초 = 59.48분 → 59분, 3570초 = 59.5분 → 1시간
+  const hourEdge: [number, string][] = [
+    [3569, "59분 걸렸어요."],
+    [3570, "1시간 걸렸어요."],
+    [3600, "1시간 걸렸어요."],
+    [3630, "1시간 1분 걸렸어요."],
+  ];
+  const badHour = hourEdge.filter(([sec, want]) => done(V1, sec)[2] !== want);
+  add(
+    "음성 안내",
+    "소요시간 1시간 경계 — 3569 '59분'·3570 '1시간'(59.5분 반올림)·3600 '1시간'·3630 '1시간 1분'",
+    badHour.length === 0,
+    hourEdge.map(([sec]) => done(V1, sec)[2]).join(" | "),
+  );
+  const dur = [spokenDuration(0) === "0초", spokenDuration(59) === "59초", spokenDuration(89) === "1분", spokenDuration(3600) === "1시간", spokenSeconds(0) === "0초", spokenSeconds(-5) === "0초", spokenSeconds(Number.NaN) === "0초"];
+  add("음성 안내", "숫자 꼴 — 소요시간 0·59초·89초→1분·3600→1시간 / 휴식 0·음수·NaN → 0초", dur.every(Boolean), S(dur));
+});
+
+scenario("음성 안내", "엔진의 내일", () => {
+  // 세션에 넘기는 내일 = snapshot().upcoming[0](오늘 성공 가정) — 기록 뒤 recorded_today.tomorrow와 같은 값이어야 한다(§19-6)
+  const scenarios: [string, WorkoutCycleRecord, string][] = [];
+  scenarios.push(["Day 1", newCycle(), D0]);
+  {
+    const { c, date } = completeThrough(newCycle(), D0, 4);
+    scenarios.push(["Day 5(→휴식 6)", c, shiftDateString(date, 1)]);
+  }
+  {
+    const { c, date } = completeThrough(newCycle(), D0, 22);
+    scenarios.push(["Day 23(→마무리 휴식)", c, shiftDateString(date, 1)]);
+  }
+  {
+    // Day 7 실패 → 회복 → 재부여(7, 5) 당일
+    const r = completeThrough(newCycle(), D0, 5);
+    let c = log(r.c, shiftDateString(r.date, 2), "fail");
+    const repeatDay = shiftDateString(r.date, 4);
+    scenarios.push(["재부여(7←5)", c, repeatDay]);
+    c = log(c, repeatDay, "complete");
+    scenarios.push(["재부여 성공 뒤 Day 7", c, shiftDateString(repeatDay, 1)]);
+  }
+  const rows = scenarios.map(([name, c, date]) => {
+    const st = todayStatus(c, date);
+    const snap = snapshot(c, date);
+    const first = snap.upcoming[0];
+    const after = todayStatus(log(c, date, "complete"), date);
+    const ok =
+      st.kind === "workout" &&
+      first?.date === shiftDateString(date, 1) &&
+      after.kind === "recorded_today" &&
+      eq(first.item, after.tomorrow);
+    return { name, ok, item: first ? desc(first.item) : "없음", st: desc(st) };
+  });
+  add(
+    "음성 안내",
+    "내일 = snapshot().upcoming[0](날짜 = KST 내일) = 기록 뒤 recorded_today.tomorrow — Day 1·Day 5·Day 23·재부여·재부여 성공 뒤",
+    rows.every((r) => r.ok),
+    rows.map((r) => `${r.name}:${r.st}→${r.item}${r.ok ? "" : "✗"}`).join(" "),
+  );
+  // 재부여 당일의 완료 안내 — "내일은 Day 7 재도전이에요."(엔진 값 → 문구)
+  const rr = scenarios.find(([n]) => n === "재부여(7←5)");
+  if (rr) {
+    const st = todayStatus(rr[1], rr[2]);
+    const tomorrow = snapshot(rr[1], rr[2]).upcoming[0]?.item ?? null;
+    const lines =
+      st.kind === "workout"
+        ? voice({ day: st.day, targetDay: st.targetDay, isRepeat: st.isRepeat, target: st.target, tomorrow }, { kind: "session_done", durationSec: null })
+        : [];
+    add("음성 안내", "재부여 당일 완료 안내 — 목표 Day 5 합계 · '내일은 Day 7 재도전이에요.'", eq(lines, ["오늘 운동 완료!", "총 63회.", "내일은 Day 7 재도전이에요."]), S(lines));
+  }
+});
+
+scenario("음성 안내", "미리 받기", () => {
+  const list = workoutVoicePrefetch(V1);
+  const spoken = new Set<string>();
+  const addAll = (xs: string[]) => xs.forEach((x) => spoken.add(x));
+  addAll(voice(V1, { kind: "session_start" }));
+  for (let k = 0; k < 9; k++) for (const sec of [120, 180]) addAll(voice(V1, { kind: "step_done", step: k, restSec: sec }));
+  for (const k of [2, 4, 6, 8]) addAll(voice(V1, { kind: "rest_end", step: k }));
+  addAll(restCuePlan(120_000, 0).map((c) => c.text));
+  addAll(voice(V1, { kind: "session_done", durationSec: null }));
+  const missing = [...spoken].filter((x) => !list.includes(x));
+  add(
+    "음성 안내",
+    "미리 받기(Day 1) — 실제로 읽는 조각(시작·✓ 9개 × 2분/3분·휴식 끝 4·카운트다운 5·완료의 소요시간 외) 전부 포함, 첫 조각 = 세션 시작 요약",
+    missing.length === 0 && list[0] === "Day 1, 풀업 5세트 총 20회, 푸시업 5세트 총 35회.",
+    missing.length ? `빠짐 ${S(missing)}` : `${list.length}개`,
+  );
+  const fixtures: WorkoutVoiceContext[] = [
+    V1,
+    { day: 23, targetDay: 23, isRepeat: false, target: targetFor(BASE, 23), tomorrow: { kind: "rest", day: 24, cycleEnd: true, index: 1, of: 3 } },
+    { day: 7, targetDay: 5, isRepeat: true, target: targetFor(BASE, 5), tomorrow: { kind: "workout", day: 7, targetDay: 7 } },
+    { day: 1, targetDay: 1, isRepeat: false, target: targetFor(makeBase({ pullup: 1, pushup: 1 }), 1), tomorrow: null },
+    { day: 1, targetDay: 1, isRepeat: false, target: targetFor(makeBase({ pullup: 150, pushup: 150 }), 1), tomorrow: W2 },
+  ];
+  const lists = fixtures.map((f) => workoutVoicePrefetch(f));
+  const shape = lists.every((l) => l.length === new Set(l).size && l.length <= PREFETCH_MAX_ITEMS && l.every((x) => !/걸렸어요/.test(x)));
+  add(
+    "음성 안내",
+    `미리 받기 — 중복 없음 · ≤ PREFETCH_MAX_ITEMS(${PREFETCH_MAX_ITEMS}) · 소요시간 조각('…걸렸어요.') 없음 — 픽스처 5종`,
+    shape,
+    lists.map((l) => l.length).join("/"),
+  );
+  // 모든 조각: 공백 아님 · TTS 상한 이하 · 카운트다운 밖에서 숫자·구두점만인 조각 없음(문맥 없는 숫자는 영어로 읽힐 수 있다)
+  const all = lists.flat();
+  const okPieces = all.every((x) => x.trim().length > 0 && x.length <= TTS_TEXT_MAX_CHARS && !/^[\d\s,.]+$/.test(x));
+  add("음성 안내", `조각 모양 — 공백 아님 · ${TTS_TEXT_MAX_CHARS}자 이하 · 숫자만인 조각 없음(셋·둘·하나는 고유어)`, okPieces, `${all.length}조각`);
+  add("음성 안내", "미리 받기 개수(Day 1) = 35 — 스펙 §19-6 '미리 받기' 문장과 같은 수", list.length === 35, String(list.length));
+  // 순수 — 입력을 바꾸지 않고, 직렬화 가능한 문자열만
+  const before = S(V1);
+  workoutVoicePrefetch(V1);
+  voice(V1, { kind: "session_done", durationSec: 700 });
+  add("음성 안내", "순수 — 입력(ctx) 불변 · 출력은 문자열 배열(plain data)", S(V1) === before && isPlainData(list), "ok");
+  add("음성 안내", "오늘 완료 첫 조각 상수", VOICE_DONE === "오늘 운동 완료!", VOICE_DONE);
+});
 // ---------------------------------------------------------------------------
 printTable(results);
 const failed = results.filter((r) => !r.pass);

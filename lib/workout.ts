@@ -494,21 +494,23 @@ export function supersetSteps(target: SetPair): WorkoutStep[] {
 /**
  * 이 스텝의 ✓ 뒤에 휴식이 오는가 — **세트(라운드)를 끝내는 푸시업 스텝**(홀수), 마지막 스텝 제외 → [1,3,5,7] (§19-1 슈퍼세트·§19-6).
  * 풀업(짝수 스텝)의 ✓는 쉬지 않고 같은 세트의 푸시업으로, 마지막 스텝의 ✓는 곧바로 완료 기록이다.
- * 휴식 규칙의 **유일한 정의처** — 세션의 ✓ 처리·휴식 끝 음성 안내 대상·진행 복원 정규화·목록의 휴식 줄이 전부 이것(과 stepFollowsRest)을 본다.
+ * 휴식 규칙의 **유일한 정의처** — 세션의 ✓ 처리·음성 안내 계획(lib/workout-voice — ✓ 뒤 휴식 시작인지)·진행 복원 정규화·목록의 휴식 줄이
+ * 전부 이것(과 stepFollowsRest)을 본다.
  * 스텝 번호 규칙(k 짝수 = 풀업, 홀수 = 푸시업, 세트 = floor(k/2))은 supersetSteps와 같다. 범위 밖·정수 아님 → false.
  */
 export function restFollowsStep(k: number): boolean {
   return Number.isInteger(k) && k >= 0 && k < SETS_PER_EXERCISE * 2 - 1 && k % 2 === 1;
 }
 
-/** 이 스텝이 휴식 뒤에 오는가 → [2,4,6,8](= 2~5세트의 풀업). 쉬는 중 "다음"이 가리킬 수 있는 스텝, 휴식 끝 음성 안내가 읽는 스텝 */
+/** 이 스텝이 휴식 뒤에 오는가 → [2,4,6,8](= 2~5세트의 풀업). 쉬는 중 "다음"이 가리킬 수 있는 스텝, 휴식 끝 안내(rest_end)가 읽는 스텝 */
 export function stepFollowsRest(k: number): boolean {
   return Number.isInteger(k) && k > 0 && restFollowsStep(k - 1);
 }
 
 /**
- * 휴식 끝에 음성으로 안내할 스텝 — 휴식 뒤 스텝(2~5세트 풀업) **정확히 4개**, 스텝 순. 세션 시작 탭의 프리페치 대상이다(§19-6).
- * 첫 스텝과 푸시업 스텝은 휴식 뒤에 오지 않아 읽히지 않으므로 뺀다(합성 낭비 방지). 문구로 옮기는 것은 화면(stepPhrase)이 한다.
+ * 휴식 끝 안내(rest_end — 타이머·건너뛰기)가 읽는 스텝 — 휴식 뒤 스텝(2~5세트 풀업) **정확히 4개**, 스텝 순(§19-6).
+ * 2026-10-01부터 음성 안내 **전체**는 세트 시작마다 나고(lib/workout-voice), 이 목록은 그중 휴식 끝 안내의 대상만이다
+ * (미리 받기 `workoutVoicePrefetch`가 휴식 끝 문구를 이것으로 고른다). 문구로 옮기는 것은 lib/workout-voice(restEndPhrase)가 한다.
  */
 export function stepsAfterRest(target: SetPair): WorkoutStep[] {
   return supersetSteps(target).filter((st) => stepFollowsRest(st.step));

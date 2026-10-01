@@ -23,11 +23,11 @@ OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_
 OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run eval:workout
 ```
 
-| 스크립트 | 대상 | import 경계 | 출력 영역 (항목 수는 2026-09-26 실측, speech·streak는 2026-09-28 갱신) |
+| 스크립트 | 대상 | import 경계 | 출력 영역 (항목 수는 2026-09-26 실측, speech·streak는 2026-09-28, workout은 2026-10-02 갱신) |
 |---|---|---|---|
 | `scripts/eval-speech.ts` | `lib/ja-coaching-script.ts` 대본·쪼개기, `lib/speech.ts` 큐·단발·자가 치유, `lib/tts-shared.ts`·`lib/tts.ts` 상수, `lib/tts-cache.ts` 지문·영속 캐시 v2(가짜 KV 주입) | store 금지. `lib/speech`·`lib/tts`·`lib/tts-cache`는 fetch 스텁을 깔고 키를 비운 **뒤에** dynamic import한다 | 대본(12)·쪼개기(12)·상수·엔진(5)·큐(46 — 2026-09-26 `onEnd` 둘째 인자 S1~S5 12개 추가)·단발(30)·지문(7)·안전(1)·**영속캐시(20)**(2026-09-27 — v2 바이트 저장·옛 Blob 이전·자가 치유·content-type G1~G17, QA 2회차 eval 공백 보강 G18~G20과 G5 확장. §1-1)·**쉼(21)·준비(10)·잠금화면(4)**(2026-09-27 — 토익 따라 말하기의 `speakQueue` 조각 뒤 쉼 H1~H11·H3 실제 속도, `prepareSpeech` P1~P9, Media Session 관문 M1~M4. §2) — 합계 (168) |
 | `scripts/eval-streak.ts` | `lib/streak.ts`의 `computeStreak`·`computeStreakFromDays`, `lib/kst.ts`(`formatKstDate`·`isZonedIsoTimestamp` 포함), `lib/toeic-streak.ts`(아빠 🎙️ 영어 트랙 입력·오늘 라벨 `toeicQuizStreakLabel`·`toeicAttemptStreakLabel`), `lib/talk-streak.ts`(은우 자유대화 입력) | `../lib/streak`·`../lib/kst`·`../lib/toeic-streak`·`../lib/talk-streak`만(뒤의 둘은 런타임 import 0 — 타입만) | KST 환산 26(formatKstDate 경계표를 TZ Asia/Seoul·UTC·America/Los_Angeles로 다시 돌림 — 실행 기기 TZ 무관)·연속 판정 5·0문항 제외 3·사람 분리 2·날짜 코어 5·영어 트랙 9(표현 시험 답한 문항≥1·응시 녹음된 문항≥1, 다른 트랙과 섞지 않음 — 2026-09-27 토익 유형별 공략이 ⑦ 라벨 `템플릿 훈련 · {모드}`·`공략 표현 · {유형}`과 틀 테스트 세션 포함·라우트 라벨 배선, ⑧ 연습 라벨 `공략 연습 · {유형}`·녹음 0 연습 제외를 더했다)·**자유대화 6**(2026-09-26 — 발화 0 제외·대화만 한 날·startedAt KST·아빠 트랙 무오염·라벨·라우트 배선) (56) |
-| `scripts/eval-workout.ts` | `lib/workout.ts` 전체, `diffDateStrings`, `components/workout-shared.tsx`의 순수 포맷 함수(소요시간 문자열) | `../lib/workout`·`../lib/kst`·`../lib/streak` + **예외 하나** `../components/workout-shared`(2026-09-26 — 문자열의 정의처가 이 화면 파일이라서다. 이 파일의 import는 `@/lib/kst`·`@/lib/workout`뿐이라 store 전이가 없다. 이 파일에 import를 더하면 이 판정을 다시 한다) | 베이스·계획·스텝·휴식(세트 사이 [1,3,5,7]·휴식 뒤 [2,4,6,8]·음성 안내 대상 4개)·세트 목록 순서(`roundDisplayOrder` — 스텝 0~9 × 축하 유무의 순서·완료 구역 시작 위치, 푸시업 ✓ 탭 순간·풀업 ✓ 무재배치, 무효 held 무시)·횟수·상태·판정(`decideLog`·`decideUndo`·`decideStart`·`closingStatus`)·활성 선택·격리·정규화(createdAt ISO 경계 = `isZonedIsoTimestamp`)·날짜 방어·진행·볼륨·일정·스냅샷·지난 사이클·운동 스트릭(endedAt ISO 경계 포함)·**소요시간 24**(2026-09-26 §19-8 — 상수·`isValidDurationSec` 경계·옛 사건 정규화·decideLog 싣기와 쓰기 경계 보존·범위 밖 null·근사식 오라클·eventDuration·스냅샷 합계·undo·workoutLog 정렬·문자열 17건) (158) |
+| `scripts/eval-workout.ts` | `lib/workout.ts` 전체, `diffDateStrings`, `components/workout-shared.tsx`의 순수 포맷 함수(소요시간 문자열), `lib/workout-voice.ts` 세션 음성 안내 계획(2026-10-01 — 사건 → 조각·카운트다운 계획·미리 받기) | `../lib/workout`·`../lib/kst`·`../lib/streak` + **예외** ① `../components/workout-shared`(2026-09-26 — 문자열의 정의처가 이 화면 파일이라서다. 이 파일의 import는 `@/lib/kst`·`@/lib/workout`·`@/lib/workout-voice`(2026-10-01 — 운동·세트 이름 재수출)뿐이라 store 전이가 없다. 이 파일에 import를 더하면 이 판정을 다시 한다) ② `../lib/workout-voice`(2026-10-01 — 런타임 import는 `./workout` 하나, eval이 소스를 파싱해 잠근다) ③ `../lib/speech`의 `PREFETCH_MAX_ITEMS`·`../lib/tts-shared`의 `TTS_TEXT_MAX_CHARS`(상한을 eval에 다시 적지 않고 대조 — 둘 다 브라우저 밖에서 아무것도 하지 않고 store·AI 의존이 없다, `lib/speech`의 값 import는 `./tts-shared`·`./tts-cache`뿐) | 베이스·계획·스텝·휴식(세트 사이 [1,3,5,7]·휴식 뒤 [2,4,6,8]·휴식 끝 안내(`rest_end`) 대상 4개 — 2026-10-01부터 음성 안내 전체가 아니라 휴식 끝 안내의 대상)·세트 목록 순서(`roundDisplayOrder` — 스텝 0~9 × 축하 유무의 순서·완료 구역 시작 위치, 푸시업 ✓ 탭 순간·풀업 ✓ 무재배치, 무효 held 무시)·횟수·상태·판정(`decideLog`·`decideUndo`·`decideStart`·`closingStatus`)·활성 선택·격리·정규화(createdAt ISO 경계 = `isZonedIsoTimestamp`)·날짜 방어·진행·볼륨·일정·스냅샷·지난 사이클·운동 스트릭(endedAt ISO 경계 포함)·**소요시간 24**(2026-09-26 §19-8 — 상수·`isValidDurationSec` 경계·옛 사건 정규화·decideLog 싣기와 쓰기 경계 보존·범위 밖 null·근사식 오라클·eventDuration·스냅샷 합계·undo·workoutLog 정렬·문자열 17건)·**음성 안내 31**(2026-10-01 §19-6 — 모듈 경계·상수·세션 시작(보통·재부여)·✓ 스텝 0~8 표·휴식 길이 꼴·절반/마지막 라운드/마지막 세트 자리·휴식 끝(옛 문구 바이트 그대로)·이어서 하기와 ▶ 사건 판정·격려 결정성(슬롯 Day)·카운트다운 경계(34/33.9·7/6.9초·늦음 1.5초)·오늘 완료(1시간 경계 3570초)·내일 4문구와 스펙 밖 null·엔진 내일 = 기록 뒤 tomorrow·미리 받기(중복 0·≤ 90·소요시간 조각 없음·Day 1 = 35)·조각 모양·순수성. 2026-10-02 QA 1 수정 루프에서 2행 추가) (189) |
 
 - **import 경계 자체가 검증 항목이다.** eval이 store를 import하면 어느 DB를 향할지 모르는 스크립트가 된다. 판정은 두 단계로 한다.
   - `grep -an 'lib/store' scripts/eval-speech.ts scripts/eval-streak.ts scripts/eval-workout.ts`가 **0줄**이어야 한다.
@@ -85,7 +85,7 @@ OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_
    - ④ v2 바이트 레코드에 비오디오 바이트를 심는다: 치유 POST +1 → 다음 🔊는 POST 0이어야 한다.
    - ⑤ 캐시 손상 + 스텁도 손상: POST 정확히 +1에 기기 음성이어야 한다. 다시 누른 🔊는 치유 없이 POST +1이어야 한다.
    - ⑥ 401 JSON / 200 JSON / 200 HTML: 각각 `tts 401`·`tts type`·`tts type`이고 IDB는 0건이어야 한다.
-   - ⑦ 큐(일본어 해설 전체 듣기·토익 전체 듣기·운동 휴식 안내) × 재시작: 재시작 뒤 POST 0이어야 한다. 큐 치유는 조각당 POST 1이다.
+   - ⑦ 큐(일본어 해설 전체 듣기·토익 전체 듣기·운동 세션 음성 안내) × 재시작: 재시작 뒤 POST 0이어야 한다. 큐 치유는 조각당 POST 1이다.
 4. **판정**:
    - 캡션 `[data-tts-diag]`와 `eunwoo:tts-diag` 이벤트를 본다. 영어 단어장 카드 모드처럼 캡션이 없는 화면은 이벤트로 판정한다.
    - POST는 스텁 로그 줄 수로 센다.
@@ -156,11 +156,11 @@ eval:workout이 잠그는 것은 이렇다. **원안 오라클**: 원안 Python 
 | zod | 코드에 `.nullish()`가 없어야 한다(`log` 라우트에는 금지 이유를 적은 주석 한 줄이 있다. 그건 정상이다). RM 경계는 `RM_MIN`/`RM_MAX` 상수를, log의 day는 `LAST_WORKOUT_DAY`·`isWorkoutDay`를 쓰는지 본다 |
 | DbShape 네 곳 | `emptyDb`·`readDb`·`mergeDbForSeed`(`mergeById`)·`scripts/seed.ts`. `npm run seed` 전후로 `workoutCycles` 개수가 같은지 본다(백업한 db.json으로) |
 | 이관 제외 | `scripts/migrate-to-firestore.ts`의 목록에 `workoutCycles`가 없어야 한다 |
-| 화면 | 409면 `messageKo` 표시, `router.refresh()`, 스트릭 이벤트가 따라오는지. 세션 진행(`workout-session:v1`)을 마운트 후 effect에서만 읽는지, cycleId·rev·day·targetDay·dateKst가 전부 같을 때만 복원하는지 본다. 휴식은 세트(풀업+푸시업) 사이에만 — 풀업 ✓ 뒤 타이머 없음·푸시업 ✓ 뒤 휴식·마지막 ✓ 곧바로 완료, 프리페치 `/api/tts` POST가 4건(2~5세트 풀업 문구)인지, 옛 저장값(홀수 스텝 + `restEndsAt`)을 복원하면 휴식만 버리는지 본다(§19-1·§19-6). **목록 순서**(2026-09-25): 지금 할 세트 맨 위 → 남은 세트 → 완료 세트 맨 아래인지, 푸시업 ✓ 뒤 약 1초 축하("🎉 n세트 완료!")가 뜨고 그 행이 맨 아래로 FLIP 이동하는지, 풀업 ✓는 체크 팝만(재배치 없음)인지, 축하 중에도 휴식 타이머·비프 예약·저장이 탭 즉시 됐는지(애니메이션이 상태를 붙잡지 않는지), 새로고침 복원은 애니메이션 없이 최종 순서인지, `prefers-reduced-motion` 에뮬레이션에서 즉시 재배치되는지, 320/360/390에서 칸 넘침이 없는지, DOM 클래스에 `undefined`가 없는지 본다. 작은 폰(375×548·320×568 — 목록이 첫 화면 밖)에서도 휴식 무대의 캡션 자리에 "🎉 n세트 완료!"가 약 1초 보이는지(움직임 줄이기에서도 움직임 없이, 알림은 숨은 `role="status"` 한 곳), 푸시업 ✓를 60ms 간격으로 두 번 탭해 두 번째 탭이 `3분`에 떨어져도 휴식·비프 예약이 그대로인지(`CHAIN_TAP_GUARD_MS` 뒤엔 정상 동작) 본다 |
+| 화면 | 409면 `messageKo` 표시, `router.refresh()`, 스트릭 이벤트가 따라오는지. 세션 진행(`workout-session:v1`)을 마운트 후 effect에서만 읽는지, cycleId·rev·day·targetDay·dateKst가 전부 같을 때만 복원하는지 본다. 휴식은 세트(풀업+푸시업) 사이에만 — 풀업 ✓ 뒤 타이머 없음·푸시업 ✓ 뒤 휴식·마지막 ✓ 곧바로 완료, ▶ 탭의 프리페치 `/api/tts` POST가 `workoutVoicePrefetch` 길이(Day 1 = 35, 고유 — 2026-10-01 전에는 4건이었다)인지(음성 안내 검증은 §4-2), 옛 저장값(홀수 스텝 + `restEndsAt`)을 복원하면 휴식만 버리는지 본다(§19-1·§19-6). **목록 순서**(2026-09-25): 지금 할 세트 맨 위 → 남은 세트 → 완료 세트 맨 아래인지, 푸시업 ✓ 뒤 약 1초 축하("🎉 n세트 완료!")가 뜨고 그 행이 맨 아래로 FLIP 이동하는지, 풀업 ✓는 체크 팝만(재배치 없음)인지, 축하 중에도 휴식 타이머·비프 예약·저장이 탭 즉시 됐는지(애니메이션이 상태를 붙잡지 않는지), 새로고침 복원은 애니메이션 없이 최종 순서인지, `prefers-reduced-motion` 에뮬레이션에서 즉시 재배치되는지, 320/360/390에서 칸 넘침이 없는지, DOM 클래스에 `undefined`가 없는지 본다. 작은 폰(375×548·320×568 — 목록이 첫 화면 밖)에서도 휴식 무대의 캡션 자리에 "🎉 n세트 완료!"가 약 1초 보이는지(움직임 줄이기에서도 움직임 없이, 알림은 숨은 `role="status"` 한 곳), 푸시업 ✓를 60ms 간격으로 두 번 탭해 두 번째 탭이 `3분`에 떨어져도 휴식·비프 예약이 그대로인지(`CHAIN_TAP_GUARD_MS` 뒤엔 정상 동작) 본다 |
 
 **409 재현**: `/workout`을 열어 둔 채 db.json에 사건 하나를 추가하고 rev를 +1해 "다른 탭이 이미 기록함"을 흉내 낸다. 그다음 `✓ 전부 해냈어요`를 누른다.
 
-**"세션 소리가 안 나" 신고는 먼저 가른다** — 비프(Web Audio, 발음 관문 밖)인지 음성 안내(`speakQueue` ko-KR)인지. 코드로 대조할 것(`components/workout-session.tsx`, `ai-harness-impl/references/app-patterns.md` §14): `▶`·`✓` 탭 핸들러 안에서 **동기로** `ensureWorkoutAudio()`를 부르는지(휴식을 시작하지 않는 풀업 `✓` 포함), 휴식 시작(푸시업 `✓`) 때 `scheduleBeep`로 종료 시각에 미리 예약하는지, 길이 변경·`+30초`에서 `rescheduleBeep`가 도는지, `finishRest`가 예약분 미재생 시 즉시 울리고(컨텍스트 `running`일 때만) 예약분을 취소하는지, 복원 시 `running`일 때만 재예약하는지, `✓` 탭에서 `unlockSpeechPlayback()`을 부르는지, 음성 토글(`workout-voice:v1`)이 새로고침 뒤에도 유지되는지. 음성 쪽은 §1·§2의 발음 경로 검증을 그대로 쓴다(ko 엔진이 cloud인지 device인지부터).
+**"세션 소리가 안 나" 신고는 먼저 가른다** — 비프(Web Audio, 발음 관문 밖)인지 음성 안내(`speakQueue` ko-KR)인지. 코드로 대조할 것(`components/workout-session.tsx`, `ai-harness-impl/references/app-patterns.md` §14): `▶`·`✓` 탭 핸들러 안에서 **동기로** `ensureWorkoutAudio()`를 부르는지(휴식을 시작하지 않는 풀업 `✓` 포함), 휴식 시작(푸시업 `✓`) 때 `scheduleBeep`로 종료 시각에 미리 예약하는지, 길이 변경·`+30초`에서 `rescheduleBeep`가 도는지, `finishRest`가 예약분 미재생 시 즉시 울리고(컨텍스트 `running`일 때만) 예약분을 취소하는지, 복원 시 `running`일 때만 재예약하는지, `▶`(`components/workout-view.tsx` `openSession`)·`✓`·건너뛰기·음성 켬 탭에서 `unlockSpeechPlayback()`을 부르는지, 음성 토글(`workout-voice:v1`)이 새로고침 뒤에도 유지되는지. 음성 쪽은 §1·§2의 발음 경로 검증을 그대로 쓴다(ko 엔진이 cloud인지 device인지부터). "어떤 안내가 안 나온다"면 먼저 그 사건이 스펙상 말하는 사건인지 본다 — 실패 기록·휴식 길이 변경·`+30초`는 말하지 않는 것이 정상이고, 휴식이 4초 미만으로 남은 계획에서는 카운트다운 큐가 빠진다(§4-2).
 
 ### 4-1. 총 운동 소요시간 (§19-8) — 독립 참조 모델 대조
 
@@ -174,7 +174,7 @@ eval:workout이 잠그는 것은 이렇다. **원안 오라클**: 원안 Python 
 | 형식 | 정수·0 이상 | `isValidDurationSec`(정수 0..상한) — 판정·정규화·표시가 이 한 함수 | 주석 | int·min(0) → 400 | `Math.round`, 음수·시작 모름 → null | 경계 |
 | 상한 3시간 | 넘으면 **기록은 받고 소요시간만 null** | `WORKOUT_DURATION_MAX_SEC` 10800, `decideLog`가 null로 | — | **막지 않는다**(막으면 기록 전체가 400) | 보지 않는다 | 0·10800 보존, 10801 → null |
 | 정규화 | 새 필드를 넣어야 한다(함정) | `normalizeWorkoutEvent`에 같은 검사 | — | — | — | 쓰기 경계 정규화 뒤에도 보존 |
-| 근사 계수 | 3·2·10초 + 휴식 120 | `DURATION_ESTIMATE_SEC`·`DEFAULT_REST_SEC`(정의처 하나) | — | — | `DEFAULT_REST_MS = DEFAULT_REST_SEC * 1000` | 상수 항목 |
+| 근사 계수 | 3·2·10초 + 휴식 120 | `DURATION_ESTIMATE_SEC`·`DEFAULT_REST_SEC`(정의처 하나) | — | — | `DEFAULT_REST_MS = REST_PRESETS[0].ms` — 2026-10-01부터 `lib/workout-voice.ts` `WORKOUT_REST_PRESET_SEC`의 첫 값(= `DEFAULT_REST_SEC`)에서 | 상수 항목 |
 | 표시 | 실측 "14분 12초", 근사 "약 13분", 섞인 합계 "약 …" | `EventDuration`·`DurationTotal` | 타입 재수출 | — | — | 문자열 17건 |
 
 **방법 — 구현을 열기 전에 참조 모델부터**
@@ -196,10 +196,42 @@ eval:workout이 잠그는 것은 이렇다. **원안 오라클**: 원안 Python 
 | 세션 | ▶ 직후 0스텝이어도 `startedAt` 저장, 첫 ✓ 전 새로고침 → "이어서 하기 · 풀업 1세트부터"·startedAt 동일 / 복원 조건(rev·dateKst 불일치)이면 시작도 버린다 / **끝 시각 고정**: 마지막 ✓ 전송을 route `abort('failed')`로 끊고 다시 눌러도 두 요청의 durationSec이 같다, 오류 뒤 경과 시계가 멈춘다 / 실패 전송이 끊긴 뒤 "돌아가기" → 다시 실패 기록이면 새 끝 시각 / 옛 저장값(startedAt 없음) → 경과 시계 숨김·`durationSec: null` / 경과 시계 1초 틱·`role="timer"`·`aria-live="off"` / 기록 성공 → 보존값 삭제, undo → 사건과 소요시간이 함께 빠진다 |
 | 렌더 중 시계 금지 | `grep -na "Date.now()\|new Date(" components/workout-session.tsx`의 결과가 전부 effect·핸들러·타이머 콜백 안인지. e2e 콘솔 hydration 경고 0 |
 | 화면(360·390·320) | ① 오늘 기록 카드 "… · 14분 19초"(실측) / "✓ 전부 해냈어요" → "· 약 12분" + 어림 안내 ② 이번 사이클 누적 "총 운동 시간 약 30분 · 근사 3회"(사건 0이면 줄 없음) ③ 지난 사이클 "총 약 26분" ④ 📒 운동 기록(모든 사이클, 최신 먼저, 사이클 머리글, "HH:MM 끝냄"은 `at`의 KST — `lib/kst` `formatKst` 재사용) ⑤ 세션 머리 "⏱ 경과 m:ss"가 뷰포트 안. 가로 넘침 0. `textContent`는 `ml-*` 여백을 공백으로 옮기지 않으니 기대 문자열을 공백 없이 비교하거나 스크린샷으로 확인한다 |
-| 정의처 하나 | `DEFAULT_REST_SEC`만 120을 정의(세션의 옛 `120_000` 없음), KST 정의(`Asia/Seoul`·`9 * 60 * 60`)가 운동 파일에 0건 |
+| 정의처 하나 | `DEFAULT_REST_SEC`만 120을 정의(세션의 옛 `120_000` 없음, 2분/3분 선택지는 `WORKOUT_REST_PRESET_SEC` — 세션 파일에 120/180 리터럴 0), KST 정의(`Asia/Seoul`·`9 * 60 * 60`)가 운동 파일에 0건 |
 | 문서 동기화 | §19-8은 들어갔지만 §19-2 사건 코드블록·§19-5 zod 줄·§19-6 진행 보존 값 모양(`startedAt`·0스텝 저장)·§19-7 eval import 예외가 같은 사실을 담는지 본다 — 어긋나면 결함이 아니라 doc-commit 요청(P2) |
 
 **관찰로 남길 것**: 실측 시작점이 "그날 세션을 **처음 연** 순간"이고 0스텝도 저장하므로, 세션을 잠깐 열어 보기만 해도 시계가 시작된다(18:00에 열어 보고 19:30~19:45에 운동 → 1시간 45분, 3시간 상한 안이라 걸러지지 않는다). 스펙대로라 결함이 아니지만 사용자 확인 거리다. 마지막 ✓ 전송이 실패한 뒤 세션을 **닫았다가 다시 열면** 끝 시각 ref가 초기화되는 것도 알려진 한계다.
+
+### 4-2. 세션 음성 안내 (§19-6 "음성 안내", 2026-10-01) — 참조 모델·시간축·실화면
+
+사용자 신고 "운동할 때 풀업 시작할 때만 음성이 나와. 음성안내가 좀더 촘촘했으면 해"로 안내를 다시 정했다 — 세트 시작마다·휴식 카운트다운·격려와 진행·시작과 완료 요약. 무엇을 언제 읽을지는 순수 모듈 `lib/workout-voice.ts`가 정하고(eval:workout "음성 안내" 31항목이 잠근다), **언제 끊기고 취소되는지는 화면 배선**(`components/workout-view.tsx` ▶·손잡이, `components/workout-session.tsx` 카운트다운 effect·`announce`·`finishRest`)이라 eval 밖이다. 선례는 `_workspace/qa_report_common_workout-voice_1.md`(P2 1 — 실패 닫힘이 ▶ 안내를 못 멈춤)·`_2.md`(순수 824만 건·시뮬레이터 5,000판·실화면 20판, 어긋남 0, P3-A 신규).
+
+**정합성 매트릭스 — 값이 사는 곳**
+
+| 축 | 정의처 | 소비자 |
+|---|---|---|
+| 사건 → 조각 | `workoutVoiceLines(ctx, ev)` — `session_start`·`session_resume`·`step_done`·`rest_end`·`session_done` | view `openSession`(시작·이어서), session `onDone`·`skipRest`·`finishRest` |
+| ▶ 사건 판정 | `sessionOpenEvent` | view가 `readSavedSession` + `restEndsAt > now`로 — 세션 마운트 복원과 같은 조건이어야 한다 |
+| 카운트다운 시각 | `restCuePlan`·`isRestCueStale`, `REST_CUE_LEAD_MS` 4000·`REST_CUE_STALE_MS` 1500 | session effect(deps `[restEndsAt, voiceOn, announce]`) |
+| 내일 | 엔진 `snapshot().upcoming[0]`(날짜 = KST 내일일 때만) → `tomorrowLine`(스펙 밖 종류는 null) | view `sessionTomorrow` → session prop → `session_done` |
+| 휴식 길이 | `WORKOUT_REST_PRESET_SEC` [120(= `DEFAULT_REST_SEC`), 180] | session 2분/3분 버튼·"휴식 2분./3분."·미리 받기 — 세션 파일에 120/180 리터럴 0 |
+| 미리 받기 | `workoutVoicePrefetch` ≤ `PREFETCH_MAX_ITEMS` 90 | view ▶(음성 켬), session `toggleVoice`(칸이 비었을 때만) |
+| 재생·받기 손잡이 | view `speechRef`·`prefetchStopRef` | session `announce`·`ownSpeechRef`·`speechHandedOffRef`, view `closeSession`·`onSessionResult`·언마운트 |
+
+**방법**
+
+1. **독립 참조 모델을 먼저 쓴다.** `lib/workout-voice.ts`와 화면 코드를 열기 전에 §19-1·§19-6만 보고 scratch에 쓴다. 엔진도 import하지 않고 사다리·목표·내일(재부여 → 재도전, Day 5/11/17 → 휴식, Day 23 → 마무리 휴식)을 스펙 공식으로 다시 계산한다. 자기검사(§19-1 표 10행, 590/890, Day 1 미리 받기 35, 카운트다운 경계 34/33.9·7/6.9초)를 맞춘 **뒤에** 구현을 연다. 스펙이 모호한 자리(이어서 하기 스텝 8·9의 진행 조각, 구두점)는 AMBIG로 적어 두고 구현과 비교한다.
+2. **순수 차분**: 실제 `decideLog`로 굴린 무작위 사이클의 운동일마다 화면과 같은 방식으로 ctx를 만들어 사건 전부를 대조한다 — 세션 시작(보통·재부여), 이어서 하기(스텝 0~9 × 쉬는 중/아님), ✓(휴식 길이 여러 종 — 0·45·90·150·210초 같은 분으로 안 떨어지는 값 포함), 휴식 끝, 오늘 완료(소요시간 null·−1·0·59·60·89·90·3569·3570·3600·3630·10800·10801·12.5·NaN·∞), 내일(`tomorrowLine` 전 공간 + 기록 뒤 `recorded_today.tomorrow`와 같은지), 미리 받기(누락·잉여·중복 0, ≤ 90, `걸렸어요` 0), `restCuePlan`·`isRestCueStale` 경계(1499/1500/1501ms). 난수기는 mulberry32처럼 정밀도가 안전한 것을 쓴다(31비트 LCG를 double 곱셈으로 구현했다가 다양성이 무너진 선례).
+3. **시간축 시뮬레이터**: 같은 행동 시나리오를 "스펙 문장" 모드와 "구현 함수 + 코드에서 읽은 배선"(250ms 틱 격자, 종료 시각·음성 변경 때 재계획, 연타 가드 1.2초, 길이 변경 = E + Δ, `+30초` = max(E, now) + 30초, 마운트마다 2분으로 돌아가는 길이) 모드로 돌려 타임라인을 맞춘다. 행동에 가드 위반 탭·늦은 깨움·reload·음성 토글·건너뛰기·`+30초`·길이 변경·실패·완주·재부여일을 섞는다. 같은 시각에 겹친 발화는 마지막 것만 들리는 것으로 접어 비교한다.
+4. **실화면 e2e**(키 없는 dev, 파일 백엔드, 390×844, Chromium + WebKit): init script로 `speechSynthesis` 스텁(목소리 목록 빈 배열 — 스텁 목소리 객체를 주면 `u.voice =` 대입이 던져 기기 폴백이 무음이 된 선례, 조각 길이 = 40ms + 글자당 20ms, 볼륨 0 잠금 해제 발화는 큐를 막지 않게)·`fetch` 기록·클릭 기록을 깐다. 타이밍 판은 `tts-engine-ko=device`로 돌려 501 왕복이 가짜 시계에 섞이지 않게 한다. 시계는 `page.clock.install` → `pauseAt` → `runFor`(≤ 1초 단위 — React 렌더·effect가 사이사이 돈다), 늦은 깨움은 `fastForward`. **취소 검증은 옛 큐 시각을 실시간(runFor)으로 지나가게** 한다 — 점프로 지나간 큐는 어차피 늦은 큐로 버려져 취소를 증명하지 못한다. 사이클은 엔진 `decideLog`로 과거 사건을 쌓아 원하는 `workout(day, targetDay)`를 만든다(재부여일·Day 5(내일 휴식)·Day 23(마무리 휴식) 포함). `data/db.json`은 shasum 백업 → 판마다 복원.
+5. **꼭 보는 경로**: 카운트다운 취소 5경로(휴식 끝·건너뛰기·종료 시각 변경(2분/3분·`+30초`)·음성 끔·닫기) 뒤 옛 큐 시각에 발화 0 / 늦은 큐 버림(몰아 읽기 0) / 겹침(`하나` −1000ms, 휴식 끝 안내 +0~250ms, 휴식 시작 안내·이어서 하기 안내와 첫 큐 사이 ≥ 4초) / **실패 기록(ok·409)으로 닫힘 → 그 시각에 정지, 그 뒤 발화 0**(▶ 시작 안내 도중·이어서 하기 안내 도중 둘 다 — QA 1 P2-1의 회귀 가드) / 오늘 완료 안내 1회(첫 전송을 route abort로 끊고 다시 ✓ → 되풀이 0, 두 요청의 `durationSec` 같음)·오버레이가 닫힌 뒤에도 4조각 끝까지 / StrictMode(dev)에서 ▶ 시작 안내 두 조각이 다 나옴 / 새로고침 복원 + ▶ 이어서 하기(쉬는 중 → `이어서 할게요.` → `휴식 중이에요.`) / 음성 끈 채 ▶ → 켬(▶ 때 POST 0, 처음 켤 때 35, 다시 켤 때 0).
+6. **비용**: 키 없는 501 경로에서 ▶ 탭의 POST = 고유 조각 수(큐 첫 조각은 진행 중 미리 받기 요청에 합류 — 중복 0). 같은 문구 중복 합성은 브라우저 안 `ctx.route`가 200 오디오를 주는 판으로 센다(`HTMLMediaElement`의 `src` 대입은 값 보관만 하게 스텁 — 가짜 바이트를 실제로 로드하면 error → 자가 치유 재요청이 나 숫자가 부푼다). 기준: 하루 합성 36 = 미리 받기 35 + 소요시간 1, 둘째 날부터 새 조각 약 6 + 소요시간 1, 다시 ▶ → 0. 루프백 스텁 dev 서버가 아니라 "키를 비운 dev"만 허락됐으면 이 판은 브라우저 안 라우트로 한다(서버로 가지 않는다).
+7. **변이 테스트**(§6-5): 11절을 겨냥한 변이 23종이 전부 잡힌 것이 기준선이다(빌드 fix1 — 격려 Day를 목표 Day로 바꾼 M14는 QA 1에서 살아남아 재부여 날 격려 행이 들어갔다). 앞둠 `>=`→`>`, 늦음 `<=`→`<`, 라운드/세트 뒤바꿈, 절반 위치, 미리 받기 누락, 셋·둘·하나 묶음 풀기, 휴식 끝 문구 형식, 소요시간 조각을 미리 받기에 넣기, 1시간 이상도 분으로, 스펙 밖 내일 문구 되살리기를 포함한다.
+
+**코드 대조**: iOS 재생 규칙 — ▶ `openSession`은 `ensureWorkoutAudio` → `unlockSpeechPlayback` → `speakQueue`가 동기(사이 await 0), `onDone`은 unlock → (마지막 스텝이면 `measuredDurationSec`) → `announce`, `skipRest`·`toggleVoice(on)`도 탭 안 unlock. 탭 밖은 카운트다운 큐와 `finishRest`뿐. 화면 파일에 문구 리터럴이 0이고(`grep -n "sessionPhrases\|stepPhrase"` 0줄), 발음 관문 우회(`speechSynthesis`·`/api/tts`·`new Audio`)가 운동 파일에 0줄, 새 `Date.now()`는 핸들러·effect·타이머 안에만.
+
+**알려진 틈 — 2026-10-02 현재 미수정(QA 2 P3-A, 담당 app-builder)**: 카운트다운 큐 콜백(`workout-session.tsx` 카운트다운 effect의 `setTimeout`)은 `voiceOnRef`와 `isRestCueStale`만 보고 **휴식이 이미 끝났는지는 보지 않는다**. 늦은 깨움이 휴식 끝 E 뒤 0~0.5초에 풀리면 250ms 인터벌의 `finishRest`가 휴식 끝 안내를 먼저 읽고, `setRestEndsAt(null)`의 effect cleanup은 렌더 뒤에야 돈다 — 그 사이에 1.3초 늦은 `하나`가 돌면 휴식 끝 안내를 끊는다(시뮬레이터에서 "cleanup 전에 큐가 먼저" 순서로 두면 5,000판 중 198판, 헤드리스 Chromium·WebKit에서는 재현 안 됨). 다음 회차는 이 틈이 닫혔는지(콜백이 `Date.now() >= restEndsAt`·`endedForRef.current === restEndsAt`이면 버리는지, 순수 판정과 eval 경계 행 E−1ms 냄 / E 안 냄 / 1501ms 늦음 안 냄)부터 본다.
+
+**실기기 미검증으로 넘길 것**(§8): 탭 밖 안내(휴식마다 카운트다운 5 + 휴식 끝 1)가 클라우드 오디오로 매번 나는지, `셋`·`둘`·`하나` 1초 간격이 클라우드 오디오 길이(앞뒤 무음 포함)로 서로 끊기지 않는지, 휴식 끝 비프와 휴식 끝 음성의 겹침, 완료 안내가 오버레이가 닫힌 뒤 끝까지 들리는지, P3-A의 실제 타이머·렌더 순서, 클라우드 TTS가 `Day 7`·`셋`·`1시간 5분`·`2분 30초`를 한국어로 자연스럽게 읽는지(실호출 — 사람이 들어야 한다).
 
 ## 5. 목록 순서변경·읽기 속도 (§15-1·§15-2)
 
@@ -228,7 +260,7 @@ eval:workout이 잠그는 것은 이렇다. **원안 오라클**: 원안 Python 
 
 ## 6. 차분 테스트·변이 테스트 — eval의 힘을 잰다
 
-eval을 통과한 엔진에서 규칙 위반을 더 찾거나, eval이 무엇을 놓치는지 잴 때 쓴다. 선례는 `_workspace/qa_report_workout-engine_1.md`다(시나리오 2,500개에서 불일치 0, eval의 변이 검출 18/23 → P2 보강 5건). 소요시간(§4-1)도 같은 방법이었다(`qa_report_common_workout-duration_1.md` — 78,475건 불일치 0, eval 변이 검출 23/24).
+eval을 통과한 엔진에서 규칙 위반을 더 찾거나, eval이 무엇을 놓치는지 잴 때 쓴다. 선례는 `_workspace/qa_report_workout-engine_1.md`다(시나리오 2,500개에서 불일치 0, eval의 변이 검출 18/23 → P2 보강 5건). 소요시간(§4-1)도 같은 방법이었다(`qa_report_common_workout-duration_1.md` — 78,475건 불일치 0, eval 변이 검출 23/24). 세션 음성 안내(§4-2)는 여기에 시간축 시뮬레이터와 실화면 대조를 더했다(`qa_report_common_workout-voice_2.md` — 순수 824만 건·5,000판·실화면 20판 불일치 0. eval 변이 검출은 QA 1의 19/20 → 수정 루프 뒤 23/23, `build_app-builder_common-workout-voice-fix1_report.md` §4).
 
 1. **참조 모델을 먼저 쓴다.** `lib/workout.ts`를 열기 전에 SPEC §19-1~§19-3만 보고 작성한다. 공식을 옮기지 말고 다른 경로로 계산한다(Day 종류는 표로, 다음 운동일은 루프로). 자기검사로 §19-1 표 10행, 590/890, 원안 오라클, 실패 당일 upcoming 예시 `[회복, (X,X−1), (X,X)]`가 전부 맞은 **뒤에야** 구현을 연다.
 2. **무작위 사용자 시뮬레이션.** 시드를 고정하고 사이클 하나를 60~90일 굴린다. 매일 무작위로 행동한다. 아무것도 안 함, complete, fail(횟수 음수·목표 초과·null), undo 연속, 같은 날 두 번째 기록, 틀린 rev, 낡은 day·targetDay, 비운동일 기록, 닫힌 사이클에 기록·취소, 도중 재시작과 틀린 expected를 섞는다.
@@ -265,7 +297,7 @@ eval을 통과한 엔진에서 규칙 위반을 더 찾거나, eval이 무엇을
 - **앱 재실행 뒤 클라우드 🔊 — 2026-09-27 NotSupportedError 신고의 재확인**(§1-1):
   - 캐시된 단어를 🔊로 한 번 듣는다. Safari 또는 홈 화면 앱을 **완전히 종료했다가 다시 열고** 🔊를 누른다. 캡션이 여전히 `마지막 재생: 클라우드 ✓`여야 한다. 이것을 2회 반복한다.
   - 배포 직후 첫 실행에서 단어마다 `클라우드 ✓(캐시 오디오 손상 → 새로 받음)`이 한 번씩 보일 수 있다. 1회 재합성이니 정상이다.
-  - 재실행 뒤 `🎧 해설 전체 듣기`·토익 `전체 듣기`·운동 휴식 안내도 클라우드 목소리로 나는지 본다.
+  - 재실행 뒤 `🎧 해설 전체 듣기`·토익 `전체 듣기`·운동 세션 음성 안내도 클라우드 목소리로 나는지 본다.
   - 치유 재생은 재합성(~1초) 뒤 탭 밖에서 `play()`를 다시 부른다. 그래서 치유 캡션이 뜬 뒤 소리가 실제로 나는지 본다. `NotAllowedError`가 나면 잠금 해제 문제다. 데스크톱 WebKit은 iOS 제스처 정책을 강제하지 않아 이 부분을 재현할 수 없다.
   - Playwright WebKit(mac)과 iOS WebKit은 IDB 코드가 같지만, 프로세스 수명과 제스처 정책이 다르다.
 - **자연 종료 판정**: 조각을 끝까지 재생했을 때 `pause`가 오는 시점에 `audio.ended === true`인지 본다. 아니면 조각마다 큐가 멈춘다.
@@ -273,7 +305,7 @@ eval을 통과한 엔진에서 규칙 위반을 더 찾거나, eval이 무엇을
 - **실제 합성 품질**: 한국어 해설 속 「は」「が」를 일본어로 읽는지(소리 설정의 ▶ 미리듣기) 확인한다. 한자만 있는 일본어를 중국어로 읽은 전례가 있어서 **사람이 들어야** 한다. 이건 실호출이라 QA가 하지 않는다.
 - 속도 변경이 **다음 조각부터** 반영되는지 본다.
 - **순서변경 터치 드래그**: 폰에서 핸들을 끌 때 페이지가 같이 스크롤되지 않는지, 화면 끝에서 자동 스크롤이 도는지 본다. 에뮬레이션의 합성 포인터 이벤트로는 실제 터치 제스처 판정을 재현할 수 없다.
-- **운동 세션**: 휴식 종료 비프(종료 시각에 예약해 둔 재생, 백그라운드에서 복귀했을 때), 탭 밖에서 부른 `speakQueue`(ko-KR cloud)의 안내 음성, Wake Lock을 본다. **소요시간**(§19-8): 화면을 끄거나 앱을 전환했다 돌아온 뒤 경과 시계와 기록된 실측값이 벽시계와 맞는지(타이머가 아니라 두 시각 차라 맞아야 한다), Safari 탭과 홈 화면 앱 각각에서 `workout-session:v1`의 `startedAt`이 유지되는지. `navigator.vibrate`는 iOS가 지원하지 않아 무시되는 것이 정상이다. **iOS 무음 스위치를 켠 상태**에서 비프가 나는지(Web Audio가 무음 모드를 따르는 것으로 알려져 있다), 백그라운드 복귀 뒤 컨텍스트가 `interrupted`·`suspended`면 `finishRest`의 `running` 조건 때문에 비프가 생략되는지도 본다.
+- **운동 세션**: 휴식 종료 비프(종료 시각에 예약해 둔 재생, 백그라운드에서 복귀했을 때), 탭 밖에서 부른 `speakQueue`(ko-KR cloud)의 안내 음성, Wake Lock을 본다. **음성 안내**(§4-2, 2026-10-01): 휴식마다 탭 밖 안내 6개(카운트다운 `30초 남았어요.`·`10초.`·`셋`·`둘`·`하나` + 휴식 끝)가 클라우드 목소리로 매번 나는지, `셋`·`둘`·`하나`가 1초 간격 안에 서로 끊기지 않고 다 들리는지, 휴식 끝 비프와 `다음, 풀업 N세트 …`가 겹쳐 묻히지 않는지, 마지막 ✓ 뒤 오버레이가 닫혀도 `오늘 운동 완료!` → … → `내일은 …`이 끝까지 들리는지, 화면을 잠갔다 휴식 끝 무렵 풀었을 때 늦은 카운트다운을 몰아 읽지 않는지(그리고 P3-A — `하나`가 휴식 끝 안내를 끊지 않는지), 숫자 조각(`8회`·`2분 30초`·`1시간 5분`·`Day 7`)을 한국어로 자연스럽게 읽는지. **소요시간**(§19-8): 화면을 끄거나 앱을 전환했다 돌아온 뒤 경과 시계와 기록된 실측값이 벽시계와 맞는지(타이머가 아니라 두 시각 차라 맞아야 한다), Safari 탭과 홈 화면 앱 각각에서 `workout-session:v1`의 `startedAt`이 유지되는지. `navigator.vibrate`는 iOS가 지원하지 않아 무시되는 것이 정상이다. **iOS 무음 스위치를 켠 상태**에서 비프가 나는지(Web Audio가 무음 모드를 따르는 것으로 알려져 있다), 백그라운드 복귀 뒤 컨텍스트가 `interrupted`·`suspended`면 `finishRest`의 `running` 조건 때문에 비프가 생략되는지도 본다.
 - 폰트 폭: 에뮬레이션은 Chromium이라 실제 폰과 몇 px 다를 수 있다.
 
 ## 9. 리포트 형식

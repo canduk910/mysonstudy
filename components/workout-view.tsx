@@ -22,7 +22,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition } from "react";
-import { prefetchSpeech, unlockSpeechPlayback } from "@/lib/speech";
+import { prefetchSpeech, speakQueue, unlockSpeechPlayback } from "@/lib/speech";
 import { STREAK_REFRESH_EVENT } from "@/lib/streak";
 import {
   CYCLE_DAYS,
@@ -31,8 +31,16 @@ import {
   supersetSteps,
   TOTAL_WORKOUT_DAYS,
   type DayKind,
+  type Upcoming,
   type WorkoutExercise,
 } from "@/lib/workout";
+import {
+  sessionOpenEvent,
+  WORKOUT_VOICE_LANG,
+  workoutVoiceLines,
+  workoutVoicePrefetch,
+  type WorkoutVoiceContext,
+} from "@/lib/workout-voice";
 import type {
   CycleSnapshot,
   TodayStatus,
@@ -51,7 +59,6 @@ import WorkoutSession, {
   ensureWorkoutAudio,
   readSavedSession,
   readVoicePref,
-  sessionPhrases,
   type SessionMatch,
   type SessionResult,
 } from "./workout-session";
@@ -144,10 +151,25 @@ export default function WorkoutView({ today, tomorrow, snapshot: snap, history, 
   /** 저장된 진행이 있으면 "이어서 하기 · 푸시업 2세트부터" — 마운트 후 effect에서만 읽는다 */
   const [resumeStep, setResumeStep] = useState<number | null>(null);
   const sessionOpenRef = useRef(false);
+  /**
+   * 음성 안내 미리 받기의 중단 손잡이 — ▶ 탭(음성 켬)이 채우고, ▶ 때 음성이 꺼져 있었으면 세션이 음성을 켤 때 채운다(비어 있을 때만 —
+   * 이미 받는 중인 것을 다시 부르면 진행 중 합성을 끊어 요금만 버린다). 이 화면을 떠날 때 멈춘다.
+   */
   const prefetchStopRef = useRef<(() => void) | null>(null);
+  /**
+   * 세션 음성 안내의 재생 손잡이(§19-6) — ▶ 탭의 시작·이어서 하기 안내를 여기 두고 세션에 넘긴다(세션의 안내도 같은 칸). 닫기는
+   * closeSession이 멈추고, 세션이 시작한 안내는 세션 언마운트가 멈추며, 오늘 완료 안내만 기록 뒤 여기 남는다 → 이 화면을 떠날 때 멈춘다.
+   */
+  const speechRef = useRef<(() => void) | null>(null);
 
   const t = snap?.today ?? null;
   const locked = busy !== null || isPending;
+  /**
+   * 오늘 성공을 가정한 내일 — 엔진 snapshot().upcoming[0](오늘이 운동일이면 오늘 성공을 가정해 시뮬레이션한 첫 칸). 오늘 완료 안내의
+   * "내일은 …"(§19-6)이 쓴다. 날짜가 KST 내일이 아니면(시작 전 건너뛰기 등 — 운동일엔 없다) 모른다고 본다.
+   */
+  const sessionTomorrow: Upcoming | null =
+    t && t.kind === "workout" && snap && snap.upcoming[0]?.date === tomorrow ? snap.upcoming[0].item : null;
   /** 저장된 진행이 이어질 스텝(엔진 순서 그대로) — "이어서 하기" 버튼 글자가 세션 무대 제목과 같은 이름을 쓴다 */
   const resumeAt = resumeStep !== null && t && t.kind === "workout" ? supersetSteps(t.target)[resumeStep] : undefined;
 
@@ -189,8 +211,15 @@ export default function WorkoutView({ today, tomorrow, snapshot: snap, history, 
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [router]);
 
-  // 화면을 떠나면 안내 문구 프리페치 중단
-  useEffect(() => () => prefetchStopRef.current?.(), []);
+  // 화면을 떠나면 안내 문구 프리페치 중단 + 남아 있는 세션 안내(오늘 완료 안내 등) 멈춤
+  useEffect(
+    () => () => {
+      prefetchStopRef.current?.();
+      speechRef.current?.();
+      speechRef.current = null;
+    },
+    [],
+  );
 
   // ---------------------------------------------------------------------------
   // 변경 요청 — 단일 비행, ok → refresh, 409·404 → 메시지 + refresh
@@ -281,17 +310,32 @@ export default function WorkoutView({ today, tomorrow, snapshot: snap, history, 
   // ---------------------------------------------------------------------------
 
   /**
-   * ▶ 탭 — 오디오를 **탭 안에서 동기로** 풀고, 음성 안내가 켜져 있으면 휴식 뒤 안내 문구 4개를 미리 받는다.
-   * 휴식은 세트(풀업+푸시업) 사이에만 있어 휴식 끝에 읽히는 건 2~5세트 풀업 안내뿐이다 — 대상 고르기는 sessionPhrases 한 곳(§19-6).
+   * ▶ 탭 — 오디오를 **탭 안에서 동기로** 풀고, 음성 안내가 켜져 있으면 ① 세션 시작(그날 요약 + 첫 세트) 또는 이어서 하기 안내를
+   * 이 탭 안에서 곧바로 읽고 ② 그날 낼 수 있는 조각 전부를 미리 받는다(§19-6 — 무엇을 읽고 받을지는 lib/workout-voice 한 곳).
+   * 이어서 하기인지는 저장된 진행(readSavedSession — 세션이 마운트 때 복원하는 것과 같은 값)으로 가른다.
    */
   function openSession() {
-    if (!t || t.kind !== "workout" || locked) return;
+    if (!t || t.kind !== "workout" || locked || !match) return;
     ensureWorkoutAudio();
     if (readVoicePref()) {
       unlockSpeechPlayback();
+      const ctx: WorkoutVoiceContext = {
+        day: t.day,
+        targetDay: t.targetDay,
+        isRepeat: t.isRepeat,
+        target: t.target,
+        tomorrow: sessionTomorrow,
+      };
+      const saved = readSavedSession(match);
+      const ev = sessionOpenEvent(
+        saved ? { step: saved.step, resting: saved.restEndsAt !== null && saved.restEndsAt > Date.now() } : null,
+      );
+      speechRef.current = speakQueue(workoutVoiceLines(ctx, ev).map((text) => ({ text, lang: WORKOUT_VOICE_LANG })));
       prefetchStopRef.current?.();
-      prefetchStopRef.current = prefetchSpeech(sessionPhrases(t.target), "ko-KR");
+      prefetchStopRef.current = prefetchSpeech(workoutVoicePrefetch(ctx), WORKOUT_VOICE_LANG);
     }
+    // 음성이 꺼진 채 시작하면 여기서는 받지 않는다 — 세션 안에서 음성을 켤 때, 이 화면에서 아직 받기를 시작한 적이 없으면
+    // 세션이 같은 손잡이(prefetchStopRef)로 받는다(§19-6 미리 받기).
     setErrorKo(null);
     setVerify(null);
     setPanel(null);
@@ -301,11 +345,20 @@ export default function WorkoutView({ today, tomorrow, snapshot: snap, history, 
 
   function closeSession() {
     setSessionOpen(false);
+    // 닫으면 남은 안내를 멈춘다 — ▶ 탭의 시작 안내는 이 화면이 시작했으니 여기서(세션이 시작한 안내는 세션 언마운트가 멈춘다, §19-6)
+    speechRef.current?.();
+    speechRef.current = null;
     // 닫아도 진행은 남는다 — 버튼 글자("이어서 하기")를 다시 맞춘다
     setResumeStep(match ? (readSavedSession(match)?.step ?? null) : null);
   }
 
   function onSessionResult(r: SessionResult) {
+    // 실패 기록으로 닫히면 남은 안내를 멈춘다(§19-6) — ▶ 탭의 세션 시작·이어서 하기 안내는 이 화면이 시작해서 세션 언마운트가
+    // 멈추지 않는다(세션은 자기가 시작한 안내만 멈춘다). 오늘 완료 안내(complete — ok·409)만 손잡이에 남겨 끝까지 읽는다.
+    if (r.kind === "fail") {
+      speechRef.current?.();
+      speechRef.current = null;
+    }
     setSessionOpen(false);
     setResumeStep(null);
     // 세션이 기록을 저장했다(ok) — 스트릭 헤드라인 즉시 갱신(§17-7). 세션 오버레이(z:20)가 닫히면 바로 보인다.
@@ -760,6 +813,9 @@ export default function WorkoutView({ today, tomorrow, snapshot: snap, history, 
           match={match}
           target={t.target}
           isRepeat={t.isRepeat}
+          tomorrow={sessionTomorrow}
+          speechRef={speechRef}
+          prefetchRef={prefetchStopRef}
           onClose={closeSession}
           onResult={onSessionResult}
         />

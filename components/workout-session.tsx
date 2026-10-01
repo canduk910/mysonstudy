@@ -6,7 +6,7 @@
  * - 슈퍼세트 10스텝(풀업1 → 푸시업1 → 풀업2 …)은 엔진 `supersetSteps(target)`이 만든다(화면이 순서를 복제하지 않는다).
  * - **휴식은 세트(라운드) 사이에만** — 풀업+푸시업이 한 세트다(§19-1, 2026-09-25 사용자 정정). 풀업 ✓는 타이머 없이 곧바로
  *   같은 세트의 푸시업으로, 푸시업 ✓가 휴식을 시작한다. 이 규칙의 정의처는 엔진 `restFollowsStep`/`stepFollowsRest`(lib/workout.ts,
- *   eval:workout이 잠근다) 하나다 — ✓ 처리·음성 안내 대상(`stepsAfterRest`)·복원 정규화·목록의 휴식 줄이 같이 본다.
+ *   eval:workout이 잠근다) 하나다 — ✓ 처리·휴식 끝 안내 대상(`stepsAfterRest`)·복원 정규화·목록의 휴식 줄이 같이 본다.
  *   풀업 ✓ 직후 같은 자리에 푸시업 ✓가 뜨므로, 연타가 푸시업(마지막 세트면 하루 완료 기록)까지 넘기지 않게 짧게 막는다(`CHAIN_TAP_GUARD_MS`).
  *   푸시업 ✓ 직후에는 같은 자리에 휴식 무대의 2분/3분 줄이 뜨므로, 같은 가드 시간 안의 휴식 조작(2분/3분·+30초·건너뛰기)도 무시한다.
  * - **세트 목록 순서는 실시간**(2026-09-25 사용자 요청): 지금 할 세트가 맨 위 → 남은 세트(번호순) → 완료 세트 맨 아래(번호순, 흐리게 ✓).
@@ -27,8 +27,18 @@
  *   · 비프 — ✓ 탭 핸들러 안에서 AudioContext를 만들거나 resume()하고, **종료 시각에 미리 예약**한다(탭 밖 재생 제약 회피).
  *     컨텍스트는 모듈 싱글턴(iOS는 컨텍스트 개수 제한이 있어 세션마다 새로 만들지 않는다).
  *   · 진동 — navigator.vibrate(되는 기기만).
- *   · 음성 안내(토글, localStorage 영속, 기본 켬) — ✓ 탭에서 unlockSpeechPlayback(), 종료 시 speakQueue([{ text, lang: "ko-KR" }]).
- *     타이머 콜백(탭 밖)의 speakQueue는 iOS에서 앞서 탭이 unlockSpeechPlayback()을 불렀어야 소리가 난다(lib/speech 계약 (2)).
+ *   · 음성 안내(토글, localStorage 영속, 기본 켬, 2026-10-01 "촘촘하게" — §19-6) — **무엇을 언제 읽을지는 순수 함수
+ *     lib/workout-voice.ts가 정한다**(화면에 문구를 두지 않는다 — eval:workout이 잠근다). 세트 시작마다(✓ 직후·휴식 끝·건너뛰기),
+ *     휴식 카운트다운(30초·10초·셋·둘·하나 — restCuePlan), 격려·절반·마지막 라운드·마지막 세트, 오늘 완료 요약(총합·소요시간·내일).
+ *     탭에서 나는 안내(✓·건너뛰기·오늘 완료)는 그 탭 안에서 unlockSpeechPlayback() 뒤 곧바로 speakQueue(조각 = 큐 항목, ko-KR).
+ *     탭 밖 안내는 카운트다운·휴식 끝뿐이고 앞선 탭의 잠금 해제에 기댄다(lib/speech 계약 (2)). 세션 시작·이어서 하기 안내는
+ *     부모의 ▶ 탭이 한다(workout-view openSession).
+ *     재생 손잡이는 부모가 넘긴 `speechRef` 하나 — 새 안내가 앞 안내를 끊고(speakQueue), 음성 끄기가 지금 것을 멈춘다. 닫기와
+ *     실패 기록으로 닫힘은 부모가 손잡이를 멈추고(▶ 탭의 시작·이어서 하기 안내 포함), 언마운트는 이 세션이 시작한 안내만 멈춘다
+ *     (StrictMode의 흉내 cleanup이 시작 안내를 끊지 않게). 미리 받기는 부모의 ▶ 탭이 하고, ▶ 때 음성이 꺼져 있었으면 이 세션이
+ *     음성을 켤 때 부모가 넘긴 `prefetchRef` 칸으로 한 번 한다.
+ *     카운트다운 타이머는 휴식 종료 시각이 바뀌거나(2분/3분·+30초) 휴식이 끝나거나(건너뛰기·끝) 음성을 끄거나 닫으면 effect
+ *     cleanup이 전부 취소한다. **오늘 완료 안내만** 기록이 끝나 닫혀도 끝까지 읽는다(손잡이를 부모에 남긴다 — 부모 언마운트가 멈춘다).
  *   · 화면 꺼짐 방지 — Wake Lock을 요청하고 visible 복귀 때 재요청(지원 안 하면 조용히 넘어간다).
  * - **진행 보존**: localStorage `workout-session:v1` 하나. **마운트 후 effect에서만** 읽고(hydration),
  *   cycleId·rev·day·targetDay·dateKst가 전부 props와 같을 때만 복원 — 다르면 조용히 버린다(undo·다른 기기 기록·어제 세션이
@@ -46,20 +56,29 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { lockBodyScroll } from "@/lib/scroll-lock";
-import { speakQueue, unlockSpeechPlayback } from "@/lib/speech";
+import { prefetchSpeech, speakQueue, unlockSpeechPlayback } from "@/lib/speech";
 import {
-  DEFAULT_REST_SEC,
   restFollowsStep,
   roundDisplayOrder,
   SETS_PER_EXERCISE,
   stepFollowsRest,
-  stepsAfterRest,
   supersetSteps,
   type FailedAt,
   type SetPair,
+  type Upcoming,
   type WorkoutEventKind,
   type WorkoutStep,
 } from "@/lib/workout";
+import {
+  isRestCueStale,
+  restCuePlan,
+  spokenSeconds,
+  WORKOUT_REST_PRESET_SEC,
+  WORKOUT_VOICE_LANG,
+  workoutVoiceLines,
+  workoutVoicePrefetch,
+  type WorkoutVoiceContext,
+} from "@/lib/workout-voice";
 import type { WorkoutLogRequest, WorkoutLogResponse } from "@/lib/workout-contract";
 import s from "./workout-session.module.css";
 import {
@@ -73,7 +92,6 @@ import {
   STALE_FALLBACK_KO,
   stepLabel,
   stepName,
-  stepPhrase,
   WORKOUT_CAUTIONS,
 } from "./workout-shared";
 
@@ -87,12 +105,12 @@ const VOICE_KEY = "workout-voice:v1";
 
 const TOTAL_STEPS = SETS_PER_EXERCISE * 2; // 풀업·푸시업 교차 슈퍼세트(§19-1)
 const LAST_STEP = TOTAL_STEPS - 1;
-/** 기본 휴식(2분)은 엔진 상수 DEFAULT_REST_SEC — 근사 소요시간(§19-8)의 "쉰 휴식 한 번"과 같은 정의처다 */
-const DEFAULT_REST_MS = DEFAULT_REST_SEC * 1000;
-const REST_PRESETS: { ms: number; label: string }[] = [
-  { ms: DEFAULT_REST_MS, label: `${DEFAULT_REST_SEC / 60}분` },
-  { ms: 180_000, label: "3분" },
-];
+/**
+ * 휴식 길이 선택지(2분/3분)는 lib/workout-voice의 WORKOUT_REST_PRESET_SEC — 미리 받기가 두 길이의 휴식 시작 안내를 함께 받는다(정의처 하나).
+ * 첫 값(기본 2분)은 엔진 상수 DEFAULT_REST_SEC — 근사 소요시간(§19-8)의 "쉰 휴식 한 번"과 같은 정의처다.
+ */
+const REST_PRESETS: { ms: number; label: string }[] = WORKOUT_REST_PRESET_SEC.map((sec) => ({ ms: sec * 1000, label: spokenSeconds(sec) }));
+const DEFAULT_REST_MS = REST_PRESETS[0].ms;
 const REST_BUMP_MS = 30_000;
 const TICK_MS = 250;
 /** 머리 경과 시계 틱(§19-8 "1초 틱") */
@@ -208,15 +226,6 @@ function writeVoicePref(on: boolean): void {
   } catch {
     /* noop */
   }
-}
-
-/**
- * 그날 휴식 끝에 읽을 음성 안내 문구 — **휴식 뒤 스텝(2~5세트의 풀업) 4개**만. 세션 시작 탭에서
- * prefetchSpeech(…, "ko-KR")로 미리 받는다(§19-6). 대상 고르기는 엔진 `stepsAfterRest`(eval:workout이 "정확히 4개"로 잠근다),
- * 문구는 stepPhrase — finishRest가 휴식 끝에 읽는 문구(stepPhrase(휴식 뒤 스텝))와 같은 규칙이다.
- */
-export function sessionPhrases(target: SetPair): string[] {
-  return stepsAfterRest(target).map(stepPhrase);
 }
 
 /** 클래스 이름 잇기 — CSS 모듈에 없는 상태(남은 칸 등)가 "undefined" 문자열로 붙지 않게 거짓 값은 뺀다 */
@@ -366,18 +375,39 @@ export default function WorkoutSession({
   match,
   target,
   isRepeat,
+  tomorrow,
+  speechRef,
+  prefetchRef,
   onClose,
   onResult,
 }: {
   match: SessionMatch;
   target: SetPair;
   isRepeat: boolean;
+  /** 오늘 성공을 가정한 내일(엔진 snapshot().upcoming[0]) — 오늘 완료 안내의 "내일은 …"(§19-6). 모르면 null */
+  tomorrow: Upcoming | null;
+  /**
+   * 음성 안내 재생 손잡이(speakQueue의 멈추기 함수) — 부모가 쥐고 넘긴다. 부모의 ▶ 탭(세션 시작·이어서 하기 안내)과 이 세션의 안내가
+   * 같은 칸을 쓴다: 새 안내가 앞 안내를 끊고, 음성 끄기가 지금 것을 멈춘다. 닫기는 부모가 멈추고, 언마운트는 이 세션이 시작한 것만
+   * 멈춘다. 오늘 완료 안내는 기록이 끝나면 부모에 남긴다(부모가 화면을 떠날 때 멈춘다).
+   */
+  speechRef: { current: (() => void) | null };
+  /**
+   * 음성 안내 미리 받기의 중단 손잡이 — 부모가 쥐고 넘긴다(부모가 화면을 떠날 때 멈춘다). ▶ 때 음성이 켜져 있었으면 부모가 이미
+   * 채웠다. 비어 있으면(▶ 때 꺼져 있었다) 이 세션이 음성을 켤 때 한 번 채운다(§19-6 미리 받기).
+   */
+  prefetchRef: { current: (() => void) | null };
   /** 닫기(진행은 저장된 채로) */
   onClose: () => void;
   /** 기록 요청이 끝났다(ok 또는 409·404) — 부모가 세션을 닫고 새로고침한다 */
   onResult: (r: SessionResult) => void;
 }) {
   const { cycleId, rev, day, targetDay, dateKst } = match;
+  /** 음성 안내 계획의 입력(§19-6) — 서버 스냅샷 값뿐이라 새로고침 전까지 같다 */
+  const voiceCtx: WorkoutVoiceContext = useMemo(
+    () => ({ day, targetDay, isRepeat, target, tomorrow }),
+    [day, targetDay, isRepeat, target, tomorrow],
+  );
   // target은 서버 스냅샷의 값이라 새로고침 전까지 참조가 같다 — 틱마다 다시 만들지 않는다
   const steps: WorkoutStep[] = useMemo(() => supersetSteps(target), [target]);
   /** 세트(라운드) 묶음 — 한 세트 = 같은 setIndex의 풀업 + 푸시업(엔진 순서 그대로). 목록이 이 단위로 보인다 */
@@ -415,7 +445,13 @@ export default function WorkoutSession({
 
   const voiceOnRef = useRef(true);
   const beepRef = useRef<{ nodes: OscillatorNode[]; at: number } | null>(null);
-  const speakStopRef = useRef<(() => void) | null>(null);
+  /**
+   * 이 세션이 시작한 마지막 안내의 멈추기 함수 — 언마운트는 **이것만** 멈춘다. 부모 ▶ 탭의 시작 안내는 부모가 닫기에서 멈춘다
+   * (StrictMode 개발 빌드는 마운트 직후 effect cleanup을 한 번 흉내 낸다 — 손잡이 칸을 통째로 멈추면 막 시작한 세션 시작 안내가 끊긴다).
+   */
+  const ownSpeechRef = useRef<(() => void) | null>(null);
+  /** 오늘 완료 안내를 부모에 남겼다(완료 기록이 ok·409로 끝남) — 언마운트가 그 재생을 멈추지 않는다 */
+  const speechHandedOffRef = useRef(false);
   /** 이미 처리한 휴식 종료 시각 — 타이머가 두 번 울리지 않게 */
   const endedForRef = useRef<number | null>(null);
   /** 기록이 끝났다(ok·409) — 이후 진행을 다시 저장하지 않는다 */
@@ -435,11 +471,11 @@ export default function WorkoutSession({
   const celebrateTimerRef = useRef<number | null>(null);
   /** 타이머 콜백(탭 밖)이 "다음 스텝"을 읽는다 — 클로저가 낡지 않게 ref로 */
   const stepRef = useRef(0);
-  const stepsRef = useRef(steps);
+  const voiceCtxRef = useRef(voiceCtx);
   useEffect(() => {
     stepRef.current = step;
-    stepsRef.current = steps;
-  }, [step, steps]);
+    voiceCtxRef.current = voiceCtx;
+  }, [step, voiceCtx]);
 
   // body 스크롤 잠금(공용 ref-count 락)
   useEffect(() => lockBodyScroll(), []);
@@ -487,17 +523,36 @@ export default function WorkoutSession({
     return () => window.clearInterval(id);
   }, [startedAt, endAt]);
 
-  // 언마운트: 예약 비프 취소, 음성 멈춤(이 세션이 시작한 재생만 — speakQueue 멈추기 함수 규약), 축하 타이머 정리
+  // 언마운트: 예약 비프 취소, 음성 멈춤(이 세션이 시작한 재생만 — speakQueue 멈추기 함수 규약. 끝났거나 밀려난 재생이면 no-op),
+  // 축하 타이머 정리. 카운트다운 타이머는 그 effect의 cleanup이 취소한다. 오늘 완료 안내를 부모에 남겼으면 멈추지 않는다(§19-6).
   useEffect(
     () => () => {
       if (beepRef.current) cancelNodes(beepRef.current.nodes);
       beepRef.current = null;
-      speakStopRef.current?.();
-      speakStopRef.current = null;
+      const own = ownSpeechRef.current;
+      if (own && !speechHandedOffRef.current) {
+        own();
+        if (speechRef.current === own) speechRef.current = null;
+        ownSpeechRef.current = null;
+      }
       if (celebrateTimerRef.current !== null) window.clearTimeout(celebrateTimerRef.current);
       celebrateTimerRef.current = null;
     },
-    [],
+    [speechRef],
+  );
+
+  /**
+   * 음성 안내 한 번(§19-6) — 조각 배열을 그대로 큐 항목으로(ko-KR). 새 안내가 앞 안내를 끊는다(speakQueue). 음성이 꺼져 있거나
+   * 조각이 없으면 아무것도 안 한다. 탭 핸들러에서 부를 때는 그 탭 안에서 동기로(iOS — 첫 await 전에 재생 잠금을 푼다).
+   */
+  const announce = useCallback(
+    (lines: readonly string[]) => {
+      if (!voiceOnRef.current || lines.length === 0) return;
+      const stop = speakQueue(lines.map((text) => ({ text, lang: WORKOUT_VOICE_LANG })));
+      speechRef.current = stop;
+      ownSpeechRef.current = stop;
+    },
+    [speechRef],
   );
 
   // FLIP — 축하가 끝나 재배치된 커밋에서만 재생한다(flipFromRef가 있을 때). 복원·재진입·움직임 줄이기는 flipFromRef가
@@ -542,12 +597,10 @@ export default function WorkoutSession({
         }
       }
       vibrate();
-      if (voiceOnRef.current) {
-        const next = stepsRef.current[stepRef.current];
-        if (next) speakStopRef.current = speakQueue([{ text: stepPhrase(next), lang: "ko-KR" }]);
-      }
+      // 휴식 끝 안내 — "다음, 풀업 2세트 5회"(옛 문구) + 5세트면 "마지막 라운드예요."(lib/workout-voice). 탭 밖이라 앞선 ✓ 탭의 잠금 해제에 기댄다.
+      announce(workoutVoiceLines(voiceCtxRef.current, { kind: "rest_end", step: stepRef.current }));
     },
-    [],
+    [announce],
   );
 
   // 휴식 카운트다운 — 종료 시각 기반(스로틀돼도 다음 틱에서 맞춰진다)
@@ -560,6 +613,21 @@ export default function WorkoutSession({
     }, TICK_MS);
     return () => window.clearInterval(id);
   }, [restEndsAt, finishRest]);
+
+  // 휴식 카운트다운 음성(§19-6) — 30초·10초·셋·둘·하나. 큐와 시각은 restCuePlan(종료 시각, 지금)이 정한다(계획 시점보다 4초 이상
+  // 뒤인 큐만, 셋·둘·하나는 한 묶음). 종료 시각이 바뀌면(2분/3분·+30초·복원) 다시 짜고, 휴식이 끝나거나(건너뛰기·끝) 음성을 끄거나
+  // 닫으면 cleanup이 남은 타이머를 전부 취소한다. 늦게 깬 큐(백그라운드·화면 잠금 — 1.5초 넘게)는 버린다.
+  useEffect(() => {
+    if (restEndsAt === null || !voiceOn) return;
+    const planned = Date.now();
+    const ids = restCuePlan(restEndsAt, planned).map((cue) =>
+      window.setTimeout(() => {
+        if (!voiceOnRef.current || isRestCueStale(cue.at, Date.now())) return;
+        announce([cue.text]);
+      }, Math.max(0, cue.at - planned)),
+    );
+    return () => ids.forEach((id) => window.clearTimeout(id));
+  }, [restEndsAt, voiceOn, announce]);
 
   // 화면 꺼짐 방지(best-effort) + visible 복귀 때 재요청·타이머 즉시 갱신
   useEffect(() => {
@@ -630,12 +698,15 @@ export default function WorkoutSession({
       if (data?.ok) {
         finishedRef.current = true;
         clearSavedSession();
+        if (kind === "complete") speechHandedOffRef.current = true; // 오늘 완료 안내는 오버레이가 닫혀도 끝까지(§19-6)
         onResult({ type: "logged", kind });
         return;
       }
       if (isStaleStatus(status)) {
         finishedRef.current = true;
         clearSavedSession();
+        // 완료 409는 대개 이미 들어간 기록이다(부모가 새로고침 뒤 recorded_today로 확인) — 완료 안내를 끊지 않는다
+        if (kind === "complete") speechHandedOffRef.current = true;
         onResult({ type: "stale", kind, messageKo: data?.messageKo ?? STALE_FALLBACK_KO });
         return;
       }
@@ -691,10 +762,16 @@ export default function WorkoutSession({
     ensureWorkoutAudio();
     if (voiceOnRef.current) unlockSpeechPlayback();
     if (step >= LAST_STEP) {
-      // 마지막 스텝 — 타이머 없이 곧바로 완료 기록
+      // 마지막 스텝 — 타이머 없이 곧바로 완료 기록. 오늘 완료 안내(총합·소요시간·내일)는 이 탭 안에서, **첫 전송 때 한 번**만
+      // (네트워크 오류 뒤 다시 눌러도 되풀이하지 않는다 — 끝 시각이 이미 고정돼 있으면 재전송이다). 소요시간은 기록과 같은 값.
+      const firstSend = endAtRef.current === null;
+      const durationSec = measuredDurationSec();
+      if (firstSend) announce(workoutVoiceLines(voiceCtx, { kind: "session_done", durationSec }));
       void sendLog("complete", null);
       return;
     }
+    // ✓ 안내(§19-6) — 격려(+ 절반) + 다음 세트 시작(풀업 ✓) 또는 휴식 시작(푸시업 ✓). 탭 안에서 동기로.
+    announce(workoutVoiceLines(voiceCtx, { kind: "step_done", step, restSec: restMs / 1000 }));
     if (!restFollowsStep(step)) {
       // 풀업 — 쉬지 않고 곧바로 같은 세트의 푸시업(§19-1 슈퍼세트). 휴식·비프 예약 없음. 그 칸 체크만 튄다(재배치 없음).
       chainedAtRef.current = Date.now();
@@ -737,7 +814,13 @@ export default function WorkoutSession({
   function skipRest() {
     if (restTapTooSoon()) return;
     cancelBeep();
+    if (restEndsAt !== null) endedForRef.current = restEndsAt; // 같은 순간 틱이 휴식 끝을 한 번 더 처리하지 않게
     setRestEndsAt(null);
+    // 건너뛰기도 세트 시작이다 — 휴식 끝과 같은 안내를 이 탭 안에서(§19-6). 남은 카운트다운 타이머는 effect cleanup이 취소한다.
+    if (voiceOnRef.current) {
+      unlockSpeechPlayback();
+      announce(workoutVoiceLines(voiceCtx, { kind: "rest_end", step }));
+    }
   }
 
   function toggleVoice() {
@@ -745,10 +828,17 @@ export default function WorkoutSession({
     voiceOnRef.current = on;
     setVoiceOn(on);
     writeVoicePref(on);
-    if (on) unlockSpeechPlayback();
-    else {
-      speakStopRef.current?.();
-      speakStopRef.current = null;
+    if (on) {
+      unlockSpeechPlayback();
+      // ▶ 때 음성이 꺼져 있었으면 미리 받기가 없었다 — 켤 때 받는다(캐시에 있는 조각은 건너뛴다). 이미 받기를 시작했으면(▶ 때 켜져
+      // 있었거나 앞서 켰다) 다시 부르지 않는다 — 새 받기는 진행 중 합성을 끊어 요금만 버린다(lib/speech rerunLastPrefetch와 같은 이유).
+      if (prefetchRef.current === null) {
+        prefetchRef.current = prefetchSpeech(workoutVoicePrefetch(voiceCtx), WORKOUT_VOICE_LANG);
+      }
+    } else {
+      // 남은 안내를 즉시 멈춘다(부모의 시작 안내까지 — 손잡이가 하나다). 카운트다운 예약은 voiceOn effect cleanup이 취소한다.
+      speechRef.current?.();
+      speechRef.current = null;
     }
   }
 
@@ -929,7 +1019,7 @@ export default function WorkoutSession({
           <button type="button" aria-pressed={voiceOn} onClick={toggleVoice} className="u-navbtn">
             {voiceOn ? "🔊 음성 안내 켬" : "🔇 음성 안내 끔"}
           </button>
-          <p className="t-caption">알림은 화면이 켜져 있을 때 가장 잘 돼요.</p>
+          <p className="t-caption">세트 시작·휴식 카운트다운·완료를 소리로 알려 줘요. 화면이 켜져 있을 때 가장 잘 돼요.</p>
         </div>
 
         {/* 세트(라운드) 목록 — 한 세트 = 풀업 + 푸시업, 휴식은 세트 사이에만(엔진 stepFollowsRest로 휴식 줄을 그린다).

@@ -8,8 +8,15 @@
  */
 
 import { formatKst, isZonedIsoTimestamp } from "@/lib/kst";
-import type { DurationTotal, EventDuration, SetPair, Upcoming, WorkoutEvent, WorkoutExercise, WorkoutStep } from "@/lib/workout";
+import type { DurationTotal, EventDuration, SetPair, Upcoming, WorkoutEvent, WorkoutStep } from "@/lib/workout";
 import { RETEST_DAY, setTotals, SETS_PER_EXERCISE } from "@/lib/workout";
+import { exerciseKo, stepName } from "@/lib/workout-voice";
+
+/**
+ * 운동·세트 이름(`풀업`·`풀업 1세트`)의 정의처는 lib/workout-voice.ts다 — 세션 음성 안내(§19-6)가 화면 글자와 같은 이름을 읽게
+ * 한 곳에 두고, 화면 쪽 기존 import가 그대로 돌게 여기서 재수출한다.
+ */
+export { exerciseKo, stepName };
 
 /** 세션 상단·브리핑에 늘 보이는 주의사항(원안 3항, §19-6) */
 export const WORKOUT_CAUTIONS = [
@@ -17,10 +24,6 @@ export const WORKOUT_CAUTIONS = [
   "반동 없는 엄격한 정자세",
   "세트 사이 최소 2분 휴식",
 ] as const;
-
-export function exerciseKo(e: WorkoutExercise): string {
-  return e === "pullup" ? "풀업" : "푸시업";
-}
 
 const WEEKDAY_KO = ["일", "월", "화", "수", "목", "금", "토"];
 
@@ -78,22 +81,9 @@ export function tomorrowText(u: Upcoming): string {
   }
 }
 
-/**
- * 슈퍼세트 한 스텝의 이름 — `풀업 1세트`. 세트 번호는 곧 라운드 번호다(한 세트 = 풀업 + 푸시업, 휴식은 세트 사이 — §19-1).
- * 세션 무대 제목·실패 제목·"이어서 하기" 버튼이 같은 이름을 쓴다.
- */
-export function stepName(st: WorkoutStep): string {
-  return `${exerciseKo(st.exercise)} ${st.setIndex + 1}세트`;
-}
-
 /** 슈퍼세트 한 스텝 — `풀업 1세트 · 6회` */
 export function stepLabel(st: WorkoutStep): string {
   return `${stepName(st)} · ${st.reps}회`;
-}
-
-/** 휴식 끝 음성 안내 — `다음, 풀업 2세트 7회` (§19-6 문구 형식 그대로) */
-export function stepPhrase(st: WorkoutStep): string {
-  return `다음, ${stepName(st)} ${st.reps}회`;
 }
 
 /** 기록 한 건을 한 줄로(취소 확인 패널) — 사건 값만 옮긴다 */

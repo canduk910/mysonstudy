@@ -48,7 +48,7 @@ model: opus
 
 ## 로컬 실행 — 실호출·프로덕션 DB를 명령으로 막는다
 
-화면을 띄워 확인할 때도 `.env`의 실키가 살아 있으면 비용이 난다. 단어장·카드·챕터 리더 같은 영어 화면은 열자마자 `prefetchSpeech()`가 `/api/tts` 합성을 최대 `PREFETCH_MAX_ITEMS`(90)개까지 미리 보낸다(영어의 기본 엔진이 클라우드라서다 — `lib/speech.ts` `DEFAULT_ENGINE`). 토익 화면도 같다 — 표현 카드·시험·모의고사 학습 보기·응시 결과가 en-US를 프리페치하고, 응시 시작 탭이 지시문·질문 약 20~25조각을 미리 받으며, **모의고사 학습 보기는 열리자마자 pending 사진 두 장을 자동 생성 요청**한다(관문 P — 이미지 생성이라 발음보다 비싸다). AI가 없는 운동도 예외가 아니다. 세션 음성 안내가 `ko-KR`(기본 클라우드)로 `/api/tts`를 거쳐, `▶ 운동 시작` 탭 한 번에 휴식 뒤 안내 문구 4개(휴식은 세트 사이에만 — 2~5세트 풀업)를 프리페치하고(`components/workout-view.tsx` `openSession`) 휴식이 끝날 때마다 `speakQueue`로 다음 안내를 읽는다(`components/workout-session.tsx`). 그래서 운동 UI 확인도 포함해 dev 서버는 항상 키를 비우고 띄운다:
+화면을 띄워 확인할 때도 `.env`의 실키가 살아 있으면 비용이 난다. 단어장·카드·챕터 리더 같은 영어 화면은 열자마자 `prefetchSpeech()`가 `/api/tts` 합성을 최대 `PREFETCH_MAX_ITEMS`(90)개까지 미리 보낸다(영어의 기본 엔진이 클라우드라서다 — `lib/speech.ts` `DEFAULT_ENGINE`). 토익 화면도 같다 — 표현 카드·시험·모의고사 학습 보기·응시 결과가 en-US를 프리페치하고, 응시 시작 탭이 지시문·질문 약 20~25조각을 미리 받으며, **모의고사 학습 보기는 열리자마자 pending 사진 두 장을 자동 생성 요청**한다(관문 P — 이미지 생성이라 발음보다 비싸다). AI가 없는 운동도 예외가 아니다. 세션 음성 안내가 `ko-KR`(기본 클라우드)로 `/api/tts`를 거쳐, `▶ 운동 시작` 탭 한 번에 그날의 안내 조각 전부(Day 1 기준 35 — 2026-10-01 촘촘화, 목록은 순수 모듈 `lib/workout-voice.ts` `workoutVoicePrefetch`)를 프리페치하고(`components/workout-view.tsx` `openSession`) 세트 시작마다·휴식 카운트다운·완료 요약을 `speakQueue`로 읽는다(`components/workout-session.tsx`). 그래서 운동 UI 확인도 포함해 dev 서버는 항상 키를 비우고 띄운다:
 
 ```bash
 OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run dev
