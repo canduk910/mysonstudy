@@ -5,6 +5,8 @@
  * 가져왔는지(공략 섹션 n)와 **외울 틀 n · 익힘 m**(m = 틀 바꿔 말하기 졸업 수 — §12-5-6), **연습 n · 마지막 점수**(한 문제 연습 — 연습
  * 문서 수와 최신순으로 처음 만나는 "녹음된 문항을 다 채점한" 연습의 점수 합/만점, §12-8)를 보인다. 2026-10-02(§12-13): 교재 표현 시험을
  * 닫아 카드의 "표현 n · 말하기 n"을 뺐다 — 폴더의 네 기능(읽기·따라 말하기·틀 시험·한 문제 연습)이 틀 은행 하나를 중심으로 돈다.
+ * 2026-10-03(SPEC §15-4): "외울 틀 n · 익힘 m" 옆에 **시험 응시 배지**("시험 전 / 오늘 ✓ · 8/10 / ✓ 10월 2일 · 8/10") — ② 틀 테스트·③ 틀 시험
+ * 중 그 유형 틀을 답한 마지막 판(templateSessionsForPart → lib/test-status). 이미 읽는 틀 은행 세션을 그대로 쓴다(추가 쿼리 없음).
  *
  * 읽기: 공략 문서는 결정적 id(`guide-{part}`)·틀 은행은 `guide-templates`라 목록 전체를 훑지 않고 id로 읽는다. 틀 테스트 세션은
  * `setId`가 하나(`guide-templates`)라 한 번 읽어 네 폴더에 나눠 쓴다(§12-5-6). 연습은 유형마다 `listToeicDrills`(등호 하나), 응시는
@@ -22,7 +24,10 @@ import { getStore, type ToeicSetRecord } from "@/lib/store";
 import { TOEIC_GUIDE_PARTS, TOEIC_GUIDE_PART_TO_MOCK_PART, TOEIC_TEMPLATE_BANK_ID, toeicGuideSetId, type ToeicGuidePart } from "@/lib/toeic-guide";
 import { toeicDrillUnit } from "@/lib/toeic-drill";
 import { summarizeToeicDrill, toeicDrillFolderCard } from "@/lib/toeic-drill-view";
-import { countMastered, guideTemplatesForPart, templateSwapMasteredKeys } from "@/lib/toeic-guide-view";
+import { countMastered, guideTemplatesForPart, templateSessionsForPart, templateSwapMasteredKeys } from "@/lib/toeic-guide-view";
+import { kstTodayString } from "@/lib/kst";
+import { summarizeTestStatus, toTestStatusBadge, type TestStatusBadge } from "@/lib/test-status";
+import TestStatusChip from "@/components/test-status-chip";
 import { toeicMockPartLabelKo } from "@/lib/toeic-mock-contract";
 import { isRenderableToeicGuide, isRenderableToeicMock, isRenderableToeicSet, isRenderableToeicTemplateBank, isToeicGuidePartSet } from "@/lib/toeic-record";
 
@@ -46,6 +51,8 @@ interface FolderCard {
   mastered: number;
   /** 한 문제 연습 수와 마지막 점수("5/6" — 없으면 null) */
   drills: { count: number; lastScoreKo: string | null };
+  /** 시험 응시 배지(SPEC §15-4) — ② 틀 테스트·③ 틀 시험 중 이 유형 틀을 답한 마지막 판. 틀이 없는 폴더는 null(볼 시험이 없다) */
+  test: TestStatusBadge | null;
 }
 
 /** 유형 공략 문서 → 폴더 카드 "가져옴" 표시(렌더 가능할 때만). 문서가 있는데 판정에서 떨어지면 broken. */
@@ -69,10 +76,12 @@ export default async function ToeicGuidesPage() {
   const bankOk = bank !== null && isRenderableToeicTemplateBank(bank);
   const bankItems: unknown[] = bankOk ? ((bank.guide as { items: unknown[] }).items ?? []) : [];
   const mastered = templateSwapMasteredKeys(bankSessions);
+  const todayKst = kstTodayString();
 
   const cards: FolderCard[] = TOEIC_GUIDE_PARTS.map((part, i) => {
     const { imported, broken } = importedOf(partDocs[i]);
     const { templates } = guideTemplatesForPart(bankItems, part);
+    const partKeys = new Set(templates.map((t) => t.key));
     const drills = partDrills[i].filter(isRenderableToeicMock);
     const ids = new Set(drills.map((d) => d.id));
     const mine = attempts.filter((a) => ids.has(a.mockId));
@@ -84,6 +93,7 @@ export default async function ToeicGuidesPage() {
       templates: templates.length,
       mastered: countMastered(templates, mastered),
       drills: toeicDrillFolderCard(drills.map((d) => summarizeToeicDrill(d, mine))),
+      test: templates.length > 0 ? toTestStatusBadge(summarizeTestStatus(templateSessionsForPart(bankSessions, partKeys), todayKst), todayKst) : null,
     };
   });
   const nothingYet = cards.every((c) => c.imported === null && c.templates === 0);
@@ -130,6 +140,7 @@ export default async function ToeicGuidesPage() {
                       외울 틀 {c.templates} · 익힘 {c.mastered}
                     </span>
                   )}
+                  {c.test && <TestStatusChip badge={c.test} />}
                   {c.drills.count > 0 && (
                     <span className="u-chip">
                       연습 {c.drills.count}

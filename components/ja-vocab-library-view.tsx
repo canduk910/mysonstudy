@@ -13,6 +13,8 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useReorder } from "@/components/use-reorder";
 import { formatKstDate } from "@/lib/kst";
+import type { TestStatusBadge } from "@/lib/test-status";
+import TestStatusChip from "@/components/test-status-chip";
 import type { JlptLevel } from "@/lib/japanese-vocab-contract";
 
 /** 서버가 목록 줄에 필요한 것만 줄여 넘긴다(entries 전문 X — 무겁다). */
@@ -25,6 +27,8 @@ export interface JaVocabLibraryItem {
   wordCount: number;
   createdAt: string; // ISO 8601
   sortIndex: number | null;
+  /** 시험 응시 배지(SPEC §15-4) — 서버가 lib/test-status로 정한다 */
+  test: TestStatusBadge;
 }
 
 export default function JaVocabLibraryView({
@@ -209,6 +213,7 @@ export default function JaVocabLibraryView({
                     <span className="min-w-0 flex-1">
                       <span className="t-list-title block truncate">{item.titleKo}</span>
                       <span className="t-caption mt-0.5 flex flex-wrap items-center gap-1.5">
+                        <TestStatusChip badge={item.test} />
                         <span className="u-chip">단어 {item.wordCount}개</span>
                         {item.levels.map((lv) => (
                           <span key={lv} className="u-chip">

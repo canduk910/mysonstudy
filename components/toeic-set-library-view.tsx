@@ -16,6 +16,8 @@ import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { useReorder } from "@/components/use-reorder";
 import { formatKstDate } from "@/lib/kst";
+import type { TestStatusBadge } from "@/lib/test-status";
+import TestStatusChip from "@/components/test-status-chip";
 import { toeicIssueLineKo, type ToeicImportResponse, type ToeicSetDeleteResponse } from "@/lib/toeic-set-contract";
 
 /** 서버가 목록 줄에 필요한 것만 줄여 넘긴다(entries 전문 X). */
@@ -31,6 +33,8 @@ export interface ToeicSetLibraryItem {
   pointsCount: number;
   createdAt: string;
   sortIndex: number | null;
+  /** 시험 응시 배지(SPEC §15-4) — 서버가 lib/test-status로 정한다 */
+  test: TestStatusBadge;
 }
 
 /** 가져오기 파일 크기 상한(클라이언트 사전 차단) — 10세트 파일이 ~0.3MB라 넉넉한 방어선 */
@@ -291,6 +295,7 @@ export default function ToeicSetLibraryView({ items, skippedCount = 0 }: { items
                     <span className="min-w-0 flex-1">
                       <span className="t-list-title block truncate">{item.titleKo}</span>
                       <span className="t-caption mt-0.5 flex flex-wrap items-center gap-1.5">
+                        <TestStatusChip badge={item.test} />
                         <span className="u-chip">표현 {item.exprCount}개</span>
                         {item.quizCount > 0 && <span className="u-chip">QUIZ {item.quizCount}</span>}
                         <span className={`u-chip ${item.pointsCount === item.exprCount ? "u-chip-accent" : ""}`}>

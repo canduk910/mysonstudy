@@ -13,6 +13,8 @@ import type { Metadata } from "next";
 import VocabLibraryView, { type VocabLibraryItem } from "@/components/vocab-library-view";
 import { isRenderableVocabBook } from "@/lib/vocabbook-record";
 import { getStore } from "@/lib/store";
+import { kstTodayString } from "@/lib/kst";
+import { testStatusByTarget, testStatusOf, toTestStatusBadge } from "@/lib/test-status";
 
 // 저장 데이터는 요청 시점에 읽는다 (빌드 시점 정적화 방지)
 export const dynamic = "force-dynamic";
@@ -26,7 +28,12 @@ export const metadata: Metadata = {
 const LIST_LIMIT = 500;
 
 export default async function VocabLibraryPage() {
-  const stored = await getStore().listVocabBooks(LIST_LIMIT);
+  const store = getStore();
+  // 시험 응시 배지(SPEC §15-4) — 세션을 **한 번** 읽어 bookId로 묶는다(단어장 수만큼 쿼리하지 않는다). 관계 문항 판(mode relation)도
+  // 같은 startedAt의 한 판으로 합쳐진다.
+  const [stored, quizzes] = await Promise.all([store.listVocabBooks(LIST_LIMIT), store.listAllVocabQuizzes()]);
+  const todayKst = kstTodayString();
+  const testByBook = testStatusByTarget(quizzes, (q) => q.bookId, todayKst);
 
   // 읽는 필드가 빠진 레코드는 건너뛴다 — 상세 화면과 **같은 함수**(lib/vocabbook-record.ts).
   const records = stored.filter(isRenderableVocabBook);
@@ -40,6 +47,7 @@ export default async function VocabLibraryPage() {
     photoCount: record.photoCount,
     createdAt: record.createdAt,
     sortIndex: record.sortIndex,
+    test: toTestStatusBadge(testStatusOf(testByBook, record.id), todayKst),
   }));
   /*
    * 정렬 규칙(서재와 동일) — sortIndex null이 먼저(createdAt 역순=최신이 위), 그다음 sortIndex 오름차순.

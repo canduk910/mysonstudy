@@ -14,6 +14,9 @@ import Link from "next/link";
 import ToeicSetLibraryView, { type ToeicSetLibraryItem } from "@/components/toeic-set-library-view";
 import { getStore } from "@/lib/store";
 import { isRenderableToeicSet, isToeicGuideSet } from "@/lib/toeic-record";
+import { kstTodayString } from "@/lib/kst";
+import { isToeicQuizModeSession } from "@/lib/toeic-quiz";
+import { testStatusByTarget, testStatusOf, toTestStatusBadge } from "@/lib/test-status";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +30,13 @@ const LIST_LIMIT = 500;
 
 export default async function ToeicSetLibraryPage() {
   // 공략 계열(유형 공략·틀 은행)을 먼저 빼고, 남은 표현집만으로 "열지 못한 n개"를 센다(§12-3 — 순서가 반대면 공략이 깨진 문서로 보고된다)
-  const stored = (await getStore().listToeicSets()).filter((s) => !isToeicGuideSet(s)).slice(0, LIST_LIMIT);
+  const store = getStore();
+  const [allSets, quizzes] = await Promise.all([store.listToeicSets(), store.listAllToeicQuizzes()]);
+  const stored = allSets.filter((s) => !isToeicGuideSet(s)).slice(0, LIST_LIMIT);
+  // 시험 응시 배지(SPEC §15-4) — 표현 시험 세션(네 모드)을 **한 번** 읽어 setId로 묶는다. 혼합 시험은 모드마다 문서가 따로지만 같은
+  // startedAt이라 한 판으로 합쳐진다. 틀 은행 세션(setId guide-templates, 틀 모드)은 표현 시험이 아니라 거른다.
+  const todayKst = kstTodayString();
+  const testBySet = testStatusByTarget(quizzes.filter(isToeicQuizModeSession), (q) => q.setId, todayKst);
   const records = stored.filter(isRenderableToeicSet);
   const skippedCount = stored.length - records.length;
 
@@ -42,6 +51,7 @@ export default async function ToeicSetLibraryPage() {
     pointsCount: r.entries.filter((e) => e.points !== null).length,
     createdAt: r.createdAt,
     sortIndex: r.sortIndex,
+    test: toTestStatusBadge(testStatusOf(testBySet, r.id), todayKst),
   }));
 
   // 정렬 규칙(서재·단어장과 동일) — sortIndex null 먼저(createdAt 역순=최신 위), 그다음 sortIndex 오름차순.

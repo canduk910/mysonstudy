@@ -10,6 +10,8 @@ import Link from "next/link";
 import JaVocabLibraryView, { type JaVocabLibraryItem } from "@/components/ja-vocab-library-view";
 import { isRenderableJaVocabBook } from "@/lib/japanese-record";
 import { getStore } from "@/lib/store";
+import { kstTodayString } from "@/lib/kst";
+import { testStatusByTarget, testStatusOf, toTestStatusBadge } from "@/lib/test-status";
 
 export const dynamic = "force-dynamic";
 
@@ -22,7 +24,12 @@ export const metadata: Metadata = {
 const LIST_LIMIT = 500;
 
 export default async function JaVocabLibraryPage() {
-  const stored = await getStore().listJaVocabBooks(LIST_LIMIT);
+  const store = getStore();
+  // 시험 응시 배지(SPEC §15-4) — 단어 시험 세션(jaQuizzes, 모드 무관)을 **한 번** 읽어 bookId로 묶는다. 한자 시험은 단어장이 아니라
+  // 전역 한자 풀 대상이라(scope:"kanji") 단어장 배지에 넣지 않는다.
+  const [stored, quizzes] = await Promise.all([store.listJaVocabBooks(LIST_LIMIT), store.listAllJaQuizzes()]);
+  const todayKst = kstTodayString();
+  const testByBook = testStatusByTarget(quizzes, (q) => q.bookId, todayKst);
   const records = stored.filter(isRenderableJaVocabBook);
   const skippedCount = stored.length - records.length;
 
@@ -35,6 +42,7 @@ export default async function JaVocabLibraryPage() {
     wordCount: record.entries.length,
     createdAt: record.createdAt,
     sortIndex: record.sortIndex,
+    test: toTestStatusBadge(testStatusOf(testByBook, record.id), todayKst),
   }));
 
   // 정렬 규칙(서재·영어 단어장과 동일) — sortIndex null 먼저(createdAt 역순=최신 위), 그다음 sortIndex 오름차순.

@@ -24,6 +24,7 @@ import {
   frameToExpression,
   guideLineTemplateKeys,
   shadowResumeIndex,
+  templateKeyFromItemKey,
   type ToeicShadowPauseLevel,
   type ToeicShadowPiece,
   type ToeicTemplateBadge,
@@ -96,6 +97,16 @@ export function templateSwapMasteredKeys(sessions: readonly ToeicQuizSessionLike
   const out = new Set<string>();
   for (const [key, st] of Object.entries(stats)) if (isStatMastered(st)) out.add(key);
   return out;
+}
+
+/**
+ * 폴더 카드 시험 응시 배지(SPEC §15-4)의 입력 — 틀 은행 세션 중 **그 유형 틀을 답한 문항**(answered true · `tpl:{key}`가 partKeys)이 있는
+ * 세션. ② 틀 테스트(말하기 둘)와 ③ 틀 시험(고르기 셋)을 모두 센다. 판 점수는 세션 전체로 본다(최근 테스트 목록 recentTemplateTests·
+ * recentTemplateChoiceTests와 같은 규칙 — 공통 틀은 여러 유형에서 푼다, 세션을 쪼개지 않는다). 같은 startedAt의 고르기 모드 문서는
+ * lib/test-status가 한 판으로 묶는다.
+ */
+export function templateSessionsForPart<T extends Pick<ToeicQuizSessionLike, "items">>(sessions: readonly T[], partKeys: ReadonlySet<string>): T[] {
+  return sessions.filter((s) => s.items.some((it) => it.answered === true && partKeys.has(templateKeyFromItemKey(it.word) ?? "")));
 }
 
 /** 틀 목록 중 익힌 수 */

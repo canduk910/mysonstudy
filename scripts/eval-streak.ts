@@ -13,6 +13,8 @@
  * 모의고사 응시(녹음된 문항≥1)를 세션 모양으로 옮긴다 — 아래 6)이 세는 규칙과 **트랙 분리**(은우·일본어·운동과 무혼합)를 반례로 잠근다.
  * 은우 트랙의 **자유대화**(SPEC §17-9 — 은우 트랙 한정 예외)는 talkStreakSessions(lib/talk-streak.ts)가 "은우 발화 ≥ 1 = 답한 문항"으로
  * 옮긴다 — 아래 7)이 발화 0 대화 제외·대화만 한 날·아빠 트랙 무오염·/api/streak 배선을 잠근다.
+ * 목록 카드의 **시험 응시 배지**(SPEC §15-4 — lib/test-status.ts)도 KST "오늘"과 "답한 문항 ≥ 1" 기준을 스트릭과 공유하는 과목 교차 규칙이라
+ * 여기서 잠근다 — 아래 8)이 세션 0개·자정 KST·같은 날 여러 판·혼합 판 묶기·미완료 판·공략 폴더 틀 세션·네 목록 배선을 반례로 본다.
  */
 
 import { readFileSync } from "node:fs";
@@ -23,6 +25,17 @@ import { TOEIC_GUIDE_PART_TO_MOCK_PART, isToeicGuidePart } from "../lib/toeic-gu
 import { toeicMockPartLabelKo } from "../lib/toeic-mock-contract";
 import { TOEIC_TEMPLATE_BANK_MODE_LABELS_KO, isToeicTemplateBankMode } from "../lib/toeic-quiz";
 import { isCountedTalkSession, talkStreakLabel, talkStreakSessions } from "../lib/talk-streak";
+import {
+  TEST_STATUS_NONE,
+  summarizeTestStatus,
+  testStatusByTarget,
+  testStatusDateKo,
+  testStatusLabelKo,
+  testStatusOf,
+  toTestStatusBadge,
+  type TestStatusSession,
+} from "../lib/test-status";
+import { templateSessionsForPart } from "../lib/toeic-guide-view";
 
 interface CheckResult {
   book: string;
@@ -523,6 +536,121 @@ const TODAY = "2026-09-21";
     "⑥ /api/streak 배선: 은우 = 단어장 시험 + talkStreakSessions(talks), 대화 읽기 실패 → 단어장만, 아빠 트랙 무혼합, 라벨 = 가장 늦은 것",
     wired && fallback && noLeakToAppa && label,
     `배선=${wired} 폴백=${fallback} 무혼합=${noLeakToAppa} 라벨=${label}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 8) 목록 시험 응시 배지(SPEC §15-4 — lib/test-status.ts) — 시험 전 / 오늘 ✓ / ✓ M월 D일 · 맞힘/답함
+//    판 = 같은 startedAt 묶음 · 센다 = 답한 문항 ≥ 1(스트릭 §17-1과 같은 기준) · 점수 = 맞힘/답함(기록 화면과 같은 분모) · 오늘 = KST
+// ---------------------------------------------------------------------------
+{
+  const B = "시험 배지";
+  const TODAY = "2026-10-03";
+  type It = { correct: boolean; answered: boolean | null };
+  const ok = (n: number): It[] => Array.from({ length: n }, () => ({ correct: true, answered: true }));
+  const no = (n: number): It[] => Array.from({ length: n }, () => ({ correct: false, answered: true }));
+  const skip = (n: number): It[] => Array.from({ length: n }, () => ({ correct: false, answered: null }));
+  const ses = (startedAt: string, items: It[], finished = true): TestStatusSession => ({ startedAt, finishedAt: finished ? startedAt : null, items });
+  const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+  // ① 세션 0개 · 답한 문항 0 판만 → 시험 전
+  const none0 = summarizeTestStatus([], TODAY);
+  add(B, "① 세션 0개 → none · \"시험 전\"", eq(none0, TEST_STATUS_NONE) && testStatusLabelKo(none0, TODAY) === "시험 전", JSON.stringify(none0));
+  const quitAll = summarizeTestStatus([ses("2026-10-03T03:00:00.000Z", skip(10), false)], TODAY);
+  add(B, "① 답한 문항 0 판(바로 그만둠)만 → none(스트릭 §17-1과 같은 기준)", quitAll.state === "none", JSON.stringify(quitAll));
+
+  // ② 자정 KST 경계 — 15:00Z = 다음날 00:00 KST(오늘), 14:59:59.999Z = 전날 23:59 KST(지난 날)
+  const mid = summarizeTestStatus([ses("2026-10-02T15:00:00.000Z", [...ok(8), ...no(2)])], TODAY);
+  add(B, "② 2026-10-02T15:00Z = KST 10-03 00:00 → today · \"오늘 ✓ · 8/10\"", mid.state === "today" && mid.lastDate === TODAY && testStatusLabelKo(mid, TODAY) === "오늘 ✓ · 8/10", `${JSON.stringify(mid)} → ${testStatusLabelKo(mid, TODAY)}`);
+  const pre = summarizeTestStatus([ses("2026-10-02T14:59:59.999Z", [...ok(8), ...no(2)])], TODAY);
+  add(B, "② 2026-10-02T14:59:59.999Z = KST 10-02 23:59 → past · \"✓ 10월 2일 · 8/10\"", pre.state === "past" && pre.lastDate === "2026-10-02" && testStatusLabelKo(pre, TODAY) === "✓ 10월 2일 · 8/10", `${JSON.stringify(pre)} → ${testStatusLabelKo(pre, TODAY)}`);
+  // UTC 날짜는 같은 10-03이어도 KST로는 다른 날이 될 수 있다 — UTC 자르기 회귀 반례
+  const utcSame = summarizeTestStatus([ses("2026-10-03T15:30:00.000Z", ok(3))], TODAY);
+  add(B, "② UTC 10-03 15:30Z = KST 10-04 → today 아님(UTC 날짜 자르기 회귀 반례)", utcSame.state === "past" && utcSame.lastDate === "2026-10-04", JSON.stringify(utcSame));
+
+  // ③ 같은 날 여러 판 — 마지막 판의 점수, 입력 순서 무관
+  const morning = ses("2026-10-03T00:10:00.000Z", [...ok(3), ...no(7)]);
+  const evening = ses("2026-10-03T11:00:00.000Z", [...ok(9), ...no(1)]);
+  const a1 = summarizeTestStatus([morning, evening], TODAY);
+  const a2 = summarizeTestStatus([evening, morning], TODAY);
+  add(B, "③ 같은 날 두 판 → 마지막 판(9/10), 입력 순서 무관", a1.correct === 9 && a1.answered === 10 && eq(a1, a2), `${JSON.stringify(a1)} / ${JSON.stringify(a2)}`);
+  const olderAfter = summarizeTestStatus([evening, ses("2026-10-01T02:00:00.000Z", ok(5))], TODAY);
+  add(B, "③ 지난 판이 뒤에 와도 오늘 판이 마지막", olderAfter.state === "today" && olderAfter.correct === 9, JSON.stringify(olderAfter));
+
+  // ④ 혼합 판 묶기 — 같은 startedAt의 모드별 문서(토익 혼합·영어 관계 문항·틀 시험)는 한 판으로 합친다
+  const T = "2026-10-01T05:00:00.000Z";
+  const mixed = summarizeTestStatus([ses(T, [...ok(4), ...no(1)]), ses(T, [...ok(2), ...no(1)]), ses(T, ok(1))], TODAY);
+  add(B, "④ 같은 startedAt 세 문서 → 한 판 7/9 · \"✓ 10월 1일 · 7/9\"", mixed.correct === 7 && mixed.answered === 9 && testStatusLabelKo(mixed, TODAY) === "✓ 10월 1일 · 7/9", `${JSON.stringify(mixed)} → ${testStatusLabelKo(mixed, TODAY)}`);
+
+  // ⑤ 미완료 판 — 답했으면 센다, 분모는 답한 문항만, "· 중단" 표시. 묶은 문서 중 하나라도 그만두면 중단
+  const quit = summarizeTestStatus([ses("2026-10-03T02:00:00.000Z", [...ok(2), ...no(1), ...skip(7)], false)], TODAY);
+  add(B, "⑤ 그만둔 판(답 3·미응답 7) → today · 2/3 · \"오늘 ✓ · 2/3 · 중단\"", quit.state === "today" && quit.correct === 2 && quit.answered === 3 && !quit.finished && testStatusLabelKo(quit, TODAY) === "오늘 ✓ · 2/3 · 중단", `${JSON.stringify(quit)} → ${testStatusLabelKo(quit, TODAY)}`);
+  const halfQuit = summarizeTestStatus([ses(T, ok(3)), ses(T, [...ok(1), ...skip(2)], false)], TODAY);
+  add(B, "⑤ 같은 판의 한 모드만 그만둠 → 판 전체 중단", !halfQuit.finished && halfQuit.answered === 4, JSON.stringify(halfQuit));
+  const emptyLater = summarizeTestStatus([ses("2026-10-02T03:00:00.000Z", ok(5)), ses("2026-10-03T03:00:00.000Z", skip(10), false)], TODAY);
+  add(B, "⑤ 오늘 답 0으로 그만둔 판은 무시 → 어제 판 past 5/5", emptyLater.state === "past" && emptyLater.lastDate === "2026-10-02" && emptyLater.correct === 5, JSON.stringify(emptyLater));
+
+  // ⑥ 스트릭과 같은 기준 — 오늘 판의 유무가 computeStreak.doneToday와 일치한다
+  const fixtures: TestStatusSession[][] = [[], [ses("2026-10-03T03:00:00.000Z", skip(4), false)], [ses("2026-10-02T15:00:00.000Z", ok(1))], [ses("2026-10-02T14:59:59.999Z", ok(1))]];
+  const asStreak = (f: TestStatusSession[]): StreakSession[] => f.map((x) => ({ startedAt: x.startedAt, items: [...x.items] }));
+  const agree = fixtures.every((f) => (summarizeTestStatus(f, TODAY).state === "today") === computeStreak(asStreak(f), TODAY).doneToday);
+  add(B, "⑥ 배지 today ⇔ 스트릭 doneToday(같은 세션 4벌)", agree, fixtures.map((f) => `${summarizeTestStatus(f, TODAY).state}/${computeStreak(asStreak(f), TODAY).doneToday}`).join(" "));
+
+  // ⑦ 깨진 startedAt은 건너뛴다(날짜를 정할 수 없다) · 해가 다르면 연도 표시
+  const broken = summarizeTestStatus([ses("garbage", ok(5)), ses("2026-10-03T03:00:00", ok(5))], TODAY);
+  add(B, "⑦ 깨진·시간대 없는 startedAt만 → none", broken.state === "none", JSON.stringify(broken));
+  const lastYear = summarizeTestStatus([ses("2025-12-31T03:00:00.000Z", [...ok(1), ...no(1)])], TODAY);
+  add(B, "⑦ 작년 판 → \"✓ 2025년 12월 31일 · 1/2\" · 날짜 표시 M월 D일(앞 0 없음)", testStatusLabelKo(lastYear, TODAY) === "✓ 2025년 12월 31일 · 1/2" && testStatusDateKo("2026-01-05", TODAY) === "1월 5일", testStatusLabelKo(lastYear, TODAY));
+
+  // ⑧ 대상별 묶기(한 번 읽은 목록) · 없는 대상은 시험 전 · 배지 데이터
+  const all = [
+    { bookId: "a", ...ses("2026-10-03T01:00:00.000Z", ok(2)) },
+    { bookId: "b", ...ses("2026-09-30T01:00:00.000Z", [...ok(1), ...no(1)]) },
+    { bookId: "a", ...ses("2026-09-01T01:00:00.000Z", no(5)) },
+  ];
+  const map = testStatusByTarget(all, (q) => q.bookId, TODAY);
+  const ba = toTestStatusBadge(testStatusOf(map, "a"), TODAY);
+  const bb = toTestStatusBadge(testStatusOf(map, "b"), TODAY);
+  const bc = toTestStatusBadge(testStatusOf(map, "c"), TODAY);
+  add(
+    B,
+    "⑧ testStatusByTarget: a=오늘 2/2 · b=9월 30일 1/2 · c(세션 없음)=시험 전",
+    eq(ba, { state: "today", labelKo: "오늘 ✓ · 2/2" }) && eq(bb, { state: "past", labelKo: "✓ 9월 30일 · 1/2" }) && eq(bc, { state: "none", labelKo: "시험 전" }),
+    `${JSON.stringify(ba)} ${JSON.stringify(bb)} ${JSON.stringify(bc)}`,
+  );
+
+  // ⑨ 공략 폴더 — 그 유형 틀(tpl:{key})을 **답한** 세션만. 다른 유형 틀만 답한 세션·미응답만 있는 세션은 뺀다
+  const partKeys = new Set(["scene-a", "scene-b"]);
+  const tplSes = (startedAt: string, items: { word: string; correct: boolean; answered: boolean | null }[]) => ({ startedAt, finishedAt: startedAt, items });
+  const mine = tplSes("2026-10-02T03:00:00.000Z", [{ word: "tpl:scene-a", correct: true, answered: true }, { word: "tpl:reason-x", correct: false, answered: true }]);
+  const other = tplSes("2026-10-03T03:00:00.000Z", [{ word: "tpl:opinion-z", correct: true, answered: true }]);
+  const unanswered = tplSes("2026-10-03T04:00:00.000Z", [{ word: "tpl:scene-b", correct: false, answered: null }]);
+  const picked = templateSessionsForPart([mine, other, unanswered], partKeys);
+  const folder = summarizeTestStatus(picked, TODAY);
+  add(
+    B,
+    "⑨ templateSessionsForPart: 이 유형 틀을 답한 세션만(다른 유형·미응답 제외) → past 10월 2일 · 판 점수는 세션 전체 1/2",
+    picked.length === 1 && picked[0] === mine && testStatusLabelKo(folder, TODAY) === "✓ 10월 2일 · 1/2",
+    `${picked.length}개 → ${testStatusLabelKo(folder, TODAY)}`,
+  );
+
+  // ⑩ 네 목록 배선(정적) — 세션을 한 번 읽어 묶는다(대상마다 쿼리 금지) · 칩을 렌더한다 · 토익 표현집은 표현 시험 모드만
+  const src = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf-8");
+  const enPage = src("../app/english/vocab/page.tsx");
+  const jaPage = src("../app/japanese/vocab/page.tsx");
+  const tsPage = src("../app/toeic/sets/page.tsx");
+  const tgPage = src("../app/toeic/guides/page.tsx");
+  const wiredEn = /listAllVocabQuizzes\(\)/.test(enPage) && /testStatusByTarget\(quizzes, \(q\) => q\.bookId, todayKst\)/.test(enPage) && !/listVocabQuizzes\(/.test(enPage);
+  const wiredJa = /listAllJaQuizzes\(\)/.test(jaPage) && /testStatusByTarget\(quizzes, \(q\) => q\.bookId, todayKst\)/.test(jaPage) && !/listJaQuizzes\(/.test(jaPage) && !/JaKanjiQuizzes/.test(jaPage);
+  const wiredTs = /listAllToeicQuizzes\(\)/.test(tsPage) && /testStatusByTarget\(quizzes\.filter\(isToeicQuizModeSession\), \(q\) => q\.setId, todayKst\)/.test(tsPage) && !/listToeicQuizzes\(/.test(tsPage);
+  const wiredTg = /templateSessionsForPart\(bankSessions, partKeys\)/.test(tgPage) && /<TestStatusChip badge=\{c\.test\} \/>/.test(tgPage) && (tgPage.match(/listToeicQuizzes\(/g) ?? []).length === 1;
+  const views = ["../components/vocab-library-view.tsx", "../components/ja-vocab-library-view.tsx", "../components/toeic-set-library-view.tsx"].every((f) => /<TestStatusChip badge=\{item\.test\} \/>/.test(src(f)));
+  const todayOnce = [enPage, jaPage, tsPage, tgPage].every((p) => (p.match(/kstTodayString\(\)/g) ?? []).length === 1);
+  add(
+    B,
+    "⑩ 배선: 영어·일본어·토익 표현집 = 전체 세션 한 번 읽어 대상별 묶기(대상별 쿼리 없음, 일본어 한자 시험·토익 틀 세션 제외) · 공략 폴더 = 기존 틀 은행 세션 재사용 · 세 목록 뷰가 칩 렌더 · 오늘은 페이지마다 한 번",
+    wiredEn && wiredJa && wiredTs && wiredTg && views && todayOnce,
+    `en=${wiredEn} ja=${wiredJa} toeic=${wiredTs} guides=${wiredTg} views=${views} today1=${todayOnce}`,
   );
 }
 
