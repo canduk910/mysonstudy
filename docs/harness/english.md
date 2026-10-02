@@ -26,7 +26,7 @@
 | **G. 단어 뜻 조회** | 단어 + 그 문장 → 그 문맥의 우리말 뜻 한 낱말 | 정확성 우선 (같은 입력은 같은 뜻) | 0 | 600 | `WORD_MEANING_CALL_OPTIONS` (`lib/ai/english/prompts.ts`) | §10-5 |
 | **H. 유의어·반의어 추천** | 단어 + 뜻 + 관계 종류 → 초등 눈높이 후보 5~6개 | 정확성 우선 + 후보 다양성 | 0.3 | 800 | `RELATED_SUGGEST_CALL_OPTIONS` (`lib/ai/english/vocabbook-prompts.ts`) | §11-6 |
 | **I. 자유대화 문장 설명** | 대화 스크립트의 문장 하나 + 앞뒤 대화 → 1학년 눈높이 선생님 말투 설명 대본(한/영 조각) | 창작(설명) + 환각 차단(짚은 단어 ⊂ 문장) | 0.5 | 1,500 | `TALK_EXPLAIN_CALL_OPTIONS` (`lib/ai/english/talk-prompts.ts`) | §12-3 |
-| **J. 자유대화 화면 카드** | 선생님이 방금 한 말 + 최근 대화 → 도움 카드(답 예시·핵심 단어) + 그림 카드 | 속도 우선(선생님 줄마다, 서버 6초 상한) + 근거 후처리(그림 ⊂ 선생님 말·오늘의 단어) | 0.3 | 600 | `TALK_CARDS_CALL_OPTIONS` (`lib/ai/english/talk-prompts.ts`) — 모델은 `OPENAI_MODEL`이 아니라 `OPENAI_TALK_CARDS_MODEL`(빈 값이면 `gpt-4.1-mini`) | §12-7 |
+| **J. 자유대화 화면 카드** | 선생님이 방금 한 말 + 최근 대화 → 도움 카드(답 예시·핵심 단어) + 그림 카드 | 속도 우선(선생님 줄마다, 서버 6초 상한) + 근거 후처리(그림 ⊂ 선생님 말·오늘의 단어) | 0.3 | 600 | `TALK_CARDS_CALL_OPTIONS` (`lib/ai/english/talk-prompts.ts`) — 모델은 `OPENAI_MODEL`이 아니라 `OPENAI_TALK_CARDS_MODEL`(빈 값이면 `gpt-6-luna`) | §12-7 |
 
 호출 C는 **단어장 정복** 기능(§7)의 판독 호출로, A→A′→B 카드 파이프라인과는 별개의 경로입니다.
 사진 1장 = 판독 1회이고, DAY 하나가 사진 여러 장이면 병렬 호출 후 앱이 번호로 병합합니다(§7-5).
@@ -69,7 +69,7 @@ WebRTC 음성 ↔ 음성)이 맡습니다. 관문 R은 Structured Outputs가 아
 - 응답은 **zod로 이중 검증**. 실패 시 검증 오류 메시지를 첨부해 **1회만 재요청**, 그래도 실패면 throw.
 - 배열 개수 제약(단어 12개, 질문 8개 등)은 스키마가 아니라 **프롬프트 + zod**에서 강제한다. (strict 모드의 `minItems`/`maxItems` 지원 여부는 모델·버전에 따라 다르니 스키마에는 넣지 않는다)
 - 호출마다 `{call, model, inputTokens, outputTokens, ms}`를 서버 로그로 남긴다 (비용 추적).
-- 모델 ID는 env `OPENAI_MODEL`. 하드코딩 금지.
+- 모델 ID는 env `OPENAI_MODEL`(빈 값이면 `gpt-6-luna` — 2026-10-02 사용자 결정, 이전 `gpt-5.5`). 하드코딩 금지. 호출 J만 env를 따로 둔다(`OPENAI_TALK_CARDS_MODEL`, §12-7).
 
 파일 배치:
 
@@ -2179,7 +2179,8 @@ A bright, friendly children's picture-book illustration of {scene}. Simple shape
 
 - **zod는 타입·폭만 보고, 근거 검사는 후처리가 거른다**(재요청으로 카드를 늦추지 않는다 — 카드는 지연에 민감하다). zod: `answers` 0~4, `words` 0~4, 문자열 길이 상한. 후처리(순수 함수 `sanitizeTalkScreenCards` — 저장 라우트의 `sanitizeTalkCards`(기록 카드)와 이름이 겹쳐 구현에서 바꿨다. §12-6 `parseTalkToolCall`의 항목 단위 검사 규칙을 재사용: 이모지 그림 문자 필수·영어 칸 라틴·한글 금지·우리말 칸 한글): 항목 단위로 버린다. `answers`는 3개·단어 2~8개로 자른다. **그림 카드 `en`은 선생님 말(단어 경계, 대소문자 무시, 끝의 s·es 허용) 또는 오늘의 단어에 있어야** 하고 이미 보여 준 것이면 null.
   구현이 정한 세부(2026-09-27): 문장을 단어 단위로 잘라 내면 깨진 영어가 되므로 2~8단어 밖의 답은 **그 항목을 버리고**, 목록만 앞 3개로 자른다(한 단어 답 "Yes!"는 버려진다 — 받은 도움이 없을 때의 기본 문구가 한 단어 답을 준다). `answers`가 비면 `words`도 `[]`다(답 예시가 도움 카드의 본체). 그림 근거는 끝의 s·es를 **양방향**(dog↔dogs·box↔boxes)으로 인정하고 앞 관사·앞뒤 문장부호·소유격("the dog's")도 인정한다 — y↔ies는 인정하지 않는다(근거를 못 찾으면 그림이 버려질 뿐이라 보수적으로). "오늘의 단어에 있다"·"이미 보여 준 것"은 ✓ 매칭(`matchTalkWord`)과 같은 느슨함으로 본다. zod 문자열 상한은 후처리 폭의 두 배다(답 120·이모지 32·영어 60·뜻 40, UTF-16 — `TALK_SCREEN_CARDS_ZOD_LIMITS`).
-- 호출 옵션(`TALK_CARDS_CALL_OPTIONS`): call `talk_cards`, temperature 0.3, max_output_tokens 600, 모델 env `OPENAI_TALK_CARDS_MODEL`(빈 값·공백이면 `gpt-4.1-mini` — `DEFAULT_TALK_CARDS_MODEL`, `lib/ai/client.ts` `resolveTalkCardsModel`. `OPENAI_MODEL`로 가지 않는다. 고른 근거: SDK `ChatModel`에 있고(tsc가 `satisfies`로 확인) Structured Outputs strict를 받으며, **비추론** 모델이라 temperature 0.3이 그대로 먹고 숨은 추론 토큰이 600 한도를 먹지 않는다 — 먹으면 incomplete → 재요청 → 6초 초과로 번진다). 서버 시간 상한 6초.
+- 호출 옵션(`TALK_CARDS_CALL_OPTIONS`): call `talk_cards`, temperature 0.3, max_output_tokens 600, 모델 env `OPENAI_TALK_CARDS_MODEL`(빈 값·공백이면 `gpt-6-luna` — `DEFAULT_TALK_CARDS_MODEL`, `lib/ai/client.ts` `resolveTalkCardsModel`. `OPENAI_MODEL`로 가지 않는다 — 메인을 바꿔도 카드 모델은 그대로이고, 카드만 따로 바꿀 수 있다). 서버 시간 상한 6초.
+  모델 이력(2026-10-02): 처음 기본값은 **비추론** 소형 `gpt-4.1-mini`였다(temperature 0.3이 그대로 먹고 숨은 추론 토큰이 600 한도를 먹지 않는다). 2026-10-02 사용자 결정("텍스트 모델은 토익 출제·채점만 `gpt-6.1-sol`, 나머지는 모두 `gpt-6-luna`")으로 `gpt-6-luna`로 바꿨다. SDK `ChatModel` 목록에 아직 없어 상수는 string이다. `gpt-6-luna`는 이름으로 추론 계열이라 보고 첫 요청부터 temperature를 싣지 않는다(공유 래퍼 `isKnownTemperatureRejectingModel` — 거부 400 왕복이 6초를 먹지 않게, 그래서 이 모델에는 temperature 0.3이 적용되지 않는다). 숨은 추론 토큰이 600 한도를 먹으면 incomplete → 재요청 → 6초 초과로 번질 수 있다 — 카드가 자주 빠지면 env로 비추론 모델(예: `gpt-4.1-mini`)을 지정한다.
   구현이 정한 세부(2026-09-27): 6초는 zod 재요청까지 포함한 **호출 전체**에 걸리고, 라우트의 `req.signal`과 합친 신호(`talkCardsAbortSignal` — 외부 신호가 살아 있어도 6초가 끊는다)로 끊는다. **SDK 자동 재시도는 끈다**(`TALK_CARDS_SDK_MAX_RETRIES` = 0 — 공유 래퍼 `callWithSchema`의 선택 인자 `maxRetries`). SDK는 429·503의 `retry-after`(최대 60초)를 끊는 신호 없이 기다려, 켜 두면 `retry-after: 12`에 6초 상한이 12초로 뚫렸다. 그래서 상류 429·5xx·연결 오류는 곧바로 실패(500 — 화면은 기본 문구)이고, 다음 선생님 줄이 곧 새 요청을 만든다. zod 재요청(래퍼의 1회)은 그대로다. 선생님 말이 비면 AI를 부르지 않고 빈 카드를 돌려준다. 이 배선은 오프라인 게이트가 fetch를 막아 태울 수 없으므로 eval "자유대화 정적"이 진입 함수 소스로 잠근다.
 - 라우트 `POST /api/english/talk/cards {topic, words, shown, context, teacherLine}`(주제·단어는 대화 시작 때 받은 스냅샷, 글자 상한 zod) → 200 `{answers, words, picture}` / 400 / 501 / 500. 저장하지 않는다(보인 그림 카드는 대화 저장 때 `cards`로 남는 기존 규칙 그대로).
   구현(`app/api/english/talk/cards/route.ts`, 계약 `lib/talk-contract.ts` `TalkCardsRequest`·`TalkCardsResponse`): `topic`은 주제 **라벨 문자열**(스냅샷의 `labelKo` — 호출 I의 `{topicLabel}`과 같은 값, 스냅샷을 통째로 받으면 단어가 두 번 실린다). 순서는 JSON 400 → zod 400(폭은 `TALK_CARDS_REQUEST_LIMITS`를 import — 단어 20·보인 카드 12·문맥 4줄·줄 1,000자·라벨 200자. 넘으면 자르지 않고 거부해 화면 버그를 드러낸다) → 키 501 → `generateTalkCards(input, {signal: req.signal})` → 200 `{ok: true, answers, words, picture}`(후처리까지 끝난 값 그대로) / 500 `cards_failed`(실패·6초 초과·요청 취소, `retriable` 없음). 모든 응답이 `cache-control: no-store`이고, 로그에는 대사·카드 없이 실패 종류와 ms만 남긴다.

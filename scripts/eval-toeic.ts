@@ -91,6 +91,7 @@ import {
 } from "../lib/ai/toeic/prompts";
 import { TOEIC_ANSWER_FLOW_STEP_MIN_RATIO, answerFlowExpressions, checkAnswerAgainstFlow, isWeakFlowCheck } from "../lib/toeic-template";
 import { cleanKeyExpressions, cleanToeicExtraction, mergeToeicExtractions } from "../lib/ai/toeic/extract-merge";
+import { DEFAULT_TOEIC_MODEL, resolveToeicModel } from "../lib/ai/toeic/model";
 import { applyPointsResults, isToeicSetEnriched, planPointsChunks } from "../lib/ai/toeic/points";
 import {
   buildFeedbackInput,
@@ -2395,6 +2396,44 @@ function runTemplateFlowAiChecks(): CheckResult[] {
         /buildFeedbackUserMessage\(input\)/.test(callsSrc),
       "",
     );
+    // 모델(2026-10-02 사용자 결정): 출제·채점(C·D)만 resolveToeicModel(), 판독·발화 포인트(A·B)는 메인 resolveModel()
+    const modelCalls = [...callsSrc.matchAll(/model: (resolve\w+)\(\)/g)].map((m) => m[1]);
+    add(
+      "calls.ts 모델 배선: A extract·B points = resolveModel() · C mock·D feedback = resolveToeicModel()(OPENAI_TOEIC_MODEL)",
+      modelCalls.join(",") === "resolveModel,resolveModel,resolveToeicModel,resolveToeicModel" &&
+        /export async function generateMockPart[\s\S]*?model: resolveToeicModel\(\)/.test(callsSrc) &&
+        /export async function generateFeedback[\s\S]*?model: resolveToeicModel\(\)/.test(callsSrc) &&
+        /export async function extractToeicPage[\s\S]*?model: resolveModel\(\)[\s\S]*?export async function generatePointsChunk[\s\S]*?model: resolveModel\(\)[\s\S]*?export async function generateMockPart/.test(callsSrc),
+      modelCalls.join(","),
+    );
+    const routeModel = ["app/api/toeic/mocks/route.ts", "app/api/toeic/guides/[part]/drills/route.ts"].map((rel) => {
+      const src = readFileSync(new URL(`../${rel}`, import.meta.url), "utf-8");
+      return /model: resolveToeicModel\(\)/.test(src) && !/resolveModel\(/.test(src);
+    });
+    add("모의고사·한 문제 연습 레코드 model = resolveToeicModel()(실제로 출제한 모델을 남긴다)", routeModel.every(Boolean), JSON.stringify(routeModel));
+    const savedToeic = process.env.OPENAI_TOEIC_MODEL;
+    const savedMain = process.env.OPENAI_MODEL;
+    try {
+      const got: string[] = [];
+      process.env.OPENAI_MODEL = "gpt-x-main"; // 메인을 바꿔도 따라가지 않는다
+      for (const v of [undefined, "", "   "]) {
+        if (v === undefined) delete process.env.OPENAI_TOEIC_MODEL;
+        else process.env.OPENAI_TOEIC_MODEL = v;
+        got.push(resolveToeicModel());
+      }
+      process.env.OPENAI_TOEIC_MODEL = " gpt-x-toeic ";
+      got.push(resolveToeicModel());
+      add(
+        "토익 출제·채점 모델: 기본 gpt-6.1-sol · env 미설정·빈 값·공백 → 기본(OPENAI_MODEL로 폴백하지 않음) · 값은 앞뒤 공백을 걷어 그대로",
+        DEFAULT_TOEIC_MODEL === "gpt-6.1-sol" && got.join("|") === ["gpt-6.1-sol", "gpt-6.1-sol", "gpt-6.1-sol", "gpt-x-toeic"].join("|"),
+        got.join("|"),
+      );
+    } finally {
+      if (savedToeic === undefined) delete process.env.OPENAI_TOEIC_MODEL;
+      else process.env.OPENAI_TOEIC_MODEL = savedToeic;
+      if (savedMain === undefined) delete process.env.OPENAI_MODEL;
+      else process.env.OPENAI_MODEL = savedMain;
+    }
   }
 
   // ── buildFeedbackInput — 저장된 흐름(검토 B1) ──

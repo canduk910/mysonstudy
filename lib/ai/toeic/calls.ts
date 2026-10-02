@@ -2,7 +2,8 @@
  * lib/ai/toeic/calls.ts — 토익 호출 A·B·C·D 진입 함수 (**서버 전용**) (docs/harness/toeic.md §2~§5)
  *
  * 공유 래퍼 `callWithSchema`(lib/ai/client.ts)를 **그대로** 부른다 — client.ts에 과목 분기·진입 함수를 넣지 않는다(docs/HARNESS.md §2).
- * 프롬프트·스키마·옵션은 prompts.ts·schemas.ts에서 가져오고, 모델은 resolveModel()로만 고른다(env OPENAI_MODEL).
+ * 프롬프트·스키마·옵션은 prompts.ts·schemas.ts에서 가져온다. 모델(2026-10-02 사용자 결정): 출제·채점(C·D)은 resolveToeicModel()
+ * (env OPENAI_TOEIC_MODEL, 빈 값이면 gpt-6.1-sol — model.ts), 판독·발화 포인트(A·B)는 메인 resolveModel()(env OPENAI_MODEL).
  *
  * - 사진·묶음·파트·문항마다 **호출 하나**다(요청 하나가 60초를 넘지 않게, §1-1). 병렬·부분 성공은 라우트가 Promise.allSettled로 한다.
  * - 키 검사(501)는 라우트가 이 함수들보다 **먼저** 한다. 키가 없으면 getOpenAIClient가 throw한다.
@@ -15,6 +16,7 @@
  */
 
 import { callWithSchema, imagePart, resolveModel, textPart } from "../client";
+import { resolveToeicModel } from "./model";
 import {
   TOEIC_EXTRACT_CALL_OPTIONS,
   TOEIC_EXTRACT_SYSTEM_PROMPT,
@@ -109,7 +111,7 @@ export async function generateMockPart<P extends ToeicMockPart>(
     zodSchema: TOEIC_MOCK_ZOD[part],
     temperature: TOEIC_MOCK_CALL_OPTIONS.temperature,
     maxOutputTokens: TOEIC_MOCK_CALL_OPTIONS.maxOutputTokens,
-    model: resolveModel(),
+    model: resolveToeicModel(),
   });
   // 허용 목록 = 흐름 틀(앞) + 정규화한 활용할 표현 — 합친 목록을 다시 normalizeMockExpressions에 넣지 않는다(검토 S4)
   return toMockRecordPart(part, raw, [...answerFlowExpressions(answerFlow), ...normalizeMockExpressions(input.expressions)]);
@@ -130,7 +132,7 @@ export async function generateFeedback(input: ToeicFeedbackInput): Promise<Toeic
     zodSchema: buildFeedbackZod({ maxScore: toeicMaxScore(input.q), transcript: input.transcript }),
     temperature: TOEIC_FEEDBACK_CALL_OPTIONS.temperature,
     maxOutputTokens: TOEIC_FEEDBACK_CALL_OPTIONS.maxOutputTokens,
-    model: resolveModel(),
+    model: resolveToeicModel(),
   });
   // 허용 목록 = 흐름 틀(앞) + 활용할 표현 — 흐름은 input.expressions에 섞지 않는다(D `활용할 표현:` 줄에 찍히지 않게, 검토 S4)
   return postprocessFeedback(raw, [...answerFlowExpressions(input.answerFlow), ...input.expressions]);

@@ -272,7 +272,7 @@ interface SceneDigestItem {
 
 ```
 OPENAI_API_KEY=      # 필수. 서버 전용
-OPENAI_MODEL=        # 기본값: 비전+Structured Outputs 지원 최신 모델 (OpenAI 문서에서 확인)
+OPENAI_MODEL=        # 텍스트 AI 호출 공통(토익 출제·채점 제외), 기본 gpt-6-luna — 2026-10-02 사용자 결정(이전 gpt-5.5)
 GOOGLE_BOOKS_API_KEY= # 선택. 없으면 무키 호출(저볼륨 가능)
 GOOGLE_APPLICATION_CREDENTIALS= # 로컬 개발용. Cloud Run에서는 서비스 계정 ADC 사용
 SUPADATA_API_KEY=    # 선택(낭독 자막 grounding 시). 서버 전용. 유튜브 자막 fetch(Supadata) — §14-1
@@ -280,16 +280,17 @@ YOUTUBE_API_KEY=     # 선택(낭독 영상 자동 검색 시). 서버 전용. Y
 OPENAI_TTS_MODEL=    # 선택. 클라우드 발음 모델, 기본 gpt-4o-mini-tts — §16 (키가 없으면 기기 음성 폴백)
 OPENAI_TTS_VOICE=    # 선택. 발음 음성, 기본 alloy(en-US·ja-JP·ko-KR 한 음성 공용) — §16·§18-3
 OPENAI_MODEL_VERIFY= # 선택. 수학 검산(호출 C) 전용 모델, 없으면 OPENAI_MODEL — docs/harness/math.md §1
+OPENAI_TOEIC_MODEL=  # 선택. 아빠의 영어 출제·채점(모의고사 문항 생성 호출 C·답변 피드백 호출 D), 기본 gpt-6.1-sol(OPENAI_MODEL로 폴백하지 않는다 — 판독 A·발화 포인트 B는 OPENAI_MODEL) — §20·docs/harness/toeic.md §1
 OPENAI_IMAGE_MODEL=  # 선택. 사진 생성 모델, 기본 gpt-image-2 — 아빠의 영어 모의고사 Q3–4 사진(관문 P, §20·docs/harness/toeic.md §4-10)과 은우 자유대화 주제 일러스트(§21-7)가 공유
 OPENAI_IMAGE_QUALITY= # 선택. 토익 사진 품질 low|medium|high|auto, 기본 medium(모르는 값도 medium) — §20. 자유대화 일러스트는 medium 고정(이 env를 보지 않는다)
 OPENAI_TRANSCRIBE_MODEL= # 선택. 아빠의 영어 답변 음성 전사(관문 T), 기본 gpt-4o-mini-transcribe — §20·docs/harness/toeic.md §5-0
 OPENAI_REALTIME_MODEL= # 선택. 은우 자유대화 실시간 음성 모델(관문 R), 기본 gpt-realtime-2.1 — §21·docs/harness/english.md §12
 OPENAI_REALTIME_VOICE= # 선택. 자유대화 선생님 음성, 기본 marin — §21
 OPENAI_REALTIME_TRANSCRIBE_MODEL= # 선택. 자유대화 중 은우 발화 전사 모델, 기본 gpt-4o-mini-transcribe(전사 언어는 영어 고정) — §21
-OPENAI_TALK_CARDS_MODEL= # 선택. 자유대화 화면 카드(호출 J — 선생님 줄마다 도움·그림 카드), 기본 gpt-4.1-mini(비추론 소형, OPENAI_MODEL과 따로) — §21-7·docs/harness/english.md §12-7
+OPENAI_TALK_CARDS_MODEL= # 선택. 자유대화 화면 카드(호출 J — 선생님 줄마다 도움·그림 카드), 기본 gpt-6-luna(OPENAI_MODEL과 따로 — 카드만 비추론 소형으로 바꿀 길, 예: gpt-4.1-mini) — §21-7·docs/harness/english.md §12-7
 ```
 
-> 선택 변수(모델·검산 모델·TTS 모델·음성·사진 모델·사진 품질·전사 모델·실시간 음성 모델·선생님 음성·대화 전사 모델·화면 카드 모델)는 **비워 두거나 빼면 기본값**이다 — 빈 값·공백도 미설정으로 본다(`lib/ai/client.ts` `resolveModel`·`resolveVerifyModel`·`resolveTalkCardsModel`, `lib/tts.ts` `resolveTtsModel`·`resolveTtsVoice`, 사진 공용 코어 `lib/image-gen.ts` `resolveImageModel`·`normalizeImageQuality`(토익 `lib/toeic-image.ts` `resolveToeicImageModel`·`resolveToeicImageQuality`와 자유대화 `lib/talk-image.ts` `resolveTalkImageModel`이 이 코어를 부른다), `lib/toeic-transcribe.ts` `resolveToeicTranscribeModel`, 자유대화 관문 R `lib/talk-session-config.ts` `resolveTalkRealtimeModel`·`resolveTalkRealtimeVoice`·`resolveTalkTranscribeModel`이 `?.trim() ||`로 폴백). 2026-09-24 전에는 `??`라 위 템플릿처럼 `KEY=`를 빈 값으로 남기면 빈 문자열이 그대로 쓰였다(모델 ID `""`로 호출 실패, 발음은 조용히 기기 음성만). 사진 품질은 한 걸음 더 — 모르는 값도 `medium`으로 되돌린다(그대로 보내면 400이라 사진이 조용히 사라진다). 사진·전사·실시간 음성도 키는 `OPENAI_API_KEY` 하나이고, 없으면 네트워크 호출 없이 라우트가 501을 낸다(자유대화는 연결·일러스트·hangup·화면 카드 라우트 — 대화 저장과 저장된 설명 다시 보기는 키 없이도 된다, §21-3).
+> 선택 변수(모델·검산 모델·토익 출제·채점 모델·TTS 모델·음성·사진 모델·사진 품질·전사 모델·실시간 음성 모델·선생님 음성·대화 전사 모델·화면 카드 모델)는 **비워 두거나 빼면 기본값**이다 — 빈 값·공백도 미설정으로 본다(`lib/ai/client.ts` `resolveModel`·`resolveVerifyModel`·`resolveTalkCardsModel`, `lib/ai/toeic/model.ts` `resolveToeicModel`, `lib/tts.ts` `resolveTtsModel`·`resolveTtsVoice`, 사진 공용 코어 `lib/image-gen.ts` `resolveImageModel`·`normalizeImageQuality`(토익 `lib/toeic-image.ts` `resolveToeicImageModel`·`resolveToeicImageQuality`와 자유대화 `lib/talk-image.ts` `resolveTalkImageModel`이 이 코어를 부른다), `lib/toeic-transcribe.ts` `resolveToeicTranscribeModel`, 자유대화 관문 R `lib/talk-session-config.ts` `resolveTalkRealtimeModel`·`resolveTalkRealtimeVoice`·`resolveTalkTranscribeModel`이 `?.trim() ||`로 폴백). 2026-09-24 전에는 `??`라 위 템플릿처럼 `KEY=`를 빈 값으로 남기면 빈 문자열이 그대로 쓰였다(모델 ID `""`로 호출 실패, 발음은 조용히 기기 음성만). 사진 품질은 한 걸음 더 — 모르는 값도 `medium`으로 되돌린다(그대로 보내면 400이라 사진이 조용히 사라진다). 사진·전사·실시간 음성도 키는 `OPENAI_API_KEY` 하나이고, 없으면 네트워크 호출 없이 라우트가 501을 낸다(자유대화는 연결·일러스트·hangup·화면 카드 라우트 — 대화 저장과 저장된 설명 다시 보기는 키 없이도 된다, §21-3).
 
 ## 12. 테스트 픽스처 (실물 검증 데이터)
 
@@ -1127,7 +1128,7 @@ type WorkoutMutationResult =
 | AI 채점 | 문항당 전사 1회 + 호출 D 1회(재요청 시 2). Q1–2·무응답은 전사만. 실전 11문항 = 전사 11 + 호출 D 최대 9. 결과 화면을 열면 모범답변·개선 답변 en-US 프리페치 | **버튼**(이미 채점된 문항은 0) |
 
 - 키(`OPENAI_API_KEY`)가 없으면 판독·발화 포인트·만들기·사진·채점 라우트가 **AI보다 먼저** 501로 안내하고(이미 준비된 사진·이미 채점된 문항은 키 없이도 돌려준다), 발음은 기기 음성으로 폴백한다 — 키를 비운 로컬에서 실호출이 구조적으로 불가능하다.
-- 모델: 호출 A~D는 `OPENAI_MODEL`, 사진은 `OPENAI_IMAGE_MODEL`·`OPENAI_IMAGE_QUALITY`, 전사는 `OPENAI_TRANSCRIBE_MODEL`(§11, 빈 값이면 기본값).
+- 모델: 호출 A(판독)·B(발화 포인트)는 `OPENAI_MODEL`(기본 `gpt-6-luna`), 출제·채점인 C(모의고사 문항 — 실전·파트 다시 만들기·한 문제 연습)·D(답변 피드백)는 `OPENAI_TOEIC_MODEL`(기본 `gpt-6.1-sol` — 2026-10-02 사용자 결정, `OPENAI_MODEL`로 폴백하지 않는다), 사진은 `OPENAI_IMAGE_MODEL`·`OPENAI_IMAGE_QUALITY`, 전사는 `OPENAI_TRANSCRIBE_MODEL`(§11, 빈 값이면 기본값).
 
 ### 20-8. 실기기 확인 항목 (아빠 iPhone Safari)
 
@@ -1292,7 +1293,7 @@ type WorkoutMutationResult =
 - 대화 1회에 주제 일러스트 1장(품질 medium, 약 2~5센트 — §21-7. 2026-09-27 low(약 1센트)에서 올렸다 — 넓은 가로 화면에 크게 띄우면 흐려서)이 더해진다. 마이크를 얻은 뒤에만 요청하므로 마이크 거부·대화 전 끝내기에는 생성 요청이 나가지 않고, 대화가 그림보다 먼저 끝나면 요청을 끊는다(그림 없이 저장).
 - 대화 안에서 앱이 선생님 응답을 더 부르는 경로 두 가지에는 상한이 있다 — 도구를 부르고 질문 없이 끝난 응답 뒤의 이어 말하기는 **연속 2회**까지(은우 발화로만 0으로 — 소리 있는 응답으로는 되돌리지 않는다, §21-7), 12초 도움 요청은 **선생님 차례 하나에 한 번**이고, 은우가 말하기 전까지 **연속 2번**(🙋 요청 합산 — 은우가 말을 시작하면 다시 센다, `docs/harness/english.md` §12-6). 상한 전에는 은우가 계속 조용하면 선생님 차례마다 요청이 되풀이됐다(가짜 전송 e2e — 시간 배율 0.2로 5분 상한을 60초로 줄인 대화 — 에서 선생님 차례 18회에 도움 요청 12회). 상한에 닿으면 도움 카드는 그대로 뜨고 요청만 멈춘다.
   (2026-09-27 — 이어 말하기는 없어졌다: 화면 카드를 음성 모델에서 떼어 내며(§21-7) 앱이 선생님 응답을 더 부르는 경로는 **12초·🙋 도움 요청 하나**만 남았다. 앱이 `response.create`를 보내는 것은 첫 인사·도움 요청·마무리뿐이고, 은우가 말하는 중이거나 막 말을 마쳐 선생님 대답을 기다리는 틈에는 보내지 않는다. 연속 2번은 **실제로 보낸** 요청을 센다 — 은우 차례라서, 또는 선생님이 새로 말해서 보내지 않은 요청은 세지 않는다.)
-- 화면 카드(호출 J, 2026-09-27 — §21-7): 선생님 줄마다 소형 텍스트 호출 1회(`gpt-4.1-mini` — env `OPENAI_TALK_CARDS_MODEL`, 대화 1회 약 1센트 안팎). 서버 상한 6초·SDK 자동 재시도 없음이라 실패는 바로 기본 문구로 넘어가고 다시 부르지 않는다(다음 선생님 줄이 새 요청을 만든다). 대신 Realtime 세션의 도구 정의·호출 토큰과 이어 말하기 응답(매번 대화 전체 재입력)이 사라졌다.
+- 화면 카드(호출 J, 2026-09-27 — §21-7): 선생님 줄마다 짧은 텍스트 호출 1회(기본 `gpt-6-luna` — env `OPENAI_TALK_CARDS_MODEL`. 2026-10-01까지 `gpt-4.1-mini`로 대화 1회 약 1센트 안팎이었고, 추론 계열로 바뀐 2026-10-02부터는 실측 전). 서버 상한 6초·SDK 자동 재시도 없음이라 실패는 바로 기본 문구로 넘어가고 다시 부르지 않는다(다음 선생님 줄이 새 요청을 만든다). 대신 Realtime 세션의 도구 정의·호출 토큰과 이어 말하기 응답(매번 대화 전체 재입력)이 사라졌다.
 - 문장 설명 1회(호출 I): 1센트 미만 + 설명 낭독(클라우드 TTS). 같은 문장은 저장된 설명을 쓰므로 한 번만 과금된다(동시에 두 번 탭하면 AI는 두 번 불릴 수 있지만 저장은 한 건).
 - **자동으로 도는 비용은 없다** — 대화는 📞 탭, 설명은 문장 탭으로만 시작한다(화면 카드 호출도 📞로 시작한 대화 안에서만 돈다). 대화 보기는 설명·낭독을 미리 받아 두지 않는다(프리페치 없음).
 

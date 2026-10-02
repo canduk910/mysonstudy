@@ -29,7 +29,7 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { resolveModel } from "@/lib/ai/client";
+import { resolveToeicModel } from "@/lib/ai/toeic/model";
 import { generateMockPart } from "@/lib/ai/toeic/calls";
 import { pickExpressionsForMock } from "@/lib/ai/toeic/mock";
 import { normalizeMockExpressions } from "@/lib/ai/toeic/prompts";
@@ -224,7 +224,7 @@ export async function POST(req: Request) {
       parts,
       drillPart: null,
       answerFlows,
-      model: resolveModel(),
+      model: resolveToeicModel(), // 출제 모델(호출 C) — OPENAI_TOEIC_MODEL
     });
     return json({
       ok: true,

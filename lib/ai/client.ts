@@ -123,11 +123,13 @@ import {
 } from "./japanese/schemas";
 
 /**
- * OPENAI_MODEL 미설정 시 기본 모델.
- * gpt-5.5: OpenAI 공식 문서 기준 비전(이미지 입력)과 Structured Outputs를 모두 지원하는
- * 현행 최신 모델 (developers.openai.com/api/docs/models/gpt-5.5, 2026-08 확인).
+ * OPENAI_MODEL 미설정 시 기본 모델 — 텍스트(Responses API) 호출 전부의 기본값.
+ * gpt-6-luna: 사용자 결정(2026-10-02 — "텍스트 AI 모델은 토익 출제·채점만 gpt-6.1-sol, 나머지는 모두 gpt-6-luna").
+ * 모델 목록에서 존재를 확인했다(오케스트레이터). 설치된 SDK(openai 7.4.0)의 `ChatModel` 목록에는 아직 없어 string이다.
+ * 이전 기본값은 gpt-5.5(2026-08~2026-10-01).
+ * 토익 호출 C·D(출제·채점)는 이 값이 아니라 `lib/ai/toeic/model.ts`의 `resolveToeicModel()`(env `OPENAI_TOEIC_MODEL`)을 쓴다.
  */
-export const DEFAULT_OPENAI_MODEL = "gpt-5.5";
+export const DEFAULT_OPENAI_MODEL: string = "gpt-6-luna";
 
 /**
  * 실제 쓸 모델. **빈 값(`OPENAI_MODEL=`)도 미설정으로 본다** — `??`는 빈 문자열을 그대로 통과시켜,
@@ -148,14 +150,17 @@ export function resolveVerifyModel(): string {
 }
 
 /**
- * 영어 자유대화 호출 J(화면 카드, english.md §12-7)의 기본 모델 — **빠른 비추론 소형 모델**.
- * gpt-4.1-mini: 설치된 SDK(openai 7.4.0)의 모델 목록(`ChatModel`)에 있고, Structured Outputs(strict json_schema)를 지원하며,
- * 추론 토큰을 쓰지 않는다. 그래서 (1) 스펙의 temperature 0.3이 그대로 적용되고(추론 계열은 temperature를 400으로 거부해
- * 한 번 헛돈다) (2) max_output_tokens 600을 숨은 추론 토큰이 먹지 않으며(incomplete → 재요청 → 6초 상한 초과 위험)
- * (3) 선생님 줄마다 부르는 짧은 텍스트 호출의 지연이 작다. 목록의 gpt-5.x mini/nano는 추론 계열이라 고르지 않았다.
+ * 영어 자유대화 호출 J(화면 카드, english.md §12-7)의 기본 모델 — **gpt-6-luna**(메인과 같은 값, 사용자 결정 2026-10-02).
+ * env는 여전히 `OPENAI_TALK_CARDS_MODEL`로 **따로** 둔다 — 메인(`OPENAI_MODEL`)을 바꿔도 카드 모델은 움직이지 않고,
+ * 카드만 빠른 모델로 되돌릴 수 있게(예: `OPENAI_TALK_CARDS_MODEL=gpt-4.1-mini`).
+ * 설치된 SDK(openai 7.4.0)의 `ChatModel` 목록에 gpt-6-luna가 없어 `satisfies OpenAI.ChatModel`을 풀고 string으로 둔다.
+ * 이전 기본값 gpt-4.1-mini(2026-09-27~2026-10-01)는 비추론 소형이라 temperature 0.3·max_output_tokens 600이 그대로 먹었다.
+ * gpt-6-luna는 추론 계열로 보고 처음부터 temperature를 빼고 보낸다(`isKnownTemperatureRejectingModel` — 거부 400 왕복이
+ * 6초 상한을 먹지 않게). 숨은 추론 토큰이 600 한도를 먹으면 incomplete → 재요청 → 6초 초과로 번질 수 있다 — 카드가 자주
+ * 빠지면 env로 비추론 모델을 지정한다(빌드 리포트 common-model-gpt6의 미해결 사항).
  * env `OPENAI_TALK_CARDS_MODEL`로 바꾼다(빈 값·공백이면 이 값 — SPEC §11 빈 값 폴백 관용구).
  */
-export const DEFAULT_TALK_CARDS_MODEL = "gpt-4.1-mini" satisfies OpenAI.ChatModel;
+export const DEFAULT_TALK_CARDS_MODEL: string = "gpt-6-luna";
 
 /** 호출 J 모델 — env `OPENAI_TALK_CARDS_MODEL`(앞뒤 공백 무시), 비면 DEFAULT_TALK_CARDS_MODEL(`||` — 빈 문자열도 미설정) */
 export function resolveTalkCardsModel(): string {
@@ -232,7 +237,8 @@ export interface CallWithSchemaArgs<T> {
   maxOutputTokens: number;
   /**
    * 이 호출에만 쓸 모델. 생략하면 `OPENAI_MODEL`.
-   * 수학 호출 C(검산)가 `resolveVerifyModel()`을 넘겨 심판만 다른 모델로 돌리는 데 쓴다(수학 §1).
+   * 수학 호출 C(검산)가 `resolveVerifyModel()`을, 영어 호출 J가 `resolveTalkCardsModel()`을, 토익 호출 C·D(출제·채점)가
+   * `resolveToeicModel()`(lib/ai/toeic/model.ts)을 넘긴다 — 과목 분기는 호출부에서, 래퍼는 받은 값만 쓴다.
    */
   model?: string;
   /**
@@ -318,6 +324,22 @@ function validateResponse<T>(
 // 한 번 거부한 모델은 기억해 두고 이후 호출에서는 처음부터 파라미터를 뺀다.
 const modelsRejectingTemperature = new Set<string>();
 
+/**
+ * 이름만으로 **temperature를 거부한다고 알려진** 모델인가 — 순수 함수, 과목 분기 없음(모델 이름만 본다).
+ * 참이면 `callWithSchema`가 첫 요청부터 temperature를 싣지 않는다. 런타임 기억(`modelsRejectingTemperature`)은 프로세스마다
+ * 비어서 시작하므로, Cloud Run 인스턴스가 새로 뜰 때마다 모델별 첫 호출이 거부 400 왕복을 한 번 더 했다 — 시간 상한이
+ * 있는 호출(영어 호출 J 6초)에선 그 왕복이 상한을 먹는다. 그래서 근거가 있는 계열만 미리 뺀다.
+ *
+ * 대상: `gpt-5.6` 이상·`gpt-6.x`의 천체 이름 계열(`-luna`·`-sol`·`-terra`, 날짜 스냅샷 접미사 포함).
+ * 근거: gpt-5.6-luna가 temperature를 400으로 거부한 기록(README §5 "temperature 자동 생략"), gpt-6-luna·gpt-6.1-sol은 같은
+ * 이름 계열의 추론 모델. 목록 밖 모델은 그대로 temperature를 보내고, 거부되면 기존 재시도·기억 경로가 처리한다(보수적 — 받아들이는
+ * 모델의 temperature 다이얼을 잘못 지우지 않게 범위를 좁게 둔다).
+ * eval-english "모델 설정" 행이 입력별 결과를 잠근다.
+ */
+export function isKnownTemperatureRejectingModel(model: string): boolean {
+  return /^gpt-(?:5\.(?:[6-9]|\d{2,})|6(?:\.\d+)?)-(?:luna|sol|terra)(?:-|$)/.test(model.trim());
+}
+
 function isTemperatureUnsupportedError(err: unknown): boolean {
   if (!(err instanceof OpenAI.APIError)) return false;
   if (err.status !== 400) return false;
@@ -350,7 +372,8 @@ export async function callWithSchema<T>(args: CallWithSchemaArgs<T>): Promise<T>
       },
       max_output_tokens: maxOutputTokens,
     };
-    if (!modelsRejectingTemperature.has(model)) params.temperature = temperature;
+    // 알려진 추론 계열(이름) 또는 이 프로세스에서 이미 거부한 모델이면 처음부터 뺀다. 나머지는 싣고, 거부되면 아래에서 1회 재시도.
+    if (!modelsRejectingTemperature.has(model) && !isKnownTemperatureRejectingModel(model)) params.temperature = temperature;
     // 끊는 신호·SDK 재시도 횟수가 있으면 요청마다 넘긴다(재요청·temperature 재시도까지 같은 값 — 호출 전체 상한).
     // 둘 다 없으면 옵션 없이(기존 동작 그대로). 조립 규칙은 순수 함수 하나(buildCallRequestOptions)에 있고 eval이 행동으로 잠근다.
     const requestOptions = buildCallRequestOptions(args);

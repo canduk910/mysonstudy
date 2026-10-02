@@ -19,6 +19,7 @@
 
 import { readFileSync } from "node:fs";
 import {
+  DEFAULT_OPENAI_MODEL,
   DEFAULT_TALK_CARDS_MODEL,
   buildCallRequestOptions,
   chapterizeTranscript,
@@ -26,6 +27,8 @@ import {
   explainTalkSentence,
   generateCard,
   lookupWordMeaning,
+  isKnownTemperatureRejectingModel,
+  resolveModel,
   resolveTalkCardsModel,
   talkCardsAbortSignal,
 } from "../lib/ai/client";
@@ -4923,7 +4926,59 @@ function runTalkCardsCallChecks(): CheckResult[] {
     if (savedModel === undefined) delete process.env.OPENAI_TALK_CARDS_MODEL;
     else process.env.OPENAI_TALK_CARDS_MODEL = savedModel;
   }
-  add("호출 J 기본 모델은 비추론 소형(gpt-4.1-mini — temperature·600토큰이 그대로 적용)", DEFAULT_TALK_CARDS_MODEL === "gpt-4.1-mini");
+  // 2026-10-02 사용자 결정 — 텍스트 모델은 토익 출제·채점(gpt-6.1-sol, eval-toeic)만 빼고 모두 gpt-6-luna
+  add("호출 J 기본 모델 = gpt-6-luna(2026-10-02 사용자 결정 — 메인과 같은 값, env는 OPENAI_TALK_CARDS_MODEL로 따로)", DEFAULT_TALK_CARDS_MODEL === "gpt-6-luna");
+  add("메인 기본 모델 DEFAULT_OPENAI_MODEL = gpt-6-luna(2026-10-02 사용자 결정)", DEFAULT_OPENAI_MODEL === "gpt-6-luna");
+  {
+    const savedMain = process.env.OPENAI_MODEL;
+    const savedCards = process.env.OPENAI_TALK_CARDS_MODEL;
+    try {
+      const got: string[] = [];
+      for (const v of [undefined, "", "   "]) {
+        if (v === undefined) delete process.env.OPENAI_MODEL;
+        else process.env.OPENAI_MODEL = v;
+        got.push(resolveModel());
+      }
+      process.env.OPENAI_MODEL = " gpt-x-main ";
+      delete process.env.OPENAI_TALK_CARDS_MODEL;
+      got.push(resolveModel(), resolveTalkCardsModel());
+      add(
+        "메인 모델: env 미설정·빈 값·공백 → gpt-6-luna, 값은 앞뒤 공백을 걷어 그대로 · OPENAI_MODEL을 바꿔도 호출 J는 자기 기본값(따로 둔 env)",
+        got.join("|") === ["gpt-6-luna", "gpt-6-luna", "gpt-6-luna", "gpt-x-main", "gpt-6-luna"].join("|"),
+        got.join("|"),
+      );
+    } finally {
+      if (savedMain === undefined) delete process.env.OPENAI_MODEL;
+      else process.env.OPENAI_MODEL = savedMain;
+      if (savedCards === undefined) delete process.env.OPENAI_TALK_CARDS_MODEL;
+      else process.env.OPENAI_TALK_CARDS_MODEL = savedCards;
+    }
+  }
+  {
+    // temperature 사전 판정 — 알려진 추론 계열(천체 이름 계열)만 처음부터 뺀다. 목록 밖은 보내고, 거부되면 런타임 재시도·기억.
+    const rows: Array<[string, boolean]> = [
+      ["gpt-6-luna", true],
+      ["gpt-6.1-sol", true],
+      ["gpt-6.1-sol-2026-09-30", true],
+      ["gpt-6-terra", true],
+      ["gpt-5.6-luna", true],
+      [" gpt-6-luna ", true],
+      ["gpt-4.1-mini", false],
+      ["gpt-5.5", false],
+      ["gpt-6", false],
+      ["gpt-5.4-mini", false],
+      ["gpt-5-luna", false],
+      ["gpt-6-lunar", false],
+      ["gpt-realtime-2.1", false],
+      ["", false],
+    ];
+    const bad = rows.filter(([m, want]) => isKnownTemperatureRejectingModel(m) !== want).map(([m]) => JSON.stringify(m));
+    add(
+      "temperature 사전 판정 isKnownTemperatureRejectingModel: gpt-5.6+·gpt-6.x의 luna/sol/terra(스냅샷 포함)만 참 — 기본 둘(gpt-6-luna·gpt-6.1-sol)은 첫 요청부터 temperature 없음",
+      bad.length === 0 && isKnownTemperatureRejectingModel(DEFAULT_OPENAI_MODEL) && isKnownTemperatureRejectingModel(DEFAULT_TALK_CARDS_MODEL),
+      bad.join(", ") || "ok",
+    );
+  }
   add("호출 J 옵션 = talk_cards · 0.3 · 600 · 6초", TALK_CARDS_CALL_OPTIONS.call === "talk_cards" && TALK_CARDS_CALL_OPTIONS.temperature === 0.3 && TALK_CARDS_CALL_OPTIONS.maxOutputTokens === 600 && TALK_CARDS_TIMEOUT_MS === 6000);
   return results;
 }
@@ -5969,7 +6024,7 @@ function runTalkCardsWiringStaticChecks(read: (rel: string) => string, add: Talk
     `호출 J 배선: SDK 재시도 maxRetries: TALK_CARDS_SDK_MAX_RETRIES(= ${TALK_CARDS_SDK_MAX_RETRIES}) — retry-after 대기가 신호를 보지 않아 6초 상한을 뚫는다(QA P3-A)`,
     has("maxRetries: TALK_CARDS_SDK_MAX_RETRIES") && TALK_CARDS_SDK_MAX_RETRIES === 0,
   );
-  add("호출 J 배선: 모델 model: resolveTalkCardsModel()(빼면 OPENAI_MODEL — 추론형이면 temperature 거부·숨은 토큰이 600 한도를 먹는다)", has("model: resolveTalkCardsModel()"));
+  add("호출 J 배선: 모델 model: resolveTalkCardsModel()(빼면 OPENAI_MODEL로 간다 — 카드 모델을 따로 바꿀 길이 사라진다)", has("model: resolveTalkCardsModel()"));
   add(
     "호출 J 배선: jsonSchema: TALK_SCREEN_CARDS_JSON_SCHEMA · zodSchema: talkScreenCardsSchema · system: TALK_CARDS_SYSTEM_PROMPT · user: buildTalkCardsUserMessage(input)",
     has("jsonSchema: TALK_SCREEN_CARDS_JSON_SCHEMA") &&
@@ -5999,6 +6054,14 @@ function runTalkCardsWiringStaticChecks(read: (rel: string) => string, add: Talk
       wrapper.split("responses.create(params, requestOptions)").length - 1 === 2 &&
       wrapper.split("responses.create(").length - 1 === 2,
     opts.slice(0, 160) || "requestOptions 조립 없음",
+  );
+  // temperature를 싣는 조건 — 이 프로세스에서 거부한 모델이 아니고(런타임 기억) 이름으로 알려진 추론 계열도 아닐 때만(2026-10-02).
+  // 사전 판정을 빼면 gpt-6-luna 호출 J가 인스턴스마다 첫 카드에서 거부 400 왕복을 한 번 더 해 6초 상한을 먹는다.
+  add(
+    "공유 래퍼: temperature는 !modelsRejectingTemperature.has(model) && !isKnownTemperatureRejectingModel(model)일 때만 싣는다(거부 재시도 경로는 그대로)",
+    wrapper.includes("if (!modelsRejectingTemperature.has(model) && !isKnownTemperatureRejectingModel(model)) params.temperature = temperature;") &&
+      wrapper.includes("modelsRejectingTemperature.add(model);") &&
+      wrapper.includes("delete params.temperature;"),
   );
 }
 

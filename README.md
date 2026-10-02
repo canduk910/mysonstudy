@@ -34,8 +34,9 @@ npm run dev    # http://localhost:3100 (다른 로컬 프로젝트와의 포트 
 | 변수 | 필수 | 설명 |
 |---|---|---|
 | `OPENAI_API_KEY` | AI 생성 시 필수 | 서버 전용. 표지 판독(vision)·카드 생성에 사용. 없으면 시드 데모만 가능 |
-| `OPENAI_MODEL` | 선택 | 기본값 `gpt-5.5` — 비전 입력 + Structured Outputs + Responses API를 모두 지원하는 최신 모델(OpenAI 공식 문서 2026-08 확인). 스냅샷 고정이 필요하면 `gpt-5.5-2026-04-23` 지정 |
+| `OPENAI_MODEL` | 선택 | 텍스트 AI 호출 공통 모델(토익 출제·채점 제외). 기본값 `gpt-6-luna` — 2026-10-02 사용자 결정("텍스트 모델은 토익 출제·채점만 `gpt-6.1-sol`, 나머지는 모두 `gpt-6-luna`"). 이전 기본값은 `gpt-5.5` |
 | `OPENAI_MODEL_VERIFY` | 선택 | 수학 검산(호출 C) 전용 모델. 비어 있거나 없으면 `OPENAI_MODEL` — 답을 독립적으로 다시 푸는 심판만 더 강한 모델로 올릴 여지(`docs/harness/math.md` §1) |
+| `OPENAI_TOEIC_MODEL` | 선택 | 아빠의 영어(토익스피킹) **출제·채점** 모델 — 모의고사 문항 생성(호출 C — 실전·파트 다시 만들기·한 문제 연습)과 답변 피드백(호출 D), `lib/ai/toeic/model.ts` `resolveToeicModel`. 기본값 `gpt-6.1-sol`. `OPENAI_MODEL`로 폴백하지 않는다(표현집 판독·발화 포인트는 `OPENAI_MODEL`) |
 | `OPENAI_TTS_MODEL` | 선택 | 클라우드 발음(§16)용 TTS 모델. 기본값 `gpt-4o-mini-tts` — 기기 음성보다 자연스러운 최신 TTS. 스냅샷 고정은 `gpt-4o-mini-tts-2025-12-15`. 미설정이어도 기본값으로 동작(별도 설정 불필요) |
 | `OPENAI_TTS_VOICE` | 선택 | 발음 음성. 기본값 `alloy`(en-US·ja-JP·ko-KR 한 음성 공용 — ko-KR은 일본어 해설 듣기(§18)와 운동 세션 음성 안내(§19-6)용). 더 따뜻한 톤은 `nova`·`coral`·`sage` 등으로 교체. `OPENAI_API_KEY`가 없으면 자동으로 기기 음성으로 폴백 |
 | `OPENAI_IMAGE_MODEL` | 선택 | 사진 생성 모델. 기본값 `gpt-image-2`. 아빠의 영어 모의고사 Q3–4 사진(관문 P, `lib/toeic-image.ts` — 1536×1024 JPEG, `toeicImages` 문서 하나)과 은우 자유대화 주제 일러스트(`lib/talk-image.ts` — 1024×1024, 품질 medium 고정, `talkImages` 문서 하나)가 같은 공용 코어(`lib/image-gen.ts`)로 만든다(data URL 900,000자 상한) |
@@ -44,7 +45,7 @@ npm run dev    # http://localhost:3100 (다른 로컬 프로젝트와의 포트 
 | `OPENAI_REALTIME_MODEL` | 선택 | 은우 자유대화 실시간 음성 모델(관문 R, `lib/talk-session-config.ts`). 기본값 `gpt-realtime-2.1`(사용자 선택 — mini보다 비싸고 더 자연스럽다). `gpt-realtime-2` 계열일 때만 세션에 `reasoning.effort: low`를 싣는다(비추론 모델로 바꿔도 연결이 거부되지 않게) |
 | `OPENAI_REALTIME_VOICE` | 선택 | 자유대화 선생님(Sunny) 음성. 기본값 `marin`. 대화 뒤 설명 낭독은 앱 공통 발음 음성(`OPENAI_TTS_VOICE`)이라 목소리가 다르다 |
 | `OPENAI_REALTIME_TRANSCRIBE_MODEL` | 선택 | 자유대화 중 은우 발화 전사 모델. 기본값 `gpt-4o-mini-transcribe`. 전사 언어는 영어 고정(`language: "en"` — 자동 감지가 아이 영어를 다른 언어로 적었다), 단어장 단어를 `prompt`로 주지 않는다 |
-| `OPENAI_TALK_CARDS_MODEL` | 선택 | 자유대화 화면 카드(호출 J — 선생님 줄마다 도움 카드·그림 카드, `lib/ai/client.ts` `resolveTalkCardsModel`). 기본값 `gpt-4.1-mini` — `OPENAI_MODEL`과 따로 둔 비추론 소형 모델이다(temperature 0.3이 그대로 먹고, 숨은 추론 토큰이 출력 한도 600을 먹어 서버 6초 상한을 넘기지 않게). 추론형 모델로 바꾸면 카드가 늦거나 자주 빠질 수 있다 |
+| `OPENAI_TALK_CARDS_MODEL` | 선택 | 자유대화 화면 카드(호출 J — 선생님 줄마다 도움 카드·그림 카드, `lib/ai/client.ts` `resolveTalkCardsModel`). 기본값 `gpt-6-luna`(2026-10-02 사용자 결정 — 이전 `gpt-4.1-mini`). `OPENAI_MODEL`과 따로 둔 env라 카드만 바꿀 수 있다. `gpt-6-luna`는 추론 계열로 보아 temperature 없이 보내고(거부 왕복이 6초 상한을 먹지 않게), 숨은 추론 토큰이 출력 한도 600을 먹으면 카드가 늦거나 빠질 수 있다 — 그러면 비추론 소형(`gpt-4.1-mini`)을 지정한다 |
 | `GOOGLE_BOOKS_API_KEY` | 선택 | 책 식별(ISBN·소개글·썸네일)용. 없으면 무키 호출(쿼터 낮음) — 실패 시 Open Library로 자동 폴백 |
 | `SUPADATA_API_KEY` | 선택 | 서버 전용. 고른 유튜브 낭독 영상의 자막을 가져와 카드·챕터 리더의 근거로 사용(없으면 자막 grounding만 비활성, 기본 카드 생성은 정상) |
 | `YOUTUBE_API_KEY` | 선택 | 서버 전용. 책 제목·저자로 낭독 영상 후보를 검색(YouTube Data API v3). 없으면 낭독 영상 자동 검색만 비활성 |
@@ -52,7 +53,7 @@ npm run dev    # http://localhost:3100 (다른 로컬 프로젝트와의 포트 
 | `STORE_BACKEND` | 선택 | `firestore` \| `file`. 미설정 시 자동 감지 — GCP 신호(`GOOGLE_APPLICATION_CREDENTIALS`/`K_SERVICE`/`GOOGLE_CLOUD_PROJECT`)가 있으면 firestore, 없으면 file |
 | `APP_PIN` | **배포 시 필수** | 접속 잠금 PIN(숫자 **6~8자리 권장**, 최소 4자리 — 4자리는 경우의 수가 1만뿐이라 짧습니다). 서버 전용. 도메인이 공개돼도 가족 외 접속과 AI 비용 유출을 막습니다. **프로덕션에서 미설정이면 전 요청을 503으로 차단**(fail-closed), 로컬 개발에서 미설정이면 잠금 없이 통과 |
 
-> 선택 변수(`OPENAI_MODEL`·`OPENAI_MODEL_VERIFY`·`OPENAI_TTS_MODEL`·`OPENAI_TTS_VOICE`·`OPENAI_IMAGE_MODEL`·`OPENAI_IMAGE_QUALITY`·`OPENAI_TRANSCRIBE_MODEL`·`OPENAI_REALTIME_MODEL`·`OPENAI_REALTIME_VOICE`·`OPENAI_REALTIME_TRANSCRIBE_MODEL`·`OPENAI_TALK_CARDS_MODEL`)는 **비워 두거나(`X=`) 빼면 기본값**이 쓰입니다 — 빈 값·공백도 미설정으로 봅니다(`lib/ai/client.ts` `resolveModel`·`resolveVerifyModel`·`resolveTalkCardsModel`, `lib/tts.ts`, `lib/image-gen.ts`(사진 공용 코어), `lib/toeic-image.ts`, `lib/toeic-transcribe.ts`, `lib/talk-session-config.ts`). 사진·전사·실시간 음성도 키는 `OPENAI_API_KEY` 하나이고, 없으면 해당 라우트가 네트워크 호출 없이 501입니다. 2026-09-24 전에는 `??` 폴백이라 `.env.example`을 그대로 복사하면 빈 문자열이 모델 ID로 새어 호출이 실패하거나 발음이 조용히 기기 음성으로만 났습니다.
+> 선택 변수(`OPENAI_MODEL`·`OPENAI_MODEL_VERIFY`·`OPENAI_TOEIC_MODEL`·`OPENAI_TTS_MODEL`·`OPENAI_TTS_VOICE`·`OPENAI_IMAGE_MODEL`·`OPENAI_IMAGE_QUALITY`·`OPENAI_TRANSCRIBE_MODEL`·`OPENAI_REALTIME_MODEL`·`OPENAI_REALTIME_VOICE`·`OPENAI_REALTIME_TRANSCRIBE_MODEL`·`OPENAI_TALK_CARDS_MODEL`)는 **비워 두거나(`X=`) 빼면 기본값**이 쓰입니다 — 빈 값·공백도 미설정으로 봅니다(`lib/ai/client.ts` `resolveModel`·`resolveVerifyModel`·`resolveTalkCardsModel`, `lib/ai/toeic/model.ts` `resolveToeicModel`, `lib/tts.ts`, `lib/image-gen.ts`(사진 공용 코어), `lib/toeic-image.ts`, `lib/toeic-transcribe.ts`, `lib/talk-session-config.ts`). 사진·전사·실시간 음성도 키는 `OPENAI_API_KEY` 하나이고, 없으면 해당 라우트가 네트워크 호출 없이 501입니다. 2026-09-24 전에는 `??` 폴백이라 `.env.example`을 그대로 복사하면 빈 문자열이 모델 ID로 새어 호출이 실패하거나 발음이 조용히 기기 음성으로만 났습니다.
 
 ## 3. Cloud Run 배포 (서울, 소스 배포)
 
@@ -82,7 +83,8 @@ gcloud run deploy eunwoo-bookcard \
   --region asia-northeast3 \
   --allow-unauthenticated \
   --set-secrets OPENAI_API_KEY=openai-api-key:latest,APP_PIN=app-pin:latest \
-  --set-env-vars OPENAI_MODEL=gpt-5.5
+  --set-env-vars OPENAI_MODEL=gpt-6-luna,OPENAI_TOEIC_MODEL=gpt-6.1-sol
+# 두 값은 코드 기본값과 같다(빼도 된다). 이미 배포된 서비스에 옛 값(예: OPENAI_MODEL=gpt-5.5)이 박혀 있으면 env가 기본값보다 우선이라 코드 기본값 변경이 먹지 않는다
 # GOOGLE_BOOKS_API_KEY를 쓰려면 --set-env-vars에 추가(또는 Secret으로)
 
 # 4) 런타임 서비스 계정에 Firestore 권한 (기본 컴퓨트 SA를 쓰는 경우)
@@ -167,12 +169,12 @@ gcloud run deploy eunwoo-bookcard --source . --region asia-northeast3
 
 | 판단 | 내용 |
 |------|------|
-| temperature 자동 생략 | 추론 계열 모델(예: gpt-5.6-luna)은 temperature 파라미터를 400으로 거부한다. callWithSchema가 첫 거부 시 파라미터를 빼고 재시도하며 모델별로 기억한다 — HARNESS §1의 temperature 다이얼은 이런 모델에는 적용되지 않는다 |
+| temperature 자동 생략 | 추론 계열 모델(예: gpt-5.6-luna)은 temperature 파라미터를 400으로 거부한다. callWithSchema가 첫 거부 시 파라미터를 빼고 재시도하며 모델별로 기억한다 — HARNESS §1의 temperature 다이얼은 이런 모델에는 적용되지 않는다. 2026-10-02부터 이름으로 알려진 계열(`gpt-5.6`+·`gpt-6.x`의 `-luna`·`-sol`·`-terra` — `isKnownTemperatureRejectingModel`)은 첫 요청부터 뺀다: 기억은 프로세스마다 비어 시작해 Cloud Run 인스턴스가 뜰 때마다 거부 왕복이 한 번 더 났고, 6초 상한의 화면 카드(호출 J)에선 그 왕복이 상한을 먹는다 |
 | 질문 유형: 사실확인 1개 확정 | HARNESS §3-1의 "논픽션 사실확인 2개"와 §4 zod의 "유형 중복 금지"가 모순이었음 — 사용자 결정(2026-08-16)으로 사실확인 1개·유형 중복 금지로 통일, HARNESS·SPEC·prompts.ts 동기 수정 |
 
 | 판단 | 내용과 근거 |
 |---|---|
-| `OPENAI_MODEL` 기본값 `gpt-5.5` | OpenAI 공식 모델 문서(2026-08 확인) 기준 비전 입력·`structured_outputs`·Responses API를 모두 지원하는 현행 최신 세대. 날짜 미고정 별칭이라 스냅샷 갱신을 자동 수용 |
+| `OPENAI_MODEL` 기본값 `gpt-6-luna`, 토익 출제·채점 `gpt-6.1-sol` | 2026-10-02 사용자 결정. 처음 기본값은 `gpt-5.5`(OpenAI 공식 모델 문서 2026-08 확인 — 비전 입력·`structured_outputs`·Responses API). 출제·채점만 `OPENAI_TOEIC_MODEL`로 따로 둬 메인을 바꿔도 따라 움직이지 않는다. 날짜 미고정 별칭이라 스냅샷 갱신을 자동 수용 |
 | strict 스키마 ↔ 선택 필드 | Structured Outputs strict 모드는 선택 필드를 null 유니온 필수로 요구 — SPEC §6 타입을 `?: T \| null`로 표기해 zod 출력이 그대로 대입되게 함 |
 | 판독 수치의 범위 밖 값은 "미상" 강등 | 오독(예: Lexile "BR40L" → -40)이 400 오류 루프가 되지 않게 클라이언트에서 서버 zod 경계 밖 수치를 null로 정리 → 레벨 추정 경로가 흡수 |
 | 키 없음(501)을 어떤 검증보다 먼저 | 키 없는 로컬 데모에서 어떤 입력이든 동일한 안내를 받게 |
@@ -183,7 +185,7 @@ gcloud run deploy eunwoo-bookcard --source . --region asia-northeast3
 | 전사에 기대 문장을 주지 않고, Q1–2는 LLM이 채점하지 않음 | 지문·모범답변을 전사 `prompt`로 넣으면 전사가 그쪽으로 끌려가 점수가 부풀려진다 — 함수에 prompt 인자 자체가 없고 eval이 소스를 정적으로 본다. 전사문으로는 발음·억양을 알 수 없으니 지문 읽기(Q1–2)는 LLM에게 점수를 지어내게 하지 않고 전사문↔지문 단어 정렬(순수 함수)로 참고 점수만 낸다 |
 | 모의고사 문항은 AI 신작 | 기출·ETS 공식 샘플은 저작권이 ETS에 있어 넣지 않는다 — 형식·시간만 맞추고, 파트 지시문도 이 앱의 문장이다 |
 | 자유대화 음성은 하네스 밖 관문 R | 실시간 음성 대화는 JSON이 아니라 음성·전사 이벤트라 `callWithSchema`·zod·재요청에 넣지 않는다 — 키 규약만 공유(키가 없으면 연결 라우트가 501). 브라우저 ↔ OpenAI는 WebRTC로 직접 잇고, 서버는 SDP 교환(`/v1/realtime/calls`)과 hangup만 표준 키로 중계해 키가 폰에 가지 않는다. 정확성은 다른 자리에서 잡는다 — 지시문 원문 spec-sync(`block-exact`), 세션 설정은 SDK GA 타입, 스크립트는 순수 리듀서. 대화 중 화면 카드(호출 J)와 대화 뒤 문장 설명(호출 I)은 하네스 안이다 |
-| 화면 카드를 선생님 음성 모델에서 떼어 냄(2026-09-27) | 처음엔 선생님(Realtime)이 도구 호출로 도움·그림 카드를 보냈다. 그런데 선생님이 질문 없는 연결 멘트를 하고 도구를 부르면 응답이 거기서 끝나고, 질문을 빠뜨리지 않으려던 앱의 "이어 말하기"가 앞말을 잇지 않는 **새 응답**을 만들어 은우 말에 처음부터 다시 답했다 — 보호자 iPhone에서 "선생님이 두 명처럼" 들렸다. 지시문으로 막는 것은 확률적이라 음성 모델에서 도구를 없앴다(세션에 `tools` 없음, 지시문 끝에 차례 규칙 — 한 차례를 한 번에, 질문으로 끝낸다). 카드는 선생님 줄마다 앱이 소형 텍스트 모델로 따로 만든다(`/api/english/talk/cards`, `gpt-4.1-mini`, 서버 6초·SDK 재시도 0 — 늦은 도움은 철 지난 도움이라 기다릴 가치가 없다). 줄마다 출처(`reply`·`greeting`·`nudge`·`wrapup`)를 저장해 `?debug=1`로 다음 신고를 증거로 가른다 |
+| 화면 카드를 선생님 음성 모델에서 떼어 냄(2026-09-27) | 처음엔 선생님(Realtime)이 도구 호출로 도움·그림 카드를 보냈다. 그런데 선생님이 질문 없는 연결 멘트를 하고 도구를 부르면 응답이 거기서 끝나고, 질문을 빠뜨리지 않으려던 앱의 "이어 말하기"가 앞말을 잇지 않는 **새 응답**을 만들어 은우 말에 처음부터 다시 답했다 — 보호자 iPhone에서 "선생님이 두 명처럼" 들렸다. 지시문으로 막는 것은 확률적이라 음성 모델에서 도구를 없앴다(세션에 `tools` 없음, 지시문 끝에 차례 규칙 — 한 차례를 한 번에, 질문으로 끝낸다). 카드는 선생님 줄마다 앱이 소형 텍스트 모델로 따로 만든다(`/api/english/talk/cards`, `gpt-4.1-mini` — 2026-10-02부터 기본 `gpt-6-luna`, 서버 6초·SDK 재시도 0 — 늦은 도움은 철 지난 도움이라 기다릴 가치가 없다). 줄마다 출처(`reply`·`greeting`·`nudge`·`wrapup`)를 저장해 `?debug=1`로 다음 신고를 증거로 가른다 |
 | 앱이 선생님에게 넣는 안내는 숨은 system 메시지 | 첫 인사·5분 마무리·도움 요청·일러스트 안내를 `response.create`의 응답 단위 `instructions`로 보내면 그 응답에서 세션 지시문(성격·안전 규칙)이 **덮어써진다** — 그래서 `app_` id의 system 메시지 항목 + 인자 없는 `response.create`로 보낸다(일러스트 안내는 메시지만). 원문은 서버 컴포넌트 props·장면 라우트 응답으로 내려 선생님 지시문·호출 I 프롬프트는 폰 번들에 싣지 않는다 |
 | 사진 생성 공용 코어 | 토익 모의고사 사진과 자유대화 일러스트가 모델 env·키 규약·JPEG 조립·크기 초과 재생성을 `lib/image-gen.ts` 하나로 쓰고 과목별 설정(품질·크기·압축·프롬프트·로그 태그)만 인자로 넘긴다 — 코어는 과목을 모른다(`lib/ai/client.ts`에 과목 분기를 두지 않는 원칙). 토익 동작은 불변(HEAD 대조) |
 | 토익 한 문제 연습은 모의고사 생성기 그대로, 틀은 "활용할 표현" 앞자리로(2026-09-27) | 새 프롬프트를 만들면 spec-sync·zod·eval이 두 벌이 된다 — 호출 C 파트 하나를 그대로 부르고(Q3–4는 두 장면 중 하나만 남겨 사진 1장), 그 유형 틀을 `~` 형태로 바꿔 기존 입력 "활용할 표현" 맨 앞에 둔다(답변 흐름의 단계마다 하나 먼저). 그러면 모범답변이 틀을 쓰고 피드백 D의 "넣었으면 좋았을 표현"이 틀을 짚는다(프롬프트 변경 0). 결과 화면의 "🧩 틀 점검"은 채점 때 만든 전사문과 저장된 출력만 쓰는 순수 함수다(AI 0) |

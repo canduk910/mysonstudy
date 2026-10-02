@@ -31,7 +31,7 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { resolveModel } from "@/lib/ai/client";
+import { resolveToeicModel } from "@/lib/ai/toeic/model";
 import { generateMockPart } from "@/lib/ai/toeic/calls";
 import { pickExpressionsForDrill } from "@/lib/ai/toeic/mock";
 import { normalizeMockExpressions } from "@/lib/ai/toeic/prompts";
@@ -194,7 +194,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ part: s
       parts,
       drillPart: mockPart,
       answerFlows: answerFlow ? [answerFlow] : [],
-      model: resolveModel(),
+      model: resolveToeicModel(), // 출제 모델(호출 C) — OPENAI_TOEIC_MODEL
     });
     return json({ ok: true, id: record.id, titleKo: record.titleKo, mockPart, expressionsCount: expressions.length });
   } catch (err) {
