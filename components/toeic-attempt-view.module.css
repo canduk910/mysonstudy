@@ -558,3 +558,53 @@
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+
+/* 2026-10-02 템플릿 중심(docs/harness/toeic.md §12-13-3) — 모의고사 결과의 틀 점검 접기·머리 요약·모범답변 점검 줄. 기존 토큰만 */
+.tplSummary {
+  margin: 6px 0 0;
+  color: var(--accent-ink);
+  font-size: 15px;
+  font-weight: var(--fw-bold);
+  word-break: keep-all;
+}
+.tplCheckFold {
+  padding: 4px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+}
+.tplCheckFold[open] {
+  padding-bottom: 12px;
+}
+.tplCheckBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+}
+.tplCheckSummary {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: var(--fw-bold);
+  word-break: keep-all;
+  cursor: pointer;
+}
+.usedFrame {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.flowCheck {
+  margin: 4px 0 0;
+  color: var(--accent-ink);
+  font-size: 14px;
+  font-weight: var(--fw-bold);
+}
+.flowWeak {
+  margin: 2px 0 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: keep-all;
+}

@@ -14,16 +14,19 @@
  */
 
 import type { ToeicGuidePart } from "./toeic-guide";
-import type { ToeicTemplateQuizMode } from "./toeic-quiz";
+import type { ToeicTemplateBankMode, ToeicTemplateChoiceMode, ToeicTemplateQuizMode } from "./toeic-quiz";
 import type { ToeicMockPart, ToeicTargetGrade } from "./toeic-mock";
 
-export type { ToeicGuidePart, ToeicTemplateQuizMode };
+export type { ToeicGuidePart, ToeicTemplateQuizMode, ToeicTemplateChoiceMode, ToeicTemplateBankMode };
 
 /**
  * 화면(클라이언트)이 받는 공략·틀 자료의 타입 — 클라이언트 컴포넌트는 lib/ai를 직접 import하지 않고 이 계약 파일에서 타입만 가져간다
  * (`export type` — 컴파일 때 지워져 zod가 폰 번들로 새지 않는다, app-patterns §3).
  */
 export type {
+  ToeicAnswerFlow,
+  ToeicAnswerFlowFrame,
+  ToeicTemplateAlternate,
   ToeicGuideBlock,
   ToeicGuideExpression,
   ToeicGuideLine,
@@ -106,11 +109,12 @@ export type ToeicTemplateTranscribeResponse =
 export interface ToeicTemplateSessionRequest {
   /** 화면이 세션을 시작할 때 만든 소문자 UUID(TOEIC_TEMPLATE_SESSION_ID_RE) */
   clientSessionId: string;
-  mode: ToeicTemplateQuizMode;
+  /** 틀 은행 세션 모드 다섯(§12-13-2) — ② 틀 테스트(말하기) 둘 · ③ 틀 시험(고르기·빈칸) 셋 */
+  mode: ToeicTemplateBankMode;
   startedAt: string;
   /** 끝까지 풀면 ISO, 그만두면 null */
   finishedAt: string | null;
-  /** word = `tpl:{틀 key}`, 한 판 한 틀(중복 거부), 1~10. 그만두면 판정한 문항만 answered true, 나머지 null */
+  /** word = `tpl:{틀 key}`, 한 판 한 틀(중복 거부), 1~10(말하기) · 1~20(틀 시험). 그만두면 판정한 문항만 answered true, 나머지 null */
   items: { word: string; correct: boolean; answered: boolean | null }[];
 }
 

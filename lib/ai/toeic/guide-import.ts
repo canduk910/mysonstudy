@@ -3,7 +3,8 @@
  *
  * - `planToeicGuideImport(file)` — zod를 통과한 가져오기 파일 → 쓸 문서 초안(유형 공략 문서 id `guide-{part}`, 틀 은행 `guide-templates`)과
  *   내용 지문 `contentHash`(SHA-256, 16진). 지문은 **zod 출력**의 JSON.stringify라 키 순서가 스키마 순서로 고정된다 — 파일의 키 순서만
- *   다른 두 파일은 같은 지문이다. 틀 은행의 alignmentSkips는 지문에도 문서에도 넣지 않는다(가져오기 검사용).
+ *   다른 두 파일은 같은 지문이다. 틀 은행의 alignmentSkips는 그대로 넣지 않는다 — `coveredBy`가 있는 것(같은 자리 다른 표현)만 이유 글을
+ *   빼고 문서 `alternates`와 지문에 넣는다(§12-13-1 — 2026-10-02. 배포 뒤 같은 파일을 다시 넣으면 틀 은행이 한 번 updated).
  * - `decideGuideUpsert(items, existing, nowIso)` — 저장소 상태 → created / updated / unchanged / 충돌(preset_key_is_book·part_mismatch·
  *   part_taken). **충돌이 하나라도 있으면 파일 전체를 쓰지 않는다**(409). 스토어(upsertToeicGuides)가 원자 단위(파일 mutate /
  *   Firestore runTransaction) **안에서, 모두 읽은 뒤** 부른다 — 파일에 든 유형들의 `guide-{part}`·`guide-templates` 문서(id로)와
@@ -25,6 +26,7 @@ import { toeicMockPartLabelKo } from "../../toeic-mock-contract";
 import { isToeicSetEnriched } from "./points";
 import {
   toeicGuideEntryContent,
+  toeicTemplateAlternatesFromSkips,
   toeicTemplateBankContent,
   type ToeicBookQuiz,
   type ToeicExprEntry,
@@ -51,8 +53,11 @@ export function toeicGuideContentHash(entry: ToeicGuideFileEntry): string {
   return sha256Hex(JSON.stringify(toeicGuideEntryContent(entry)));
 }
 
-/** 틀 은행 내용 지문 — flows·items의 SHA-256(alignmentSkips 제외 — 건너뜀 이유만 고친 파일은 unchanged) */
-export function toeicTemplateBankContentHash(bank: Pick<ToeicTemplateBankFile, "flows" | "items">): string {
+/**
+ * 틀 은행 내용 지문 — flows·items·alternates(alignmentSkips 중 coveredBy가 있는 것, 이유 글 없음)의 SHA-256(§12-2-5 — 2026-10-02).
+ * 건너뜀 이유만 고친 파일은 unchanged다.
+ */
+export function toeicTemplateBankContentHash(bank: Pick<ToeicTemplateBankFile, "flows" | "items" | "alignmentSkips">): string {
   return sha256Hex(JSON.stringify(toeicTemplateBankContent(bank)));
 }
 
@@ -106,7 +111,7 @@ export function planToeicGuideImport(file: ToeicGuideFile): ToeicGuideImportItem
       docId: TOEIC_TEMPLATE_BANK_ID,
       contentHash,
       titleKo: TOEIC_TEMPLATE_BANK_TITLE_KO,
-      guide: { kind: "templates", flows: bank.flows, items: bank.items, contentHash },
+      guide: { kind: "templates", flows: bank.flows, items: bank.items, alternates: toeicTemplateAlternatesFromSkips(bank.alignmentSkips), contentHash },
       entries: [],
       quiz: [],
     });

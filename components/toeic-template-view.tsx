@@ -5,7 +5,8 @@
  *
  * **틀 보기**(§12-5-1): 흐름 순서(templateFlowOrder — 단계 → 단계 안 묶음 → 소재 묶음 → 기타)로 묶음이 늘어서고, 틀마다 카드 하나 —
  * 영어 틀(고정 부분 굵게·자리 칩, 자리 순서마다 색)과 한국어 틀(같은 자리 이름이 같은 색), useKo, 출처 칩(📘 교재 틀 → 연결된 교재 쪽 /
- * 새 틀), 공통 틀 칩, 배지 자리(두 테스트 모드 + 연결된 표현의 표현 시험 상태 — 읽기만), 예문(🔊, 채움에 자리 색 밑줄). testFills는 보이지
+ * 새 틀), 공통 틀 칩, 배지 자리(두 테스트 모드 + ③ 👀 틀 시험에서 **틀린 것만** "👀 ✕ n" — 2026-10-02 §12-13-2, 고르기 졸업·진행 중은
+ * 카드에 보이지 않는다 — 말하기 숙련처럼 보이지 않게), 예문(🔊, 채움에 자리 색 밑줄). testFills는 보이지
  * 않는다(틀 바꿔 말하기에서 처음 본다). 머리에 "이어서 하기" 카드(첫 미졸업 묶음)와 단계·소재 칩 줄. `?tpl=`로 열리면 그 카드로 스크롤.
  *
  * **따라 말하기 바**(§12-5-2 — sticky, top: var(--streak-h)):
@@ -48,7 +49,6 @@ import {
 } from "@/lib/speech";
 import type { ToeicGuidePart, ToeicTemplate, ToeicTemplateFlow, ToeicTemplateGuideRef } from "@/lib/toeic-guide-contract";
 import {
-  TOEIC_EXPRESSION_BADGE_LABELS_KO,
   TOEIC_SHADOW_RANGES,
   TOEIC_TEMPLATE_BADGE_LABELS_KO,
   countMastered,
@@ -56,6 +56,7 @@ import {
   guidePartShortKo,
   guideRefHref,
   guideRefLabelKo,
+  toeicGuideFolderHref,
   nextShadowGroup,
   readShadowResume,
   shadowHeadIndex,
@@ -72,7 +73,7 @@ import {
   type ToeicShadowRange,
   type ToeicShadowSelection,
 } from "@/lib/toeic-guide-view";
-import { TOEIC_QUIZ_MODE_LABELS_KO, TOEIC_TEMPLATE_QUIZ_MODES, TOEIC_TEMPLATE_QUIZ_MODE_LABELS_KO, type ToeicQuizMode, type ToeicTemplateQuizMode } from "@/lib/toeic-quiz";
+import { TOEIC_TEMPLATE_QUIZ_MODES, TOEIC_TEMPLATE_QUIZ_MODE_LABELS_KO, type ToeicTemplateQuizMode } from "@/lib/toeic-quiz";
 import {
   TOEIC_SHADOW_REPEAT_MAX,
   TOEIC_SHADOW_REPEAT_MIN,
@@ -87,7 +88,6 @@ import {
   type ToeicTemplateBadge,
 } from "@/lib/toeic-template";
 import { TOEIC_TEMPLATE_TEST_MODE_TAG_KO, toeicTemplateTestHref, type ToeicRecentTemplateTest } from "@/lib/toeic-template-test-view";
-import { expressionKey } from "@/lib/toeic-text";
 import s from "./toeic-template-view.module.css";
 
 /** 이어 듣기 기억(기기 localStorage — 대본 서명마다) */
@@ -133,7 +133,8 @@ export default function ToeicTemplateView({
   badges,
   wrongKeys,
   masteredKeys,
-  exprBadges,
+  choiceWrongCounts,
+  readFrameKeys,
   brokenTemplates,
   recentTests,
   wrongCounts,
@@ -148,7 +149,10 @@ export default function ToeicTemplateView({
   badges: Record<ToeicTemplateQuizMode, Record<string, ToeicTemplateBadge>>;
   wrongKeys: string[];
   masteredKeys: string[];
-  exprBadges: Record<string, { mode: ToeicQuizMode; badge: "mastered" | "progress" | "wrong" }[]>;
+  /** ③ 👀 틀 시험 고르기 세 모드 중 그 틀이 틀린(미졸업) 모드 수(0이면 키 없음 — 칩 없음, §12-13-2) */
+  choiceWrongCounts: Record<string, number>;
+  /** ① 본문에 외울 틀 줄이 있는 틀 key — 📘 교재 틀의 같은 유형 표현 연결은 여기에 든 틀만 보인다(§12-13-1 — `?goto=k:{key}`) */
+  readFrameKeys: string[];
   brokenTemplates: number;
   /** 그 유형 틀이 든 틀 세션 최신 10개(서버 요약) */
   recentTests: ToeicRecentTemplateTest[];
@@ -557,10 +561,17 @@ export default function ToeicTemplateView({
   }
 
   // ── 📘 교재 틀 칩 — 연결이 여럿이면 작은 목록 ──
+  // 표현 연결은 ① 공략 읽기의 그 틀 "🧩 외울 틀" 줄로 간다(`?tab=read&goto=k:{틀 key}` — ③ 표현 목록이 사라졌다, §12-13-1). 같은 유형의
+  // 표현 연결은 ① 본문에 그 틀의 외울 틀 줄이 있을 때만 보인다(없으면 갈 자리가 없다 — 교재 표현 목록에만 있는 표현).
   const [refMenu, setRefMenu] = useState<string | null>(null);
-  function goRef(ref: ToeicTemplateGuideRef) {
+  const readFrames = useMemo(() => new Set(readFrameKeys), [readFrameKeys]);
+  const visibleRefs = useCallback(
+    (t: ToeicTemplate) => t.guideRefs.filter((r) => !(r.kind === "expression" && r.part === part && !readFrames.has(t.key))),
+    [part, readFrames],
+  );
+  function goRef(ref: ToeicTemplateGuideRef, key: string) {
     setRefMenu(null);
-    onNavigate(guideRefHref(ref));
+    onNavigate(guideRefHref(ref, key));
   }
 
   const playing = phase === "playing" || phase === "preparing";
@@ -815,10 +826,8 @@ export default function ToeicTemplateView({
                 {g.templates.map((t) => {
                   const tones = slotToneMap(frameSlotNames(t.frameEn));
                   const isCur = curPiece?.key === t.key;
-                  const exprRefs = t.guideRefs.filter((r): r is Extract<ToeicTemplateGuideRef, { kind: "expression" }> => r.kind === "expression" && r.part === part);
-                  const exprLines = exprRefs
-                    .map((r) => exprBadges[expressionKey(r.expression)])
-                    .filter((x): x is NonNullable<typeof x> => Array.isArray(x) && x.length > 0);
+                  const refs = visibleRefs(t);
+                  const choiceWrong = choiceWrongCounts[t.key] ?? 0;
                   const otherParts = t.parts.filter((p) => p !== part);
                   return (
                     <li key={t.key} data-tpl={t.key} className={`${s.card} ${isCur ? s.cardActive : ""} ${flash === t.key ? s.cardFlash : ""}`}>
@@ -830,21 +839,21 @@ export default function ToeicTemplateView({
                       </p>
                       <p className={s.use}>{t.useKo}</p>
                       <div className={s.chips}>
-                        {t.guideRefs.length > 0 ? (
+                        {refs.length > 0 ? (
                           <span className={s.refWrap}>
                             <button
                               type="button"
                               className={s.refChip}
-                              aria-expanded={t.guideRefs.length > 1 ? refMenu === t.key : undefined}
-                              onClick={() => (t.guideRefs.length === 1 ? goRef(t.guideRefs[0]) : setRefMenu((k) => (k === t.key ? null : t.key)))}
+                              aria-expanded={refs.length > 1 ? refMenu === t.key : undefined}
+                              onClick={() => (refs.length === 1 ? goRef(refs[0], t.key) : setRefMenu((k) => (k === t.key ? null : t.key)))}
                             >
                               {t.source === "guide" ? "📘 교재 틀" : "새 틀 · 📘 교재 단계"}
-                              {t.guideRefs.length > 1 ? ` ${t.guideRefs.length}` : ""}
+                              {refs.length > 1 ? ` ${refs.length}` : ""}
                             </button>
                             {refMenu === t.key && (
                               <span className={s.refMenu} role="menu">
-                                {t.guideRefs.map((r, i) => (
-                                  <button key={i} type="button" role="menuitem" className={s.refItem} onClick={() => goRef(r)}>
+                                {refs.map((r, i) => (
+                                  <button key={i} type="button" role="menuitem" className={s.refItem} onClick={() => goRef(r, t.key)}>
                                     {guideRefLabelKo(r, part)}
                                   </button>
                                 ))}
@@ -852,7 +861,7 @@ export default function ToeicTemplateView({
                             )}
                           </span>
                         ) : (
-                          <span className="u-chip">새 틀</span>
+                          <span className="u-chip">{t.source === "guide" ? "📘 교재 틀" : "새 틀"}</span>
                         )}
                         {otherParts.length > 0 && <span className="u-chip">{[part, ...otherParts].map(guidePartShortKo).join(" · ")} 공통</span>}
                         {TOEIC_TEMPLATE_QUIZ_MODES.map((m) => {
@@ -863,11 +872,17 @@ export default function ToeicTemplateView({
                             </span>
                           );
                         })}
-                        {exprLines.map((list, i) => (
-                          <span key={`e${i}`} className="u-chip">
-                            표현 시험: {list.map((x) => `${TOEIC_QUIZ_MODE_LABELS_KO[x.mode]} ${TOEIC_EXPRESSION_BADGE_LABELS_KO[x.badge]}`).join(" · ")}
-                          </span>
-                        ))}
+                        {choiceWrong > 0 && (
+                          <button
+                            type="button"
+                            className={`u-chip ${s.badgeWrong}`}
+                            onClick={() => onNavigate(toeicGuideFolderHref(part, { tab: "quiz" }))}
+                            aria-label={`틀 시험에서 틀린 방식 ${choiceWrong}개 — 틀 시험의 틀린 틀로`}
+                            data-testid={`tpl-choice-wrong-${t.key}`}
+                          >
+                            👀 ✕ {choiceWrong}
+                          </button>
+                        )}
                       </div>
                       <ol className={s.examples}>
                         {t.examples.map((ex, j) => (

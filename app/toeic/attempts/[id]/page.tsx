@@ -9,8 +9,10 @@
  * 유형별 공략의 **한 문제 연습**(모의고사 문서의 drillPart — §12-7-5·§12-7-9):
  * - "뒤로"는 그 유형 폴더 ④ 탭(toeicMockBackLink), 범위 라벨은 "공략 연습 · …"(toeicDrillScopeLabelKo).
  * - 끝 버튼 줄은 "같은 문제 다시"·"새 문제"(학습 보기는 연습을 폴더로 보내므로 "학습 보기로"를 숨긴다 — 결과 화면이 받는 `drill`).
- * - "🧩 틀 점검"(AI 없음): 틀 은행을 읽어 그 유형 틀·흐름과 단계마다 가장 약한 틀을 줄여 넘긴다(toeicDrillCheckData — 클라이언트에는
- *   예문·테스트 채움 없이 틀 줄만). 틀 은행이 없거나 그 유형 틀이 없으면 틀 점검 없이 결과만.
+ * "🧩 틀 점검"(AI 없음 — 2026-10-02부터 **실전 모의고사에도**, docs/harness/toeic.md §12-13-3): 응시 범위의 파트마다(read 제외 — drillPart와
+ * 상관없이) 틀 은행을 읽어 그 유형 틀·흐름과 단계마다 가장 약한 틀을 줄여 넘긴다(toeicTemplateCheckData — 클라이언트에는 예문·테스트 채움 없이
+ * 틀 줄만). 틀 은행이 없거나 그 유형 틀이 0이면 그 파트는 점검이 없다. 모범답변 점검 줄("🧩 모범답변의 틀 n개 · 단계 a/b")은 문서에
+ * **저장된 흐름**(answerFlows — 만들 때의 입력)으로 잰다(옛 문서는 [] → 줄 없음).
  */
 
 import type { Metadata } from "next";
@@ -23,10 +25,11 @@ import { getStore } from "@/lib/store";
 import { buildToeicQuestionViews, toeicDrillScopeLabelKo, toeicScopeLabelKo } from "@/lib/toeic-attempt-contract";
 import { isToeicAttemptClosed } from "@/lib/toeic-attempt-rules";
 import { toeicDrillUnitForMockPart } from "@/lib/toeic-drill";
-import { toeicDrillCheckData, toeicDrillFolderHref, toeicMockBackLink, type ToeicDrillCheckData } from "@/lib/toeic-drill-view";
-import { TOEIC_TEMPLATE_BANK_ID } from "@/lib/toeic-guide";
+import { toeicDrillFolderHref, toeicMockBackLink, toeicTemplateCheckData, type ToeicTemplateCheckData } from "@/lib/toeic-drill-view";
+import { TOEIC_TEMPLATE_BANK_ID, toeicGuidePartOfMockPart } from "@/lib/toeic-guide";
 import { guideTemplatesForPart } from "@/lib/toeic-guide-view";
 import { toeicTakeHref } from "@/lib/toeic-mock-contract";
+import { TOEIC_MOCK_PARTS, type ToeicMockPart } from "@/lib/toeic-mock";
 import { isRenderableToeicMock, isRenderableToeicTemplateBank } from "@/lib/toeic-record";
 
 export const dynamic = "force-dynamic";
@@ -53,23 +56,30 @@ export default async function ToeicAttemptPage({ params }: AttemptPageProps) {
   const qs = attempt.questions;
   const back = toeicMockBackLink(mock);
 
-  // ── 한 문제 연습이면 끝 버튼 줄·틀 점검 자료 ──
-  let drill: ToeicAttemptDrillInfo | null = null;
-  if (mock.drillPart !== null) {
-    const unit = toeicDrillUnitForMockPart(mock.drillPart);
-    let check: ToeicDrillCheckData | null = null;
-    if (unit) {
-      const [bank, bankSessions] = await Promise.all([store.getToeicSet(TOEIC_TEMPLATE_BANK_ID), store.listToeicQuizzes(TOEIC_TEMPLATE_BANK_ID)]);
-      if (bank !== null && isRenderableToeicTemplateBank(bank)) {
-        const doc = bank.guide as { flows: ToeicTemplateFlow[]; items: unknown[] };
-        const { templates } = guideTemplatesForPart(doc.items, unit.part);
-        if (templates.length > 0) check = toeicDrillCheckData(unit.part, templates, doc.flows, bankSessions);
+  const questions = buildToeicQuestionViews(mock.parts, qs);
+
+  // ── 🧩 틀 점검 자료 — 응시 범위의 파트마다(read 제외 — 연습·실전 모의고사 모두, §12-13-3) ──
+  const checks: Partial<Record<ToeicMockPart, ToeicTemplateCheckData>> = {};
+  const checkParts = TOEIC_MOCK_PARTS.filter((p) => toeicGuidePartOfMockPart(p) !== null && questions.some((v) => v.part === p));
+  if (checkParts.length > 0) {
+    const [bank, bankSessions] = await Promise.all([store.getToeicSet(TOEIC_TEMPLATE_BANK_ID), store.listToeicQuizzes(TOEIC_TEMPLATE_BANK_ID)]);
+    if (bank !== null && isRenderableToeicTemplateBank(bank)) {
+      const doc = bank.guide as { flows: ToeicTemplateFlow[]; items: unknown[] };
+      for (const p of checkParts) {
+        const guidePart = toeicGuidePartOfMockPart(p);
+        if (guidePart === null) continue;
+        const { templates } = guideTemplatesForPart(doc.items, guidePart); // 렌더 가능한 틀만(깨진 틀은 빠진다)
+        if (templates.length > 0) checks[p] = toeicTemplateCheckData(guidePart, templates, doc.flows, bankSessions);
       }
     }
+  }
+
+  // ── 한 문제 연습이면 끝 버튼 줄 ──
+  let drill: ToeicAttemptDrillInfo | null = null;
+  if (mock.drillPart !== null && toeicDrillUnitForMockPart(mock.drillPart)) {
     drill = {
       retakeHref: toeicTakeHref(mock.id, "part", mock.drillPart),
       newHref: toeicDrillFolderHref(mock.drillPart),
-      check,
     };
   }
 
@@ -89,8 +99,10 @@ export default async function ToeicAttemptPage({ params }: AttemptPageProps) {
         mockTitleKo={mock.titleKo}
         scopeLabelKo={mock.drillPart !== null ? toeicDrillScopeLabelKo(mock.drillPart, qs) : toeicScopeLabelKo(attempt.scope, attempt.parts)}
         closed={isToeicAttemptClosed(attempt)}
-        questions={buildToeicQuestionViews(mock.parts, qs)}
+        questions={questions}
         drill={drill}
+        checks={checks}
+        answerFlows={mock.answerFlows}
       />
     </main>
   );

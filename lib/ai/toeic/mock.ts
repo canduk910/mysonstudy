@@ -5,28 +5,27 @@
  * - 파트 결과 → 레코드 파트 변환(§4-9): C2는 items[i].image = {status:"pending", imageId:null}을 붙인다(관문 P가 채운다).
  * - 피드백 자료(§5-2 buildFeedbackMaterial)·피드백 후처리(§5-3 tryExpressions는 입력 목록에 있는 것만).
  * - 활용할 표현 고르기(§4-0 pickExpressionsForMock): 세트·시험 통계에서 최대 24개, 숙련도 낮은 것 우선, 없으면 무작위.
+ * - 2026-10-02(§12-13-3): 호출 D 입력에 그 문항 파트의 **답변 흐름**(레코드 answerFlows — 만들 때 보낸 것)을 싣는다. 후처리 두 함수
+ *   (toMockRecordPart·postprocessFeedback)는 받은 허용 목록을 그대로 쓴다 — 흐름 틀을 앞에 합치는 일은 calls.ts가 한다.
  *
  * 실호출 없이 eval이 잠그는 순수 함수다. 값을 만드는 곳은 여기뿐이다.
  */
 
-import { collapseSpaces, matchKey } from "../../toeic-text";
+import { collapseSpaces, expressionKey, matchKey } from "../../toeic-text";
 import { TOEIC_MOCK_PART_NAME_KO, toeicQuestionFormat, type ToeicMockPart } from "../../toeic-mock";
 import { aggregateToeicStatsByMode, TOEIC_QUIZ_MODES, type ToeicQuizSessionLike } from "../../toeic-quiz";
 import { isStatMastered } from "../../vocab-mastery";
 import type { Rng } from "../../vocab-quiz";
-import { TOEIC_DRILL_TEMPLATES_MAX, frameToExpression, pickTemplatesForDrill } from "../../toeic-template";
-import type { ToeicGuidePart } from "../../toeic-guide";
 import {
   TOEIC_FEEDBACK_LIMITS,
   TOEIC_MOCK_EXPRESSIONS_MAX,
+  type ToeicAnswerFlow,
   type ToeicFeedback,
   type ToeicMockPartGenMap,
   type ToeicMockPartRecordMap,
   type ToeicMockParts,
   type ToeicPicturePart,
   type ToeicPictureGeneration,
-  type ToeicTemplate,
-  type ToeicTemplateFlow,
   type ToeicUsedExpression,
 } from "./schemas";
 
@@ -192,22 +191,29 @@ export interface ToeicFeedbackInput {
   q: number;
   material: string;
   sampleAnswer: string;
+  /** 레코드 expressionsUsed 그대로 — 흐름 틀을 섞지 않는다(D 사용자 메시지 `활용할 표현:` 줄에 찍히지 않게) */
   expressions: string[];
+  /** 그 문항 파트의 저장된 답변 흐름(§12-13-3 — 만들 때 보낸 것, 재현성). 옛 문서·틀 은행이 없던 문서·read는 null */
+  answerFlow: ToeicAnswerFlow | null;
   transcript: string;
 }
 
 /**
  * 모의고사 레코드 + 문항 + 전사문 → 호출 D 입력. Q1–2이거나 파트·문항이 없으면 null(호출하지 않는다).
+ * 답변 흐름은 레코드 answerFlows에서 **그 문항 파트**의 것(Q5–7 세 문항은 같은 흐름 — 문항 단계 고르기는 §5-1 프롬프트가 한다). 만들 때
+ * 고르지 않았던 파트를 나중에 채운 문서도 저장된 그 흐름을 쓴다(검토 B1). 지금의 틀 은행을 다시 읽지 않는다(§12-12 35).
  */
 export function buildFeedbackInput(
-  mock: { parts: ToeicMockParts; expressionsUsed: readonly string[] },
+  mock: { parts: ToeicMockParts; expressionsUsed: readonly string[]; answerFlows: readonly ToeicAnswerFlow[] },
   q: number,
   transcript: string,
 ): ToeicFeedbackInput | null {
   const material = buildFeedbackMaterial(mock.parts, q);
   const sampleAnswer = sampleAnswerFor(mock.parts, q);
   if (material === null || sampleAnswer === null) return null;
-  return { q, material, sampleAnswer, expressions: [...mock.expressionsUsed], transcript };
+  const part = toeicQuestionFormat(q).part;
+  const answerFlow = (Array.isArray(mock.answerFlows) ? mock.answerFlows : []).find((f) => f.part === part) ?? null;
+  return { q, material, sampleAnswer, expressions: [...mock.expressionsUsed], answerFlow, transcript };
 }
 
 /** 문항 유형 이름(§5-2 "{유형 이름}") */
@@ -292,45 +298,36 @@ export function pickExpressionsForMock(
 }
 
 // ---------------------------------------------------------------------------
-// 한 문제 연습의 활용할 표현 (docs/harness/toeic.md §12-7-2·§12-7-9) — 서버 전용(pickExpressionsForMock이 여기 산다)
+// 한 문제 연습의 활용할 표현 (docs/harness/toeic.md §12-13-3 — 2026-10-02 새 모양) — 서버 전용(pickExpressionsForMock이 여기 산다)
 // ---------------------------------------------------------------------------
 
 export interface ToeicDrillExpressionSources {
   /**
-   * 그 유형 틀(틀 은행에서 parts로 고른 것 — 없으면 빈 배열)과 틀 테스트 세션(setId guide-templates, startedAt 오름차순).
-   * flows는 단계마다 하나를 먼저 고르는 데 쓴다.
+   * 그 유형 공략 세트(없으면 null)와 **그 세트의** 시험 세션, 그리고 뺄 공략 표현 키 `exclude`(expressionKey —
+   * guideExpressionKeysInFlow(틀 은행, 유형): 틀이 guideRefs로 연결한 표현 ∪ 같은 자리 다른 표현. 틀 은행이 없으면 빈 집합).
    */
-  templates: { part: ToeicGuidePart; flows: readonly ToeicTemplateFlow[]; items: readonly ToeicTemplate[]; sessions: readonly ToeicQuizSessionLike[] };
-  /** 그 유형 공략 세트(없으면 null)와 **그 세트의** 시험 세션 */
-  guide: { set: { entries: readonly { expression: string }[] } | null; sessions: readonly ToeicQuizSessionLike[] };
+  guide: { set: { entries: readonly { expression: string }[] } | null; sessions: readonly ToeicQuizSessionLike[]; exclude: ReadonlySet<string> };
   /** 표현집 세트들과 **setId ∈ 표현집 세트인** 시험 세션 — 통계 키가 표현 문자열이라 섞으면 서로의 순위가 움직인다 */
   book: { sets: readonly { entries: readonly { expression: string }[] }[]; sessions: readonly ToeicQuizSessionLike[] };
 }
 
 /**
- * 한 문제 연습에 넘길 활용할 표현(§12-7-2) — **틀을 맨 앞에**(pickTemplatesForDrill: 단계마다 가장 약한 틀 하나 → 단계·소재를 통틀어
- * 약한 순, 최대 10개, 각 틀은 frameToExpression의 `~` 형태), 그다음 **pickExpressionsForMock을 두 번** — 공략 세트 하나(그 유형 공략
- * 표현, 숙련도 낮은 것 우선), 표현집 세트들(나머지 칸). 틀 → 공략 → 표현집 순으로 대소문자 무시 중복을 접어 최대 24개.
+ * 한 문제 연습에 넘길 활용할 표현(§12-13-3 — 2026-10-02). **틀은 넣지 않는다** — 틀은 답변 흐름(buildAnswerFlow, 호출 C의 `answerFlow`
+ * 칸)으로 간다. 공략 표현 중 `guide.exclude`에 든 것(외울 틀이 연결한 표현 — 흐름에 이미 있다 · 같은 자리 다른 표현 — 외우지 않을 대안)을
+ * 빼고 pickExpressionsForMock([공략 세트], 그 세트 세션) → 표현집 pickExpressionsForMock → 대소문자 무시 중복 접기 → 최대 24개.
  * 라우트는 이 목록을 normalizeMockExpressions로 정리해 호출 C에 넘기고 **같은 목록을** expressionsUsed로 저장한다(보낸 목록 = 저장 목록).
- * 틀 은행·공략이 없으면 rng를 더 쓰지 않아, 결과가 pickExpressionsForMock(표현집)과 같다.
+ * 틀 은행이 없으면 exclude가 비어 결과가 옛 함수(틀 은행 없을 때)와 같다(rng 소비 순서도 같다 — 공략 → 표현집).
  */
-export function pickExpressionsForDrill(
-  src: ToeicDrillExpressionSources,
-  opts: { max?: number; templatesMax?: number; rng?: Rng } = {},
-): string[] {
+export function pickExpressionsForDrill(src: ToeicDrillExpressionSources, opts: { max?: number; rng?: Rng } = {}): string[] {
   const max = opts.max ?? TOEIC_MOCK_EXPRESSIONS_MAX;
   const rng = opts.rng ?? Math.random;
-  const templates = pickTemplatesForDrill(src.templates.items, src.templates.sessions, {
-    part: src.templates.part,
-    flows: src.templates.flows,
-    max: opts.templatesMax ?? TOEIC_DRILL_TEMPLATES_MAX,
-    rng,
-  }).map((t) => frameToExpression(t.frameEn));
-  const guide = src.guide.set ? pickExpressionsForMock([src.guide.set], src.guide.sessions, { rng }) : [];
+  const exclude = src.guide.exclude;
+  const guideSet = src.guide.set ? { entries: src.guide.set.entries.filter((e) => !exclude.has(expressionKey(e.expression))) } : null;
+  const guide = guideSet ? pickExpressionsForMock([guideSet], src.guide.sessions, { rng }) : [];
   const book = pickExpressionsForMock(src.book.sets, src.book.sessions, { rng });
   const out: string[] = [];
   const seen = new Set<string>();
-  for (const e of [...templates, ...guide, ...book]) {
+  for (const e of [...guide, ...book]) {
     const v = collapseSpaces(e);
     const k = matchKey(v);
     if (k === "" || seen.has(k)) continue;

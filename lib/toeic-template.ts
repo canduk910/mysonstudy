@@ -4,6 +4,9 @@
  * 학습 단위는 **틀**(바꿔 끼울 `{자리}`가 있는 문장 뼈대)이다. 틀 채우기·`~` 형태·표시 분할·흐름 순서·교재 연결 표, 따라 말하기 대본·
  * 예상 시간·이어 듣기 위치, 전사 비교(축약형 두 뜻·숫자·관사), 테스트 문항 고르기·숙련도(같은 날 ○ 접기)·틀린 틀, 연습에 넘길 틀
  * 고르기·전사문 속 틀 찾기·단계 커버리지를 **여기 한 곳**에 둔다. 화면·라우트·zod(lib/ai/toeic/schemas.ts)·eval이 같은 함수를 본다.
+ * 2026-10-02(§12-13 템플릿 중심 재정렬): 같은 자리 다른 표현 연결 표(templateAlternateLinks)·연습에서 뺄 공략 표현(guideExpressionKeysInFlow)·
+ * **답변 흐름**(buildAnswerFlow·buildMockAnswerFlows — 호출 C·D 입력)·모범답변 점검(checkAnswerAgainstFlow·isWeakFlowCheck)과
+ * 모드 목록을 받는 통계 도우미(aggregateTemplateStatsByModes 등 — ③ 틀 시험 lib/toeic-template-quiz.ts가 같은 길을 탄다)도 여기 산다.
  *
  * 경계(§12-5-9):
  * - 런타임 import는 lib/toeic-guide·lib/toeic-text·lib/toeic-score·lib/toeic-quiz·lib/vocab-mastery·lib/kst·lib/tts-split·
@@ -15,6 +18,8 @@
 import { TTS_TEXT_MAX_CHARS } from "./tts-shared";
 import { splitForTts } from "./tts-split";
 import {
+  TOEIC_GUIDE_PARTS,
+  TOEIC_GUIDE_PART_TO_MOCK_PART,
   TOEIC_SHADOW_PAUSE,
   TOEIC_SHADOW_PAUSE_LEVELS,
   TOEIC_SHADOW_PAUSE_LEVEL_DEFAULT,
@@ -22,6 +27,7 @@ import {
   cleanGuideKoForTts,
   scanSlots,
   shadowPauseMs,
+  toeicGuidePartOfMockPart,
   type ToeicGuidePart,
   type ToeicShadowPauseLevel,
 } from "./toeic-guide";
@@ -32,12 +38,21 @@ import {
   toeicSessionsToVocabRecords,
   weaknessRank,
   type ToeicQuizSessionLike,
+  type ToeicTemplateBankMode,
   type ToeicTemplateQuizMode,
 } from "./toeic-quiz";
 import { aggregateWordStats, isStatMastered, type WordStat } from "./vocab-mastery";
 import { kstDateString } from "./kst";
 import type { Rng } from "./vocab-quiz";
-import type { ToeicGuideFileEntry, ToeicTemplate, ToeicTemplateFlow } from "./ai/toeic/schemas";
+import type {
+  ToeicAnswerFlow,
+  ToeicAnswerFlowFrame,
+  ToeicGuideFileEntry,
+  ToeicTemplate,
+  ToeicTemplateAlternate,
+  ToeicTemplateFlow,
+} from "./ai/toeic/schemas";
+import type { ToeicMockPart } from "./toeic-mock";
 
 export { TOEIC_SHADOW_PAUSE, TOEIC_SHADOW_PAUSE_LEVELS, TOEIC_SHADOW_PAUSE_LEVEL_DEFAULT, shadowPauseMs };
 export type { ToeicShadowPauseLevel };
@@ -789,7 +804,7 @@ function foldSameDayCorrect(sessions: readonly ToeicQuizSessionLike[]): ToeicQui
 }
 
 /** 세션들 중 그 모드만 */
-function modeSessions(sessions: readonly ToeicQuizSessionLike[], mode: ToeicTemplateQuizMode): ToeicQuizSessionLike[] {
+function modeSessions(sessions: readonly ToeicQuizSessionLike[], mode: ToeicTemplateBankMode): ToeicQuizSessionLike[] {
   return sessions.filter((s) => s.mode === mode);
 }
 
@@ -804,16 +819,28 @@ function byTemplateKey(stats: Record<string, WordStat>): Record<string, WordStat
 }
 
 /**
- * 틀 숙련도(§12-5-6) → `{ [mode]: { [틀 key]: WordStat } }`. 모드로 가른 뒤 같은 날 잇단 ○를 접고 aggregateWordStats(은우 순수 함수)를
- * 부른다(세션 → VocabQuizRecord는 표현 시험의 어댑터 toeicSessionsToVocabRecords 그대로). 표현 시험 세션이 섞여 들어와도 틀 모드만 본다.
- * **sessions는 startedAt 오름차순.**
+ * 틀 숙련도 — **받은 모드 목록마다** `{ [mode]: { [틀 key]: WordStat } }`(§12-5-6·§12-13-2). 모드로 가른 뒤 같은 날 잇단 ○를 접고
+ * aggregateWordStats(은우 순수 함수)를 부른다(세션 → VocabQuizRecord는 표현 시험의 어댑터 toeicSessionsToVocabRecords 그대로).
+ * ② 틀 테스트(말하기 두 모드)와 ③ 틀 시험(고르기 세 모드)이 **이 길 하나**를 모드 목록만 바꿔 탄다 — 복사하면 같은 날 접기 규칙이 두 벌이
+ * 된다. 다른 모드 세션이 섞여 들어와도 받은 모드만 본다. **sessions는 startedAt 오름차순.**
  */
-export function aggregateToeicTemplateStats(sessions: readonly ToeicQuizSessionLike[]): Record<ToeicTemplateQuizMode, Record<string, WordStat>> {
-  const out = {} as Record<ToeicTemplateQuizMode, Record<string, WordStat>>;
-  for (const mode of TOEIC_TEMPLATE_QUIZ_MODES) {
+export function aggregateTemplateStatsByModes<M extends ToeicTemplateBankMode>(
+  sessions: readonly ToeicQuizSessionLike[],
+  modes: readonly M[],
+): Record<M, Record<string, WordStat>> {
+  const out = {} as Record<M, Record<string, WordStat>>;
+  for (const mode of modes) {
     out[mode] = byTemplateKey(aggregateWordStats(toeicSessionsToVocabRecords(foldSameDayCorrect(modeSessions(sessions, mode)))));
   }
   return out;
+}
+
+/**
+ * 틀 숙련도(§12-5-6) — ② 틀 테스트 두 모드(말하기). aggregateTemplateStatsByModes의 얇은 함수(결과는 옛 함수와 글자까지 같다).
+ * 고르기 세션(③ 틀 시험)이 섞여 들어와도 말하기 두 모드만 본다.
+ */
+export function aggregateToeicTemplateStats(sessions: readonly ToeicQuizSessionLike[]): Record<ToeicTemplateQuizMode, Record<string, WordStat>> {
+  return aggregateTemplateStatsByModes(sessions, TOEIC_TEMPLATE_QUIZ_MODES);
 }
 
 /** 틀린 틀(§12-5-6) = 그 모드에서 틀린 적 있고 아직 졸업하지 않은 틀 key */
@@ -842,9 +869,18 @@ export function toeicTemplateBadges(
   sessions: readonly ToeicQuizSessionLike[],
   todayKst: string,
 ): Record<ToeicTemplateQuizMode, Record<string, ToeicTemplateBadge>> {
-  const stats = aggregateToeicTemplateStats(sessions);
-  const out = {} as Record<ToeicTemplateQuizMode, Record<string, ToeicTemplateBadge>>;
-  for (const mode of TOEIC_TEMPLATE_QUIZ_MODES) {
+  return templateBadgesByModes(sessions, todayKst, TOEIC_TEMPLATE_QUIZ_MODES);
+}
+
+/** 모드 목록을 받는 배지(§12-5-6 규칙 그대로) — ② 말하기 두 모드·③ 고르기 세 모드가 같은 함수를 쓴다(§12-13-2) */
+export function templateBadgesByModes<M extends ToeicTemplateBankMode>(
+  sessions: readonly ToeicQuizSessionLike[],
+  todayKst: string,
+  modes: readonly M[],
+): Record<M, Record<string, ToeicTemplateBadge>> {
+  const stats = aggregateTemplateStatsByModes(sessions, modes);
+  const out = {} as Record<M, Record<string, ToeicTemplateBadge>>;
+  for (const mode of modes) {
     const lastRaw = new Map<string, { correct: boolean; day: string }>();
     for (const s of modeSessions(sessions, mode)) {
       for (const it of s.items) {
@@ -867,8 +903,11 @@ export function toeicTemplateBadges(
   return out;
 }
 
-/** 그 모드에서 틀 key의 시도 수(원래 수 — 같은 날 ○ 접기 전). 예문·채움 차례(§12-5-3)가 이 값으로 돈다 */
-function rawAttemptCounts(sessions: readonly ToeicQuizSessionLike[], mode: ToeicTemplateQuizMode): Map<string, { count: number; lastAt: string }> {
+/**
+ * 그 모드에서 틀 key의 시도 수(원래 수 — 같은 날 ○ 접기 전)와 마지막 시도 세션 시각. 예문·채움 차례(§12-5-3)와 ③ 빈칸 낱말 차례·답한 뒤
+ * 예문(§12-13-2)이 이 값으로 돈다.
+ */
+export function templateAttemptCounts(sessions: readonly ToeicQuizSessionLike[], mode: ToeicTemplateBankMode): Map<string, { count: number; lastAt: string }> {
   const out = new Map<string, { count: number; lastAt: string }>();
   for (const s of modeSessions(sessions, mode)) {
     for (const it of s.items) {
@@ -936,7 +975,7 @@ export function buildTemplateTestQuestions(
   const rng = opts.rng ?? Math.random;
   const mode = opts.mode;
   const stats = aggregateToeicTemplateStats(sessions)[mode];
-  const attempts = rawAttemptCounts(sessions, mode);
+  const attempts = templateAttemptCounts(sessions, mode);
 
   // 범위 — 같은 key는 한 번(흐름 순서의 첫 자리), 출제에 필요한 칸이 있는 틀만
   const order = new Map<string, number>();
@@ -1158,13 +1197,17 @@ export interface ToeicTemplateSuggestion {
 }
 
 /**
- * "쓸 수 있었던 틀"(§12-7-9) — 겹치지 않게 이 순서로 최대 5개: ① 모범답변이 쓴 틀(문항 usedExpressions를 틀로 되짚은 것) ②
- * 피드백 tryExpressions 중 틀로 되짚히는 것 ③ 빠진 단계마다 그 단계의 가장 약한 틀 하나(호출측이 key로 넘긴다). 내가 쓴 틀은 뺀다.
+ * "쓸 수 있었던 틀"(§12-7-9 → §12-13-3 검토 B4 — 2026-10-02 순서 바꿈) — 겹치지 않게 이 순서로 최대 5개, 내가 쓴 틀은 뺀다:
+ * ① `step` — 빠진 단계마다 하나(단계 순서 — 호출측 drillTemplateCheck가 그 단계에서 모범답변이 쓴 틀, 없으면 가장 약한 틀을 key로 넘긴다)
+ * ② `feedback` — 피드백 tryExpressions 중 지금 틀 은행에서 틀로 되짚히는 것
+ * ③ `sample` — 남은 모범답변 틀(호출측이 이미 틀 key로 되짚은 sampleKeys — 모범답변 글에서 찾은 순서 → usedExpressions 되짚기)
+ * 까닭: 모범답변이 단계마다 틀로 조립되면 모범답변 틀만으로 5칸이 차서 "내가 건너뛴 단계"(가장 행동할 만한 신호)와 내 답 맞춤
+ * 피드백 틀이 늘 잘린다. 빠진 단계가 없으면 feedback → sample 순이다(옛 sample → feedback → step과 다르다 — 같은 근거).
  */
 export function templatesCouldHaveUsed(args: {
-  sampleUsedExpressions: readonly string[];
-  tryExpressions: readonly string[];
   missingStepKeys: readonly string[];
+  tryExpressions: readonly string[];
+  sampleKeys: readonly string[];
   mine: ReadonlySet<string>;
   byExpression: ReadonlyMap<string, string>;
   max?: number;
@@ -1177,8 +1220,226 @@ export function templatesCouldHaveUsed(args: {
     seen.add(key);
     out.push({ key, source });
   };
-  for (const e of args.sampleUsedExpressions) add(args.byExpression.get(matchKey(e)), "sample");
-  for (const e of args.tryExpressions) add(args.byExpression.get(matchKey(e)), "feedback");
   for (const k of args.missingStepKeys) add(k, "step");
+  for (const e of args.tryExpressions) add(args.byExpression.get(matchKey(e)), "feedback");
+  for (const k of args.sampleKeys) add(k, "sample");
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// ① 공략 읽기 정렬 — 같은 자리 다른 표현 연결 표 (§12-13-1)
+// ---------------------------------------------------------------------------
+
+/**
+ * 같은 자리 다른 표현 연결 표(§12-13-1) — 틀 은행 문서 `alternates`에서 그 유형 것만 골라 templateLinksForGuide와 **같은 모양·같은 키
+ * 정규화**로(템플릿 줄 label → key들, 머리말(공백 정리) → key들, 표현(expressionKey) → key들 — 값은 coveredBy). 두 표를 같은 줄에 대 본다.
+ * alternates가 배열이 아니면(깨진 문서) 빈 표.
+ */
+export function templateAlternateLinks(bank: { alternates?: readonly ToeicTemplateAlternate[] | null }, part: ToeicGuidePart): ToeicTemplateGuideLinks {
+  const links: ToeicTemplateGuideLinks = { templateLabels: new Map(), leads: new Map(), expressions: new Map() };
+  const list = Array.isArray(bank.alternates) ? bank.alternates : [];
+  for (const a of list) {
+    if (!a || a.part !== part || typeof a.ref !== "string" || typeof a.coveredBy !== "string") continue;
+    if (a.kind === "template") pushKey(links.templateLabels, a.ref, a.coveredBy);
+    else if (a.kind === "lead") pushKey(links.leads, collapseSpaces(a.ref), a.coveredBy);
+    else if (a.kind === "expression") pushKey(links.expressions, expressionKey(a.ref), a.coveredBy);
+  }
+  return links;
+}
+
+/**
+ * 한 문제 연습의 활용할 표현에서 뺄 공략 표현 키(§12-13-3 pickExpressionsForDrill `guide.exclude`) — 틀이 guideRefs로 연결한 그 유형 교재
+ * 표현의 expressionKey ∪ 그 유형 `alternates` 중 표현 종류의 expressionKey. 외울 틀은 답변 흐름에 이미 있고(두 칸에 같은 틀이 있으면
+ * 모델이 어느 칸 글자로 적을지 갈린다), 같은 자리 다른 표현은 외우지 않을 대안이다.
+ */
+export function guideExpressionKeysInFlow(
+  bank: { items: readonly Pick<ToeicTemplate, "guideRefs">[]; alternates?: readonly ToeicTemplateAlternate[] | null },
+  part: ToeicGuidePart,
+): Set<string> {
+  const out = new Set<string>();
+  for (const t of Array.isArray(bank.items) ? bank.items : []) {
+    // 정규화 뒤 틀 은행 items는 모양을 믿지 않는다(깨진 틀은 렌더 판정이 막는다) — 여기서도 형식을 본다
+    for (const r of Array.isArray(t?.guideRefs) ? t.guideRefs : []) {
+      if (r && r.kind === "expression" && r.part === part && typeof r.expression === "string") out.add(expressionKey(r.expression));
+    }
+  }
+  for (const k of templateAlternateLinks(bank, part).expressions.keys()) out.add(k);
+  return out;
+}
+
+/**
+ * 틀이 자리로 끝나는가(§12-13-1 규칙 4) — 끝의 공백·`.`·`?`·`!`·따옴표를 떼면 `}`로 끝난다. 가운데에만 자리가 있는 틀은 false.
+ * 이어 말하기 머리말이 같은 자리 다른 표현일 때, 대표 틀이 자리로 끝나면 머리말 줄만 접고 조각은 남긴다(조각이 그 끝 자리의 재료).
+ */
+export function frameEndsWithSlot(frameEn: string): boolean {
+  const t = (frameEn ?? "").replace(/[\s.?!"'“”‘’]+$/u, "");
+  return t.endsWith("}");
+}
+
+// ---------------------------------------------------------------------------
+// ④ 답변 흐름 — 호출 C·D의 새 입력 (§12-13-3)
+// ---------------------------------------------------------------------------
+
+/** 답변 흐름 틀 상한(§12-13-3·§12-12 31) — 넘으면 소재 틀을 뒤에서 자르고, 단계 틀만으로 넘으면 단계마다 앞에서 ⌊60 ÷ 단계 수⌋개 */
+export const TOEIC_ANSWER_FLOW_FRAMES_MAX = 60;
+/** 모범답변 점검 미달 기준(§12-13-3) — Q3–4·Q11은 쓴 단계 비율 < 0.75면 미달. 화면 경고와 실호출 점검이 **같은 값**을 쓴다 */
+export const TOEIC_ANSWER_FLOW_STEP_MIN_RATIO = 0.75;
+
+export interface ToeicAnswerFlowOptions {
+  /** "flow"(실전 모의고사 — 흐름 순서 그대로, rng 안 씀) / "weakness"(한 문제 연습 — 단계 안·소재 안 틀을 두 테스트 모드 합친 약한 순) */
+  order: "flow" | "weakness";
+  /** "weakness"의 틀 세션(setId guide-templates, startedAt 오름차순). 없으면 모두 "안 해 봄"(무작위) */
+  sessions?: readonly ToeicQuizSessionLike[];
+  rng?: Rng;
+}
+
+function flowFrame(t: Pick<ToeicTemplate, "key" | "frameEn">): ToeicAnswerFlowFrame {
+  return { key: t.key, expression: frameToExpression(t.frameEn) };
+}
+
+/**
+ * 답변 흐름(§12-13-3) — 그 파트 유형의 단계마다 그 단계 틀 전부(중복 정리 뒤 은행 — 자리마다 하나) + 소재 틀.
+ * - 유형 = toeicGuidePartOfMockPart(mockPart) — `read`면 null(흐름 없음).
+ * - `templates` = 그 유형 **렌더 가능한** 틀(호출측이 guideTemplatesForPart로 거른다 — 깨진 틀은 넣지 않는다).
+ * - 순서는 templateFlowOrder 하나 — 단계 묶음의 틀은 그 단계로(단계 순서·단계 안 묶음 순서·묶음 안 파일 순서), 소재·기타 묶음의 틀은 banks로.
+ *   틀이 없는 단계는 내지 않는다.
+ * - `order: "weakness"`면 단계마다·소재 안을 templatesByWeakness(두 말하기 모드 합친 약함 — 같은 rng면 결정적)로. 모델은 앞쪽의 맞는 틀을
+ *   먼저 고르기 쉽다 — 강제는 아니다(§12-12 30). "flow"는 rng를 쓰지 않는다.
+ * - 상한 TOEIC_ANSWER_FLOW_FRAMES_MAX(60) — 넘으면 소재 틀을 뒤에서 자르고, 단계 틀만으로 넘으면 단계마다 앞에서 ⌊60 ÷ 단계 수⌋개(소재 0).
+ * - 틀이 하나도 없으면 null.
+ */
+export function buildAnswerFlow(
+  bank: { flows: readonly ToeicTemplateFlow[] },
+  mockPart: ToeicMockPart,
+  templates: readonly ToeicTemplate[],
+  opts: ToeicAnswerFlowOptions,
+): ToeicAnswerFlow | null {
+  const part = toeicGuidePartOfMockPart(mockPart);
+  if (part === null) return null;
+  const groups = templateFlowOrder({ flows: Array.isArray(bank.flows) ? bank.flows : [], items: templates }, part);
+  const steps: { stepKo: string; templates: ToeicTemplate[] }[] = [];
+  const bankTemplates: ToeicTemplate[] = [];
+  for (const g of groups) {
+    if (g.kind === "step" && g.stepKo !== null) {
+      const last = steps[steps.length - 1];
+      if (last && last.stepKo === g.stepKo) last.templates.push(...g.templates);
+      else steps.push({ stepKo: g.stepKo, templates: [...g.templates] });
+    } else {
+      bankTemplates.push(...g.templates);
+    }
+  }
+  const reorder = (list: readonly ToeicTemplate[]): ToeicTemplate[] =>
+    opts.order === "weakness" ? templatesByWeakness(list, opts.sessions ?? [], opts.rng ?? Math.random) : [...list];
+  let outSteps = steps.map((st) => ({ stepKo: st.stepKo, frames: reorder(st.templates).map(flowFrame) })).filter((st) => st.frames.length > 0);
+  let banks = reorder(bankTemplates).map(flowFrame);
+
+  const max = TOEIC_ANSWER_FLOW_FRAMES_MAX;
+  const stepTotal = outSteps.reduce((n, st) => n + st.frames.length, 0);
+  if (stepTotal + banks.length > max) {
+    if (stepTotal <= max) {
+      banks = banks.slice(0, max - stepTotal);
+    } else {
+      const per = Math.floor(max / outSteps.length);
+      outSteps = outSteps.map((st) => ({ stepKo: st.stepKo, frames: st.frames.slice(0, per) })).filter((st) => st.frames.length > 0);
+      banks = [];
+    }
+  }
+  if (outSteps.length === 0 && banks.length === 0) return null;
+  return { part: mockPart, steps: outSteps, banks };
+}
+
+/**
+ * 실전 모의고사가 만들 때 저장할 흐름(§12-13-3 검토 B1) — **고른 파트와 상관없이** read를 뺀 네 파트(틀이 있는 유형)의 흐름을 형식표
+ * 순서로(order "flow"). 틀 은행이 없으면 []. 틀이 없는 유형은 빠진다. 한 파트의 흐름 만들기가 던지면 그 파트만 빠지고(onError로 알린다)
+ * 나머지는 계속한다 — 흐름 때문에 모의고사를 실패시키지 않는다(§0-4). 라우트는 이것을 부르기만 하고, 호출 C에는 고른 파트의 흐름만 넘긴다.
+ * @param templatesByPart 유형마다 렌더 가능한 틀(guideTemplatesForPart — 호출측이 거른다)
+ */
+export function buildMockAnswerFlows(
+  bank: { flows: readonly ToeicTemplateFlow[] } | null,
+  templatesByPart: Partial<Record<ToeicGuidePart, readonly ToeicTemplate[]>>,
+  onError?: (part: ToeicGuidePart, err: unknown) => void,
+): ToeicAnswerFlow[] {
+  if (bank === null) return [];
+  const out: ToeicAnswerFlow[] = [];
+  for (const part of TOEIC_GUIDE_PARTS) {
+    try {
+      const flow = buildAnswerFlow(bank, TOEIC_GUIDE_PART_TO_MOCK_PART[part], templatesByPart[part] ?? [], { order: "flow" });
+      if (flow !== null) out.push(flow);
+    } catch (err) {
+      onError?.(part, err);
+    }
+  }
+  return out;
+}
+
+/** 흐름의 틀 글자 전부(단계 → 소재 순, matchKey 같으면 한 번) — 호출 C·D 후처리 허용 목록의 **앞**에 둔다(표기가 흐름 쪽) */
+export function answerFlowExpressions(flow: ToeicAnswerFlow | null): string[] {
+  if (flow === null) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const f of [...flow.steps.flatMap((st) => st.frames), ...flow.banks]) {
+    const k = matchKey(f.expression);
+    if (k === "" || seen.has(k)) continue;
+    seen.add(k);
+    out.push(f.expression);
+  }
+  return out;
+}
+
+/**
+ * 흐름 틀을 전사문 속 틀 찾기(findTemplatesInTranscript)가 받는 모양으로 — `~`(`～`·`〜`)를 자리 `{_}`로 바꾼 frameEn(단계 → 소재 순).
+ * **저장된 흐름**으로 재므로 틀 은행이 나중에 바뀌어도 결과가 같다.
+ */
+export function answerFlowMatchFrames(flow: ToeicAnswerFlow): { key: string; frameEn: string }[] {
+  return [...flow.steps.flatMap((st) => st.frames), ...flow.banks].map((f) => ({ key: f.key, frameEn: f.expression.replace(/[~～〜]/g, "{_}") }));
+}
+
+/** 모범답변(또는 개선 답변) 점검 결과(§12-13-3) */
+export interface ToeicAnswerFlowCheck {
+  /** 쓴 틀(첫 위치 순). step = 단계 번호(0부터), 소재 틀이면 null */
+  used: { key: string; step: number | null }[];
+  /** 쓴 틀이 하나라도 있는 단계 수 */
+  stepsUsed: number;
+  /** 흐름의 단계 수 */
+  stepsTotal: number;
+  /** 쓴 단계들의 첫 위치가 단계 순서대로 늘어섰는가(쓴 단계가 1개 이하면 true) */
+  inOrder: boolean;
+  /** 두 낱말 이상 고정 조각이 없어 찾을 수 없는 흐름 틀 수 */
+  unmatchable: number;
+}
+
+/**
+ * 모범답변 점검(§12-13-3 — **측정만**, 재요청하지 않는다). 찾기는 findTemplatesInTranscript(두 낱말 이상 고정 조각이 순서대로,
+ * sameTemplateWord — 축약형·대소문자 무시) 그대로. 한 낱말 조각뿐인 틀은 unmatchable로 센다(판정 자체가 근사다).
+ */
+export function checkAnswerAgainstFlow(answer: string, flow: ToeicAnswerFlow): ToeicAnswerFlowCheck {
+  const stepOf = new Map<string, number>();
+  flow.steps.forEach((st, i) => st.frames.forEach((f) => { if (!stepOf.has(f.key)) stepOf.set(f.key, i); }));
+  const { found, unmatchable } = findTemplatesInTranscript(answer ?? "", answerFlowMatchFrames(flow));
+  const used = found.map((f) => ({ key: f.key, step: stepOf.has(f.key) ? (stepOf.get(f.key) as number) : null }));
+  const firstAt = new Map<number, number>();
+  for (const f of found) {
+    const st = stepOf.get(f.key);
+    if (st !== undefined && !firstAt.has(st)) firstAt.set(st, f.at);
+  }
+  const usedSteps = [...firstAt.keys()].sort((a, b) => a - b);
+  let inOrder = true;
+  for (let i = 1; i < usedSteps.length; i++) {
+    if ((firstAt.get(usedSteps[i - 1]) as number) > (firstAt.get(usedSteps[i]) as number)) inOrder = false;
+  }
+  return { used, stepsUsed: usedSteps.length, stepsTotal: flow.steps.length, inOrder, unmatchable: unmatchable.length };
+}
+
+/**
+ * 모범답변이 틀을 덜 따랐는가(§12-13-3 미달 경고 — AI 0). 흐름 없음(null) → false. Q3–4·Q11(TOEIC_TEMPLATE_FLOW_CHECK_PARTS — 한 답이
+ * 흐름 전체를 지나는 유형)은 쓴 단계 비율 < TOEIC_ANSWER_FLOW_STEP_MIN_RATIO(0.75)면 참, 그 밖(Q5–7·Q8–10 — 질문마다 짧게 답한다)은
+ * 쓴 틀 0이면 참. 단계가 0인 흐름(소재 틀만)은 쓴 틀 0이면 참. 기준 이상이면 단계가 비어도 결핍이 아니다(필요 없는 단계를 건너뛴 경우).
+ */
+export function isWeakFlowCheck(check: ToeicAnswerFlowCheck | null, mockPart: ToeicMockPart): boolean {
+  if (check === null) return false;
+  const part = toeicGuidePartOfMockPart(mockPart);
+  if (part !== null && (TOEIC_TEMPLATE_FLOW_CHECK_PARTS as readonly string[]).includes(part) && check.stepsTotal > 0) {
+    return check.stepsUsed / check.stepsTotal < TOEIC_ANSWER_FLOW_STEP_MIN_RATIO;
+  }
+  return check.used.length === 0;
 }

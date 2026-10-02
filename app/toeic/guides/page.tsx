@@ -2,8 +2,9 @@
  * 유형별 공략 폴더 목록 `/toeic/guides` (docs/harness/toeic.md §12-8, SPEC §20-10) — 서버 컴포넌트.
  *
  * 유형 폴더 넷(Q3–4 사진 묘사 · Q5–7 듣고 답하기 · Q8–10 정보 활용 · Q11 의견 말하기)을 **파일이 없어도** 보인다. 폴더 카드에는
- * 가져왔는지(섹션 n · 표현 n · 말하기 n)와 **틀 n · 익힘 m**(m = 틀 바꿔 말하기 졸업 수 — §12-5-6), **연습 n · 마지막 점수**(한 문제
- * 연습 — 연습 문서 수와 최신순으로 처음 만나는 "녹음된 문항을 다 채점한" 연습의 점수 합/만점, §12-8)를 보인다.
+ * 가져왔는지(공략 섹션 n)와 **외울 틀 n · 익힘 m**(m = 틀 바꿔 말하기 졸업 수 — §12-5-6), **연습 n · 마지막 점수**(한 문제 연습 — 연습
+ * 문서 수와 최신순으로 처음 만나는 "녹음된 문항을 다 채점한" 연습의 점수 합/만점, §12-8)를 보인다. 2026-10-02(§12-13): 교재 표현 시험을
+ * 닫아 카드의 "표현 n · 말하기 n"을 뺐다 — 폴더의 네 기능(읽기·따라 말하기·틀 시험·한 문제 연습)이 틀 은행 하나를 중심으로 돈다.
  *
  * 읽기: 공략 문서는 결정적 id(`guide-{part}`)·틀 은행은 `guide-templates`라 목록 전체를 훑지 않고 id로 읽는다. 틀 테스트 세션은
  * `setId`가 하나(`guide-templates`)라 한 번 읽어 네 폴더에 나눠 쓴다(§12-5-6). 연습은 유형마다 `listToeicDrills`(등호 하나), 응시는
@@ -38,7 +39,7 @@ const FOLDER_ICON: Record<ToeicGuidePart, string> = { q3_4: "📷", q5_7: "👂"
 interface FolderCard {
   part: ToeicGuidePart;
   labelKo: string;
-  imported: { sections: number; expressions: number; speak: number } | null;
+  imported: { sections: number } | null;
   /** 공략 문서가 있는데 모양이 깨져 열 수 없다 */
   broken: boolean;
   templates: number;
@@ -52,7 +53,7 @@ function importedOf(record: ToeicSetRecord | null): { imported: FolderCard["impo
   if (record === null) return { imported: null, broken: false };
   if (!isToeicGuidePartSet(record) || !isRenderableToeicSet(record) || !isRenderableToeicGuide(record)) return { imported: null, broken: record.guide !== null };
   const g = record.guide as { sections: unknown[] };
-  return { imported: { sections: g.sections.length, expressions: record.entries.length, speak: record.quiz.length }, broken: false };
+  return { imported: { sections: g.sections.length }, broken: false };
 }
 
 export default async function ToeicGuidesPage() {
@@ -97,7 +98,7 @@ export default async function ToeicGuidesPage() {
         </div>
         <h1 className="t-book-title mt-4">🧭 토익스피킹 유형별 공략</h1>
         <p className="t-lead mt-1">
-          질문 유형마다 폴더가 하나예요. 교재 공략을 읽고 듣고, 답변 틀을 따라 말하며 입에 붙여요.
+          질문 유형마다 폴더가 하나예요. 자리마다 외울 틀 하나 — 공략 읽기에서 그 틀을 찾고, 따라 말하고, 틀 시험으로 확인하고, 한 문제 연습에서 그 틀로 답해요.
         </p>
       </header>
 
@@ -118,9 +119,7 @@ export default async function ToeicGuidesPage() {
                 <span className={s.folderTitle}>{c.labelKo}</span>
                 <span className={s.folderChips}>
                   {c.imported ? (
-                    <span className="u-chip">
-                      섹션 {c.imported.sections} · 표현 {c.imported.expressions} · 말하기 {c.imported.speak}
-                    </span>
+                    <span className="u-chip">공략 섹션 {c.imported.sections}</span>
                   ) : c.broken ? (
                     <span className="u-chip">⚠️ 공략을 열지 못했어요</span>
                   ) : (
@@ -128,7 +127,7 @@ export default async function ToeicGuidesPage() {
                   )}
                   {c.templates > 0 && (
                     <span className={`u-chip ${c.mastered > 0 ? "u-chip-accent" : ""}`}>
-                      틀 {c.templates} · 익힘 {c.mastered}
+                      외울 틀 {c.templates} · 익힘 {c.mastered}
                     </span>
                   )}
                   {c.drills.count > 0 && (

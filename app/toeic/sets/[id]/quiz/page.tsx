@@ -10,11 +10,11 @@
  * - `?wrong=<mode>`    : 오답 재시험 — 그 모드에서 틀리고 미졸업인 항목만, 그 모드로(toeicWrongKeys — 모드별 무오염).
  * - `?t=`              : "다시 풀기" 논스 — 서버 재조립(새 셔플)을 강제하고 러너를 remount(일본어 관용구).
  *
- * ── 유형별 공략 세트(guide-{part}, docs/harness/toeic.md §12-6) ─────────────────────────────
- * 화면·저장은 그대로이고 달라지는 것만 가른다: "뒤로"는 그 유형 폴더 ③ 탭(toeicSetBackLink — 헤더·말하기 0문항 카드·러너 끝 화면),
- * 5지선다는 한 판 최대 TOEIC_GUIDE_CHOICE_SESSION_MAX(20)개를 **그 모드 통계로** 약한 것부터(오답 재시험도), 말하기는
- * `quizOrder:"weakness"`(말하기 통계만으로 약한 순 10개 — 공략 speak는 수십 개라 파일 순서면 매번 앞 10개만 나온다), 말하기 이름은
- * "📝 교재 문장 말하기"(② "🧩 틀 테스트"와 가른다 — 검토 S11), 공략용 안내 문구(말하기 0문항·빈칸 없음). 틀 은행 id는 폴더 목록으로 보낸다.
+ * ── 유형별 공략 세트(guide-{part}) ─────────────────────────────────────────────
+ * 2026-10-02(docs/harness/toeic.md §12-13-2): 유형 폴더의 **교재 표현 시험을 닫았다** — 유형 공략 세트(isToeicGuidePartSet)면 그 유형 폴더의
+ * ③ 👀 틀 시험(`?tab=quiz`)으로 보낸다(틀 은행 리다이렉트와 같은 자리). 지난 기록은 지우지 않는다(스트릭이 그대로 센다 — 화면에서만 안 보인다).
+ * 저장 라우트 `POST /api/toeic/sets/[id]/quiz`는 그대로다(옛 탭에서 끝난 판이 버려지지 않게). 틀 은행 id는 폴더 목록으로 보낸다.
+ * 옛 공략 갈래(5지선다 상한 20·말하기 weakness·"교재 문장 말하기")는 쓰는 화면이 없어져 이 페이지에서 뺐다 — lib/toeic-quiz의 옵션은 남는다.
  */
 
 import type { Metadata } from "next";
@@ -24,10 +24,9 @@ import { notFound, redirect } from "next/navigation";
 import ToeicQuizPicker from "@/components/toeic-quiz-picker";
 import { ToeicChoiceRunner, ToeicSpeakRunner, type ToeicQuizEntryInfo } from "@/components/toeic-quiz-runner";
 import { getStore } from "@/lib/store";
-import { toeicGuidePartOfSet, toeicSetBackLink } from "@/lib/toeic-guide-view";
+import { toeicGuideFolderHref, toeicGuidePartOfSet, toeicSetBackLink } from "@/lib/toeic-guide-view";
 import {
   TOEIC_CHOICE_QUIZ_MODES,
-  TOEIC_GUIDE_CHOICE_SESSION_MAX,
   TOEIC_QUIZ_MODE_LABELS_KO,
   buildToeicChoiceQuestions,
   buildToeicSpeakSession,
@@ -36,7 +35,7 @@ import {
   toeicWrongKeys,
   type ToeicChoiceQuizMode,
 } from "@/lib/toeic-quiz";
-import { isRenderableToeicSet, isToeicTemplateBankSet } from "@/lib/toeic-record";
+import { isRenderableToeicSet, isToeicGuidePartSet, isToeicTemplateBankSet } from "@/lib/toeic-record";
 
 export const dynamic = "force-dynamic";
 
@@ -54,20 +53,24 @@ export async function generateMetadata({ params }: QuizPageProps): Promise<Metad
 
 const one = (v: string | string[] | undefined): string | undefined => (Array.isArray(v) ? v[0] : v);
 
+/** 유형 공략 세트 → 그 유형 폴더 ③ 👀 틀 시험(유형을 못 읽으면 폴더 목록) — 시험·오답노트·기록 세 페이지가 같은 주소로 보낸다(§12-13-2) */
+function guideQuizHref(record: { guide: unknown }): string {
+  const part = toeicGuidePartOfSet(record);
+  return part ? toeicGuideFolderHref(part, { tab: "quiz" }) : "/toeic/guides";
+}
+
 export default async function ToeicQuizPage({ params, searchParams }: QuizPageProps) {
   const { id } = await params;
   const sp = await searchParams;
   const store = getStore();
   const record = await store.getToeicSet(id);
   if (record && isToeicTemplateBankSet(record)) redirect("/toeic/guides"); // 틀 은행은 표현 시험이 없다(§12-3 표)
+  if (record && isToeicGuidePartSet(record)) redirect(guideQuizHref(record)); // 유형 공략의 교재 표현 시험은 닫았다(§12-13-2)
   if (!record || !isRenderableToeicSet(record)) notFound();
 
-  // 유형 공략 세트면 "뒤로"·말하기 이름·출제 상한·안내 문구가 갈린다(§12-6)
-  const isGuide = toeicGuidePartOfSet(record) !== null;
   const back = toeicSetBackLink(record);
-  const speakLabelKo = isGuide ? "교재 문장 말하기" : TOEIC_QUIZ_MODE_LABELS_KO.speak;
-  const choiceLimit = isGuide ? { max: TOEIC_GUIDE_CHOICE_SESSION_MAX } : {};
-  /** 표현 시험 모드 세션(오름차순) — 공략의 5지선다 상한·말하기 약한 순이 읽는다(표현집은 말하기만) */
+  const speakLabelKo = TOEIC_QUIZ_MODE_LABELS_KO.speak;
+  /** 표현 시험 모드 세션(오름차순) — 오답 재시험·말하기가 읽는다(레코드 mode는 틀 모드까지 넓다) */
   const quizSessions = async () => (await store.listToeicQuizzes(id)).filter(isToeicQuizModeSession);
 
   // 러너가 피드백에 쓰는 표현 정보(표현 → 뜻·예문·구간). entries 전문 대신 필요한 것만.
@@ -86,7 +89,7 @@ export default async function ToeicQuizPage({ params, searchParams }: QuizPagePr
           <Link href={back.href} className="u-navbtn">
             {back.labelKo}
           </Link>
-          <p className="t-caption flex-none">{isGuide ? "공략 표현 시험" : "시험"}</p>
+          <p className="t-caption flex-none">시험</p>
         </div>
         <h1 className="t-book-title mt-4">📝 {record.titleKo}</h1>
       </header>
@@ -131,10 +134,7 @@ export default async function ToeicQuizPage({ params, searchParams }: QuizPagePr
     );
     if (keys.size === 0) return main(graduated);
     if (mode === "speak") {
-      const questions = buildToeicSpeakSession(record, sessions.filter((s) => s.mode === "speak"), {
-        onlyKeys: keys,
-        ...(isGuide ? { quizOrder: "weakness" as const } : {}),
-      });
+      const questions = buildToeicSpeakSession(record, sessions.filter((s) => s.mode === "speak"), { onlyKeys: keys });
       if (questions.length === 0) return main(graduated);
       return main(
         <ToeicSpeakRunner
@@ -146,11 +146,11 @@ export default async function ToeicQuizPage({ params, searchParams }: QuizPagePr
           isReview
           back={back}
           speakLabelKo={speakLabelKo}
-          quizSourceKo={isGuide ? "교재 문장" : "교재 QUIZ"}
+          quizSourceKo="교재 QUIZ"
         />,
       );
     }
-    const built = buildToeicChoiceQuestions(record, { modes: [mode], onlyKeys: keys, ...choiceLimit, sessions });
+    const built = buildToeicChoiceQuestions(record, { modes: [mode], onlyKeys: keys, sessions });
     if (built.questions.length === 0) return main(graduated);
     return main(
       <ToeicChoiceRunner
@@ -172,26 +172,17 @@ export default async function ToeicQuizPage({ params, searchParams }: QuizPagePr
     const requested = modesParam.split(",").map((m) => m.trim());
     if (requested.includes("speak")) {
       const sessions = await quizSessions();
-      const questions = buildToeicSpeakSession(record, sessions.filter((s) => s.mode === "speak"), isGuide ? { quizOrder: "weakness" } : {});
+      const questions = buildToeicSpeakSession(record, sessions.filter((s) => s.mode === "speak"));
       if (questions.length === 0) {
         return main(
-          isGuide
-            ? emptyCard(
-                "🤔",
-                "교재 문장 말하기 문항이 없어요",
-                "공략 파일에 말하기 문항(speak)이 없어요. 파일에 넣어 다시 가져오세요.",
-                <Link href={back.href} className="u-btn u-btn-primary">
-                  {back.buttonKo}
-                </Link>,
-              )
-            : emptyCard(
-                "🤔",
-                "말하기 문제를 만들 수 없어요",
-                "말하기 시험은 교재 QUIZ와 발화 포인트의 활용 문장으로 내요. 표현집 화면에서 발화 포인트를 먼저 만들어 주세요.",
-                <Link href={back.href} className="u-btn u-btn-primary">
-                  {back.buttonKo}
-                </Link>,
-              ),
+          emptyCard(
+            "🤔",
+            "말하기 문제를 만들 수 없어요",
+            "말하기 시험은 교재 QUIZ와 발화 포인트의 활용 문장으로 내요. 표현집 화면에서 발화 포인트를 먼저 만들어 주세요.",
+            <Link href={back.href} className="u-btn u-btn-primary">
+              {back.buttonKo}
+            </Link>,
+          ),
         );
       }
       return main(
@@ -204,21 +195,19 @@ export default async function ToeicQuizPage({ params, searchParams }: QuizPagePr
           isReview={false}
           back={back}
           speakLabelKo={speakLabelKo}
-          quizSourceKo={isGuide ? "교재 문장" : "교재 QUIZ"}
+          quizSourceKo="교재 QUIZ"
         />,
       );
     }
     const modes = TOEIC_CHOICE_QUIZ_MODES.filter((m) => requested.includes(m));
     if (modes.length > 0) {
-      const built = buildToeicChoiceQuestions(record, isGuide ? { modes, ...choiceLimit, sessions: await quizSessions() } : { modes });
+      const built = buildToeicChoiceQuestions(record, { modes });
       if (built.questions.length === 0) {
         return main(
           emptyCard(
             "🤔",
             "낼 수 있는 문제가 없어요",
-            isGuide
-              ? "고른 방식으로는 문제를 만들 수 없었어요. 보기를 만들려면 뜻이 다른 표현이 2개 이상 있어야 해요(공략에는 빈칸 시험이 없어요). 다른 방식을 골라 보세요."
-              : "고른 방식으로는 이 표현집에서 문제를 만들 수 없었어요. 보기를 만들려면 뜻이 다른 표현이 2개 이상 있어야 하고, 빈칸은 예문과 발화 포인트도 있어야 해요. 다른 방식을 골라 보세요.",
+            "고른 방식으로는 이 표현집에서 문제를 만들 수 없었어요. 보기를 만들려면 뜻이 다른 표현이 2개 이상 있어야 하고, 빈칸은 예문과 발화 포인트도 있어야 해요. 다른 방식을 골라 보세요.",
             <Link href={`/toeic/sets/${id}/quiz`} className="u-btn u-btn-primary">
               방식 다시 고르기
             </Link>,
@@ -252,7 +241,7 @@ export default async function ToeicQuizPage({ params, searchParams }: QuizPagePr
   const choiceZeroReasonsKo: Record<ToeicChoiceQuizMode, string> = {
     "ko-to-expr": needTwoKo,
     "expr-to-ko": needTwoKo,
-    cloze: isGuide ? "공략에는 빈칸 시험이 없어요" : hasClozeSource ? needTwoKo : "예문과 발화 포인트가 있어야 낼 수 있어요",
+    cloze: hasClozeSource ? needTwoKo : "예문과 발화 포인트가 있어야 낼 수 있어요",
   };
   // 말하기 문항 수는 키 중복 제거·최대 10(TOEIC_SPEAK_SESSION_MAX)까지 조립 함수가 정한다 — 개수는 rng와 무관하다
   const speakCount = buildToeicSpeakSession(record, []).length;
@@ -263,7 +252,7 @@ export default async function ToeicQuizPage({ params, searchParams }: QuizPagePr
       choiceCounts={choiceCounts}
       choiceZeroReasonsKo={choiceZeroReasonsKo}
       speakCount={speakCount}
-      guide={isGuide ? { maxTotal: TOEIC_GUIDE_CHOICE_SESSION_MAX, speakLabelKo } : null}
+      guide={null}
     />,
   );
 }

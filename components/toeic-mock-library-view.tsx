@@ -60,6 +60,7 @@ export default function ToeicMockLibraryView({
   setCount,
   expressionCount,
   expressionsMax,
+  flowTemplateCount = 0,
 }: {
   items: ToeicMockLibraryItem[];
   skippedCount?: number;
@@ -67,6 +68,8 @@ export default function ToeicMockLibraryView({
   setCount: number;
   expressionCount: number;
   expressionsMax: number;
+  /** 유형별 공략의 외울 틀 수(Q3–11 네 유형 — 0이면 답변 흐름 없이 만든다, docs/harness/toeic.md §12-13-3) */
+  flowTemplateCount?: number;
 }) {
   const router = useRouter();
 
@@ -342,6 +345,11 @@ export default function ToeicMockLibraryView({
             </fieldset>
 
             <p className={s.info}>📒 {exprInfo}</p>
+            {flowTemplateCount > 0 && (
+              <p className={s.info}>
+                🧩 유형별 공략의 외울 틀 {flowTemplateCount}개로 Q3–11 모범답변을 단계마다 조립해요(틀 글자는 그대로, 자리만 채워요). AI 피드백도 그 틀로 고쳐 줘요.
+              </p>
+            )}
             <p className={s.info}>⏱ 파트마다 따로 동시에 만들어요 — 보통 20~40초. Q3–4 사진 2장은 만든 뒤 학습 보기에서 따로 그려요.</p>
 
             <div className={s.actions}>

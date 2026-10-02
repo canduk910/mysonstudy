@@ -620,25 +620,31 @@ function runS2SourceChecks(): GuideCheckResult[] {
 
   // T8
   const qp = read("app/toeic/sets/[id]/quiz/page.tsx");
+  // 2026-10-02(docs/harness/toeic.md §12-13-2): 유형 공략의 교재 표현 시험을 닫았다 — 옛 공략 갈래 3건(상한 20·말하기 weakness·공략 안내
+  // 문구)은 페이지가 폴더 ③ 👀 틀 시험으로 보내므로 리다이렉트 대조로 교체했다(§12-13-5 퇴역·교체).
   add(
-    "시험 페이지: 틀 은행 → /toeic/guides · 공략이면 5지선다 상한 20(그 세트 표현 시험 세션) · 말하기 quizOrder weakness · \"뒤로\" = toeicSetBackLink",
+    "시험 페이지: 틀 은행 → /toeic/guides · 유형 공략 세트 → 그 유형 폴더 ?tab=quiz(틀 은행 리다이렉트와 같은 자리, notFound보다 앞) · \"뒤로\" = toeicSetBackLink",
     /isToeicTemplateBankSet\(record\)\) redirect\("\/toeic\/guides"\)/.test(qp) &&
-      /TOEIC_GUIDE_CHOICE_SESSION_MAX/.test(qp) &&
-      /\.\.\.choiceLimit, sessions/.test(qp) &&
-      /quizOrder: "weakness"/.test(qp) &&
+      /if \(record && isToeicGuidePartSet\(record\)\) redirect\(guideQuizHref\(record\)\);/.test(qp) &&
+      /return part \? toeicGuideFolderHref\(part, \{ tab: "quiz" \}\) : "\/toeic\/guides";/.test(qp) &&
+      qp.indexOf("isToeicGuidePartSet(record)) redirect(") < qp.indexOf("notFound();") &&
       /toeicSetBackLink\(record\)/.test(qp) &&
       !/href=\{`\/toeic\/sets\/\$\{id\}`\}/.test(qp),
   );
   add(
-    "시험 페이지: 공략 5지선다 상한 — choiceLimit = isGuide ? { max: TOEIC_GUIDE_CHOICE_SESSION_MAX } : {} · 한 판·오답 재시험 두 조립 모두 싣는다(QA S2 P3-1 M11)",
-    /const choiceLimit = isGuide \? \{ max: TOEIC_GUIDE_CHOICE_SESSION_MAX \} : \{\};/.test(codeOnly(qp)) &&
-      /buildToeicChoiceQuestions\(record, \{ modes: \[mode\], onlyKeys: keys, \.\.\.choiceLimit, sessions \}\)/.test(qp) &&
-      /buildToeicChoiceQuestions\(record, isGuide \? \{ modes, \.\.\.choiceLimit, sessions: await quizSessions\(\) \} : \{ modes \}\)/.test(qp),
+    "시험 페이지: 공략 갈래 퇴역 — isGuide·TOEIC_GUIDE_CHOICE_SESSION_MAX·\"교재 문장 말하기\"가 페이지에 없다(표현집 시험 동작은 그대로)",
+    !/isGuide|TOEIC_GUIDE_CHOICE_SESSION_MAX|교재 문장 말하기/.test(codeOnly(qp)) && /buildToeicChoiceQuestions\(record, \{ modes \}\)/.test(qp),
   );
-  add("시험 페이지: 공략용 안내 문구(말하기 0문항 · 빈칸 없음) · \"교재 문장 말하기\"", /공략 파일에 말하기 문항\(speak\)이 없어요/.test(qp) && /공략에는 빈칸 시험이 없어요/.test(qp) && /교재 문장 말하기/.test(qp));
   for (const f of ["app/toeic/sets/[id]/wrong/page.tsx", "app/toeic/sets/[id]/history/page.tsx"]) {
     const src = read(f);
-    add(`${f}: 틀 은행 → /toeic/guides · "뒤로" = toeicSetBackLink · 하드코딩 표현집 링크 없음`, /isToeicTemplateBankSet\(record\)\) redirect\("\/toeic\/guides"\)/.test(src) && /toeicSetBackLink\(record\)/.test(src) && !/href=\{`\/toeic\/sets\/\$\{id\}`\}/.test(src));
+    add(
+      `${f}: 틀 은행 → /toeic/guides · 유형 공략 세트 → 폴더 ?tab=quiz(2026-10-02 §12-13-2) · "뒤로" = toeicSetBackLink · 하드코딩 표현집 링크 없음`,
+      /isToeicTemplateBankSet\(record\)\) redirect\("\/toeic\/guides"\)/.test(src) &&
+        /if \(record && isToeicGuidePartSet\(record\)\) \{[\s\S]*?redirect\(part \? toeicGuideFolderHref\(part, \{ tab: "quiz" \}\) : "\/toeic\/guides"\);/.test(src) &&
+        src.indexOf("isToeicGuidePartSet(record)") < src.indexOf("notFound();") &&
+        /toeicSetBackLink\(record\)/.test(src) &&
+        !/href=\{`\/toeic\/sets\/\$\{id\}`\}/.test(src),
+    );
   }
   const dp = read("app/toeic/sets/[id]/page.tsx");
   add("표현집 상세: 공략 계열이면 리다이렉트(유형 공략 → 폴더 ③ 탭, 틀 은행 → 폴더 목록)", /isToeicGuideSet\(record\)/.test(dp) && /redirect\(part \? toeicGuideFolderHref\(part, \{ tab: "quiz" \}\) : "\/toeic\/guides"\)/.test(dp));
@@ -656,8 +662,15 @@ function runS2SourceChecks(): GuideCheckResult[] {
       `${iGuide} ${iRender} ${iKey2} ${iPlan}`,
     );
   }
+  // 2026-10-02(§12-13-2): ③ 탭은 👀 틀 시험(ToeicTemplateQuizTab) — 교재 표현 목록은 ① 끝 읽기 전용(시험·오답노트·기록 버튼 없음)
   const ex = read("components/toeic-guide-expr-list.tsx");
-  add("③ 탭: 시험·📝 교재 문장 말하기·오답노트·기록 버튼 → /toeic/sets/guide-{part}/…", /const base = `\/toeic\/sets\/\$\{toeicGuideSetId\(part\)\}`;/.test(ex) && /\$\{base\}\/quiz\?modes=speak/.test(ex) && /\$\{base\}\/wrong/.test(ex) && /\$\{base\}\/history/.test(ex) && /📝 교재 문장 말하기/.test(ex));
+  const fv = codeOnly(read("components/toeic-guide-folder-view.tsx"));
+  add(
+    "③ 탭: 👀 틀 시험(ToeicTemplateQuizTab — 틀 0이면 빈 상태) · 폴더 탭이 표현 목록 컴포넌트를 쓰지 않는다 · 표현 목록에 /toeic/sets/guide-… 시험·오답노트·기록 링크 없음",
+    /tab === "quiz" &&\s*\(data\.templates\.length > 0 \? \(\s*<ToeicTemplateQuizTab/.test(fv) &&
+      !/ToeicGuideExprList/.test(fv) &&
+      !/\/toeic\/sets\/|toeicGuideSetId|교재 문장 말하기|quiz\?modes/.test(codeOnly(ex)),
+  );
 
   // 새 클라이언트 안전 모듈
   const tvm = read("lib/toeic-template-test-view.ts");

@@ -15,6 +15,10 @@
  * - **빈 파트**: "이 파트 다시 만들기"(`POST [id]/regenerate?part=`) — 빈 자리만 채운다(이미 있으면 409 → 새로 읽기).
  * - **응시**: "실전 응시(11문항)"는 다섯 파트가 다 있을 때만, 파트마다 "유형 연습" — 응시 화면 `/take`(T4).
  * - **응시 기록**: 최신 위 — 날짜(KST 시각)·범위·끝까지/중단·녹음 수·채점 수·추정(11문항 채점 시). 누르면 결과 화면(T5).
+ * - **답변 흐름**(2026-10-02, docs/harness/toeic.md §12-13-3): 문서에 저장된 흐름(answerFlows — 만들 때 넘긴 입력)이 있는 파트마다 접힌
+ *   "🧩 이 파트 답변 흐름"(단계마다 틀 `~` 형태, 틀마다 ② 카드 링크 — 흐름이 없으면 숨긴다). 모범답변마다 점검 줄 "🧩 모범답변의 틀 n개 · 단계 a/b"
+ *   (Q5–7·Q8–10은 "틀 n개"만 — answerFlowCheckLine, 측정만)과 크게 덜 따랐으면 미달 경고(누르면 그 파트 흐름 접기를 연다 — 다시 만들기는 빈 파트만
+ *   채우므로 덜 따른 모범답변을 바꿀 길이 없다, 외울 것은 흐름이다). 모범답변 속 강조는 틀 글자에서 온 구간을 🧩 색으로 따로 보인다.
  */
 
 import Link from "next/link";
@@ -44,6 +48,11 @@ import {
   type ToeicUsedExpression,
 } from "@/lib/toeic-mock-contract";
 import { TOEIC_MOCK_FORMAT, TOEIC_MOCK_PARTS, TOEIC_QUESTION_COUNT, toeicPartQuestions, type ToeicMockPart } from "@/lib/toeic-mock";
+import { TOEIC_ANSWER_FLOW_WEAK_KO, answerFlowCheckLine } from "@/lib/toeic-drill-view";
+import { toeicGuidePartOfMockPart } from "@/lib/toeic-guide";
+import { toeicGuideFolderHref } from "@/lib/toeic-guide-view";
+import { answerFlowExpressions } from "@/lib/toeic-template";
+import { expressionKey } from "@/lib/toeic-text";
 import { TTS_TEXT_MAX_CHARS } from "@/lib/tts-shared";
 import { splitForTts } from "@/lib/tts-split";
 import s from "./toeic-mock-detail-view.module.css";
@@ -86,10 +95,11 @@ function partTimeKo(part: ToeicMockPart): string {
   return `준비 ${preps.join("/")}초 · 답변 ${same ? answers[0] : answers.join("/")}초`;
 }
 
-function highlightUsed(text: string, used: readonly ToeicUsedExpression[]): ReactNode {
+/** 모범답변 속 활용한 표현 강조 — 틀 글자(그 파트 흐름 글자 집합)에서 온 구간은 🧩 색(s.usedFrame)으로 따로(§12-13-3) */
+function highlightUsed(text: string, used: readonly ToeicUsedExpression[], frameKeys?: ReadonlySet<string>): ReactNode {
   return segmentUsedExpressions(text, used).map((seg, i) =>
     seg.mark ? (
-      <mark key={i} className={s.used} title={seg.expression ?? undefined}>
+      <mark key={i} className={frameKeys && seg.expression && frameKeys.has(expressionKey(seg.expression)) ? `${s.used} ${s.usedFrame}` : s.used} title={seg.expression ?? undefined}>
         {seg.text}
       </mark>
     ) : (
@@ -415,8 +425,72 @@ export default function ToeicMockDetailView({
     );
   }
 
-  function modelAnswer(k: string, text: string, used: readonly ToeicUsedExpression[], label = "모범답변") {
+  // ── 답변 흐름(저장된 것) — 파트마다 접기·모범답변 점검·강조 ──
+  const flowOf = (part: ToeicMockPart) => mock.answerFlows.find((f) => f.part === part) ?? null;
+  const flowKeySets = useMemo(
+    () => new Map(mock.answerFlows.map((f) => [f.part, new Set(answerFlowExpressions(f).map(expressionKey))] as const)),
+    [mock.answerFlows],
+  );
+  const [flowOpen, setFlowOpen] = useState<Set<ToeicMockPart>>(() => new Set());
+  function openFlow(part: ToeicMockPart) {
+    setFlowOpen((prev) => (prev.has(part) ? prev : new Set(prev).add(part)));
+    window.requestAnimationFrame(() => document.getElementById(`flow-${part}`)?.scrollIntoView({ block: "nearest" }));
+  }
+
+  /** "🧩 이 파트 답변 흐름"(저장된 흐름 — 단계마다 틀 `~` 형태, 틀마다 ② 카드). 흐름이 없으면(옛 문서·틀 은행 없던 때) 숨긴다 */
+  function flowFold(part: ToeicMockPart) {
+    const flow = flowOf(part);
+    const gp = toeicGuidePartOfMockPart(part);
+    if (!flow || !gp) return null;
+    const frameLink = (f: { key: string; expression: string }) => (
+      <Link key={f.key} href={toeicGuideFolderHref(gp, { tab: "templates", tpl: f.key })} className={s.flowFrame} lang="en">
+        {f.expression}
+      </Link>
+    );
+    return (
+      <details
+        id={`flow-${part}`}
+        className={s.flowBox}
+        open={flowOpen.has(part)}
+        onToggle={(e) => {
+          const isOpen = (e.currentTarget as HTMLDetailsElement).open;
+          setFlowOpen((prev) => {
+            if (prev.has(part) === isOpen) return prev;
+            const next = new Set(prev);
+            if (isOpen) next.add(part);
+            else next.delete(part);
+            return next;
+          });
+        }}
+        data-testid={`mock-flow-${part}`}
+      >
+        <summary className={s.flowSummary}>🧩 이 파트 답변 흐름 — 모범답변이 이 틀로 조립돼요</summary>
+        <ol className={s.flowSteps}>
+          {flow.steps.map((st, i) => (
+            <li key={`${i}-${st.stepKo}`} className={s.flowStep}>
+              <span className={s.flowStepName}>
+                {i + 1}. {st.stepKo}
+              </span>
+              <span className={s.flowFrames}>{st.frames.map(frameLink)}</span>
+            </li>
+          ))}
+        </ol>
+        {flow.banks.length > 0 && (
+          <p className={s.flowBanks}>
+            <span className={s.flowStepName}>소재 틀</span>
+            <span className={s.flowFrames}>{flow.banks.map(frameLink)}</span>
+          </p>
+        )}
+        <p className={s.caption}>틀을 누르면 템플릿 훈련의 그 카드로 가요(따라 말하기·틀 테스트).</p>
+      </details>
+    );
+  }
+
+  function modelAnswer(k: string, text: string, used: readonly ToeicUsedExpression[], part: ToeicMockPart, label = "모범답변") {
     const exprs = [...new Set(used.map((u) => u.expression))];
+    const frameKeys = flowKeySets.get(part);
+    // 모범답변 점검(§12-13-3 — 측정만, 저장된 흐름으로). 흐름이 없으면 줄 없음
+    const check = answerFlowCheckLine(text, flowOf(part), part);
     return (
       <div className={s.answer}>
         <div className={s.answerHead}>
@@ -424,13 +498,26 @@ export default function ToeicMockDetailView({
           {playBtn(k, text, label)}
         </div>
         <p className={s.answerText} lang="en">
-          {highlightUsed(text, used)}
+          {highlightUsed(text, used, frameKeys)}
         </p>
+        {check && (
+          <p className={s.flowCheck} data-testid={`flow-check-${k}`}>
+            {check.textKo}
+          </p>
+        )}
+        {check?.weak && (
+          <p className={s.flowWeak}>
+            {TOEIC_ANSWER_FLOW_WEAK_KO}{" "}
+            <button type="button" className={s.flowOpenBtn} onClick={() => openFlow(part)}>
+              흐름 열기
+            </button>
+          </p>
+        )}
         {exprs.length > 0 && (
           <p className={s.usedList}>
             <span className={s.usedLabel}>활용한 표현</span>
             {exprs.map((e) => (
-              <span key={e} className={`u-chip u-chip-accent ${s.exprChip}`} lang="en">
+              <span key={e} className={`u-chip u-chip-accent ${s.exprChip} ${frameKeys?.has(expressionKey(e)) ? s.exprChipFrame : ""}`} lang="en">
                 {e}
               </span>
             ))}
@@ -661,6 +748,7 @@ export default function ToeicMockDetailView({
       {/* Q3–4 사진 묘사 */}
       <section id="part-picture" className={s.part} aria-label={toeicMockPartLabelKo("picture")}>
         {partHead("picture", p.picture !== null)}
+        {p.picture && flowFold("picture")}
         {p.picture ? (
           p.picture.items.map((it, i) => {
             const q = qOf("picture")[i] ?? 3 + i;
@@ -681,7 +769,7 @@ export default function ToeicMockDetailView({
                     </ul>
                   </>
                 )}
-                {modelAnswer(`pic-${i}`, it.sampleAnswer, it.usedExpressions)}
+                {modelAnswer(`pic-${i}`, it.sampleAnswer, it.usedExpressions, "picture")}
               </article>
             );
           })
@@ -693,6 +781,7 @@ export default function ToeicMockDetailView({
       {/* Q5–7 듣고 답하기 */}
       <section id="part-respond" className={s.part} aria-label={toeicMockPartLabelKo("respond")}>
         {partHead("respond", p.respond !== null)}
+        {p.respond && flowFold("respond")}
         {p.respond ? (
           <>
             <article className={s.item}>
@@ -718,7 +807,7 @@ export default function ToeicMockDetailView({
                   <p className={s.question} lang="en">
                     {qq.question}
                   </p>
-                  {modelAnswer(`respond-a-${i}`, qq.sampleAnswer, qq.usedExpressions)}
+                  {modelAnswer(`respond-a-${i}`, qq.sampleAnswer, qq.usedExpressions, "respond")}
                   <p className={s.tip}>💡 {qq.tipKo}</p>
                 </article>
               );
@@ -732,6 +821,7 @@ export default function ToeicMockDetailView({
       {/* Q8–10 정보 활용 */}
       <section id="part-info" className={s.part} aria-label={toeicMockPartLabelKo("info")}>
         {partHead("info", p.info !== null)}
+        {p.info && flowFold("info")}
         {p.info ? (
           <>
             <article className={s.item}>
@@ -788,7 +878,7 @@ export default function ToeicMockDetailView({
                   <p className={s.question} lang="en">
                     {qq.question}
                   </p>
-                  {modelAnswer(`info-a-${i}`, qq.sampleAnswer, qq.usedExpressions)}
+                  {modelAnswer(`info-a-${i}`, qq.sampleAnswer, qq.usedExpressions, "info")}
                   <p className={s.tip}>💡 {qq.tipKo}</p>
                 </article>
               );
@@ -803,6 +893,7 @@ export default function ToeicMockDetailView({
       {/* Q11 의견 말하기 */}
       <section id="part-opinion" className={s.part} aria-label={toeicMockPartLabelKo("opinion")}>
         {partHead("opinion", p.opinion !== null)}
+        {p.opinion && flowFold("opinion")}
         {p.opinion ? (
           <article className={s.item}>
             <div className={s.itemHead}>
@@ -823,7 +914,7 @@ export default function ToeicMockDetailView({
                 </ol>
               </>
             )}
-            {modelAnswer("opinion-a", p.opinion.sampleAnswer, p.opinion.usedExpressions)}
+            {modelAnswer("opinion-a", p.opinion.sampleAnswer, p.opinion.usedExpressions, "opinion")}
             <p className={s.tip}>💡 {p.opinion.tipKo}</p>
           </article>
         ) : (

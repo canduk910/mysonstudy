@@ -67,6 +67,38 @@ export function isToeicTemplateQuizMode(v: unknown): v is ToeicTemplateQuizMode 
 }
 
 /**
+ * ③ 틀 시험 세 모드(§12-13-2 — 2026-10-02) — 한→영 고르기(tpl-ko-frame) · 영→뜻 고르기(tpl-frame-ko) · 빈칸 채우기(tpl-cloze).
+ * ② 틀 테스트(말하기 두 모드)와 **별개**다(§6-2 모드 분리 — 뜻을 고르는 힘·고정 낱말을 알아보는 힘·말로 꺼내는 힘은 다르다).
+ * 말하기 두 모드만 보는 곳(배지·익힘·틀린 틀·연습 약함·최근 테스트·라벨 색인)은 TOEIC_TEMPLATE_QUIZ_MODES를 돌거나
+ * isToeicTemplateQuizMode로 거른 뒤에만 색인한다 — 고르기 세션이 섞여 들어와도 결과가 같아야 한다.
+ */
+export const TOEIC_TEMPLATE_CHOICE_MODES = ["tpl-ko-frame", "tpl-frame-ko", "tpl-cloze"] as const;
+export type ToeicTemplateChoiceMode = (typeof TOEIC_TEMPLATE_CHOICE_MODES)[number];
+
+export const TOEIC_TEMPLATE_CHOICE_MODE_LABELS_KO: Record<ToeicTemplateChoiceMode, string> = {
+  "tpl-ko-frame": "한→영 고르기",
+  "tpl-frame-ko": "영→뜻 고르기",
+  "tpl-cloze": "빈칸 채우기",
+};
+
+export function isToeicTemplateChoiceMode(v: unknown): v is ToeicTemplateChoiceMode {
+  return typeof v === "string" && (TOEIC_TEMPLATE_CHOICE_MODES as readonly string[]).includes(v);
+}
+
+/** 틀 은행 세션(setId guide-templates)이 갖는 모드 다섯 — 말하기 둘 + 틀 시험 셋. 기록 라우트 zod·정규화·스트릭 이름표가 이 목록을 본다 */
+export const TOEIC_TEMPLATE_BANK_MODES = [...TOEIC_TEMPLATE_QUIZ_MODES, ...TOEIC_TEMPLATE_CHOICE_MODES] as const;
+export type ToeicTemplateBankMode = ToeicTemplateQuizMode | ToeicTemplateChoiceMode;
+
+export const TOEIC_TEMPLATE_BANK_MODE_LABELS_KO: Record<ToeicTemplateBankMode, string> = {
+  ...TOEIC_TEMPLATE_QUIZ_MODE_LABELS_KO,
+  ...TOEIC_TEMPLATE_CHOICE_MODE_LABELS_KO,
+};
+
+export function isToeicTemplateBankMode(v: unknown): v is ToeicTemplateBankMode {
+  return isToeicTemplateQuizMode(v) || isToeicTemplateChoiceMode(v);
+}
+
+/**
  * 세트 단위 화면(표현 시험·오답노트·기록)과 모의고사 라우트가 세션을 넘기기 전에 거르는 판정(§12-3 "모드 타입 넓히기").
  * 레코드의 mode가 두 목록의 유니온으로 넓어졌으므로, 표현 시험 모드만 남기고 타입도 그 모드로 좁힌다.
  */
@@ -115,14 +147,14 @@ export interface ToeicQuizSourceSet {
 }
 
 /**
- * 시험 세션 최소 타입(ToeicQuizRecord가 구조적으로 만족). mode는 표현 시험 네 모드 + 틀 테스트 두 모드의 유니온이다(§12-3 —
- * 레코드 mode를 넓혀도 기존 호출처가 tsc에서 깨지지 않게). 집계 함수는 모드 등호로 거르므로(aggregateToeicStatsByMode는
- * TOEIC_QUIZ_MODES만 돈다) 틀 세션이 섞여 들어와도 결과가 같다.
+ * 시험 세션 최소 타입(ToeicQuizRecord가 구조적으로 만족). mode는 표현 시험 네 모드 + 틀 은행 세션 다섯 모드(② 말하기 둘 ·
+ * ③ 틀 시험 셋 — §12-3·§12-13-2)의 유니온이다(레코드 mode를 넓혀도 기존 호출처가 tsc에서 깨지지 않게). 집계 함수는 모드 등호로
+ * 거르므로(aggregateToeicStatsByMode는 TOEIC_QUIZ_MODES만 돈다) 틀 세션이 섞여 들어와도 결과가 같다.
  */
 export interface ToeicQuizSessionLike {
   id: string;
   setId: string;
-  mode: ToeicQuizMode | ToeicTemplateQuizMode;
+  mode: ToeicQuizMode | ToeicTemplateBankMode;
   startedAt: string;
   finishedAt: string | null;
   items: readonly { word: string; correct: boolean; answered: boolean | null }[];

@@ -11,8 +11,13 @@
  * 사용자 메시지는 **형식(템플릿) 상수**를 spec-sync하고, 빌더는 그 템플릿의 플레이스홀더만 한 번에 치환한다
  * (값 안에 플레이스홀더 모양의 글자가 있어도 다시 치환되지 않는다 — 단일 패스).
  *
- * 호출 C 시스템 프롬프트는 `TOEIC_MOCK_COMMON + "\n\n" + TOEIC_MOCK_<PART>_TASK`로 조립한다(§4-0) —
- * spec-sync 대상은 조립 결과가 아니라 코드블록 6개 각각이다.
+ * 호출 C 시스템 프롬프트는 `TOEIC_MOCK_COMMON + "\n\n" + TOEIC_MOCK_<PART>_TASK`로 조립하고, **답변 흐름을 받은 파트만** 그 뒤에
+ * `"\n\n" + TOEIC_MOCK_FLOW_RULES`를 더 붙인다(§4-0 — 2026-10-02, 흐름이 없으면 옛 프롬프트와 바이트까지 같다). spec-sync 대상은
+ * 조립 결과가 아니라 코드블록 7개 각각이다(머리말 1 + 파트 5 + 흐름 규칙 1).
+ *
+ * ── 답변 흐름(§12-13-3) ──────────────────────────────────────────────────────
+ * 호출 C·D의 사용자 메시지에 `답변 흐름:` 블록이 있다. 값은 formatAnswerFlow 하나가 만든다(C·D 공용). 틀 글자는 런타임에 틀 은행
+ * 문서에서 읽은 것(`~` 형태)과 단계 이름뿐이다 — 프롬프트 상수에 틀을 박지 않는다(공개 저장소 — 교재 글).
  */
 
 import {
@@ -22,7 +27,7 @@ import {
   type ToeicTargetGrade,
 } from "../../toeic-mock";
 import { collapseSpaces } from "../../toeic-text";
-import { TOEIC_MOCK_EXPRESSIONS_MAX, type ToeicPointsInput } from "./schemas";
+import { TOEIC_MOCK_EXPRESSIONS_MAX, type ToeicAnswerFlow, type ToeicPointsInput } from "./schemas";
 
 // ===========================================================================
 // 원문 상수 — docs/harness/toeic.md 코드블록 그대로 (손대지 말 것: spec-sync가 바이트 대조)
@@ -105,6 +110,20 @@ export const TOEIC_MOCK_COMMON = `너는 TOEIC Speaking 시험 형식을 잘 아
 - 한국어 설명은 짧고 실용적으로 쓴다.
 - 지정된 JSON 스키마 외의 텍스트를 내지 않는다.`;
 
+/**
+ * 호출 C 흐름 규칙 (§4-1 둘째 블록 원문 그대로 — 2026-10-02). **답변 흐름을 받은 파트만** 과제 절 **뒤에** 붙인다
+ * (buildMockSystemPrompt(part, hasFlow)). 흐름이 없으면 붙이지 않으므로 시스템 프롬프트가 옛것과 바이트까지 같다.
+ */
+export const TOEIC_MOCK_FLOW_RULES = `[답변 흐름]
+- 사용자 메시지의 '답변 흐름'은 수험자가 미리 외워 둔 답변 틀이다. 번호 붙은 줄이 답변 순서의 단계이고, 단계마다 그 단계에서 쓰는 틀이 " / "로 적혀 있다. 틀의 ~는 바꿔 끼울 자리다. '소재 틀' 줄의 틀은 단계와 상관없이 내용이 맞을 때 쓴다.
+- 모범답변은 이 틀로 조립한다. 단계 순서대로 말하고, 단계마다 그 단계의 틀 중 이 문항에 맞는 것을 골라 쓴다. 틀의 ~ 밖 글자는 한 글자도 바꾸지 않고 그대로 쓰고, ~ 자리만 장면·질문에 맞는 말로 채운다. ~를 채우지 않은 채 남기지 않는다.
+- 맞는 틀이 없는 내용에서만 자유 문장을 쓴다. 틀과 같은 역할의 문장을 다른 말로 바꿔 쓰지 않는다.
+- 이 문항에 필요 없는 단계는 건너뛴다(다른 문항 번호가 붙은 단계, 짧은 답에 필요 없는 단계).
+- 위 과제 절의 답변 순서와 따옴표 친 영어(시작 문장·연결어·바꿔 말하기 예)는 답변 흐름이 없을 때의 예시다. 답변 순서는 흐름의 단계를 따르고, 흐름에 그 역할의 틀이 있으면 그 틀을 쓰며 예시 글자로 바꾸거나 섞지 않는다. 과제 절의 길이·문장 수 규칙과 그 밖의 내용 규칙은 그대로 지킨다.
+- 목표 등급의 차이는 ~ 자리의 채움, 자유 문장, 문장 사이의 연결로 낸다. 틀의 ~ 밖 글자는 등급과 상관없이 그대로다.
+- '활용할 표현'은 틀의 ~ 자리나 자유 문장 안에서만 쓴다. 틀이 있는 자리를 활용할 표현으로 바꾸지 않는다.
+- 쓴 틀도 usedExpressions에 적는다 — expression은 답변 흐름에 적힌 틀 글자 그대로, span은 모범답변에서 그 틀로 말한 연속 구간이다.`;
+
 /** 호출 C1 read 과제 절 (§4-2 원문 그대로). */
 export const TOEIC_MOCK_READ_TASK = `[과제: Q1–2 지문 읽기]
 - 소리 내어 읽을 지문 정확히 2개를 만든다. 두 지문은 종류(kind)가 달라야 한다 — advertisement(광고), announcement(공공장소 안내방송), news(라디오·뉴스 소식), introduction(행사·인물 소개), tour(투어 안내), voicemail(자동 응답 메시지) 중에서 고른다.
@@ -151,7 +170,9 @@ export const TOEIC_MOCK_OPINION_TASK = `[과제: Q11 의견 말하기]
 /** 호출 C1~C5 공통 사용자 메시지 형식 (§4-7 원문 그대로). buildMockUserMessage가 채운다. */
 export const TOEIC_MOCK_USER_TEMPLATE = `목표 등급: {IM3|IH|AL}
 주제 힌트: {topicHints를 ", "로, 없으면 "없음"}
-활용할 표현: {expressions를 " / "로, 없으면 "없음"}`;
+활용할 표현: {expressions를 " / "로, 없으면 "없음"}
+답변 흐름:
+{answerFlow를 단계마다 한 줄로, 없으면 "없음"}`;
 
 /** 관문 P 사진 프롬프트 고정 접미사 (§4-10 원문 그대로). C2 imagePrompt 뒤에 붙인다. */
 export const TOEIC_IMAGE_PROMPT_SUFFIX = `A realistic candid photograph for an English speaking test picture-description task. Natural colors and lighting, everyday adults, clear actions. No text, no signs with words, no logos, no watermarks, no children.`;
@@ -160,9 +181,10 @@ export const TOEIC_IMAGE_PROMPT_SUFFIX = `A realistic candid photograph for an E
 export const TOEIC_FEEDBACK_SYSTEM_PROMPT = `너는 ETS TOEIC Speaking 채점 기준을 잘 아는 채점관 겸 코치다. 한국인 성인 수험자의 답변 전사문을 받아 공식 기준에 맞춰 점수를 매기고, 다음 답변을 더 잘하게 만드는 피드백을 한국어로 준다.
 
 [입력]
-- 문항 번호와 유형, 만점, 답변 시간, 수험자가 본 자료(질문·표·사진 설명), 참고용 모범답변, 활용할 표현 목록, 그리고 음성 인식으로 얻은 답변 전사문을 받는다.
+- 문항 번호와 유형, 만점, 답변 시간, 수험자가 본 자료(질문·표·사진 설명), 참고용 모범답변, 활용할 표현 목록, 답변 흐름, 그리고 음성 인식으로 얻은 답변 전사문을 받는다.
 - 전사문은 음성 인식 결과라 발음과 억양을 알 수 없고 인식 오류가 섞여 있을 수 있다. 발음과 억양은 평가하지 않는다. 인식 오류로 보이는 단어는 감점하지 말고 문맥으로 해석한다.
 - 모범답변은 참고용이다. 모범답변과 다르다는 이유로 감점하지 않는다.
+- 답변 흐름은 수험자가 미리 외워 둔 답변 틀이다. 번호 붙은 줄이 단계이고, 단계마다 틀이 " / "로 적혀 있으며 ~는 바꿔 끼울 자리다. '소재 틀'은 내용이 맞을 때 쓰는 틀이다. "없음"이면 이 입력은 없다. 답변 흐름은 피드백에만 쓴다 — 틀을 쓰지 않았다는 이유로 감점하지 않는다.
 
 [채점]
 - Q3–4(0~3): 사진의 주요 특징을 묘사했는가, 어휘와 문장 구조가 적절하고 생각이 이어지는가.
@@ -175,10 +197,10 @@ export const TOEIC_FEEDBACK_SYSTEM_PROMPT = `너는 ETS TOEIC Speaking 채점 �
 [피드백]
 - summaryKo: 총평 1~2문장(한국어).
 - strengths: 잘한 점 1~3개(한국어, 구체적으로).
-- fixes: 고칠 문장 0~5개. said에는 전사문에서 그대로 복사한 구간을, better에는 같은 뜻의 올바르고 자연스러운 영어를, whyKo에는 이유 한 줄(문법·어휘·어색함·내용)을 쓴다. 인식 오류로 보이는 것은 고치지 않는다.
+- fixes: 고칠 문장 0~5개. said에는 전사문에서 그대로 복사한 구간을, better에는 같은 뜻의 올바르고 자연스러운 영어를, whyKo에는 이유 한 줄(문법·어휘·어색함·내용)을 쓴다. 인식 오류로 보이는 것은 고치지 않는다. 답변 흐름을 받았고 said가 어떤 틀과 같은 역할의 문장이면, better는 그 틀의 ~ 밖 글자를 그대로 쓰고 ~ 자리만 수험자의 내용으로 채운 문장으로 쓰고, whyKo에 외운 틀로 말하라는 뜻을 적는다.
 - missingKo: 내용상 빠진 것 0~3개(한국어, 예: "정정 정보(시작 시간 변경)를 말하지 않음").
-- improvedAnswer: 수험자의 답변 내용을 살려 제한 시간 안에 말할 수 있게 고쳐 쓴 더 나은 답변(영어). 모범답변을 베끼지 않는다.
-- tryExpressions: 받은 활용할 표현 목록 중 이 답변에 넣었으면 좋았을 표현 0~3개(목록의 문자열 그대로).
+- improvedAnswer: 수험자의 답변 내용을 살려 제한 시간 안에 말할 수 있게 고쳐 쓴 더 나은 답변(영어). 모범답변을 베끼지 않는다. 답변 흐름을 받았으면 이 문항에 필요한 단계만 단계 순서대로 쓴다(다른 문항 번호가 붙은 단계와 이 답변 시간에 필요 없는 단계는 건너뛴다). 쓰는 단계마다 맞는 틀을 ~ 밖 글자 그대로 쓰고 ~ 자리만 수험자의 답이나 수험자가 본 자료에 있는 내용으로 채워 조립한다. 채울 내용이 없는 틀은 쓰지 않는다(~를 그대로 남기지 않는다). 맞는 틀이 없는 내용에서만 자유 문장을 쓴다.
+- tryExpressions: 받은 활용할 표현 목록과, 답변 흐름의 틀 중 이 문항의 단계에 맞는 것에서 이 답변에 넣었으면 좋았을 것 0~3개(적힌 문자열 그대로).
 
 [금지]
 - 전사문에 없는 말을 수험자가 했다고 쓰지 않는다.
@@ -191,6 +213,8 @@ export const TOEIC_FEEDBACK_USER_TEMPLATE = `문항: Q{n} ({유형 이름}) · �
 모범답변(참고용):
 {sampleAnswer}
 활용할 표현: {목록을 " / "로, 없으면 "없음"}
+답변 흐름:
+{answerFlow를 단계마다 한 줄로, 없으면 "없음"}
 답변 전사문:
 {transcript}`;
 
@@ -207,9 +231,38 @@ export const TOEIC_MOCK_TASKS: Record<ToeicMockPart, string> = {
   opinion: TOEIC_MOCK_OPINION_TASK,
 };
 
-/** 호출 C 파트별 완결 시스템 프롬프트(§4-0) = 공통 머리말 + 빈 줄 + 과제 절 */
-export function buildMockSystemPrompt(part: ToeicMockPart): string {
-  return TOEIC_MOCK_COMMON + "\n\n" + TOEIC_MOCK_TASKS[part];
+/**
+ * 호출 C 파트별 완결 시스템 프롬프트(§4-0) = 공통 머리말 + 빈 줄 + 과제 절, **답변 흐름을 받았으면**(hasFlow) 그 뒤에 빈 줄 + 흐름 규칙.
+ * 흐름 규칙이 과제 절 **뒤에** 와야 과제 절의 따옴표 예시보다 흐름의 틀이 앞선다는 것이 마지막 말이 된다. hasFlow를 생략하면 false —
+ * 옛 한 인자 호출과 같은 바이트다. hasFlow는 generateMockPart가 "넘긴 answerFlow !== null"로 정한다(read는 흐름이 늘 null).
+ */
+export function buildMockSystemPrompt(part: ToeicMockPart, hasFlow = false): string {
+  return TOEIC_MOCK_COMMON + "\n\n" + TOEIC_MOCK_TASKS[part] + (hasFlow ? "\n\n" + TOEIC_MOCK_FLOW_RULES : "");
+}
+
+/**
+ * 답변 흐름 → 사용자 메시지 자리 값(§4-7·§5-2 — 호출 C·D 공용).
+ * - 흐름이 null이거나 단계·소재 틀이 모두 비었으면 `없음`.
+ * - 단계마다 한 줄 `{번호}. {단계 이름}: {틀} / {틀} …` — 틀이 없는 단계는 줄을 내지 않고 번호는 낸 줄끼리 1부터 잇는다.
+ * - 소재 틀이 있으면 마지막 줄 `소재 틀: {틀} / …`. 줄은 `\n`으로 잇는다.
+ * 틀 글자는 frameToExpression의 `~` 형태(`/` 없음 — 틀 zod가 자리 밖 `/`를 거부한다)라 `" / "` 경계가 흐리지 않다. 공백은 접는다.
+ */
+export function formatAnswerFlow(flow: ToeicAnswerFlow | null): string {
+  if (flow === null) return "없음";
+  const join = (frames: readonly { expression: string }[]) =>
+    frames
+      .map((f) => collapseSpaces(f.expression))
+      .filter((e) => e !== "")
+      .join(" / ");
+  const lines: string[] = [];
+  for (const st of flow.steps) {
+    const frames = join(st.frames);
+    if (frames === "") continue;
+    lines.push(`${lines.length + 1}. ${collapseSpaces(st.stepKo)}: ${frames}`);
+  }
+  const banks = join(flow.banks);
+  if (banks !== "") lines.push(`소재 틀: ${banks}`);
+  return lines.length > 0 ? lines.join("\n") : "없음";
 }
 
 /**
@@ -256,6 +309,7 @@ export const TOEIC_MOCK_PLACEHOLDERS = {
   grade: "{IM3|IH|AL}",
   topics: '{topicHints를 ", "로, 없으면 "없음"}',
   expressions: '{expressions를 " / "로, 없으면 "없음"}',
+  answerFlow: '{answerFlow를 단계마다 한 줄로, 없으면 "없음"}',
 } as const;
 
 export interface ToeicMockUserMessageInput {
@@ -264,6 +318,11 @@ export interface ToeicMockUserMessageInput {
   topicHints: readonly string[];
   /** 활용할 표현(최대 TOEIC_MOCK_EXPRESSIONS_MAX). 비면 "없음" */
   expressions: readonly string[];
+  /**
+   * 답변 흐름(§12-13-3 — 2026-10-02, **필수 칸**). 그 파트 유형의 단계마다 외울 틀. null이면 "없음"(틀 은행 없음·read·옛 문서 다시
+   * 만들기) — 이때 시스템 프롬프트에 흐름 규칙이 붙지 않아 옛 요청과 다른 곳은 사용자 메시지 끝 두 줄뿐이다.
+   */
+  answerFlow: ToeicAnswerFlow | null;
 }
 
 /** 공백 정리 + 빈 값·중복(대소문자 무시) 제거, 등장 순서 유지 */
@@ -288,7 +347,7 @@ export function normalizeMockExpressions(list: readonly string[]): string[] {
   return cleanList(list).slice(0, TOEIC_MOCK_EXPRESSIONS_MAX);
 }
 
-/** 호출 C1~C5 공통 사용자 메시지(§4-7). 주제·표현은 공백 정리·중복 제거 후 잇고, 표현은 상한에서 자른다. */
+/** 호출 C1~C5 공통 사용자 메시지(§4-7). 주제·표현은 공백 정리·중복 제거 후 잇고, 표현은 상한에서 자른다. 흐름은 formatAnswerFlow. */
 export function buildMockUserMessage(input: ToeicMockUserMessageInput): string {
   const topics = cleanList(input.topicHints);
   const expressions = normalizeMockExpressions(input.expressions);
@@ -296,6 +355,7 @@ export function buildMockUserMessage(input: ToeicMockUserMessageInput): string {
     [TOEIC_MOCK_PLACEHOLDERS.grade]: input.targetGrade,
     [TOEIC_MOCK_PLACEHOLDERS.topics]: topics.length > 0 ? topics.join(", ") : "없음",
     [TOEIC_MOCK_PLACEHOLDERS.expressions]: expressions.length > 0 ? expressions.join(" / ") : "없음",
+    [TOEIC_MOCK_PLACEHOLDERS.answerFlow]: formatAnswerFlow(input.answerFlow),
   });
 }
 
@@ -308,6 +368,7 @@ export const TOEIC_FEEDBACK_PLACEHOLDERS = {
   material: "{material}",
   sampleAnswer: "{sampleAnswer}",
   expressions: '{목록을 " / "로, 없으면 "없음"}',
+  answerFlow: '{answerFlow를 단계마다 한 줄로, 없으면 "없음"}',
   transcript: "{transcript}",
 } as const;
 
@@ -317,8 +378,10 @@ export interface ToeicFeedbackUserMessageInput {
   /** 수험자가 본 자료 — lib/ai/toeic/mock.ts의 buildFeedbackMaterial이 만든다 */
   material: string;
   sampleAnswer: string;
-  /** 활용할 표현(모의고사의 expressionsUsed) */
+  /** 활용할 표현(모의고사의 expressionsUsed) — 답변 흐름 틀은 섞지 않는다(`활용할 표현:` 줄에 찍히지 않게, 검토 S4) */
   expressions: readonly string[];
+  /** 답변 흐름(§12-13-3) — 그 문항 파트로 모의고사를 만들 때 보낸 흐름(레코드 answerFlows). 없으면 null → "없음" */
+  answerFlow: ToeicAnswerFlow | null;
   /** 관문 T 전사문 */
   transcript: string;
 }
@@ -335,6 +398,7 @@ export function buildFeedbackUserMessage(input: ToeicFeedbackUserMessageInput): 
     [TOEIC_FEEDBACK_PLACEHOLDERS.material]: input.material,
     [TOEIC_FEEDBACK_PLACEHOLDERS.sampleAnswer]: input.sampleAnswer,
     [TOEIC_FEEDBACK_PLACEHOLDERS.expressions]: expressions.length > 0 ? expressions.join(" / ") : "없음",
+    [TOEIC_FEEDBACK_PLACEHOLDERS.answerFlow]: formatAnswerFlow(input.answerFlow),
     [TOEIC_FEEDBACK_PLACEHOLDERS.transcript]: input.transcript,
   });
 }

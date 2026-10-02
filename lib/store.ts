@@ -79,6 +79,7 @@ import { decideLog, decideStart, decideUndo, normalizeWorkoutCycle } from "./wor
 // — 둘 다 openai를 끌고 오지 않는다(zod만). 시험 모드 유니온은 클라이언트 안전 순수 모듈 lib/toeic-quiz.ts가 정의처다.
 import type {
   ToeicAnswer,
+  ToeicAnswerFlow,
   ToeicAttemptScope,
   ToeicBookQuiz,
   ToeicExprEntry,
@@ -89,7 +90,7 @@ import type {
   ToeicSetSource,
 } from "./ai/toeic/schemas";
 import type { ToeicMockPart, ToeicTargetGrade } from "./toeic-mock";
-import type { ToeicQuizMode, ToeicTemplateQuizMode } from "./toeic-quiz";
+import type { ToeicQuizMode, ToeicTemplateBankMode } from "./toeic-quiz";
 import { applyPointsResults } from "./ai/toeic/points";
 // 모의고사 파트 채우기·사진 저장 판정 — 두 백엔드가 같은 함수로(lib/toeic-mock-apply.ts, 런타임 import 0)
 import { applyFillPart, applyPictureImage, decideFillPart, decidePictureImage } from "./toeic-mock-apply";
@@ -586,10 +587,10 @@ export interface ToeicQuizRecord {
   id: string;
   setId: string;
   /**
-   * 표현 시험 네 모드 + 템플릿 테스트 두 모드(§12-3 — setId `guide-templates`, 항목 키 `tpl:{key}`). 세트 단위 화면·모의고사 라우트는
-   * isToeicQuizModeSession(lib/toeic-quiz)으로 표현 시험 모드만 걸러 넘긴다.
+   * 표현 시험 네 모드 + 틀 은행 세션 다섯 모드(② 틀 테스트 둘 · ③ 틀 시험 셋 — §12-3·§12-13-2, setId `guide-templates`, 항목 키
+   * `tpl:{key}`). 세트 단위 화면·모의고사 라우트는 isToeicQuizModeSession(lib/toeic-quiz)으로 표현 시험 모드만 걸러 넘긴다.
    */
-  mode: ToeicQuizMode | ToeicTemplateQuizMode;
+  mode: ToeicQuizMode | ToeicTemplateBankMode;
   startedAt: string;
   /** 끝까지 풀면 ISO, 그만하기면 null */
   finishedAt: string | null;
@@ -614,6 +615,12 @@ export interface ToeicMockRecord {
    * 필드가 없는 옛 문서는 null(normalize). 모의고사 목록·제목 번호·학습 보기는 이 값으로 연습을 가린다(lib/toeic-record isToeicDrill).
    */
   drillPart: ToeicMockPart | null;
+  /**
+   * 답변 흐름(docs/harness/toeic.md §7-2·§12-13-3 — 2026-10-02) — 만들 때 만든 흐름 = 저장한 흐름(0~4, 파트 중복 없음, read 없음).
+   * 실전 모의고사는 **고르지 않은 파트까지** 네 파트 흐름을 저장하고(나중의 "이 파트 만들기"·채점이 같은 흐름을 받게), 연습은 그 파트 하나.
+   * 다시 만들기·호출 D가 여기서 그 파트 흐름을 꺼낸다. 옛 문서 = [](normalize — 흐름 없음 → 옛 동작).
+   */
+  answerFlows: ToeicAnswerFlow[];
   model: string;
   createdAt: string;
   sortIndex: number | null;

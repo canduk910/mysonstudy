@@ -16,11 +16,28 @@
  * - 프리페치: 열린 섹션들의 **영어 조각만**(toeicGuidePrefetchTexts — 한국어는 큐의 look-ahead에 맡긴다, §18-5 비용 가드). 키는 문자열.
  * - 🧩 칩: 블록 머리(템플릿 줄 label·이어 말하기 머리말이 틀에 연결된 블록 — "🧩 템플릿 훈련 n")와 list 블록 줄 머리(그 줄 영어의 `~`
  *   모양이 틀이 연결한 교재 표현과 같은 줄). 누르면 ② 탭의 그 틀(여럿이면 첫 틀). 판정은 templateLinksForGuide 하나.
- * - `?goto=`(틀 카드의 📘 교재 틀 칩): 그 블록의 섹션을 열고 스크롤·잠깐 강조.
+ * - `?goto=`(틀 카드의 📘 교재 틀 칩): 그 블록의 섹션을 열고 스크롤·잠깐 강조. `k:{틀 key}`(2026-10-02)는 그 틀의 첫 외울 틀 줄 블록.
  * - 모든 글은 텍스트로만 넣는다(HTML 해석 없음). label·note·marked는 읽지 않는다(화면 표시만).
+ *
+ * ── 2026-10-02 템플릿 중심 재정렬(docs/harness/toeic.md §12-13-1) — 외울 틀 강조 · 같은 자리 다른 표현 접기 ──
+ * - 판정은 순수 함수 `guideReadMarks(sections, 연결 표, 같은 자리 다른 표현 표, 그 유형 틀)` 하나(lib/toeic-guide-view). 화면은 소비만 한다.
+ * - **외울 틀 줄**: 강조 띠 + 줄 아래 그 틀의 **틀 줄**(고정 부분 굵게·자리 칩 — ② 카드와 같은 조각)과 틀 줄 머리의 "🧩 외울 틀" 칩(→ ② 그 카드)·
+ *   탭 🔊(cleanGuideEnForTts(frameEn) — ② 카드 영어 틀 소개와 같은 글자, 미리 받지 않는다). 줄 영어의 `~` 모양이 그 틀과 같으면 틀 줄을 생략하고
+ *   칩을 교재 줄 머리에. 템플릿 줄(label 연결)은 그 label의 첫 줄 아래에 연결된 틀 줄 목록, 이어 말하기 머리말은 머리말 아래에.
+ * - **같은 자리 다른 표현**: 블록 통째(altBlocks)는 블록 자리에 닫힌 접기 하나(요약 "↳ 같은 자리 다른 표현" + 캡션 + "외울 틀: {대표 틀}"),
+ *   줄 단위(altLines)는 블록 끝의 닫힌 접기 하나("↳ 같은 자리 다른 표현 n줄", 줄마다 "→ 🧩 {대표 틀}"), 이어 말하기 머리말만 접힘(bareBlocks)은
+ *   머리말 자리에 접기 + "→ 🧩 {대표 틀}의 끝 자리에 넣어 말해 보세요" + 조각은 머리말 없이 그대로. 대표 틀이 렌더 불가·다른 유형이면 "외울 틀"
+ *   표시만 빼고 접는다.
+ * - **대본**: 섹션 ▶·▶ 처음부터·진행·프리페치·접히지 않은 줄 🔊·text 블록 🔊는 모두 `skip` 적용 대본(guideReadScriptSkip) — 접은 것은 듣지도
+ *   미리 받지도 않고, framePicks 줄은 외울 틀 쪽 대안만, bareBlocks 조각은 조각만 읽는다. **접기 안의 줄 🔊**는 skip 없는 대본에서 그 주소로
+ *   거른 조각(toeicGuideLinePieces)을 탭할 때만, 접힌 머리말 🔊는 toeicGuideLeadPieces를 탭할 때만(미리 받지 않는다 — §18-5 비용 가드).
+ * - 머리 두 줄(틀 은행이 있을 때만): "🧩 이 유형 외울 틀 n개 · 이 읽기에 나온 것 m개 — 나머지는 🧩 템플릿 훈련에서"(m = guideReadFrameKeys)와
+ *   범례(alternates가 비면 그 자리에 다시 가져오기 안내). 맨 끝에 닫힌 "📘 교재 표현 목록"(읽기 전용 — 옛 ③ 탭 목록, 대본·프리페치 밖).
  */
 
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import ToeicGuideExprList from "@/components/toeic-guide-expr-list";
+import { FrameLine } from "@/components/toeic-template-lines";
 import TtsEngineControl from "@/components/tts-engine-control";
 import TtsSpeedControl from "@/components/tts-speed-control";
 import { useToeicShadowSettings } from "@/components/use-toeic-shadow-settings";
@@ -32,17 +49,33 @@ import {
   cleanGuideEnForTts,
   guideLineEn,
   splitGuideEnForDisplay,
+  toeicGuideBlockKey,
+  toeicGuideBlockPieces,
+  toeicGuideLeadPieces,
+  toeicGuideLineKey,
+  toeicGuideLinePieces,
   toeicGuidePrefetchTexts,
   toeicGuideSectionStart,
   type ToeicGuideScriptMode,
   type ToeicGuideScriptPiece,
   type ToeicShadowPauseLevel,
 } from "@/lib/toeic-guide";
-import type { ToeicGuideBlock, ToeicGuideLine, ToeicGuidePart, ToeicGuideSection, ToeicTemplate } from "@/lib/toeic-guide-contract";
-import { findGuideGotoBlock, guideBlockTemplateKeys, guideGotoAddr, guideReadInitialOpen } from "@/lib/toeic-guide-view";
-import { guideLineTemplateKeys, templateLinksForGuide, type ToeicTemplateGuideLinks } from "@/lib/toeic-template";
+import type { ToeicGuideBlock, ToeicGuideLine, ToeicGuidePart, ToeicGuideSection, ToeicTemplate, ToeicTemplateAlternate } from "@/lib/toeic-guide-contract";
+import {
+  findGuideGotoBlock,
+  guideBlockTemplateKeys,
+  guideGotoAddr,
+  guideReadFrameKeys,
+  guideReadInitialOpen,
+  guideReadMarks,
+  guideReadScriptSkip,
+  slotToneMap,
+} from "@/lib/toeic-guide-view";
+import { frameSlotNames, frameToExpression, templateAlternateLinks, templateLinksForGuide, type ToeicTemplateGuideLinks } from "@/lib/toeic-template";
+import { expressionKey } from "@/lib/toeic-text";
 import { splitForTts } from "@/lib/tts-split";
 import { TTS_TEXT_MAX_CHARS } from "@/lib/tts-shared";
+import type { ToeicGuideExpressionItem } from "./toeic-guide-folder-view";
 import s from "./toeic-guide-read-view.module.css";
 
 const PAUSE_LEVEL_LABELS_KO: Record<ToeicShadowPauseLevel, string> = { short: "짧게", normal: "보통", long: "길게" };
@@ -103,15 +136,30 @@ function EnText({ en, emphasis, underline }: { en: string; emphasis: readonly st
 export default function ToeicGuideReadView({
   part,
   sections,
+  expressions,
   templates,
+  alternates,
+  bankReady,
+  alternatesEmpty,
   goto,
   onOpenTemplate,
+  onOpenTemplatesTab,
 }: {
   part: ToeicGuidePart;
   sections: ToeicGuideSection[];
+  /** 공략 세트의 교재 표현(① 끝 읽기 전용 "📘 교재 표현 목록") */
+  expressions: ToeicGuideExpressionItem[];
+  /** 그 유형의 렌더 가능한 틀(testFills 비움) */
   templates: ToeicTemplate[];
+  /** 그 유형의 같은 자리 다른 표현(틀 은행 alternates) */
+  alternates: ToeicTemplateAlternate[];
+  /** 틀 은행이 렌더 가능하다(머리 두 줄·범례의 조건) */
+  bankReady: boolean;
+  /** 틀 은행 alternates가 통째로 비었다(다시 가져오기 안내) */
+  alternatesEmpty: boolean;
   goto: string | null;
   onOpenTemplate: (key: string) => void;
+  onOpenTemplatesTab: () => void;
 }) {
   const [mode, setMode] = useState<ToeicGuideScriptMode>("all");
   const [pauseOn, setPauseOn] = useState(false); // "영어만" 따라 말할 틈 — 기본 끔(§12-4), 기억하지 않는다
@@ -119,16 +167,25 @@ export default function ToeicGuideReadView({
   const pauseLevel = settings.pauseLevel;
 
   const guide = useMemo(() => ({ sections }), [sections]);
+  const links: ToeicTemplateGuideLinks = useMemo(() => templateLinksForGuide({ items: templates }, part), [templates, part]);
+  // 외울 틀 강조·같은 자리 다른 표현 접기 판정(§12-13-1) — 틀 은행이 없으면(두 표가 비면) 모든 판정이 빈다
+  const altLinks: ToeicTemplateGuideLinks = useMemo(() => templateAlternateLinks({ alternates }, part), [alternates, part]);
+  const marks = useMemo(() => guideReadMarks(sections, links, altLinks, templates), [sections, links, altLinks, templates]);
+  const skip = useMemo(() => guideReadScriptSkip(marks), [marks]);
+  // 섹션 ▶·처음부터·진행·프리페치·접히지 않은 줄 🔊·text 블록 🔊는 skip 적용 대본 하나(접은 것은 듣지도 미리 받지도 않는다)
   const script = useMemo(
-    () => buildToeicGuideScript(guide, mode, { pause: mode === "english-only" && pauseOn, pauseLevel }),
-    [guide, mode, pauseOn, pauseLevel],
+    () => buildToeicGuideScript(guide, mode, { pause: mode === "english-only" && pauseOn, pauseLevel, skip }),
+    [guide, mode, pauseOn, pauseLevel, skip],
   );
+  // 접기 안의 줄 🔊 — skip 없는 대본에서 그 주소로 거른 조각(탭할 때만, 미리 받지 않는다 — 정리 함수가 같아 캐시 키 규칙 그대로)
+  const fullScript = useMemo(() => buildToeicGuideScript(guide, mode, { pause: mode === "english-only" && pauseOn, pauseLevel }), [guide, mode, pauseOn, pauseLevel]);
   const scriptKey = useMemo(() => script.map((p) => `${p.lang}|${p.pauseAfterMs}|${p.text}`).join("\n"), [script]);
   const addr = useMemo(() => buildAddress(script), [script]);
-  const links: ToeicTemplateGuideLinks = useMemo(() => templateLinksForGuide({ items: templates }, part), [templates, part]);
+  const tplByKey = useMemo(() => new Map(templates.map((t) => [t.key, t] as const)), [templates]);
+  const readFrameCount = useMemo(() => guideReadFrameKeys(marks).size, [marks]);
 
   // ── 섹션 열림(첫 섹션만 열림 + `?goto=` 목표 섹션 — 첫 렌더부터, 서버 HTML 포함) ──
-  const [open, setOpen] = useState<Set<number>>(() => new Set(guideReadInitialOpen(sections, goto)));
+  const [open, setOpen] = useState<Set<number>>(() => new Set(guideReadInitialOpen(sections, goto, marks)));
   const openSection = useCallback((i: number) => setOpen((prev) => (prev.has(i) ? prev : new Set(prev).add(i))), []);
 
   // ── 재생 ──
@@ -241,6 +298,29 @@ export default function ToeicGuideReadView({
     if (runRef.current === run) stopRef.current = stop;
   }
 
+  /** 접기 안 줄 🔊·접힌 머리말 🔊·틀 줄 🔊 — 그 조각만(지금 읽는 줄 강조 없이). ⚠️ 탭 핸들러 안에서 동기로 */
+  function playPieces(pieces: readonly { text: string; lang: string }[]) {
+    if (pieces.length === 0) return;
+    const run = ++runRef.current;
+    stopRef.current = null;
+    setPlaying(null);
+    setPausing(false);
+    const stop = speakQueue(
+      pieces.map((p) => ({ text: p.text, lang: p.lang })),
+      {
+        onEnd: () => {
+          if (runRef.current === run) stopRef.current = null;
+        },
+      },
+    );
+    if (runRef.current === run) stopRef.current = stop;
+  }
+
+  /** 틀 줄 🔊 — ② 카드의 영어 틀 소개와 같은 글자(cleanGuideEnForTts) */
+  function playFrame(frameEn: string) {
+    playPieces(splitForTts(cleanGuideEnForTts(frameEn), TTS_TEXT_MAX_CHARS).map((text) => ({ text, lang: "en-US" })));
+  }
+
   function stopPlayback() {
     haltQueue(runRef, stopRef);
     setPlaying(null);
@@ -261,7 +341,7 @@ export default function ToeicGuideReadView({
   //   열려 있다(guideReadInitialOpen) → 아래 효과가 커밋 뒤 바로 스크롤한다(Next의 이동 스크롤은 layout 단계라 그보다 먼저 끝난다).
   // - 마운트된 채 goto가 바뀌면: 효과가 목표를 pendingGotoRef에 남기고 섹션을 연다 → 열림이 커밋된 뒤 layout 효과([open, flash])가 스크롤.
   // 키는 블록 주소 문자열 — 같은 목표면 데이터 새로 고침(sections 새 참조)에 다시 스크롤·강조하지 않는다.
-  const gotoHit = useMemo(() => findGuideGotoBlock(sections, goto), [sections, goto]);
+  const gotoHit = useMemo(() => findGuideGotoBlock(sections, goto, marks), [sections, goto, marks]);
   const gotoAddr = guideGotoAddr(gotoHit);
   const gotoSection = gotoHit?.section ?? null;
   const pendingGotoRef = useRef<string | null>(null);
@@ -325,6 +405,16 @@ export default function ToeicGuideReadView({
     );
   }
 
+  /** 접기 안의 🔊 — skip 없는 대본의 그 조각을 탭할 때만(미리 받지 않는다) */
+  function foldSpeakBtn(pieces: readonly { text: string; lang: string }[], label: string) {
+    if (pieces.length === 0) return null;
+    return (
+      <button type="button" className={s.speak} onClick={() => playPieces(pieces)} aria-label={`${label} 듣기`} title="듣기">
+        🔊
+      </button>
+    );
+  }
+
   function tplChip(keys: readonly string[], text: string, aria: string): ReactNode {
     if (keys.length === 0) return null;
     return (
@@ -334,11 +424,78 @@ export default function ToeicGuideReadView({
     );
   }
 
-  function renderLine(block: ToeicGuideBlock, line: ToeicGuideLine, si: number, bi: number, li: number | "lead", opts: { chip: boolean; ghostLead: boolean }) {
+  /** 외울 틀 줄 아래의 **틀 줄** — 칩 "🧩 외울 틀"(→ ② 카드)은 틀 줄 머리, 탭 🔊(미리 받지 않는다) */
+  function frameRows(keys: readonly string[]): ReactNode {
+    const list = keys.map((k) => tplByKey.get(k)).filter((t): t is ToeicTemplate => t !== undefined);
+    if (list.length === 0) return null;
+    return (
+      <div className={s.frameRows}>
+        {list.map((t) => (
+          <div key={t.key} className={s.frameRow} data-testid={`read-frame-${t.key}`}>
+            <div className={s.frameRowHead}>
+              <button type="button" className={s.tplChip} onClick={() => onOpenTemplate(t.key)} aria-label="이 틀의 템플릿 훈련 카드로">
+                🧩 외울 틀
+              </button>
+              <button type="button" className={s.speak} onClick={() => playFrame(t.frameEn)} aria-label="외울 틀 듣기" title="듣기">
+                🔊
+              </button>
+            </div>
+            <p className={s.frameEn} lang="en">
+              <FrameLine frame={t.frameEn} tones={slotToneMap(frameSlotNames(t.frameEn))} lang="en" />
+            </p>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  /** 대표 틀(같은 자리 다른 표현이 가리키는 외울 틀 — coveredBy 첫 key)의 `~` 형태 칩. 렌더 불가·다른 유형이면 null(접기는 한다) */
+  function repChip(keys: readonly string[] | undefined, prefix: string, suffix = ""): ReactNode {
+    const t = keys && keys.length > 0 ? tplByKey.get(keys[0]) : undefined;
+    if (!t) return null;
+    return (
+      <button
+        type="button"
+        className={s.repChip}
+        onClick={(e) => {
+          e.preventDefault(); // <summary> 안에서도 접기를 여닫지 않게
+          e.stopPropagation();
+          onOpenTemplate(t.key);
+        }}
+        aria-label="외울 틀의 템플릿 훈련 카드로"
+      >
+        {prefix}
+        <span lang="en">{frameToExpression(t.frameEn)}</span>
+        {suffix}
+      </button>
+    );
+  }
+
+  /**
+   * 줄 하나. `folded`면 접기 안(🔊는 skip 없는 대본 조각 — 탭할 때만, 강조·스크롤 대상 아님). `frameKeys`가 있으면 외울 틀 줄(강조 띠) —
+   * `rows`면 그 틀 줄을 아래에 보인다(줄 영어의 `~` 모양이 그 틀과 같으면 틀 줄 대신 칩을 교재 줄 머리에).
+   */
+  function renderLine(
+    block: ToeicGuideBlock,
+    line: ToeicGuideLine,
+    si: number,
+    bi: number,
+    li: number | "lead",
+    opts: { ghostLead: boolean; folded?: boolean; rows?: boolean },
+  ) {
     const a = `l:${si}:${bi}:${li}`;
+    const lineKey = toeicGuideLineKey(si, bi, li);
     const readEn = guideLineEn(block, line);
-    const chipKeys = opts.chip ? guideLineTemplateKeys(links, line.en) : [];
+    const frameKeys = opts.folded ? [] : (marks.frameLines.get(lineKey) ?? []);
+    const lineExprKey = line.en ? expressionKey(frameToExpression(line.en)) : "";
+    const sameKeys = frameKeys.filter((k) => {
+      const t = tplByKey.get(k);
+      return t !== undefined && lineExprKey !== "" && expressionKey(frameToExpression(t.frameEn)) === lineExprKey;
+    });
+    const rowKeys = opts.rows === false ? [] : frameKeys.filter((k) => !sameKeys.includes(k));
     const lead = block.kind === "lines" && block.style === "completions" ? block.lead : null;
+    const speak = (label: string) =>
+      opts.folded ? foldSpeakBtn(toeicGuideLinePieces(fullScript, si, bi, li), label) : speakBtn(addr.line.get(`${si}:${bi}:${li}`), label);
     // 손 표시(✎)는 줄 머리의 작은 표시 — 따로 줄을 차지하지 않게 글 앞에 붙인다(읽지 않는다)
     const marked = line.marked ? (
       <span className={s.marked} title="교재에 손으로 표시한 줄" aria-label="교재에 표시한 줄">
@@ -346,11 +503,15 @@ export default function ToeicGuideReadView({
       </span>
     ) : null;
     return (
-      <div key={String(li)} data-addr={a} className={`${s.line} ${isActive(a) ? s.active : ""}`}>
-        {(line.label || chipKeys.length > 0) && (
+      <div
+        key={String(li)}
+        data-addr={opts.folded ? undefined : a}
+        className={`${s.line} ${frameKeys.length > 0 ? s.frameLine : ""} ${!opts.folded && isActive(a) ? s.active : ""}`}
+      >
+        {(line.label || sameKeys.length > 0) && (
           <div className={s.lineHead}>
             {line.label && <span className={s.label}>{line.label}</span>}
-            {tplChip(chipKeys, "🧩", "이 줄의 템플릿 훈련 틀로")}
+            {tplChip(sameKeys, "🧩 외울 틀", "이 줄의 템플릿 훈련 카드로")}
           </div>
         )}
         {line.en !== null && (
@@ -360,7 +521,7 @@ export default function ToeicGuideReadView({
               {opts.ghostLead && lead?.en ? <span className={s.ghost}>{lead.en.trimEnd()} </span> : null}
               <EnText en={opts.ghostLead ? line.en.trimStart() : line.en} emphasis={line.emphasis} underline={line.underline} />
             </p>
-            {readEn !== null && speakBtn(addr.line.get(`${si}:${bi}:${li}`), "이 줄")}
+            {readEn !== null && speak("이 줄")}
           </div>
         )}
         {line.en === null && line.ko !== null && (
@@ -369,7 +530,7 @@ export default function ToeicGuideReadView({
               {marked}
               {line.ko}
             </p>
-            {speakBtn(addr.line.get(`${si}:${bi}:${li}`), "이 줄")}
+            {speak("이 줄")}
           </div>
         )}
         {line.en !== null && line.ko !== null && <p className={s.ko}>{line.ko}</p>}
@@ -386,51 +547,101 @@ export default function ToeicGuideReadView({
             </button>
           </div>
         )}
+        {rowKeys.length > 0 && frameRows(rowKeys)}
       </div>
     );
   }
 
-  function renderBlock(block: ToeicGuideBlock, si: number, bi: number) {
-    const a = `b:${si}:${bi}`;
-    const cls = `${s.block} ${isActive(a) ? s.active : ""} ${flash === a ? s.flash : ""}`;
-    if (block.kind === "heading") {
-      return (
-        <h4 key={bi} data-addr={a} className={`${s.heading} ${isActive(a) ? s.active : ""}`}>
-          {block.textKo}
-        </h4>
-      );
-    }
+  /** 블록 끝 줄 단위 접기 — 한 블록 안의 같은 자리 다른 표현 줄들을 닫힌 접기 하나로(줄마다 "→ 🧩 {대표 틀}") */
+  function altLinesFold(block: ToeicGuideBlock, si: number, bi: number, items: { line: ToeicGuideLine; li: number | "lead" }[]) {
+    if (items.length === 0) return null;
+    return (
+      <details className={s.altFold} data-testid={`read-alt-lines-${si}-${bi}`}>
+        <summary className={s.altSummary}>↳ 같은 자리 다른 표현 {items.length}줄</summary>
+        <div className={s.altBody}>
+          {items.map(({ line, li }) => (
+            <div key={String(li)} className={s.altItem}>
+              {renderLine(block, line, si, bi, li, { ghostLead: false, folded: true })}
+              <p className={s.altPointer}>{repChip(marks.altLines.get(toeicGuideLineKey(si, bi, li)), "→ 🧩 ")}</p>
+            </div>
+          ))}
+        </div>
+      </details>
+    );
+  }
+
+  /** 블록 안을 그린다 — `folded`면 블록 통째 접기 안(🔊는 skip 없는 대본 조각, 접기·강조 판정 없음) */
+  function renderBlockInner(block: ToeicGuideBlock, si: number, bi: number, folded: boolean) {
+    const blockKey = toeicGuideBlockKey(si, bi);
+    const isAlt = (li: number | "lead") => !folded && marks.altLines.has(toeicGuideLineKey(si, bi, li));
+    if (block.kind === "heading") return null;
     if (block.kind === "text") {
+      const blockSpeak = folded
+        ? foldSpeakBtn(toeicGuideBlockPieces(fullScript, si, bi), "이 설명")
+        : speakBtn(addr.block.get(`${si}:${bi}`), "이 설명"); // skip 적용 대본(script)의 그 블록 조각 — 접은 줄은 빠져 있다
+      const altItems = block.lines.flatMap((ln, li) => (isAlt(li) ? [{ line: ln, li }] : []));
       return (
-        <div key={bi} data-addr={a} className={cls}>
+        <>
           {(block.label || block.titleKo) && (
             <div className={s.blockHead}>
               {block.label && <span className={s.label}>{block.label}</span>}
               {block.titleKo && <span className={s.blockTitle}>{block.titleKo}</span>}
-              {speakBtn(addr.block.get(`${si}:${bi}`), "이 설명")}
+              {blockSpeak}
             </div>
           )}
           {block.bodyKo && (
             <div className={s.enRow}>
               <p className={s.body}>{block.bodyKo}</p>
-              {!block.label && !block.titleKo && speakBtn(addr.block.get(`${si}:${bi}`), "이 설명")}
+              {!block.label && !block.titleKo && blockSpeak}
             </div>
           )}
-          {block.lines.map((ln, li) => renderLine(block, ln, si, bi, li, { chip: false, ghostLead: false }))}
-        </div>
+          {block.lines.map((ln, li) => (isAlt(li) ? null : renderLine(block, ln, si, bi, li, { ghostLead: false, folded })))}
+          {altLinesFold(block, si, bi, altItems)}
+        </>
       );
     }
     const blockKeys = guideBlockTemplateKeys(links, block);
+    const bare = !folded && block.style === "completions" && marks.bareBlocks.has(blockKey);
+    const leadKey = toeicGuideLineKey(si, bi, "lead");
+    const leadFrameKeys = folded ? [] : (marks.frameLines.get(leadKey) ?? []);
+    const altItems: { line: ToeicGuideLine; li: number | "lead" }[] = [];
+    if (block.style !== "completions" && block.lead && isAlt("lead")) altItems.push({ line: block.lead, li: "lead" });
+    block.lines.forEach((ln, li) => {
+      if (isAlt(li)) altItems.push({ line: ln, li });
+    });
+    // 템플릿 줄: 그 label의 첫 줄 아래에만 연결된 틀 줄 목록(같은 label의 다른 줄은 강조 띠만)
+    const seenLabels = new Set<string>();
+    let renderedTplRows = 0;
     return (
-      <div key={bi} data-addr={a} className={`${cls} ${block.style === "template" ? s.templateBlock : ""}`}>
+      <>
         {(block.captionKo || blockKeys.length > 0) && (
           <div className={s.blockHead}>
             {block.captionKo && <span className={s.blockTitle}>{block.captionKo}</span>}
             {tplChip(blockKeys, `🧩 템플릿 훈련 ${blockKeys.length}`, "이 블록의 템플릿 훈련 틀로")}
           </div>
         )}
-        {block.style === "completions" && block.lead && (
-          <div data-addr={`l:${si}:${bi}:lead`} className={`${s.lead} ${isActive(`l:${si}:${bi}:lead`) ? s.active : ""}`}>
+        {block.style === "completions" && block.lead && bare && (
+          <>
+            <details className={s.altFold} data-testid={`read-bare-lead-${si}-${bi}`}>
+              <summary className={s.altSummary}>↳ 같은 자리 다른 표현 — 머리말</summary>
+              <div className={s.altBody}>
+                <div className={s.enRow}>
+                  <p className={s.leadEn} lang="en">
+                    {block.lead.en} <span className={s.leadDots}>…</span>
+                  </p>
+                  {foldSpeakBtn(toeicGuideLeadPieces(block, si, bi, mode), "이 머리말")}
+                </div>
+                {block.lead.ko && <p className={s.ko}>{block.lead.ko}</p>}
+              </div>
+            </details>
+            <p className={s.altPointer}>{repChip(marks.bareBlocks.get(blockKey), "→ 🧩 ", "의 끝 자리에 넣어 말해 보세요")}</p>
+          </>
+        )}
+        {block.style === "completions" && block.lead && !bare && (
+          <div
+            data-addr={folded ? undefined : `l:${si}:${bi}:lead`}
+            className={`${s.lead} ${leadFrameKeys.length > 0 ? s.frameLine : ""} ${!folded && isActive(`l:${si}:${bi}:lead`) ? s.active : ""}`}
+          >
             {block.lead.marked && (
               <span className={s.marked} aria-label="교재에 표시한 줄">
                 ✎
@@ -440,34 +651,93 @@ export default function ToeicGuideReadView({
               {block.lead.en} <span className={s.leadDots}>…</span>
             </p>
             {block.lead.ko && <p className={s.ko}>{block.lead.ko}</p>}
+            {leadFrameKeys.length > 0 && frameRows(leadFrameKeys)}
           </div>
         )}
-        {block.style !== "completions" && block.lead && (
-          <div className={s.leadLine}>{renderLine(block, block.lead, si, bi, "lead", { chip: block.style === "list", ghostLead: false })}</div>
+        {block.style !== "completions" && block.lead && !isAlt("lead") && (
+          <div className={s.leadLine}>{renderLine(block, block.lead, si, bi, "lead", { ghostLead: false, folded })}</div>
         )}
         {block.style === "template" ? (
           <div className={s.tplRows}>
-            {block.lines.map((ln, li) => (
-              <Fragment key={li}>
-                {ln.alt && <p className={s.altSep}>또는</p>}
-                <div className={s.tplRow}>
-                  <span className={s.tplLabel}>{ln.label ?? ""}</span>
-                  <div className={s.tplCell}>{renderLine(block, { ...ln, label: null }, si, bi, li, { chip: false, ghostLead: false })}</div>
-                </div>
-              </Fragment>
-            ))}
+            {block.lines.map((ln, li) => {
+              if (isAlt(li)) return null;
+              const firstOfLabel = ln.label !== null && !seenLabels.has(ln.label);
+              if (ln.label !== null) seenLabels.add(ln.label);
+              const sep = ln.alt && renderedTplRows > 0;
+              renderedTplRows++;
+              return (
+                <Fragment key={li}>
+                  {sep && <p className={s.altSep}>또는</p>}
+                  <div className={s.tplRow}>
+                    <span className={s.tplLabel}>{ln.label ?? ""}</span>
+                    <div className={s.tplCell}>
+                      {renderLine(block, { ...ln, label: null }, si, bi, li, { ghostLead: false, folded, rows: firstOfLabel })}
+                    </div>
+                  </div>
+                </Fragment>
+              );
+            })}
           </div>
         ) : (
           block.lines.map((ln, li) =>
-            renderLine(block, ln, si, bi, li, { chip: block.style === "list", ghostLead: block.style === "completions" }),
+            isAlt(li) ? null : renderLine(block, ln, si, bi, li, { ghostLead: block.style === "completions" && !bare, folded }),
           )
         )}
+        {altLinesFold(block, si, bi, altItems)}
+      </>
+    );
+  }
+
+  function renderBlock(block: ToeicGuideBlock, si: number, bi: number) {
+    const a = `b:${si}:${bi}`;
+    const blockKey = toeicGuideBlockKey(si, bi);
+    if (block.kind === "heading") {
+      return (
+        <h4 key={bi} data-addr={a} className={`${s.heading} ${isActive(a) ? s.active : ""}`}>
+          {block.textKo}
+        </h4>
+      );
+    }
+    const altBlock = marks.altBlocks.get(blockKey);
+    if (altBlock) {
+      // 블록 통째 — 같은 자리 다른 표현(접기를 열면 지금 모양 그대로, 줄 🔊는 탭으로만)
+      const caption = block.kind === "text" ? block.titleKo : block.captionKo;
+      return (
+        <details key={bi} data-addr={a} className={`${s.altFold} ${s.altBlockFold}`} data-testid={`read-alt-block-${si}-${bi}`}>
+          <summary className={s.altSummary}>
+            <span>↳ 같은 자리 다른 표현{caption ? ` · ${caption}` : ""}</span>
+            {repChip(altBlock, "외울 틀: ")}
+          </summary>
+          <div className={`${s.block} ${s.altBlockBody}`}>{renderBlockInner(block, si, bi, true)}</div>
+        </details>
+      );
+    }
+    const cls = `${s.block} ${isActive(a) ? s.active : ""} ${flash === a ? s.flash : ""}`;
+    return (
+      <div key={bi} data-addr={a} className={`${cls} ${block.kind === "lines" && block.style === "template" ? s.templateBlock : ""}`}>
+        {renderBlockInner(block, si, bi, false)}
       </div>
     );
   }
 
   return (
     <div ref={wrapRef} className={s.wrap}>
+      {/* 머리 두 줄(§12-13-1 — 틀 은행이 있을 때만): 외울 틀 수 대 이 읽기에 나온 수 · 범례(또는 다시 가져오기 안내) */}
+      {bankReady && templates.length > 0 && (
+        <div className={s.frameHead} data-testid="read-head">
+          <button type="button" className={s.frameHeadLink} onClick={onOpenTemplatesTab}>
+            🧩 이 유형 외울 틀 {templates.length}개 · 이 읽기에 나온 것 {readFrameCount}개 — 나머지는 🧩 템플릿 훈련에서
+          </button>
+          {alternatesEmpty ? (
+            <p className={s.legend}>접힌 &lsquo;같은 자리 다른 표현&rsquo;이 아직 없어요 — 공략 파일을 이번 업데이트 뒤 한 번 다시 가져오면 생겨요(📂).</p>
+          ) : (
+            <p className={s.legend}>
+              <span className={s.legendFrame}>🧩 외울 틀</span> · 보통 줄 = 예·참고 · ↳ 접힘 = 같은 자리 다른 표현(안 외워도 돼요)
+            </p>
+          )}
+        </div>
+      )}
+
       {/* 목차 칩 — groupKo로 무리 짓는다(대본에는 넣지 않는다) */}
       {sections.length > 1 && (
         <nav aria-label="공략 목차" className={s.toc}>
@@ -551,6 +821,7 @@ export default function ToeicGuideReadView({
             className={s.section}
             open={open.has(si)}
             onToggle={(e) => {
+              if (e.target !== e.currentTarget) return; // 안쪽 접기(같은 자리 다른 표현)의 여닫기는 섹션 열림이 아니다
               const isOpen = (e.currentTarget as HTMLDetailsElement).open;
               setOpen((prev) => {
                 if (prev.has(si) === isOpen) return prev;
@@ -586,6 +857,14 @@ export default function ToeicGuideReadView({
           </details>
         );
       })}
+
+      {/* ① 끝 — 📘 교재 표현 목록(읽기 전용, §12-13-1 · §12-12 34): 시험·?expr=·미리 받기 없음, 대본에 들지 않는다 */}
+      {expressions.length > 0 && (
+        <details className={s.exprFold} data-testid="read-expr-list">
+          <summary className={s.exprFoldSummary}>📘 교재 표현 목록 {expressions.length}개</summary>
+          <ToeicGuideExprList part={part} expressions={expressions} templates={templates} alternates={alternates} onOpenTemplate={onOpenTemplate} />
+        </details>
+      )}
     </div>
   );
 }

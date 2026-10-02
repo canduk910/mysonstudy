@@ -3,8 +3,9 @@
 /**
  * ④ 🎤 한 문제 연습 탭 (docs/harness/toeic.md §12-7·§12-8, SPEC §20-10) — 유형 폴더의 네 번째 탭(클라이언트 컴포넌트).
  *
- * - **🧩 이 유형 답변 흐름**(접힘, §12-7-9): 흐름의 단계마다 단계 이름과 틀 하나(두 테스트 모드 합친 가장 약한 틀 — 서버가
- *   lib/toeic-drill-view drillStepPicks로 골라 넘긴다). 응시 화면(준비 45초) 안에는 두지 않는다 — 시작 전에 보는 자리다.
+ * - **🧩 이 유형 답변 흐름**(접힘, §12-7-9 → 2026-10-02 §12-13-3): 단계마다 **첫 틀 하나**(흐름 순서)와 "+n"(펼치면 그 단계의 틀 전부 —
+ *   모범답변이 고르는 목록과 같은 buildAnswerFlow(…, { order: "flow" }) — 서버가 drillPrepFlowFold로 만들어 넘긴다), 끝에 접힌 "소재 틀".
+ *   틀마다 "이 틀 연습하기". 시작 직전에 훑을 것은 "단계마다 무엇을 말하나"이지 메뉴 전체가 아니다. 응시 화면(준비 45초) 안에는 두지 않는다.
  * - **응시 전 연습 안내**(§12-7-2): 응시 기록이 없는 연습이 있으면 "응시 전 연습 n개 — 먼저 풀어 보세요" + 가장 최근 것 열기
  *   (새로 만들기를 막지는 않는다).
  * - **새 문제 만들기**: 목표 등급(IM3·IH 기본·AL — 마지막 선택을 기기 localStorage에, try/catch) → `POST /api/toeic/guides/[part]/drills`
@@ -54,8 +55,15 @@ export interface ToeicDrillTabData {
   pendingCount: number;
   /** 응시 전 연습 중 가장 최근 것(없으면 null) */
   latestPending: ToeicDrillSummary | null;
-  /** 🧩 이 유형 답변 흐름 — 단계마다 가장 약한 틀 하나(없는 단계는 null) */
-  flow: { stepKo: string; template: { key: string; frameEn: string; frameKo: string } | null }[];
+  /** 🧩 이 유형 답변 흐름(§12-13-3) — 단계마다 그 단계 틀 전부(흐름 순서 — 첫 틀을 먼저 보인다)·소재 틀. 틀이 없으면 null */
+  flowFold: { steps: { stepKo: string; frames: ToeicDrillFlowFrame[] }[]; banks: ToeicDrillFlowFrame[] } | null;
+}
+
+/** 답변 흐름 접기의 틀 한 줄(서버가 틀 은행에서 줄여 넘긴다 — 예문·testFills 없음) */
+export interface ToeicDrillFlowFrame {
+  key: string;
+  frameEn: string;
+  frameKo: string;
 }
 
 type CreateState =
@@ -273,7 +281,26 @@ export default function ToeicDrillView({
 
   const busy = create.phase === "creating" || makingJob?.phase === "making";
   const takeHref = (id: string) => toeicTakeHref(id, "part", data.mockPart);
-  const flowShown = data.flow.some((f) => f.template !== null);
+  const fold = data.flowFold;
+  const flowShown = fold !== null && (fold.steps.length > 0 || fold.banks.length > 0);
+
+  /** 흐름 접기의 틀 한 줄 — 영어 틀·한국어 틀(자리 칩) + 이 틀 연습하기(② 카드) */
+  function flowFrame(t: ToeicDrillFlowFrame) {
+    const tones = slotToneMap(frameSlotNames(t.frameEn));
+    return (
+      <>
+        <span className={s.flowEn} lang="en">
+          <FrameLine frame={t.frameEn} tones={tones} lang="en" />
+        </span>
+        <span className={s.flowKo}>
+          <FrameLine frame={t.frameKo} tones={tones} lang="ko" />
+        </span>
+        <button type="button" className={s.flowLink} onClick={() => onOpenTemplate(t.key)}>
+          이 틀 연습하기 →
+        </button>
+      </>
+    );
+  }
 
   // ── 준비 카드 ──
   function prepCard() {
@@ -359,38 +386,46 @@ export default function ToeicDrillView({
       </p>
 
       {/* 🧩 이 유형 답변 흐름(접힘 — 시작 전에 보는 자리, §12-7-9) */}
-      {flowShown && (
+      {flowShown && fold && (
         <details className={s.flow} data-testid="drill-flow">
-          <summary className={s.flowSummary}>🧩 이 유형 답변 흐름 — 단계마다 틀 하나</summary>
+          <summary className={s.flowSummary}>🧩 이 유형 답변 흐름 — 단계마다 첫 틀</summary>
           <ol className={s.flowList}>
-            {data.flow.map((f, i) => {
-              const t = f.template;
-              const tones = t ? slotToneMap(frameSlotNames(t.frameEn)) : new Map<string, number>();
-              return (
-                <li key={`${i}-${f.stepKo}`} className={s.flowItem}>
-                  <span className={s.flowStep}>
-                    {i + 1}. {f.stepKo}
-                  </span>
-                  {t ? (
-                    <>
-                      <span className={s.flowEn} lang="en">
-                        <FrameLine frame={t.frameEn} tones={tones} lang="en" />
-                      </span>
-                      <span className={s.flowKo}>
-                        <FrameLine frame={t.frameKo} tones={tones} lang="ko" />
-                      </span>
-                      <button type="button" className={s.flowLink} onClick={() => onOpenTemplate(t.key)}>
-                        이 틀 연습하기 →
-                      </button>
-                    </>
-                  ) : (
-                    <span className={s.caption}>이 단계의 틀이 아직 없어요.</span>
-                  )}
-                </li>
-              );
-            })}
+            {fold.steps.map((st, i) => (
+              <li key={`${i}-${st.stepKo}`} className={s.flowItem}>
+                <span className={s.flowStep}>
+                  {i + 1}. {st.stepKo}
+                </span>
+                {flowFrame(st.frames[0])}
+                {st.frames.length > 1 && (
+                  <details className={s.flowMore}>
+                    <summary className={s.flowMoreSummary}>+{st.frames.length - 1} · 이 단계의 틀 전부</summary>
+                    <ul className={s.flowMoreList}>
+                      {st.frames.slice(1).map((t) => (
+                        <li key={t.key} className={s.flowMoreItem}>
+                          {flowFrame(t)}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </li>
+            ))}
           </ol>
-          <p className={s.caption}>틀이 가장 약한 것부터 골랐어요. 문제를 만들 때도 이 틀들을 모범답변에 먼저 녹여요.</p>
+          {fold.banks.length > 0 && (
+            <details className={s.flowMore}>
+              <summary className={s.flowMoreSummary}>소재 틀 {fold.banks.length}</summary>
+              <ul className={s.flowMoreList}>
+                {fold.banks.map((t) => (
+                  <li key={t.key} className={s.flowMoreItem}>
+                    {flowFrame(t)}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+          <p className={s.caption}>
+            문제를 만들면 AI가 모범답변을 이 흐름대로 — 단계마다 이 틀 글자 그대로 쓰고 자리만 채워 — 조립해요. 연습에서는 아직 약한 틀을 단계 안 앞에 둬요.
+          </p>
         </details>
       )}
 

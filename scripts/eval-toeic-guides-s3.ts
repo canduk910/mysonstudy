@@ -360,11 +360,13 @@ function runDrillViewChecks(): GuideCheckResult[] {
       eqJson(r1.missingSteps, ["이유", "정리", "덧붙임"]),
     `${r1.used.map((u) => u.key).join(",")} / ${r1.missingSteps.join(",")}`,
   );
+  // §12-13-3 검토 B4(2026-10-02) — 옛 순서(모범답변 → 피드백 → 빠진 단계)를 교체: 빠진 단계(그 단계의 모범답변 틀 우선, 없으면 가장 약한 틀)
+  // → 피드백 → 남은 모범답변. 이유 단계는 모범답변 틀(main-reason), 정리 단계는 가장 약한 틀(all-in-all), 덧붙임은 틀이 없다
   add(
-    "쓸 수 있었던 틀: 모범답변 → 피드백(내가 쓴 틀 제외) → 빠진 단계의 가장 약한 틀, 겹치지 않게",
+    "쓸 수 있었던 틀: 빠진 단계(그 단계 모범답변 틀 → 없으면 가장 약한 틀) → 피드백(내가 쓴 틀 제외) → 모범답변, 겹치지 않게",
     eqJson(
       r1.suggestions.map((x) => [x.key, x.source]),
-      [["main-reason", "sample"], ["all-in-all", "feedback"], ["another-reason", "step"]],
+      [["main-reason", "step"], ["all-in-all", "step"]],
     ),
     r1.suggestions.map((x) => `${x.key}:${x.source}`).join(" "),
   );
@@ -510,7 +512,7 @@ function runS3SourceChecks(): GuideCheckResult[] {
     "연습 라우트: 주제 하나(pickDrillTopic — 그 유형 최근 연습의 topicHints) → topicHints [주제]로 호출 C와 문서에 같은 값",
     /pickDrillTopic\(\s*unit\.mockPart,\s*drills\.map\(\(d\) => d\.topicHints\),?\s*\)/.test(drillRoute) &&
       /const topicHints = \[topic\];/.test(drillRoute) &&
-      /generateMockPart\(mockPart, \{ targetGrade, topicHints, expressions \}\)/.test(drillRoute) &&
+      /generateMockPart\(mockPart, \{ targetGrade, topicHints, expressions, answerFlow \}\)/.test(drillRoute) &&
       /createToeicMock\(\{[\s\S]*?topicHints,[\s\S]*?\}\)/.test(drillRoute),
   );
   add(
@@ -607,12 +609,16 @@ function runS3SourceChecks(): GuideCheckResult[] {
 
   // 결과 페이지·화면
   const attemptPage = codeOnly(read("app/toeic/attempts/[id]/page.tsx"));
+  // 2026-10-02(§12-13-3): 틀 점검 자료는 연습뿐 아니라 실전 모의고사도 — 응시 범위의 파트마다(read 제외, drillPart와 상관없이)
   add(
-    "결과 페이지: 문항 = attempt.questions · 연습 라벨 · 뒤로 = toeicMockBackLink · 틀 점검 자료는 연습일 때만(toeicDrillCheckData)",
+    "결과 페이지: 문항 = attempt.questions · 연습 라벨 · 뒤로 = toeicMockBackLink · 틀 점검 자료는 응시 범위의 파트마다(read 제외 — 연습·모의고사 모두, toeicTemplateCheckData) · 저장된 흐름을 넘긴다",
     /const qs = attempt\.questions;/.test(attemptPage) &&
       /toeicDrillScopeLabelKo\(mock\.drillPart, qs\)/.test(attemptPage) &&
       /const back = toeicMockBackLink\(mock\);/.test(attemptPage) &&
-      /if \(mock\.drillPart !== null\) \{[\s\S]*toeicDrillCheckData\(/.test(attemptPage) &&
+      /const checkParts = TOEIC_MOCK_PARTS\.filter\(\(p\) => toeicGuidePartOfMockPart\(p\) !== null && questions\.some\(\(v\) => v\.part === p\)\);/.test(attemptPage) &&
+      /checks\[p\] = toeicTemplateCheckData\(guidePart, templates, doc\.flows, bankSessions\)/.test(attemptPage) &&
+      !/if \(mock\.drillPart !== null\) \{[^}]*toeicTemplateCheckData\(/.test(attemptPage) &&
+      /answerFlows=\{mock\.answerFlows\}/.test(attemptPage) &&
       !/toeicAttemptQuestions\(/.test(attemptPage),
   );
   const view = codeOnly(read("components/toeic-attempt-view.tsx"));
@@ -628,9 +634,12 @@ function runS3SourceChecks(): GuideCheckResult[] {
       drillBtns.indexOf("학습 보기로") > drillBtns.indexOf(") : ("),
   );
   add(
-    "결과 화면: 🧩 틀 점검은 연습 자료(check)가 있을 때만 · drillTemplateCheck(전사문·모범답변 usedExpressions·피드백 tryExpressions) · \"이 틀 연습하기\" = ② 탭 ?tpl=",
-    /\{check &&[\s\S]*drillTemplateCheck\(check, \{\s*transcript: a\?\.transcript \?\? null,\s*sampleUsedExpressions: v\.usedExpressions\.map\(\(u\) => u\.expression\),\s*tryExpressions: a\?\.feedback\?\.tryExpressions \?\? \[\],/.test(view) &&
-      /toeicGuideFolderHref\(check\.part, \{ tab: "templates", tpl: key \}\)/.test(view),
+    "결과 화면: 🧩 틀 점검은 그 파트 자료(checks[v.part])가 있을 때 · drillTemplateCheck(전사문·모범답변 글·usedExpressions·피드백 tryExpressions) · 연습은 펼쳐서, 모의고사는 닫힌 접기 · \"이 틀 연습하기\" = ② 탭 ?tpl=",
+    /drillTemplateCheck\(data, \{\s*transcript: a\?\.transcript \?\? null,\s*sampleAnswer: v\.sampleAnswer,\s*sampleUsedExpressions: v\.usedExpressions\.map\(\(u\) => u\.expression\),\s*tryExpressions: a\?\.feedback\?\.tryExpressions \?\? \[\],/.test(view) &&
+      /const data = checks\[v\.part\];/.test(view) &&
+      /if \(drill\) \{\s*return \(\s*<section className=\{s\.tplCheck\}/.test(view) &&
+      /<details className=\{s\.tplCheckFold\}/.test(view) &&
+      /toeicGuideFolderHref\(data\.part, \{ tab: "templates", tpl: key \}\)/.test(view),
   );
   // 결과 화면 칩 줄바꿈(QA final P2-2) — 공략 연습의 D tryExpressions는 틀의 `~` 형태(50자 넘음)가 올 수 있다
   const tryAt = view.indexOf("<p className={s.tryList}>");
@@ -682,10 +691,11 @@ function runS3SourceChecks(): GuideCheckResult[] {
   const streak = codeOnly(read("app/api/streak/route.ts"));
   add("스트릭 라벨: 응시 라벨을 toeicAttemptStreakLabel(연습이면 `공략 연습 · {유형}`)로", /toeicAttemptStreakLabel\(mock, TOEIC_DRILL_PART_KO\)/.test(streak) && !/`모의고사 · \$\{mock\.titleKo\}`/.test(streak));
   const folderPage = codeOnly(read("app/toeic/guides/[part]/page.tsx"));
+  // 2026-10-02(§12-13-3): ④ 준비 접기 = 단계마다 첫 틀 + "+n"(모범답변이 고르는 목록과 같은 흐름 — buildAnswerFlow(…, { order: "flow" }))
   add(
-    "폴더 페이지: 그 유형 연습(listToeicDrills)·응시 → 요약(파트 본문 없음)·최근 10·응시 전·단계마다 틀 하나(drillStepPicks)",
+    "폴더 페이지: 그 유형 연습(listToeicDrills)·응시 → 요약(파트 본문 없음)·최근 10·응시 전·답변 흐름 접기(buildAnswerFlow order flow → drillPrepFlowFold)",
     /store\.listToeicDrills\(unit\.mockPart\)/.test(folderPage) && /summarizeToeicDrill\(d, drillAttempts\)/.test(folderPage) && /drillSummaries\.slice\(0, TOEIC_DRILL_RECENT_MAX\)/.test(folderPage) &&
-      /drillStepPicks\(templates, bankSessions, part, partFlows\)/.test(folderPage) && !/sampleAnswer/.test(folderPage),
+      /drillPrepFlowFold\(bankDoc \? buildAnswerFlow\(bankDoc, unit\.mockPart, templates, \{ order: "flow" \}\) : null\)/.test(folderPage) && !/sampleAnswer/.test(folderPage),
   );
   const folderView = codeOnly(read("components/toeic-guide-folder-view.tsx"));
   add("폴더 탭: ④ 한 문제 연습 탭이 있다(공략 없이도 — 빈 상태 없음)", /AVAILABLE_TABS: readonly ToeicGuideTab\[\] = \["read", "templates", "quiz", "drill"\]/.test(folderView) && /tab === "drill" && <ToeicDrillView/.test(folderView));

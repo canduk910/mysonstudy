@@ -10,10 +10,10 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import ToeicQuizHistoryView, { type ToeicHistorySession } from "@/components/toeic-quiz-history-view";
 import { getStore } from "@/lib/store";
-import { toeicGuidePartOfSet, toeicSetBackLink } from "@/lib/toeic-guide-view";
+import { toeicGuideFolderHref, toeicGuidePartOfSet, toeicSetBackLink } from "@/lib/toeic-guide-view";
 import { TOEIC_QUIZ_MODE_LABELS_KO, isToeicQuizModeSession } from "@/lib/toeic-quiz";
 import { toeicItemKeyLabel } from "@/lib/toeic-quiz-contract";
-import { isRenderableToeicSet, isToeicTemplateBankSet } from "@/lib/toeic-record";
+import { isRenderableToeicSet, isToeicGuidePartSet, isToeicTemplateBankSet } from "@/lib/toeic-record";
 
 export const dynamic = "force-dynamic";
 
@@ -33,8 +33,12 @@ export default async function ToeicHistoryPage({ params }: HistoryPageProps) {
   const store = getStore();
   const record = await store.getToeicSet(id);
   if (record && isToeicTemplateBankSet(record)) redirect("/toeic/guides"); // 틀 은행은 표현 시험이 없다(§12-3 표)
+  if (record && isToeicGuidePartSet(record)) {
+    // 유형 공략의 교재 표현 시험은 닫았다(2026-10-02 §12-13-2) — 그 유형 폴더 ③ 👀 틀 시험으로(지난 기록은 지우지 않는다)
+    const part = toeicGuidePartOfSet(record);
+    redirect(part ? toeicGuideFolderHref(part, { tab: "quiz" }) : "/toeic/guides");
+  }
   if (!record || !isRenderableToeicSet(record)) notFound();
-  const isGuide = toeicGuidePartOfSet(record) !== null;
   const back = toeicSetBackLink(record);
 
   // 표현 시험 모드만(레코드 mode는 틀 테스트 모드까지 넓다 — docs/harness/toeic.md §12-3 "모드 타입 넓히기")
@@ -77,7 +81,7 @@ export default async function ToeicHistoryPage({ params }: HistoryPageProps) {
           </div>
         </section>
       ) : (
-        <ToeicQuizHistoryView sessions={sessions} modeLabelsKo={isGuide ? { ...TOEIC_QUIZ_MODE_LABELS_KO, speak: "교재 문장 말하기" } : TOEIC_QUIZ_MODE_LABELS_KO} />
+        <ToeicQuizHistoryView sessions={sessions} modeLabelsKo={TOEIC_QUIZ_MODE_LABELS_KO} />
       )}
     </main>
   );

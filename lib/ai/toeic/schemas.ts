@@ -61,7 +61,14 @@ import {
   parseFrame,
   toeicGuideAlignmentTargets,
 } from "../../toeic-template";
-import { TOEIC_TEMPLATE_QUIZ_MODES, type ToeicTemplateQuizMode } from "../../toeic-quiz";
+import {
+  TOEIC_TEMPLATE_BANK_MODES,
+  isToeicTemplateChoiceMode,
+  type ToeicTemplateBankMode,
+  type ToeicTemplateChoiceMode,
+  type ToeicTemplateQuizMode,
+} from "../../toeic-quiz";
+import { TOEIC_TEMPLATE_CHOICE_MAX } from "../../toeic-template-quiz";
 import { TTS_TEXT_MAX_CHARS } from "../../tts-shared";
 import { toToeicIssues } from "../../toeic-zod-ko";
 import { TOEIC_TEMPLATE_SESSION_ID_RE, type ToeicTemplateSessionRequest } from "../../toeic-guide-contract";
@@ -1447,6 +1454,16 @@ const mockQuestionShape = z.object({
 
 const B = TOEIC_MOCK_ZOD_BANDS;
 
+/**
+ * 채우지 않은 틀 자리 거부(§4-9·§5-3 — 2026-10-02 검토 반영). 답변 흐름을 받으면 "틀의 ~ 밖 글자 그대로"를 시키므로 `~`까지 베낀
+ * 출력이 나올 수 있다 — 말할 수 없는 깨진 출력이라 거부한다(기존 1회 재요청). 판정은 hasUnfilledSlot 하나(C·D 공용).
+ */
+function checkFilledSlots(ctx: IssueSink, path: Path, s: string, label: string): void {
+  if (hasUnfilledSlot(s)) {
+    issue(ctx, path, `${label}에 채우지 않은 틀 자리(~ 또는 { })가 남아 있습니다 — 틀의 ~ 자리를 실제 말로 채워 쓰세요`);
+  }
+}
+
 /** stressWord가 지문에 단어 경계로 있는가(대소문자 무시 — 폭을 넓게) */
 function hasWordAt(text: string, word: string): boolean {
   const w = word.trim();
@@ -1515,6 +1532,7 @@ export const toeicMockPictureSchema: z.ZodType<ToeicPictureGeneration> = z
       checkKorean(ctx, [...p, "sceneKo"], it.sceneKo, "sceneKo");
       checkEnglish(ctx, [...p, "sampleAnswer"], it.sampleAnswer, "sampleAnswer");
       checkWords(ctx, [...p, "sampleAnswer"], it.sampleAnswer, B.pictureSampleWords, "sampleAnswer");
+      checkFilledSlots(ctx, [...p, "sampleAnswer"], it.sampleAnswer, "sampleAnswer");
       checkCount(ctx, [...p, "keyPointsKo"], it.keyPointsKo, B.pictureKeyPoints[0], B.pictureKeyPoints[1], "keyPointsKo");
       it.keyPointsKo.forEach((k, j) => checkKorean(ctx, [...p, "keyPointsKo", j], k, "keyPointsKo"));
     });
@@ -1537,6 +1555,7 @@ function checkMockQuestions(
     if (requireQuestionMark && !q.question.trim().endsWith("?")) issue(ctx, [...p, "question"], "question은 ?로 끝나야 합니다");
     checkEnglish(ctx, [...p, "sampleAnswer"], q.sampleAnswer, "sampleAnswer");
     checkWords(ctx, [...p, "sampleAnswer"], q.sampleAnswer, i === count - 1 ? longBand : shortBand, "sampleAnswer");
+    checkFilledSlots(ctx, [...p, "sampleAnswer"], q.sampleAnswer, "sampleAnswer");
     checkKorean(ctx, [...p, "tipKo"], q.tipKo, "tipKo");
   });
 }
@@ -1590,6 +1609,7 @@ export const toeicMockOpinionSchema: z.ZodType<ToeicOpinionPart> = z
     checkEnglish(ctx, ["question"], d.question, "question");
     checkEnglish(ctx, ["sampleAnswer"], d.sampleAnswer, "sampleAnswer");
     checkWords(ctx, ["sampleAnswer"], d.sampleAnswer, B.opinionWords, "sampleAnswer");
+    checkFilledSlots(ctx, ["sampleAnswer"], d.sampleAnswer, "sampleAnswer");
     checkCount(ctx, ["outlineKo"], d.outlineKo, B.opinionOutline[0], B.opinionOutline[1], "outlineKo");
     d.outlineKo.forEach((o, i) => checkKorean(ctx, ["outlineKo", i], o, "outlineKo"));
     checkKorean(ctx, ["tipKo"], d.tipKo, "tipKo");
@@ -1643,10 +1663,12 @@ export function buildFeedbackZod(args: { maxScore: number; transcript: string })
           issue(ctx, ["fixes", i, "said"], "said는 답변 전사문에서 그대로 복사한 구간이어야 합니다(전사문에 없는 말을 고치지 마세요)");
         }
         if (f.better.trim() === "") issue(ctx, ["fixes", i, "better"], "better가 비었습니다");
+        else checkFilledSlots(ctx, ["fixes", i, "better"], f.better, "better");
         if (f.whyKo.trim() === "") issue(ctx, ["fixes", i, "whyKo"], "whyKo가 비었습니다");
       });
       checkCount(ctx, ["missingKo"], d.missingKo, F.missingKo[0], F.missingKo[1], "missingKo");
       checkEnglish(ctx, ["improvedAnswer"], d.improvedAnswer, "improvedAnswer");
+      checkFilledSlots(ctx, ["improvedAnswer"], d.improvedAnswer, "improvedAnswer");
     });
 }
 
@@ -1897,7 +1919,10 @@ export interface ToeicTemplateBankFile {
   presetKey: string;
   flows: ToeicTemplateFlow[];
   items: ToeicTemplate[];
-  /** 가져오기 검사용 — 문서에 저장하지 않고 내용 지문에도 넣지 않는다(§12-2-5) */
+  /**
+   * 가져오기 검사용(정렬 빠짐 0). 그대로 저장하지 않는다 — `coveredBy`가 있는 것만 이유 글을 빼고 문서 `alternates`(같은 자리 다른 표현)로
+   * 옮기고 내용 지문에도 그것만 넣는다(§12-2-5·§12-13-1 — 이유 글만 고친 파일은 unchanged)
+   */
   alignmentSkips: ToeicTemplateAlignmentSkip[];
 }
 
@@ -1920,13 +1945,51 @@ export interface ToeicGuidePartDoc {
   updatedAt: string;
 }
 
-/** ToeicSetRecord.guide — 틀 은행(§12-3). 정렬 건너뜀은 저장하지 않는다 */
+/**
+ * 같은 자리 다른 표현(§12-13-1 — 2026-10-02) — 가져오기 파일 `alignmentSkips` 중 `coveredBy`가 있는 건너뜀(이유 글 `reasonKo`는 버린다).
+ * 정렬 규칙 5가 대안(같은 자리의 다른 표현)에는 대표 틀을, 틀로 쓰지 않는 표현에는 null을 요구하므로 `coveredBy` 유무가 곧 판정이다
+ * (새 칸을 두지 않는다 — 같은 사실이 두 곳에 살지 않게).
+ */
+export interface ToeicTemplateAlternate {
+  part: ToeicGuidePart;
+  /** 가리키는 방법은 ToeicTemplateGuideRef와 같다(expression·template·lead) */
+  kind: ToeicTemplateRefKind;
+  /** 그 표현·단계 label·머리말 글자(alignmentSkips[].ref 그대로) */
+  ref: string;
+  /** 그 자리에서 외울 틀 key */
+  coveredBy: string;
+}
+
+/** ToeicSetRecord.guide — 틀 은행(§12-3). 정렬 건너뜀은 저장하지 않고, 그중 같은 자리 다른 표현만 alternates로 둔다(§12-13-1) */
 export interface ToeicTemplateBankDoc {
   kind: "templates";
   flows: ToeicTemplateFlow[];
   items: ToeicTemplate[];
+  /** 같은 자리 다른 표현(파일 순서). 옛 문서 = [](정규화) — 같은 파일을 한 번 다시 가져오면 채워진다 */
+  alternates: ToeicTemplateAlternate[];
+  /** 내용 지문 — flows·items·alternates(2026-10-02부터) */
   contentHash: string;
   updatedAt: string;
+}
+
+/** 답변 흐름의 틀 하나(§12-13-3) — 호출 C·D로 나가는 글자는 `expression`(frameToExpression — `~` 자리, `/` 없음)과 단계 이름뿐이다 */
+export interface ToeicAnswerFlowFrame {
+  /** 틀 key — 화면이 ② 카드로 잇는다 */
+  key: string;
+  /** frameToExpression(frameEn) — 보낸 글자 그대로 */
+  expression: string;
+}
+
+/**
+ * 답변 흐름(§12-13-3) — 그 파트 유형의 단계마다 외울 틀 + 소재 틀. 호출 C(모범답변을 틀로 조립)·D(틀로 고쳐 주기)의 입력이고,
+ * 모의고사·연습 문서에 만든 그대로 저장한다(ToeicMockRecord.answerFlows — 다시 만들기·채점이 같은 흐름을 쓴다). read는 흐름이 없다.
+ */
+export interface ToeicAnswerFlow {
+  part: ToeicMockPart;
+  /** 그 유형 흐름의 단계 순서 — 틀이 없는 단계는 뺀다 */
+  steps: { stepKo: string; frames: ToeicAnswerFlowFrame[] }[];
+  /** 소재 틀(소재 묶음·기타 묶음, 흐름 순서) — 없으면 [] */
+  banks: ToeicAnswerFlowFrame[];
 }
 
 /**
@@ -1938,7 +2001,7 @@ export type ToeicGuideDoc = ToeicGuidePartDoc | ToeicTemplateBankDoc;
 /** 멱등 판정의 "유형 자리" — 유형 넷 + 틀 은행 */
 export type ToeicGuideSlot = ToeicGuidePart | typeof TOEIC_TEMPLATE_BANK_SLOT;
 
-export type { ToeicTemplateQuizMode };
+export type { ToeicTemplateQuizMode, ToeicTemplateChoiceMode, ToeicTemplateBankMode };
 
 // ---------------------------------------------------------------------------
 // 공략 zod 공통 판정
@@ -1954,9 +2017,36 @@ export function toeicGuideEntryContent(g: ToeicGuideFileEntry): Pick<ToeicGuideF
   return { part: g.part, introKo: g.introKo, sections: g.sections, expressions: g.expressions, speak: g.speak };
 }
 
-/** 틀 은행의 내용(지문·바이트 상한이 재는 것) — flows·items(alignmentSkips·presetKey 제외) */
-export function toeicTemplateBankContent(b: Pick<ToeicTemplateBankFile, "flows" | "items">): Pick<ToeicTemplateBankFile, "flows" | "items"> {
-  return { flows: b.flows, items: b.items };
+/**
+ * 가져오기 파일의 정렬 건너뜀 → 같은 자리 다른 표현(§12-13-1) — `coveredBy`가 있는 것만 파일 순서대로, 이유 글은 버린다.
+ * 가져오기 계획(문서 alternates)·내용 지문·바이트 상한이 이 함수 하나를 거친다.
+ */
+export function toeicTemplateAlternatesFromSkips(skips: readonly ToeicTemplateAlignmentSkip[]): ToeicTemplateAlternate[] {
+  const out: ToeicTemplateAlternate[] = [];
+  for (const sk of skips) {
+    if (sk.coveredBy === null) continue;
+    out.push({ part: sk.part, kind: sk.kind, ref: sk.ref, coveredBy: sk.coveredBy });
+  }
+  return out;
+}
+
+/**
+ * 틀 은행의 내용(지문·바이트 상한이 재는 것) — flows·items·alternates(2026-10-02 — alignmentSkips 중 coveredBy가 있는 것, 이유 글 없음).
+ * presetKey·건너뜀 이유는 넣지 않는다(이유만 고친 파일은 unchanged). 키 순서 flows → items → alternates 고정.
+ */
+export function toeicTemplateBankContent(
+  b: Pick<ToeicTemplateBankFile, "flows" | "items" | "alignmentSkips">,
+): Pick<ToeicTemplateBankDoc, "flows" | "items" | "alternates"> {
+  return { flows: b.flows, items: b.items, alternates: toeicTemplateAlternatesFromSkips(b.alignmentSkips) };
+}
+
+/**
+ * 채우지 않은 틀 자리가 남았는가(§4-9·§5-3 — 2026-10-02 검토 반영) — `~`·`～`·`〜`·`{`·`}` 중 하나라도 있으면 참.
+ * 호출 C2~C5 `sampleAnswer`와 호출 D `improvedAnswer`·`fixes[].better` zod가 **이 함수 하나**를 부른다(말할 수 없는 깨진 출력 —
+ * 기존 1회 재요청, 위반일 때만 비용). 틀 조립 준수(몇 개·어느 단계)는 거부하지 않는다(측정만 — §12-12 25).
+ */
+export function hasUnfilledSlot(text: string): boolean {
+  return /[~～〜{}]/.test(text ?? "");
 }
 
 const SLOT_PROBLEM_KO: Record<ToeicSlotProblem, string> = {
@@ -2600,7 +2690,8 @@ export function toeicGuideImportInvalidBody(issues: readonly z.core.$ZodIssue[])
 export const toeicTemplateSessionBodySchema = z
   .object({
     clientSessionId: z.string().regex(TOEIC_TEMPLATE_SESSION_ID_RE, "clientSessionId는 소문자 UUID여야 해요"),
-    mode: z.enum(TOEIC_TEMPLATE_QUIZ_MODES),
+    // 틀 은행 세션 모드 다섯(§12-13-2) — ② 틀 테스트(말하기) 둘 + ③ 틀 시험(고르기·빈칸) 셋
+    mode: z.enum(TOEIC_TEMPLATE_BANK_MODES),
     startedAt: z.string().datetime({ message: "startedAt이 올바른 시각이 아니에요" }),
     finishedAt: z.string().datetime({ message: "finishedAt이 올바른 시각이 아니에요" }).nullable(),
     items: z
@@ -2612,9 +2703,13 @@ export const toeicTemplateSessionBodySchema = z
         }),
       )
       .min(1, "저장할 문항이 없어요")
-      .max(TOEIC_TEMPLATE_TEST_MAX, `한 판은 ${TOEIC_TEMPLATE_TEST_MAX}문항까지예요`),
+      .max(TOEIC_TEMPLATE_CHOICE_MAX, `한 판은 ${TOEIC_TEMPLATE_CHOICE_MAX}문항까지예요`),
   })
   .superRefine((b, ctx) => {
+    // items 상한은 모드로 가른다(§12-13-2) — 말하기 두 모드 10(TOEIC_TEMPLATE_TEST_MAX), 틀 시험 셋 20(TOEIC_TEMPLATE_CHOICE_MAX — 위 .max)
+    if (!isToeicTemplateChoiceMode(b.mode) && b.items.length > TOEIC_TEMPLATE_TEST_MAX) {
+      issue(ctx, ["items"], `한 판은 ${TOEIC_TEMPLATE_TEST_MAX}문항까지예요`);
+    }
     const seen = new Set<string>();
     b.items.forEach((it, i) => {
       if (seen.has(it.word)) issue(ctx, ["items", i, "word"], "한 판에 같은 틀은 한 번만 나와요");

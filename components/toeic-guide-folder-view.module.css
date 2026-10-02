@@ -263,3 +263,23 @@
   color: var(--ink-3);
   font-size: var(--fs-vocab-example);
 }
+
+/* ① 끝 📘 교재 표현 목록 — 같은 자리 다른 표현 안쪽 접기(§12-13-1) */
+.exprAltFold {
+  margin-top: 8px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-box);
+  padding: 0 10px;
+}
+.exprAltSummary {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  color: var(--ink-3);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+  cursor: pointer;
+}
+.exprAltFold[open] {
+  padding-bottom: 10px;
+}

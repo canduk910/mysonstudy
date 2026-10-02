@@ -27,9 +27,13 @@ import type {
 } from "./store";
 import {
   TOEIC_CONFIDENCES,
+  TOEIC_GUIDE_PARTS,
   TOEIC_IMAGE_STATUSES,
   TOEIC_PARTS,
+  TOEIC_TEMPLATE_REF_KINDS,
   type ToeicAnswer,
+  type ToeicAnswerFlow,
+  type ToeicAnswerFlowFrame,
   type ToeicBookQuiz,
   type ToeicExprEntry,
   type ToeicFeedback,
@@ -40,10 +44,11 @@ import {
   type ToeicPictureImage,
   type ToeicReadDiff,
   type ToeicSpeakingPoints,
+  type ToeicTemplateAlternate,
   type ToeicTemplateBankDoc,
 } from "./ai/toeic/schemas";
 import { isToeicSetEnriched } from "./ai/toeic/points";
-import { isToeicQuizMode, isToeicTemplateQuizMode } from "./toeic-quiz";
+import { isToeicQuizMode, isToeicTemplateBankMode } from "./toeic-quiz";
 import { TOEIC_DEFAULT_TARGET_GRADE, TOEIC_MOCK_PARTS, TOEIC_QUESTION_COUNT, TOEIC_TARGET_GRADES, type ToeicMockPart } from "./toeic-mock";
 import { toeicAttemptQuestions } from "./toeic-attempt-rules";
 
@@ -81,6 +86,73 @@ const CONFIDENCE_SET: ReadonlySet<string> = new Set(TOEIC_CONFIDENCES);
 const IMAGE_STATUS_SET: ReadonlySet<string> = new Set(TOEIC_IMAGE_STATUSES);
 const MOCK_PART_SET: ReadonlySet<string> = new Set(TOEIC_MOCK_PARTS);
 const GRADE_SET: ReadonlySet<string> = new Set(TOEIC_TARGET_GRADES);
+const GUIDE_PART_SET: ReadonlySet<string> = new Set(TOEIC_GUIDE_PARTS);
+const REF_KIND_SET: ReadonlySet<string> = new Set(TOEIC_TEMPLATE_REF_KINDS);
+
+function nonEmptyStr(v: unknown): v is string {
+  return typeof v === "string" && v.trim() !== "";
+}
+
+/**
+ * 같은 자리 다른 표현(§12-13-1) — 배열이 아니거나 없으면 [](옛 문서·다시 가져오기 전), 항목마다 모양(part 네 값·kind 세 값·ref·coveredBy
+ * 비지 않은 문자열)을 보고 맞는 것만. 깨져도 틀 은행은 연다(접기만 빠진다 — 렌더 판정에 넣지 않는다). **이 필드를 명시적으로 옮긴다** —
+ * 빠뜨리면 alternates만 지워지고 contentHash(alternates 포함)는 저장돼, 같은 파일을 다시 넣어도 unchanged라 접기 자료가 영영 안 들어간다.
+ */
+export function normalizeToeicTemplateAlternates(v: unknown): ToeicTemplateAlternate[] {
+  if (!Array.isArray(v)) return [];
+  const out: ToeicTemplateAlternate[] = [];
+  for (const raw of v) {
+    const a = obj(raw);
+    if (!a) continue;
+    if (typeof a.part !== "string" || !GUIDE_PART_SET.has(a.part)) continue;
+    if (typeof a.kind !== "string" || !REF_KIND_SET.has(a.kind)) continue;
+    if (!nonEmptyStr(a.ref) || !nonEmptyStr(a.coveredBy)) continue;
+    out.push({ part: a.part as ToeicTemplateAlternate["part"], kind: a.kind as ToeicTemplateAlternate["kind"], ref: a.ref, coveredBy: a.coveredBy });
+  }
+  return out;
+}
+
+function normalizeFlowFrame(v: unknown): ToeicAnswerFlowFrame | null {
+  const f = obj(v);
+  if (!f || !nonEmptyStr(f.key) || !nonEmptyStr(f.expression)) return null;
+  return { key: f.key, expression: f.expression };
+}
+
+/**
+ * 모의고사·연습 문서의 답변 흐름(§7-2·§12-13-3) — 배열이 아니거나 없으면 [](옛 문서 = 흐름 없음 → 다시 만들기·채점 모두 "없음"),
+ * 모양이 깨진 흐름은 **그 항목만** 버린다(part가 read를 뺀 네 파트 밖·steps·banks가 배열이 아님·단계 이름 빈 값·틀 모양이 깨짐·같은 파트
+ * 두 번째). 단계·틀은 형식을 보고 옮긴다(배열 속 배열이 없다 — 흐름 = 배열 안 객체 안 배열이라 Firestore 제약에 걸리지 않는다).
+ */
+export function normalizeToeicAnswerFlows(v: unknown): ToeicAnswerFlow[] {
+  if (!Array.isArray(v)) return [];
+  const out: ToeicAnswerFlow[] = [];
+  const seen = new Set<string>();
+  for (const raw of v) {
+    const f = obj(raw);
+    if (!f || typeof f.part !== "string" || !MOCK_PART_SET.has(f.part) || f.part === "read" || seen.has(f.part)) continue;
+    if (!Array.isArray(f.steps) || !Array.isArray(f.banks)) continue;
+    let broken = false;
+    const steps: ToeicAnswerFlow["steps"] = [];
+    for (const rs of f.steps) {
+      const st = obj(rs);
+      if (!st || !nonEmptyStr(st.stepKo) || !Array.isArray(st.frames)) {
+        broken = true;
+        break;
+      }
+      const frames = st.frames.map(normalizeFlowFrame);
+      if (frames.some((x) => x === null)) {
+        broken = true;
+        break;
+      }
+      steps.push({ stepKo: st.stepKo, frames: frames as ToeicAnswerFlowFrame[] });
+    }
+    const banks = f.banks.map(normalizeFlowFrame);
+    if (broken || banks.some((x) => x === null)) continue;
+    seen.add(f.part);
+    out.push({ part: f.part as ToeicAnswerFlow["part"], steps, banks: banks as ToeicAnswerFlowFrame[] });
+  }
+  return out;
+}
 
 function enKo(v: unknown): { en: string; ko: string } {
   const o = obj(v) ?? {};
@@ -167,6 +239,8 @@ export function normalizeToeicGuideDoc(v: unknown): ToeicGuideDoc | null {
       kind: "templates" as const,
       flows: Array.isArray(g.flows) ? g.flows : keep(g.flows),
       items: Array.isArray(g.items) ? g.items : keep(g.items),
+      // 같은 자리 다른 표현(§12-13-1) — 캐스트라 빠뜨려도 tsc가 못 잡는다. 명시적으로 옮긴다(eval 파일 저장소 왕복이 잠근다)
+      alternates: normalizeToeicTemplateAlternates(g.alternates),
       contentHash: str(g.contentHash),
       updatedAt: isoOr(g.updatedAt, EPOCH),
     };
@@ -223,11 +297,11 @@ export function normalizeToeicQuizItem(v: unknown): ToeicQuizItem {
 /**
  * 시험 세션 레코드. **모르는 mode면 null**(호출측이 버린다) — 모드별 숙련도(§6-2)가 이 축에 매달려 있어, 모르는 값을
  * 아무 모드로 떨어뜨리면 그 모드의 "안다" 판정이 오염된다. 저장 라우트 zod가 막으므로 정상 경로에서는 오지 않는다.
- * 받는 mode는 표현 시험 네 모드 + 템플릿 테스트 두 모드(§12-3)다.
+ * 받는 mode는 표현 시험 네 모드 + 틀 은행 세션 다섯 모드(② 틀 테스트 둘 · ③ 틀 시험 셋 — §12-3·§12-13-2)다.
  */
 export function normalizeToeicQuizRecord(v: unknown): ToeicQuizRecord | null {
   const r = obj(v) ?? {};
-  if (!isToeicQuizMode(r.mode) && !isToeicTemplateQuizMode(r.mode)) return null;
+  if (!isToeicQuizMode(r.mode) && !isToeicTemplateBankMode(r.mode)) return null;
   return {
     id: str(r.id),
     setId: str(r.setId),
@@ -280,6 +354,8 @@ export function normalizeToeicMockRecord(v: unknown): ToeicMockRecord {
     parts: normalizeMockParts(r.parts),
     // 유형별 공략 한 문제 연습(§12-3) — 필드가 없거나 다섯 파트 밖이면 null(= 모의고사). 옛 문서는 모두 모의고사다.
     drillPart: typeof r.drillPart === "string" && MOCK_PART_SET.has(r.drillPart) ? (r.drillPart as ToeicMockPart) : null,
+    // 답변 흐름(§7-2·§12-13-3 — 2026-10-02) — 모르는 키를 버리는 정규화라 명시적으로 옮긴다. 옛 문서 = []
+    answerFlows: normalizeToeicAnswerFlows(r.answerFlows),
     model: str(r.model),
     createdAt: isoOr(r.createdAt, EPOCH),
     sortIndex: numOrNull(r.sortIndex),

@@ -19,7 +19,9 @@ import { TOEIC_MOCK_EXPRESSIONS_MAX } from "@/lib/ai/toeic/schemas";
 import { getStore } from "@/lib/store";
 import { missingToeicMockParts } from "@/lib/toeic-mock-contract";
 import { TOEIC_MOCK_PARTS } from "@/lib/toeic-mock";
-import { isRenderableToeicSet, isToeicGuideSet, listableToeicMocks } from "@/lib/toeic-record";
+import { isRenderableToeicSet, isRenderableToeicTemplateBank, isToeicGuideSet, listableToeicMocks } from "@/lib/toeic-record";
+import { TOEIC_GUIDE_PARTS, TOEIC_TEMPLATE_BANK_ID } from "@/lib/toeic-guide";
+import { guideTemplatesForPart } from "@/lib/toeic-guide-view";
 import { collapseSpaces } from "@/lib/toeic-text";
 
 export const dynamic = "force-dynamic";
@@ -81,6 +83,10 @@ export default async function ToeicMocksPage() {
     seenTopic.add(t.toLowerCase());
     topicChoices.push(t);
   }
+  // 답변 흐름 안내(§12-13-3) — 같은 목록(sets)에서 틀 은행을 찾아 네 유형의 렌더 가능한 틀 수(공통 틀은 한 번). 읽기 추가 0
+  const bank = sets.find((s) => s.id === TOEIC_TEMPLATE_BANK_ID) ?? null;
+  const bankItems: unknown[] = bank !== null && isRenderableToeicTemplateBank(bank) ? ((bank.guide as { items: unknown[] }).items ?? []) : [];
+  const flowTemplateCount = new Set(TOEIC_GUIDE_PARTS.flatMap((p) => guideTemplatesForPart(bankItems, p).templates.map((t) => t.key))).size;
   const exprKeys = new Set<string>();
   for (const s of renderableSets) for (const e of s.entries) exprKeys.add(collapseSpaces(e.expression).toLowerCase());
 
@@ -105,6 +111,7 @@ export default async function ToeicMocksPage() {
         setCount={renderableSets.length}
         expressionCount={exprKeys.size}
         expressionsMax={TOEIC_MOCK_EXPRESSIONS_MAX}
+        flowTemplateCount={flowTemplateCount}
       />
     </main>
   );

@@ -429,7 +429,11 @@ function runSourceChecks(): GuideCheckResult[] {
   const gotoAt = rvCode.indexOf("const gotoHit = useMemo(");
   const gotoSeg = gotoAt < 0 ? "" : rvCode.slice(gotoAt, rvCode.indexOf("function jumpToSection(", gotoAt));
   const scrollFn = gotoSeg.slice(gotoSeg.indexOf("const scrollPendingGoto = useCallback("), gotoSeg.indexOf("useEffect(", gotoSeg.indexOf("const scrollPendingGoto = useCallback(")));
-  add("읽기 탭 goto: 섹션 첫 열림 = guideReadInitialOpen(sections, goto)(첫 렌더·서버 HTML부터 목표 섹션 열림)", /useState<Set<number>>\(\(\) => new Set\(guideReadInitialOpen\(sections, goto\)\)\)/.test(rvCode));
+  // 2026-10-02(§12-13-1): 판정 marks를 넘긴다 — `k:{틀 key}` 목표 섹션도 첫 렌더부터 연다(marks 없으면 t:·l:만)
+  add(
+    "읽기 탭 goto: 섹션 첫 열림 = guideReadInitialOpen(sections, goto, marks)(첫 렌더·서버 HTML부터 목표 섹션 열림 — k: 포함)",
+    /useState<Set<number>>\(\(\) => new Set\(guideReadInitialOpen\(sections, goto, marks\)\)\)/.test(rvCode) && /findGuideGotoBlock\(sections, goto, marks\)/.test(rvCode),
+  );
   add("읽기 탭 goto: 스크롤 경로에 requestAnimationFrame 없음(커밋 전 rAF 경합 금지)", gotoSeg.length > 0 && !/requestAnimationFrame/.test(gotoSeg));
   add(
     "읽기 탭 goto: 스크롤은 그 블록의 closest(\"details\")가 열렸을 때만(아니면 남겨 둔다) → scrollIntoView({ block: \"start\" }) 뒤 ref 비움",

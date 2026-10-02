@@ -11,10 +11,10 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import ToeicQuizWrongView, { type ToeicWrongModeGroup } from "@/components/toeic-quiz-wrong-view";
 import { getStore } from "@/lib/store";
-import { toeicGuidePartOfSet, toeicSetBackLink } from "@/lib/toeic-guide-view";
+import { toeicGuideFolderHref, toeicGuidePartOfSet, toeicSetBackLink } from "@/lib/toeic-guide-view";
 import { TOEIC_QUIZ_MODES, TOEIC_QUIZ_MODE_LABELS_KO, aggregateToeicStatsByMode, isToeicQuizModeSession, speakKeyForBookQuiz } from "@/lib/toeic-quiz";
 import { toeicItemKeyLabel } from "@/lib/toeic-quiz-contract";
-import { isRenderableToeicSet, isToeicTemplateBankSet } from "@/lib/toeic-record";
+import { isRenderableToeicSet, isToeicGuidePartSet, isToeicTemplateBankSet } from "@/lib/toeic-record";
 import { isStatMastered } from "@/lib/vocab-mastery";
 
 export const dynamic = "force-dynamic";
@@ -35,10 +35,14 @@ export default async function ToeicWrongPage({ params }: WrongPageProps) {
   const store = getStore();
   const record = await store.getToeicSet(id);
   if (record && isToeicTemplateBankSet(record)) redirect("/toeic/guides"); // 틀 은행은 표현 시험이 없다(§12-3 표)
+  if (record && isToeicGuidePartSet(record)) {
+    // 유형 공략의 교재 표현 시험은 닫았다(2026-10-02 §12-13-2) — 그 유형 폴더 ③ 👀 틀 시험으로(지난 기록은 지우지 않는다)
+    const part = toeicGuidePartOfSet(record);
+    redirect(part ? toeicGuideFolderHref(part, { tab: "quiz" }) : "/toeic/guides");
+  }
   if (!record || !isRenderableToeicSet(record)) notFound();
-  const isGuide = toeicGuidePartOfSet(record) !== null;
   const back = toeicSetBackLink(record);
-  const modeLabelsKo = isGuide ? { ...TOEIC_QUIZ_MODE_LABELS_KO, speak: "교재 문장 말하기" } : TOEIC_QUIZ_MODE_LABELS_KO;
+  const modeLabelsKo = TOEIC_QUIZ_MODE_LABELS_KO;
 
   // 표현 시험 모드만(레코드 mode는 틀 테스트 모드까지 넓다 — docs/harness/toeic.md §12-3 "모드 타입 넓히기")
   const sessions = (await store.listToeicQuizzes(id)).filter(isToeicQuizModeSession);
@@ -49,8 +53,7 @@ export default async function ToeicWrongPage({ params }: WrongPageProps) {
   for (const q of record.quiz) info.set(speakKeyForBookQuiz(q), { title: q.modelAnswer, sub: q.promptKo });
   for (const e of record.entries) info.set(e.expression, { title: e.expression, sub: e.meaningKo });
 
-  // 공략에는 빈칸 시험이 없다(§12-6) — 탭에서 뺀다(표현집은 네 모드 그대로)
-  const modes = isGuide ? TOEIC_QUIZ_MODES.filter((m) => m !== "cloze") : TOEIC_QUIZ_MODES;
+  const modes = TOEIC_QUIZ_MODES;
   const groups: ToeicWrongModeGroup[] = modes.map((mode) => {
     const stats = byMode[mode] ?? {};
     let attempted = 0;
@@ -80,9 +83,7 @@ export default async function ToeicWrongPage({ params }: WrongPageProps) {
         </div>
         <h1 className="t-book-title mt-4">📕 {record.titleKo}</h1>
         <p className="t-lead mt-1">
-          {isGuide
-            ? "방식(뜻·표현·교재 문장 말하기)마다 따로 봐요 — 뜻은 아는데 말로 못 꺼내는 표현이 바로 보여요. 연속 2번 맞히면 졸업이에요."
-            : "방식(뜻·표현·빈칸·말하기)마다 따로 봐요 — 뜻은 아는데 말로 못 꺼내는 표현이 바로 보여요. 연속 2번 맞히면 졸업이에요."}
+          방식(뜻·표현·빈칸·말하기)마다 따로 봐요 — 뜻은 아는데 말로 못 꺼내는 표현이 바로 보여요. 연속 2번 맞히면 졸업이에요.
         </p>
       </header>
 

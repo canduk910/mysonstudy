@@ -16,8 +16,13 @@
  * - 모범답변 접기 안에 Q3–4 **묘사 포인트**(keyPointsKo)·Q11 **답변 뼈대**(outlineKo)도 보인다 — 규칙은 "비어 있지 않으면 보인다" 하나라
  *   실전 모의고사 결과에도 같다(docs/harness/toeic.md §12-7-5 — 연습은 학습 보기를 쓰지 않으므로 결과 화면이 복습 자리다).
  * - 유형별 공략 **한 문제 연습**(`drill` — 서버 페이지가 문서의 drillPart로 넘긴다, §12-7-5·§12-7-9): 끝 버튼 줄은 "같은 문제 다시"·
- *   "새 문제"(유형 폴더의 만들기로)이고 **"학습 보기로"는 숨긴다**(학습 보기는 연습을 폴더로 보낸다). 문항마다 "🧩 틀 점검"(AI 없음 —
- *   채점 때 만든 전사문과 저장된 C·D 출력만: 쓴 틀·빠진 단계(Q3–4·Q11)·쓸 수 있었던 틀 — lib/toeic-drill-view drillTemplateCheck).
+ *   "새 문제"(유형 폴더의 만들기로)이고 **"학습 보기로"는 숨긴다**(학습 보기는 연습을 폴더로 보낸다).
+ * - **"🧩 틀 점검"**(AI 없음 — 채점 때 만든 전사문과 저장된 C·D 출력만: 쓴 틀·빠진 단계(Q3–4·Q11)·쓸 수 있었던 틀 — lib/toeic-drill-view
+ *   drillTemplateCheck). 2026-10-02(§12-13-3)부터 **실전 모의고사에도** 붙는다 — 서버가 파트마다 점검 자료(`checks`)를 넘긴다. 연습은 문항마다
+ *   펼쳐서, 실전 모의고사는 문항마다 **닫힌 접기** "🧩 틀 점검 · 쓴 틀 n(· 빠진 단계 m)"(채점 전은 "🧩 모범답변의 틀 n · 채점 뒤 내 틀") — 11문항
+ *   결과 화면이 길어지지 않게. 실전 모의고사는 결과 머리에 한 줄 "🧩 틀을 쓴 문항 n/m · 빠진 단계 k"(toeicTemplateCheckSummary).
+ * - 모범답변 접기에 **모범답변 점검 줄**("🧩 모범답변의 틀 n개 · 단계 a/b" — 문서에 저장된 흐름으로 잰다, 옛 문서는 줄 없음)과 크게 덜 따랐으면
+ *   미달 경고(→ ② 템플릿 훈련). 모범답변 속 강조는 틀 글자에서 온 구간을 🧩 색으로 따로 보인다(흐름 글자 집합에 드는가로 가른다).
  */
 
 import Link from "next/link";
@@ -45,14 +50,22 @@ import {
 import { isScorableToeicAnswer } from "@/lib/toeic-attempt-rules";
 import { FrameLine } from "@/components/toeic-template-lines";
 import {
+  TOEIC_ANSWER_FLOW_WEAK_KO,
   TOEIC_DRILL_SUGGESTION_SOURCE_KO,
+  answerFlowCheckLine,
   drillTemplateCheck,
-  type ToeicDrillCheckData,
+  toeicTemplateCheckSummary,
+  type ToeicDrillCheckResult,
   type ToeicDrillCheckTemplate,
+  type ToeicTemplateCheckData,
 } from "@/lib/toeic-drill-view";
+import { toeicGuidePartOfMockPart } from "@/lib/toeic-guide";
+import type { ToeicAnswerFlow } from "@/lib/toeic-guide-contract";
 import { slotToneMap, toeicGuideFolderHref } from "@/lib/toeic-guide-view";
 import { segmentUsedExpressions, toeicImageUrl, toeicTakeHref, type ToeicUsedExpression } from "@/lib/toeic-mock-contract";
-import { frameSlotNames } from "@/lib/toeic-template";
+import type { ToeicMockPart } from "@/lib/toeic-mock";
+import { answerFlowExpressions, frameSlotNames } from "@/lib/toeic-template";
+import { expressionKey } from "@/lib/toeic-text";
 import { markReadAloud } from "@/lib/toeic-read-marks";
 import { listToeicRecordings, type ToeicRecording } from "@/lib/toeic-rec-store";
 import { TOEIC_NO_RESPONSE_KO, TOEIC_READ_NOTICE_KO, estimateToeicTotal, isNoResponseTranscript } from "@/lib/toeic-score";
@@ -106,8 +119,6 @@ export interface ToeicAttemptDrillInfo {
   retakeHref: string;
   /** "새 문제" — 유형 폴더 ④ 탭(만들기) */
   newHref: string;
-  /** 🧩 틀 점검 자료(틀 은행에 그 유형 틀이 없으면 null — 틀 점검 없이 결과만) */
-  check: ToeicDrillCheckData | null;
 }
 
 /** 틀 한 줄(영어 틀 — 자리 칩) + 한국어 틀(작은 글씨) */
@@ -125,10 +136,15 @@ function TemplateMini({ t }: { t: ToeicDrillCheckTemplate }) {
   );
 }
 
-function highlightUsed(text: string, used: readonly ToeicUsedExpression[], markClass: string): ReactNode {
+/** 모범답변 속 활용한 표현 강조 — 틀 글자(흐름 글자 집합)에서 온 구간은 `frameClass`(🧩 색)로 따로(§12-13-3) */
+function highlightUsed(text: string, used: readonly ToeicUsedExpression[], markClass: string, frameKeys?: ReadonlySet<string>, frameClass?: string): ReactNode {
   return segmentUsedExpressions(text, used).map((seg, i) =>
     seg.mark ? (
-      <mark key={i} className={markClass} title={seg.expression ?? undefined}>
+      <mark
+        key={i}
+        className={frameKeys && frameClass && seg.expression && frameKeys.has(expressionKey(seg.expression)) ? `${markClass} ${frameClass}` : markClass}
+        title={seg.expression ?? undefined}
+      >
         {seg.text}
       </mark>
     ) : (
@@ -145,6 +161,8 @@ export default function ToeicAttemptView({
   closed,
   questions,
   drill = null,
+  checks = {},
+  answerFlows = [],
 }: {
   attempt: ToeicAttemptRecord;
   mockId: string;
@@ -152,13 +170,24 @@ export default function ToeicAttemptView({
   scopeLabelKo: string;
   closed: boolean;
   questions: ToeicQuestionView[];
-  /** 한 문제 연습이면 끝 버튼 줄·틀 점검 자료(모의고사면 null) */
+  /** 한 문제 연습이면 끝 버튼 줄(모의고사면 null) */
   drill?: ToeicAttemptDrillInfo | null;
+  /** 🧩 틀 점검 자료 — 파트마다(read 제외, 틀 은행에 그 유형 틀이 없으면 그 파트는 키 없음 — 점검 없이 결과만) */
+  checks?: Partial<Record<ToeicMockPart, ToeicTemplateCheckData>>;
+  /** 문서에 저장된 답변 흐름(만들 때의 입력 — 모범답변 점검 줄이 잰다. 옛 문서는 []) */
+  answerFlows?: ToeicAnswerFlow[];
 }) {
   const router = useRouter();
   const id = attempt.id;
-  const check = drill?.check ?? null;
-  const checkTplByKey = useMemo(() => new Map((check?.templates ?? []).map((t) => [t.key, t] as const)), [check]);
+  const checkTplByKey = useMemo(() => {
+    const m = new Map<string, ToeicDrillCheckTemplate>();
+    for (const c of Object.values(checks)) for (const t of c?.templates ?? []) if (!m.has(t.key)) m.set(t.key, t);
+    return m;
+  }, [checks]);
+  const flowOf = useCallback((part: ToeicMockPart) => answerFlows.find((f) => f.part === part) ?? null, [answerFlows]);
+  /** 파트마다 흐름 틀 글자 키 — 모범답변 강조에서 틀 글자에서 온 구간을 가른다 */
+  const flowKeySets = useMemo(() => new Map(answerFlows.map((f) => [f.part, new Set(answerFlowExpressions(f).map(expressionKey))] as const)), [answerFlows]);
+  const flowKeys = (part: ToeicMockPart): ReadonlySet<string> | undefined => flowKeySets.get(part);
 
   // ── 문항별 답(서버 값 위에 이 화면의 채점 결과를 얹는다 — 새로 읽으면 서버 값으로 맞춘다) ──
   const toMap = (list: readonly ToeicAnswer[]) => Object.fromEntries(list.map((a) => [a.q, a] as const)) as Record<number, ToeicAnswer>;
@@ -334,6 +363,28 @@ export default function ToeicAttemptView({
   const recordedAll = qs.filter((q) => answers[q]?.recorded).length;
   const recordedElsewhere = recordedAll - recordedHere;
   const estimate = estimateToeicTotal(Object.values(answers));
+
+  // ── 🧩 틀 점검(AI 0) — 문항마다 한 번 계산해 머리 요약·문항 접기가 같이 쓴다 ──
+  const checkResults = useMemo(() => {
+    const out = new Map<number, ToeicDrillCheckResult>();
+    for (const v of questions) {
+      const data = checks[v.part];
+      if (!data || toeicGuidePartOfMockPart(v.part) === null) continue;
+      const a = answers[v.q];
+      out.set(
+        v.q,
+        drillTemplateCheck(data, {
+          transcript: a?.transcript ?? null,
+          sampleAnswer: v.sampleAnswer,
+          sampleUsedExpressions: v.usedExpressions.map((u) => u.expression),
+          tryExpressions: a?.feedback?.tryExpressions ?? [],
+        }),
+      );
+    }
+    return out;
+  }, [questions, checks, answers]);
+  /** 실전 모의고사 결과 머리 한 줄(연습에는 두지 않는다 — 문항이 1~3개이고 펼쳐서 보인다) */
+  const checkSummary = drill ? null : toeicTemplateCheckSummary([...checkResults.values()]);
   const doneCount = qs.filter((q) => jobs[q]?.phase === "done" || jobs[q]?.phase === "failed").length;
   const activeTargets = qs.filter((q) => jobs[q] !== undefined && jobs[q].phase !== "done" && jobs[q].phase !== "failed");
 
@@ -454,6 +505,11 @@ export default function ToeicAttemptView({
           </span>
           {!estimate.complete && estimate.scoredCount > 0 && <span className="u-chip">{estimate.messageKo}</span>}
         </p>
+        {checkSummary && (
+          <p className={s.tplSummary} data-testid="tpl-check-summary">
+            {checkSummary.textKo}
+          </p>
+        )}
       </div>
 
       {/* 추정 총점 */}
@@ -746,8 +802,34 @@ export default function ToeicAttemptView({
                   {playBtn(`model-${v.q}`, v.sampleAnswer, `Q${v.q} 모범답변`)}
                 </div>
                 <p className={s.answerText} lang="en">
-                  {highlightUsed(v.sampleAnswer, v.usedExpressions, s.used)}
+                  {highlightUsed(v.sampleAnswer, v.usedExpressions, s.used, flowKeys(v.part), s.usedFrame)}
                 </p>
+                {(() => {
+                  // 모범답변 점검(§12-13-3 — 저장된 흐름으로 잰다, 측정만). 흐름이 없는 문서(옛 문서)는 줄이 없다
+                  const line = answerFlowCheckLine(v.sampleAnswer, flowOf(v.part), v.part);
+                  if (!line) return null;
+                  const gp = toeicGuidePartOfMockPart(v.part);
+                  return (
+                    <>
+                      <p className={s.flowCheck} data-testid={`flow-check-${v.q}`}>
+                        {line.textKo}
+                      </p>
+                      {line.weak && (
+                        <p className={s.flowWeak}>
+                          {TOEIC_ANSWER_FLOW_WEAK_KO}
+                          {gp && (
+                            <>
+                              {" "}
+                              <Link href={toeicGuideFolderHref(gp, { tab: "templates" })} className={s.tplLink}>
+                                🧩 템플릿 훈련 →
+                              </Link>
+                            </>
+                          )}
+                        </p>
+                      )}
+                    </>
+                  );
+                })()}
                 {v.tipKo && <p className={s.caption}>💡 {v.tipKo}</p>}
                 {/* 응시 뒤 복습 자료(§12-7-5) — 비어 있지 않으면 보인다(실전 결과에도 같다) */}
                 {v.keyPointsKo.length > 0 && (
@@ -773,85 +855,98 @@ export default function ToeicAttemptView({
               </details>
             )}
 
-            {/* 🧩 틀 점검(한 문제 연습만 — AI 없음, §12-7-9) */}
-            {check &&
-              (() => {
-                const result = drillTemplateCheck(check, {
-                  transcript: a?.transcript ?? null,
-                  sampleUsedExpressions: v.usedExpressions.map((u) => u.expression),
-                  tryExpressions: a?.feedback?.tryExpressions ?? [],
-                });
-                const tplHref = (key: string) => toeicGuideFolderHref(check.part, { tab: "templates", tpl: key });
-                return (
-                  <section className={s.tplCheck} aria-label={`Q${v.q} 틀 점검`} data-testid={`tpl-check-${v.q}`}>
-                    <p className={s.tplCheckTitle}>🧩 틀 점검</p>
-                    {result.scored && (
-                      <div className={s.block}>
-                        <p className={s.label}>내 답에서 쓴 틀</p>
-                        {result.used.length > 0 ? (
-                          <ul className={s.tplList}>
-                            {result.used.map((u) => {
-                              const t = checkTplByKey.get(u.key);
-                              if (!t) return null;
-                              return (
-                                <li key={u.key} className={s.tplItem}>
-                                  <span className={s.tplMeta}>{u.stepKo ? `${u.stepKo} · ${u.groupKo}` : u.groupKo}</span>
-                                  <TemplateMini t={t} />
-                                </li>
-                              );
-                            })}
-                          </ul>
-                        ) : (
-                          <p className={s.caption}>받아쓰기에서 찾은 틀이 없어요.</p>
-                        )}
-                      </div>
-                    )}
-                    {result.scored && result.flowChecked && (
-                      <div className={s.block}>
-                        <p className={s.label}>빠진 단계</p>
-                        {result.missingSteps.length > 0 ? (
-                          <p className={s.tplSteps}>
-                            {result.missingSteps.map((st) => (
-                              <span key={st} className="u-chip">
-                                {st}
-                              </span>
-                            ))}
-                          </p>
-                        ) : (
-                          <p className={s.caption}>답변 흐름의 단계를 모두 지났어요 ✓</p>
-                        )}
-                      </div>
-                    )}
+            {/* 🧩 틀 점검(AI 없음 — 연습은 펼쳐서, 실전 모의고사는 닫힌 접기로, §12-7-9·§12-13-3) */}
+            {(() => {
+              const data = checks[v.part];
+              const result = checkResults.get(v.q);
+              if (!data || !result) return null;
+              const tplHref = (key: string) => toeicGuideFolderHref(data.part, { tab: "templates", tpl: key });
+              const body = (
+                <>
+                  {result.scored && (
                     <div className={s.block}>
-                      <p className={s.label}>{result.scored ? "쓸 수 있었던 틀" : "모범답변이 쓴 틀"}</p>
-                      {result.suggestions.length > 0 ? (
+                      <p className={s.label}>내 답에서 쓴 틀</p>
+                      {result.used.length > 0 ? (
                         <ul className={s.tplList}>
-                          {result.suggestions.map((sg) => {
-                            const t = checkTplByKey.get(sg.key);
+                          {result.used.map((u) => {
+                            const t = checkTplByKey.get(u.key);
                             if (!t) return null;
                             return (
-                              <li key={sg.key} className={s.tplItem}>
-                                <span className={s.tplMeta}>{TOEIC_DRILL_SUGGESTION_SOURCE_KO[sg.source]}</span>
+                              <li key={u.key} className={s.tplItem}>
+                                <span className={s.tplMeta}>{u.stepKo ? `${u.stepKo} · ${u.groupKo}` : u.groupKo}</span>
                                 <TemplateMini t={t} />
-                                <Link href={tplHref(sg.key)} className={s.tplLink}>
-                                  이 틀 연습하기 →
-                                </Link>
                               </li>
                             );
                           })}
                         </ul>
                       ) : (
-                        <p className={s.caption}>{result.scored ? "더 권할 틀이 없어요." : "모범답변에서 되짚히는 틀이 없어요."}</p>
+                        <p className={s.caption}>받아쓰기에서 찾은 틀이 없어요.</p>
                       )}
                     </div>
-                    <p className={s.caption}>
-                      {result.scored
-                        ? "받아쓰기에서 틀의 고정 부분을 찾은 참고예요(점수가 아니에요) — 발음 때문에 다르게 적히면 쓴 틀도 못 찾을 수 있어요."
-                        : "AI 채점을 받으면 내 답에서 쓴 틀과 쓸 수 있었던 틀이 더 보여요."}
-                    </p>
+                  )}
+                  {result.scored && result.flowChecked && (
+                    <div className={s.block}>
+                      <p className={s.label}>빠진 단계</p>
+                      {result.missingSteps.length > 0 ? (
+                        <p className={s.tplSteps}>
+                          {result.missingSteps.map((st) => (
+                            <span key={st} className="u-chip">
+                              {st}
+                            </span>
+                          ))}
+                        </p>
+                      ) : (
+                        <p className={s.caption}>답변 흐름의 단계를 모두 지났어요 ✓</p>
+                      )}
+                    </div>
+                  )}
+                  <div className={s.block}>
+                    <p className={s.label}>{result.scored ? "쓸 수 있었던 틀" : "모범답변이 쓴 틀"}</p>
+                    {result.suggestions.length > 0 ? (
+                      <ul className={s.tplList}>
+                        {result.suggestions.map((sg) => {
+                          const t = checkTplByKey.get(sg.key);
+                          if (!t) return null;
+                          return (
+                            <li key={sg.key} className={s.tplItem}>
+                              <span className={s.tplMeta}>{TOEIC_DRILL_SUGGESTION_SOURCE_KO[sg.source]}</span>
+                              <TemplateMini t={t} />
+                              <Link href={tplHref(sg.key)} className={s.tplLink}>
+                                이 틀 연습하기 →
+                              </Link>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : (
+                      <p className={s.caption}>{result.scored ? "더 권할 틀이 없어요." : "모범답변에서 되짚히는 틀이 없어요."}</p>
+                    )}
+                  </div>
+                  <p className={s.caption}>
+                    {result.scored
+                      ? "받아쓰기에서 틀의 고정 부분을 찾은 참고예요(점수가 아니에요) — 발음 때문에 다르게 적히면 쓴 틀도 못 찾을 수 있어요."
+                      : "AI 채점을 받으면 내 답에서 쓴 틀과 쓸 수 있었던 틀이 더 보여요."}
+                  </p>
+                </>
+              );
+              if (drill) {
+                return (
+                  <section className={s.tplCheck} aria-label={`Q${v.q} 틀 점검`} data-testid={`tpl-check-${v.q}`}>
+                    <p className={s.tplCheckTitle}>🧩 틀 점검</p>
+                    {body}
                   </section>
                 );
-              })()}
+              }
+              const summaryKo = result.scored
+                ? `🧩 틀 점검 · 쓴 틀 ${result.used.length}${result.flowChecked ? ` · 빠진 단계 ${result.missingSteps.length}` : ""}`
+                : `🧩 모범답변의 틀 ${result.suggestions.length} · 채점 뒤 내 틀`;
+              return (
+                <details className={s.tplCheckFold} aria-label={`Q${v.q} 틀 점검`} data-testid={`tpl-check-${v.q}`}>
+                  <summary className={s.tplCheckSummary}>{summaryKo}</summary>
+                  <div className={s.tplCheckBody}>{body}</div>
+                </details>
+              );
+            })()}
 
             {diag && (
               <p className={s.diagLine}>

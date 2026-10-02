@@ -74,6 +74,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       targetGrade: mock.targetGrade,
       topicHints: mock.topicHints,
       expressions: mock.expressionsUsed,
+      // 처음과 같은 입력(§7-2) — 만들 때 저장한 그 파트 흐름(§12-13-3). 지금의 틀 은행은 읽지 않는다. 옛 문서·흐름이 없던 문서는 null
+      answerFlow: mock.answerFlows.find((f) => f.part === part) ?? null,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

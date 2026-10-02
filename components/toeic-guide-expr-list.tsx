@@ -1,28 +1,22 @@
 "use client";
 
 /**
- * ③ 📝 표현 시험 탭의 **표현 목록** (docs/harness/toeic.md §12-6·§12-5-7) — 클라이언트 컴포넌트.
+ * ① 공략 읽기 끝의 **📘 교재 표현 목록**(읽기 전용 — docs/harness/toeic.md §12-13-1·§12-13-2, §12-12 34) — 클라이언트 컴포넌트.
  *
- * 머리에 **시험 화면으로 가는 버튼**(T8 — 기존 표현 시험 화면 그대로, 주소는 `/toeic/sets/guide-{part}/…`): 👀 5지선다 시험(뜻 → 표현 ·
- * 표현 → 뜻, 한 판 최대 20문항 — 약한 것부터) · 📝 교재 문장 말하기(말하기 통계로 약한 문장부터 10개 — ② "🧩 틀 테스트"와 이름으로 가른다,
- * §12-6 검토 S11) · 📕 오답노트 · 📊 기록. 시험 화면의 "뒤로"는 이 탭으로 돌아온다(서버 페이지가 toeicSetBackLink로 내려준다).
- * 목록에는 **틀로 가는 🧩 칩** — 틀 은행의 어떤 틀이 `guideRefs`(kind "expression")로 가리키는 표현 옆에 "🧩 틀"
- * 칩과 그 틀의 테스트 상태(틀 바꿔 말하기 배지 — 틀 세션만 읽는다, 숙련도는 섞지 않는다). 누르면 ② 탭의 그 틀로 간다. `?expr=`로
- * 열리면 그 줄로 스크롤한다(틀 카드의 "📘 교재 틀" 칩이 여기로 온다). 판정은 templateLinksForGuide 하나(§12-4 — ① 탭과 같은 함수).
- *
- * 🔊·프리페치(§12-6): 표현 영어는 **trim만** 한 글자로 — 표현집 카드·시험 러너의 🔊와 캐시 키가 같아야 한다(공략 읽기의 정리 함수를
- * 쓰지 않는다, `~`도 그대로). 탭을 열 때만 미리 받는다(폴더를 여는 것만으로는 받지 않는다 — 이 컴포넌트는 탭이 열릴 때만 올라온다).
+ * 2026-10-02: 유형 폴더의 교재 표현 **시험**을 닫고(③은 👀 틀 시험), 시험이 아닌 **표현 목록 자체**(교재 표현·뜻·교재 예문)는 지우지 않고 여기로
+ * 옮겼다 — ① 본문 줄에 없는 교재 표현의 뜻·예문이 화면에서 사라지지 않게("교재 내용은 그대로"). 그래서 **시험 버튼·오답노트·기록·`?expr=`
+ * 처리·말하기 상태·미리 받기가 없다**.
+ * - 틀이 연결한 표현(templateLinksForGuide — ① 본문과 같은 표)에는 "🧩 외울 틀" 칩(→ ② 그 카드).
+ * - 같은 자리 다른 표현(templateAlternateLinks — 틀 은행 alternates)에 든 표현은 목록 끝의 안쪽 접기 "↳ 같은 자리 다른 표현 n"에 모으고
+ *   줄마다 "→ 🧩 {대표 틀}".
+ * - 🔊는 **탭할 때만**(표현 영어 trim만 — 옛 목록·표현집 카드·시험 러너와 같은 캐시 키). 섹션 ▶·처음부터 대본에 들지 않고 미리 받지 않는다.
+ * 이 파일은 지우지 않는다(기존 eval이 최상위에서 읽는다 — 검토 S1).
  */
 
-import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { prefetchSpeech, speak } from "@/lib/speech";
-import { toeicGuideSetId } from "@/lib/toeic-guide";
-import type { ToeicGuidePart, ToeicTemplate } from "@/lib/toeic-guide-contract";
-import { TOEIC_GUIDE_CHOICE_SESSION_MAX } from "@/lib/toeic-quiz";
-import { TOEIC_TEMPLATE_BADGE_LABELS_KO, findGuideExpressionIndex } from "@/lib/toeic-guide-view";
-import type { ToeicTemplateQuizMode } from "@/lib/toeic-quiz";
-import { templateLinksForGuide, type ToeicTemplateBadge } from "@/lib/toeic-template";
+import { useMemo } from "react";
+import { speak } from "@/lib/speech";
+import type { ToeicGuidePart, ToeicTemplate, ToeicTemplateAlternate } from "@/lib/toeic-guide-contract";
+import { frameToExpression, templateAlternateLinks, templateLinksForGuide } from "@/lib/toeic-template";
 import { expressionKey } from "@/lib/toeic-text";
 import type { ToeicGuideExpressionItem } from "./toeic-guide-folder-view";
 import s from "./toeic-guide-folder-view.module.css";
@@ -30,118 +24,79 @@ import s from "./toeic-guide-folder-view.module.css";
 export default function ToeicGuideExprList({
   part,
   expressions,
-  speakCount,
   templates,
-  badges,
-  focusExpr,
+  alternates,
   onOpenTemplate,
 }: {
   part: ToeicGuidePart;
   expressions: ToeicGuideExpressionItem[];
-  speakCount: number;
+  /** 그 유형의 렌더 가능한 틀 */
   templates: ToeicTemplate[];
-  badges: Record<ToeicTemplateQuizMode, Record<string, ToeicTemplateBadge>>;
-  focusExpr: string | null;
+  /** 그 유형의 같은 자리 다른 표현(틀 은행 alternates) */
+  alternates: ToeicTemplateAlternate[];
   onOpenTemplate: (key: string) => void;
 }) {
   const links = useMemo(() => templateLinksForGuide({ items: templates }, part), [templates, part]);
-  const listRef = useRef<HTMLOListElement>(null);
-  const [flash, setFlash] = useState<number | null>(null);
+  const altLinks = useMemo(() => templateAlternateLinks({ alternates }, part), [alternates, part]);
+  const byKey = useMemo(() => new Map(templates.map((t) => [t.key, t] as const)), [templates]);
+  const main = expressions.filter((e) => !altLinks.expressions.has(expressionKey(e.expression)));
+  const alts = expressions.filter((e) => altLinks.expressions.has(expressionKey(e.expression)));
 
-  // 프리페치 — 표현 영어(trim만, 최대 60 — PREFETCH_MAX_ITEMS 90 안). 키는 문자열(참조 변경으로 재시작하지 않게)
-  const prefetchKey = useMemo(
-    () =>
-      expressions
-        .map((e) => e.expression.trim())
-        .filter((t) => t !== "")
-        .join("\u0001"),
-    [expressions],
-  );
-  useEffect(() => {
-    if (!prefetchKey) return;
-    return prefetchSpeech(prefetchKey.split("\u0001"), "en-US");
-  }, [prefetchKey]);
-
-  // ?expr= → 그 줄로 스크롤·잠깐 강조
-  useEffect(() => {
-    const i = findGuideExpressionIndex(expressions, focusExpr);
-    if (i < 0) return;
-    const el = listRef.current?.querySelector<HTMLElement>(`[data-expr="${i}"]`);
-    el?.scrollIntoView({ block: "center" });
-    setFlash(i);
-    const t = window.setTimeout(() => setFlash(null), 2400);
-    return () => window.clearTimeout(t);
-  }, [focusExpr, expressions]);
-
-  const base = `/toeic/sets/${toeicGuideSetId(part)}`;
+  function row(e: ToeicGuideExpressionItem, i: number, alt: boolean) {
+    const k = expressionKey(e.expression);
+    const frameKeys = alt ? [] : (links.expressions.get(k) ?? []);
+    const rep = alt ? byKey.get(altLinks.expressions.get(k)?.[0] ?? "") : undefined;
+    return (
+      <li key={`${alt ? "a" : "m"}${i}`} className={s.expr}>
+        <div className={s.exprRow}>
+          {e.no !== null && <span className={s.exprNo}>{String(e.no).padStart(2, "0")}</span>}
+          <p className={s.exprEn} lang="en">
+            {e.expression}
+          </p>
+          <button type="button" className={s.speak} onClick={() => speak(e.expression.trim(), "en-US")} aria-label={`${e.expression} 듣기`}>
+            🔊
+          </button>
+        </div>
+        <p className={s.exprKo}>{e.meaningKo}</p>
+        {e.example && (
+          <p className={s.exprExample} lang="en">
+            {e.example}
+          </p>
+        )}
+        {frameKeys.length > 0 && (
+          <div className={s.exprChips}>
+            <button type="button" className={s.linkChip} onClick={() => onOpenTemplate(frameKeys[0])} aria-label="이 표현의 템플릿 훈련 카드로">
+              🧩 외울 틀{frameKeys.length > 1 ? ` ${frameKeys.length}` : ""}
+            </button>
+          </div>
+        )}
+        {rep && (
+          <div className={s.exprChips}>
+            <button type="button" className={s.linkChip} onClick={() => onOpenTemplate(rep.key)} aria-label="외울 틀의 템플릿 훈련 카드로">
+              → 🧩 <span lang="en">{frameToExpression(rep.frameEn)}</span>
+            </button>
+          </div>
+        )}
+      </li>
+    );
+  }
 
   return (
     <div className={s.exprWrap}>
-      <section className={s.exprActions} aria-label="표현 시험">
-        <div className={s.exprActionRow}>
-          <Link href={`${base}/quiz`} className="u-btn u-btn-primary">
-            👀 5지선다 시험
-          </Link>
-          {speakCount > 0 ? (
-            <Link href={`${base}/quiz?modes=speak`} className="u-btn u-btn-primary">
-              📝 교재 문장 말하기
-            </Link>
-          ) : (
-            <span className={s.exprActionOff} aria-disabled="true">
-              📝 교재 문장 말하기 — 문항 없음
-            </span>
-          )}
-        </div>
-        <div className={s.exprActionRow}>
-          <Link href={`${base}/wrong`} className="u-btn u-btn-secondary">
-            📕 오답노트
-          </Link>
-          <Link href={`${base}/history`} className="u-btn u-btn-secondary">
-            📊 기록
-          </Link>
-        </div>
-        <p className="t-caption">
-          5지선다는 뜻 → 표현 · 표현 → 뜻, 한 판 최대 {TOEIC_GUIDE_CHOICE_SESSION_MAX}문항(약한 것부터). 교재 문장 말하기는 우리말을 보고 소리 내어
-          말한 뒤 스스로 채점해요(약한 문장부터 10개).
-        </p>
-      </section>
       <p className="t-caption">
-        공략 표현 {expressions.length}개 · 교재 문장 말하기 {speakCount}개
+        교재 표현 {expressions.length}개(읽기 전용 — 시험은 👀 틀 시험이 틀로 내요). 🔊는 누를 때만 소리 나요.
       </p>
-      <ol ref={listRef} className={s.exprList} aria-label="공략 표현">
-        {expressions.map((e, i) => {
-          const keys = links.expressions.get(expressionKey(e.expression)) ?? [];
-          const tplKey = keys[0] ?? null;
-          const swap = tplKey ? (badges["tpl-swap"][tplKey] ?? "new") : null;
-          return (
-            <li key={i} data-expr={i} className={`${s.expr} ${flash === i ? s.exprFocus : ""}`}>
-              <div className={s.exprRow}>
-                {e.no !== null && <span className={s.exprNo}>{String(e.no).padStart(2, "0")}</span>}
-                <p className={s.exprEn} lang="en">
-                  {e.expression}
-                </p>
-                <button type="button" className={s.speak} onClick={() => speak(e.expression.trim(), "en-US")} aria-label={`${e.expression} 듣기`}>
-                  🔊
-                </button>
-              </div>
-              <p className={s.exprKo}>{e.meaningKo}</p>
-              {e.example && (
-                <p className={s.exprExample} lang="en">
-                  {e.example}
-                </p>
-              )}
-              {tplKey && swap && (
-                <div className={s.exprChips}>
-                  <button type="button" className={s.linkChip} onClick={() => onOpenTemplate(tplKey)} aria-label="이 표현의 템플릿 훈련 틀로">
-                    🧩 틀{keys.length > 1 ? ` ${keys.length}` : ""}
-                  </button>
-                  <span className="u-chip">틀 바꿔 말하기 · {TOEIC_TEMPLATE_BADGE_LABELS_KO[swap]}</span>
-                </div>
-              )}
-            </li>
-          );
-        })}
+      <ol className={s.exprList} aria-label="교재 표현">
+        {main.map((e, i) => row(e, i, false))}
       </ol>
+      {alts.length > 0 && (
+        <details className={s.exprAltFold}>
+          <summary className={s.exprAltSummary}>↳ 같은 자리 다른 표현 {alts.length}</summary>
+          <ol className={s.exprList} aria-label="같은 자리 다른 표현">
+            {alts.map((e, i) => row(e, i, true))}
+          </ol>
+        </details>
+      )}
     </div>
   );
 }

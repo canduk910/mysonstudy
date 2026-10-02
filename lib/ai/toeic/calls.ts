@@ -7,6 +7,9 @@
  * - 사진·묶음·파트·문항마다 **호출 하나**다(요청 하나가 60초를 넘지 않게, §1-1). 병렬·부분 성공은 라우트가 Promise.allSettled로 한다.
  * - 키 검사(501)는 라우트가 이 함수들보다 **먼저** 한다. 키가 없으면 getOpenAIClient가 throw한다.
  * - 재요청까지 실패하면 throw — 라우트가 상태코드로 바꾼다.
+ * - 답변 흐름(§12-13-3 — 2026-10-02): C는 흐름을 받으면 시스템 프롬프트 끝에 흐름 규칙을 붙이고(buildMockSystemPrompt(part, hasFlow)),
+ *   C·D 후처리 허용 목록을 **여기서** 합친다 — `[...answerFlowExpressions(흐름), ...활용할 표현]`, 흐름 틀을 **앞에**(두 후처리는 같은 키면
+ *   먼저 나온 표기를 쓴다 → 저장 표기가 흐름 쪽). 합친 목록을 normalizeMockExpressions에 다시 넣지 않는다(24에서 잘려 흐름 틀이 버려진다).
  *
  * ⚠️ 클라이언트 컴포넌트에서 import 금지(openai·API 키). 화면이 타입이 필요하면 lib/toeic-*-contract.ts가 `export type`으로 재수출한다.
  */
@@ -48,6 +51,7 @@ import {
 } from "./schemas";
 import { postprocessFeedback, toMockRecordPart, type ToeicFeedbackInput } from "./mock";
 import { toeicMaxScore } from "../../toeic-mock";
+import { answerFlowExpressions } from "../../toeic-template";
 
 /**
  * 호출 A — 표현집 한 페이지 판독(vision). 사진 1장 = 호출 1회. 이미지 파트를 텍스트보다 먼저 넣는다(§2-2).
@@ -89,22 +93,26 @@ export async function generatePointsChunk(topicKo: string | null, chunk: readonl
  * 호출 C — 모의고사 파트 하나(C1~C5). 파트마다 호출 하나(라우트가 5개를 병렬로).
  * 반환은 **레코드에 바로 넣을 파트**다 — usedExpressions 정리(입력 목록·모범답변 대조)와 C2 image pending이 붙어 있다.
  * `input.expressions`는 normalizeMockExpressions를 거친 목록을 레코드 expressionsUsed에 그대로 저장하라(보낸 목록 = 저장 목록).
+ * `input.answerFlow`(필수 칸 — 없으면 null)는 레코드 answerFlows에 저장된 흐름과 같은 것이어야 한다(다시 만들기·채점이 같은 흐름).
+ * read(C1)는 흐름을 받지 않는다 — 넘겨도 null로 본다(§4-0 "read는 흐름이 늘 null").
  */
 export async function generateMockPart<P extends ToeicMockPart>(
   part: P,
   input: ToeicMockUserMessageInput,
 ): Promise<ToeicMockPartRecordMap[P]> {
+  const answerFlow = part === "read" ? null : input.answerFlow;
   const raw = await callWithSchema<ToeicMockPartGenMap[P]>({
     call: toeicMockCallLabel(part),
-    system: buildMockSystemPrompt(part),
-    user: [textPart(buildMockUserMessage(input))],
+    system: buildMockSystemPrompt(part, answerFlow !== null),
+    user: [textPart(buildMockUserMessage({ ...input, answerFlow }))],
     jsonSchema: TOEIC_MOCK_JSON_SCHEMAS[part],
     zodSchema: TOEIC_MOCK_ZOD[part],
     temperature: TOEIC_MOCK_CALL_OPTIONS.temperature,
     maxOutputTokens: TOEIC_MOCK_CALL_OPTIONS.maxOutputTokens,
     model: resolveModel(),
   });
-  return toMockRecordPart(part, raw, normalizeMockExpressions(input.expressions));
+  // 허용 목록 = 흐름 틀(앞) + 정규화한 활용할 표현 — 합친 목록을 다시 normalizeMockExpressions에 넣지 않는다(검토 S4)
+  return toMockRecordPart(part, raw, [...answerFlowExpressions(answerFlow), ...normalizeMockExpressions(input.expressions)]);
 }
 
 /**
@@ -124,5 +132,6 @@ export async function generateFeedback(input: ToeicFeedbackInput): Promise<Toeic
     maxOutputTokens: TOEIC_FEEDBACK_CALL_OPTIONS.maxOutputTokens,
     model: resolveModel(),
   });
-  return postprocessFeedback(raw, input.expressions);
+  // 허용 목록 = 흐름 틀(앞) + 활용할 표현 — 흐름은 input.expressions에 섞지 않는다(D `활용할 표현:` 줄에 찍히지 않게, 검토 S4)
+  return postprocessFeedback(raw, [...answerFlowExpressions(input.answerFlow), ...input.expressions]);
 }

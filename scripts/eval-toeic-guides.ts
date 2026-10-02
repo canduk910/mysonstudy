@@ -29,6 +29,7 @@ import {
   type ToeicTemplateBankFile,
 } from "../lib/ai/toeic/schemas";
 import { decideGuideUpsert, planToeicGuideImport, toeicGuideContentHash, toeicTemplateBankContentHash } from "../lib/ai/toeic/guide-import";
+import { toeicTemplateAlternatesFromSkips } from "../lib/ai/toeic/schemas";
 import { pickExpressionsForDrill, pickExpressionsForMock } from "../lib/ai/toeic/mock";
 import {
   TOEIC_GUIDE_PARTS,
@@ -67,6 +68,7 @@ import {
   flattenTemplateFlow,
   frameFixedWordRuns,
   frameToExpression,
+  guideExpressionKeysInFlow,
   guideLineTemplateKeys,
   isSendableTemplateRecording,
   leadMatchesFrame,
@@ -388,7 +390,8 @@ function templateBank(): Json {
   };
 }
 
-function fixtureFile(): Json {
+/** 기준 가져오기 픽스처(지어낸 것) — eval-toeic-template-centric.ts도 쓴다 */
+export function fixtureFile(): Json {
   return { format: TOEIC_GUIDE_FORMAT, guides: [guideQ34(), guideQ57(), guideQ11()], templates: templateBank() };
 }
 
@@ -1549,16 +1552,17 @@ function runTemplateFindChecks(): GuideCheckResult[] {
     byExpr.get("i support {의견} for two reasons".replace("{의견}", "~")) === "i-support" && byExpr.get("i support ~") === "i-support" && byExpr.get("~ helps me ~") === "helps-me",
     "",
   );
+  // §12-13-3 검토 B4(2026-10-02) — 옛 순서(모범답변 → tryExpressions → 빠진 단계)를 이 순서로 교체했다(인자 이름 sampleKeys)
   const sugg = templatesCouldHaveUsed({
-    sampleUsedExpressions: ["I support ~ for two reasons", "~ helps me ~"],
-    tryExpressions: ["For these reasons, I ~", "not a template"],
     missingStepKeys: ["wrap-q11", "i-oppose", "free-time", "costs-about"],
+    tryExpressions: ["For these reasons, I ~", "not a template"],
+    sampleKeys: ["i-support", "helps-me"],
     mine: new Set(["helps-me"]),
     byExpression: byExpr,
   });
   add(
-    "쓸 수 있었던 틀 = 모범답변 사용 → tryExpressions → 빠진 단계 순, 최대 5, 내가 쓴 틀은 빠진다",
-    eqJson(sugg.map((x) => `${x.source}:${x.key}`), ["sample:i-support", "feedback:wrap-q11", "step:i-oppose", "step:free-time", "step:costs-about"]),
+    "쓸 수 있었던 틀 = 빠진 단계 → tryExpressions → 모범답변 순(§12-13-3 B4), 최대 5, 내가 쓴 틀은 빠진다, 겹치면 앞 출처",
+    eqJson(sugg.map((x) => `${x.source}:${x.key}`), ["step:wrap-q11", "step:i-oppose", "step:free-time", "step:costs-about", "sample:i-support"]),
     sugg.map((x) => `${x.source}:${x.key}`).join(","),
   );
   return results;
@@ -1731,26 +1735,36 @@ function runDrillChecks(): GuideCheckResult[] {
   const picks = new Set(Array.from({ length: 50 }, (_x, i) => pickDrillTopic("picture", recent, makeRng(i + 1))));
   add("pickDrillTopic: 최근 3개 주제 제외(넷째는 다시 나올 수 있다)", ![pool[0], pool[1], pool[2]].some((p) => picks.has(p)), [...picks].length.toString());
   add("다 빠지면 풀 전체에서 고른다", pool.includes(pickDrillTopic("picture", [pool.slice(0, 5), pool.slice(5)], () => 0.3)), "");
-  // pickExpressionsForDrill
+  // pickExpressionsForDrill — §12-13-3 새 모양(2026-10-02): 틀은 답변 흐름으로 갔다. 공략 표현 중 틀이 연결한 것·같은 자리 다른 표현을 뺀다
   const bank = parsedFixture().templates!;
+  const bankDoc = { ...bank, alternates: toeicTemplateAlternatesFromSkips(bank.alignmentSkips) };
   const guideSet = { entries: [{ expression: "I support ~" }, { expression: "I oppose ~" }, { expression: "For these reasons, I ~" }] };
   const bookSets = [{ entries: Array.from({ length: 30 }, (_x, i) => ({ expression: `book expression ${i}` })) }];
   const q11Items = bank.items.filter((t) => t.parts.includes("q11"));
-  const src = (rng: () => number) => ({
-    templates: { part: "q11" as const, flows: bank.flows, items: bank.items, sessions: [] },
-    guide: { set: guideSet, sessions: [] as ToeicQuizSessionLike[] },
+  const q11Exclude = guideExpressionKeysInFlow(bankDoc, "q11");
+  const src = (exclude: ReadonlySet<string>) => ({
+    guide: { set: guideSet, sessions: [] as ToeicQuizSessionLike[], exclude },
     book: { sets: bookSets, sessions: [] as ToeicQuizSessionLike[] },
   });
-  const list = pickExpressionsForDrill(src(makeRng(1)), { rng: makeRng(1) });
-  const tplForms = q11Items.map((t) => frameToExpression(t.frameEn));
-  const firstN = list.slice(0, tplForms.length);
+  const list = pickExpressionsForDrill(src(q11Exclude), { rng: makeRng(1) });
+  const tplForms = new Set(q11Items.map((t) => frameToExpression(t.frameEn).toLowerCase()));
   add(
-    "틀 먼저(단계마다 하나 → 약한 순, ~ 형태 — { } 없음), 공략 다음, 표현집으로 채움, 24 상한, 중복 없음",
-    firstN.every((e) => tplForms.includes(e)) && list.length === 24 && new Set(list.map((e) => e.toLowerCase())).size === list.length && list.every((e) => !/[{}]/.test(e)) &&
-      list.indexOf("I oppose ~") > firstN.length - 1 && list.some((e) => e.startsWith("book expression")),
-    list.slice(0, 8).join(" / "),
+    "새 모양: 틀 ~ 형태는 넣지 않는다(흐름으로 갔다) · 틀이 연결한 공략 표현(I support ~·I oppose ~)은 빠진다 · 흐름 밖 공략 표현은 남는다 · 24 상한 · 중복 없음",
+    !list.includes("I support ~") && !list.includes("I oppose ~") && list[0] === "For these reasons, I ~" && list.length === 24 &&
+      new Set(list.map((e) => e.toLowerCase())).size === list.length && list.slice(1).every((e) => e.startsWith("book expression")) &&
+      list.filter((e) => tplForms.has(e.toLowerCase())).length <= 1,
+    list.slice(0, 4).join(" / "),
   );
-  add("교재 틀을 옮긴 틀의 ~ 형태와 같은 글자의 공략 표현은 한 번(For these reasons, I ~)", list.filter((e) => e.toLowerCase() === "for these reasons, i ~").length === 1, "");
+  {
+    const q34Exclude = guideExpressionKeysInFlow(bankDoc, "q3_4");
+    const q34Guide = { entries: [{ expression: "The scene is set on ~" }, { expression: "The scene is set in ~" }, { expression: "Look at the ~ first" }] };
+    const l = pickExpressionsForDrill({ guide: { set: q34Guide, sessions: [], exclude: q34Exclude }, book: { sets: [], sessions: [] } }, { rng: makeRng(3) });
+    add(
+      "같은 자리 다른 표현(alternates — The scene is set in ~)과 틀이 연결한 표현(…set on ~)은 빠지고 흐름 밖 공략 표현만 남는다",
+      eqJson(l, ["Look at the ~ first"]) && q34Exclude.has("the scene is set in ~") && q34Exclude.has("the scene is set on ~"),
+      l.join(" / "),
+    );
+  }
   const fiveSteps = {
     ...bank,
     flows: bank.flows.map((f) =>
@@ -1768,16 +1782,26 @@ function runDrillChecks(): GuideCheckResult[] {
   const shared = "I support ~";
   const book2 = [{ entries: [{ expression: shared }, { expression: "book a" }, { expression: "book b" }] }];
   const wrongGuide: ToeicQuizSessionLike[] = [{ id: "g", setId: "guide-q11", mode: "ko-to-expr", startedAt: "2026-09-01T00:00:00.000Z", finishedAt: null, items: [{ word: shared, correct: false, answered: true }] }];
-  const noTpl = { part: "q11" as const, flows: bank.flows, items: [] as ToeicTemplate[], sessions: [] as ToeicQuizSessionLike[] };
+  const noBankExclude = new Set<string>();
   const bookRank = (sessions: ToeicQuizSessionLike[]) => pickExpressionsForMock(book2, sessions, { rng: makeRng(2) });
-  const viaDrill = pickExpressionsForDrill({ templates: noTpl, guide: { set: null, sessions: wrongGuide }, book: { sets: book2, sessions: [] } }, { rng: makeRng(2) });
+  const viaDrill = pickExpressionsForDrill({ guide: { set: null, sessions: wrongGuide, exclude: noBankExclude }, book: { sets: book2, sessions: [] } }, { rng: makeRng(2) });
   add("세션 분리: 공략 세션만 틀린 표현은 표현집 쪽 순위를 바꾸지 않는다", eqJson(viaDrill, bookRank([])), `${viaDrill.join(",")}`);
   // pickExpressionsForMock을 거친다 — 공략 쪽 순위 = pickExpressionsForMock([guide], guideSessions)
   const gSessions: ToeicQuizSessionLike[] = [{ id: "g2", setId: "guide-q11", mode: "ko-to-expr", startedAt: "2026-09-01T00:00:00.000Z", finishedAt: null, items: [{ word: "I oppose ~", correct: false, answered: true }, { word: "I support ~", correct: true, answered: true }] }];
-  const guideOnly = pickExpressionsForDrill({ templates: noTpl, guide: { set: guideSet, sessions: gSessions }, book: { sets: [], sessions: [] } }, { rng: makeRng(8) });
+  const guideOnly = pickExpressionsForDrill({ guide: { set: guideSet, sessions: gSessions, exclude: noBankExclude }, book: { sets: [], sessions: [] } }, { rng: makeRng(8) });
   add("공략 쪽 순위가 pickExpressionsForMock([guide], guideSessions)와 같다", eqJson(guideOnly, pickExpressionsForMock([guideSet], gSessions, { rng: makeRng(8) })), guideOnly.join(","));
-  const noBank = pickExpressionsForDrill({ templates: noTpl, guide: { set: null, sessions: [] }, book: { sets: bookSets, sessions: [] } }, { rng: makeRng(11) });
+  const noBank = pickExpressionsForDrill({ guide: { set: null, sessions: [], exclude: noBankExclude }, book: { sets: bookSets, sessions: [] } }, { rng: makeRng(11) });
   add("틀 은행·공략이 없으면 지금과 같은 결과(= pickExpressionsForMock(표현집))", eqJson(noBank, pickExpressionsForMock(bookSets, [], { rng: makeRng(11) })), "");
+  {
+    // 틀 은행이 없으면 exclude가 비어 옛 함수(틀 은행 없을 때 — 틀 0개: 공략 → 표현집, 같은 rng 소비)와 같다
+    const rngA = makeRng(21);
+    const viaNew = pickExpressionsForDrill({ guide: { set: guideSet, sessions: [], exclude: new Set() }, book: { sets: bookSets, sessions: [] } }, { rng: rngA });
+    const rngB = makeRng(21);
+    const oldWay = [...pickExpressionsForMock([guideSet], [], { rng: rngB }), ...pickExpressionsForMock(bookSets, [], { rng: rngB })];
+    const oldDedup: string[] = [];
+    for (const e of oldWay) if (!oldDedup.some((x) => x.toLowerCase() === e.toLowerCase()) && oldDedup.length < 24) oldDedup.push(e);
+    add("틀 은행이 없으면(exclude 빈 집합) 옛 함수(틀 0개)와 같은 결과 — 공략 → 표현집, 같은 rng 소비", eqJson(viaNew, oldDedup), "");
+  }
   return results;
 }
 

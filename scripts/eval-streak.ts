@@ -21,7 +21,7 @@ import { formatKst, formatKstDate, isZonedIsoTimestamp, kstDateString, shiftDate
 import { isCountedToeicAttempt, toeicAttemptStreakLabel, toeicQuizStreakLabel, toeicStreakSessions, type ToeicQuizLabelNames } from "../lib/toeic-streak";
 import { TOEIC_GUIDE_PART_TO_MOCK_PART, isToeicGuidePart } from "../lib/toeic-guide";
 import { toeicMockPartLabelKo } from "../lib/toeic-mock-contract";
-import { TOEIC_TEMPLATE_QUIZ_MODE_LABELS_KO, isToeicTemplateQuizMode } from "../lib/toeic-quiz";
+import { TOEIC_TEMPLATE_BANK_MODE_LABELS_KO, isToeicTemplateBankMode } from "../lib/toeic-quiz";
 import { isCountedTalkSession, talkStreakLabel, talkStreakSessions } from "../lib/talk-streak";
 
 interface CheckResult {
@@ -384,7 +384,8 @@ const TODAY = "2026-09-21";
 
   // ⑦ 오늘 라벨(docs/harness/toeic.md §12-9) — 계산식은 그대로, 라벨만 가른다. 이름표는 라우트와 같은 단일 정의처에서.
   const names: ToeicQuizLabelNames = {
-    templateModeKo: (m) => (isToeicTemplateQuizMode(m) ? TOEIC_TEMPLATE_QUIZ_MODE_LABELS_KO[m] : null),
+    // 2026-10-02(docs/harness/toeic.md §12-13-2·§12-13-5) — 틀 모드 다섯(② 말하기 둘 + ③ 틀 시험 고르기 셋)
+    templateModeKo: (m) => (isToeicTemplateBankMode(m) ? TOEIC_TEMPLATE_BANK_MODE_LABELS_KO[m] : null),
     guidePartKo: (p) => (isToeicGuidePart(p) ? toeicMockPartLabelKo(TOEIC_GUIDE_PART_TO_MOCK_PART[p]) : null),
   };
   const bankSet = { titleKo: "템플릿 훈련", guide: { kind: "templates", flows: [], items: [] } };
@@ -395,6 +396,8 @@ const TODAY = "2026-09-21";
   const labels = {
     recall: toeicQuizStreakLabel({ mode: "tpl-recall" }, bankSet, names),
     swap: toeicQuizStreakLabel({ mode: "tpl-swap" }, null, names),
+    choice: toeicQuizStreakLabel({ mode: "tpl-ko-frame" }, bankSet, names),
+    cloze: toeicQuizStreakLabel({ mode: "tpl-cloze" }, null, names),
     guide: toeicQuizStreakLabel({ mode: "speak" }, partSet, names),
     legacy: toeicQuizStreakLabel({ mode: "ko-to-expr" }, legacyPart, names),
     broken: toeicQuizStreakLabel({ mode: "speak" }, brokenPart, names),
@@ -403,9 +406,11 @@ const TODAY = "2026-09-21";
   };
   add(
     "영어 트랙",
-    "⑦ 오늘 라벨: 틀 테스트 `템플릿 훈련 · {모드}`(유형 이름 없음) · 공략 `공략 표현 · {유형}` · 표현집 `표현집 · {세트}` 그대로",
+    "⑦ 오늘 라벨: 틀 테스트·틀 시험 `템플릿 훈련 · {모드}`(유형 이름 없음 — 모드 다섯) · 공략 `공략 표현 · {유형}` · 표현집 `표현집 · {세트}` 그대로",
     labels.recall === "템플릿 훈련 · 예문 말하기" &&
       labels.swap === "템플릿 훈련 · 틀 바꿔 말하기" &&
+      labels.choice === "템플릿 훈련 · 한→영 고르기" &&
+      labels.cloze === "템플릿 훈련 · 빈칸 채우기" &&
       labels.guide === "공략 표현 · Q3–4 사진 묘사" &&
       labels.legacy === "공략 표현 · Q11 의견 말하기" &&
       labels.broken === "표현집 · 지어낸 세트" &&
@@ -415,7 +420,7 @@ const TODAY = "2026-09-21";
   );
   // 틀 모드 세션도 영어 트랙에 든다(모드를 보지 않는다 — 답한 문항 ≥ 1) + 라우트가 라벨을 이 함수로 만든다(소스 대조)
   const tplDay = computeStreak(toeicStreakSessions([{ startedAt: "2026-09-21T03:00:00.000Z", items: [{ answered: true }] }], []), TODAY);
-  const labelWired = /toeicQuizStreakLabel\(tQuiz, set, TOEIC_LABEL_NAMES\)/.test(route) && /isToeicTemplateQuizMode\(mode\) \? TOEIC_TEMPLATE_QUIZ_MODE_LABELS_KO\[mode\]/.test(route) && /toeicMockPartLabelKo\(TOEIC_GUIDE_PART_TO_MOCK_PART\[part\]\)/.test(route);
+  const labelWired = /toeicQuizStreakLabel\(tQuiz, set, TOEIC_LABEL_NAMES\)/.test(route) && /isToeicTemplateBankMode\(mode\) \? TOEIC_TEMPLATE_BANK_MODE_LABELS_KO\[mode\]/.test(route) && /toeicMockPartLabelKo\(TOEIC_GUIDE_PART_TO_MOCK_PART\[part\]\)/.test(route);
   add(
     "영어 트랙",
     "⑦ 틀 테스트 세션(답한 문항 ≥ 1)도 영어 트랙에 든다 + /api/streak가 라벨을 toeicQuizStreakLabel(단일 정의처 이름표)로 만든다",

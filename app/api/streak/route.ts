@@ -19,7 +19,7 @@ import { isCountedTalkSession, talkStreakLabel, talkStreakSessions } from "@/lib
 import { TOEIC_GUIDE_PART_TO_MOCK_PART, isToeicGuidePart } from "@/lib/toeic-guide";
 import { toeicMockPartLabelKo } from "@/lib/toeic-mock-contract";
 import { TOEIC_MOCK_PARTS, type ToeicMockPart } from "@/lib/toeic-mock";
-import { TOEIC_TEMPLATE_QUIZ_MODE_LABELS_KO, isToeicTemplateQuizMode } from "@/lib/toeic-quiz";
+import { TOEIC_TEMPLATE_BANK_MODE_LABELS_KO, isToeicTemplateBankMode } from "@/lib/toeic-quiz";
 import {
   isCountedToeicAttempt,
   toeicAttemptStreakLabel,
@@ -45,10 +45,11 @@ const TOEIC_DRILL_PART_KO = (part: string): string | null =>
 
 /**
  * 영어 트랙 라벨 이름표(docs/harness/toeic.md §12-9) — 틀 모드 이름·공략 유형 이름(긴 이름)은 단일 정의처(lib/toeic-quiz·
- * lib/toeic-mock-contract)에서 가져온다. 틀 테스트는 `템플릿 훈련 · {모드}`, 공략 표현 시험은 `공략 표현 · {유형}`.
+ * lib/toeic-mock-contract)에서 가져온다. 틀 테스트·틀 시험(2026-10-02 — 틀 모드 다섯, §12-13-2)은 `템플릿 훈련 · {모드}`, 공략 표현 시험은
+ * `공략 표현 · {유형}`(그 시험 화면은 닫았지만 지난 기록이 가장 늦은 세션일 수 있어 라벨은 그대로 둔다).
  */
 const TOEIC_LABEL_NAMES: ToeicQuizLabelNames = {
-  templateModeKo: (mode) => (isToeicTemplateQuizMode(mode) ? TOEIC_TEMPLATE_QUIZ_MODE_LABELS_KO[mode] : null),
+  templateModeKo: (mode) => (isToeicTemplateBankMode(mode) ? TOEIC_TEMPLATE_BANK_MODE_LABELS_KO[mode] : null),
   guidePartKo: (part) => (isToeicGuidePart(part) ? toeicMockPartLabelKo(TOEIC_GUIDE_PART_TO_MOCK_PART[part]) : null),
 };
 

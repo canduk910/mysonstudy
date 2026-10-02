@@ -40,6 +40,14 @@ export const TOEIC_GUIDE_PART_TO_MOCK_PART: Readonly<Record<ToeicGuidePart, Toei
   q11: "opinion",
 };
 
+/**
+ * 모의고사 파트 → 공략 유형(TOEIC_GUIDE_PART_TO_MOCK_PART의 역, §12-13-3). `read`(Q1–2)는 공략 폴더가 없어 null — 답변 흐름도 없다.
+ */
+export function toeicGuidePartOfMockPart(mockPart: ToeicMockPart): ToeicGuidePart | null {
+  for (const p of TOEIC_GUIDE_PARTS) if (TOEIC_GUIDE_PART_TO_MOCK_PART[p] === mockPart) return p;
+  return null;
+}
+
 /** 공략 세트 문서 id 접두어 — 결정적 id `guide-{part}`(점 없음 — 경로 조각에 점을 쓰면 PIN 게이트 정적 예외에 걸린다, §12-8) */
 export const TOEIC_GUIDE_SET_ID_PREFIX = "guide-";
 /** 틀 은행 문서 id(§12-3) — 유형 공략과 같은 `toeicSets` 컬렉션, 문서 하나 */
@@ -199,10 +207,57 @@ export interface ToeicGuideScriptPiece {
   pauseAfterMs: number;
 }
 
+/** 대본 주소 키 — 블록 `"s:b"`(§12-13-1 ToeicGuideReadMarks·ToeicGuideScriptSkip이 같은 모양을 쓴다) */
+export function toeicGuideBlockKey(section: number, block: number): string {
+  return `${section}:${block}`;
+}
+
+/** 대본 주소 키 — 줄 `"s:b:l"` 또는 머리말 줄 `"s:b:lead"` */
+export function toeicGuideLineKey(section: number, block: number, line: number | "lead"): string {
+  return `${section}:${block}:${line}`;
+}
+
+/**
+ * 공략 읽기 대본에서 뺄 것(§12-13-1 — 같은 자리 다른 표현). 화면은 `guideReadMarks`(lib/toeic-guide-view.ts) 결과로 만든다 —
+ * `{ blocks: altBlocks의 키, lines: altLines의 키, bareLeads: bareBlocks의 키, picks: framePicks }`.
+ */
+export interface ToeicGuideScriptSkip {
+  /** 블록 키 — 그 블록의 조각 전부(캡션·머리말·줄)를 내지 않는다 */
+  blocks: ReadonlySet<string>;
+  /** 줄 키 — 그 줄의 조각을 내지 않는다(bareLeads 블록의 머리말 줄 포함) */
+  lines: ReadonlySet<string>;
+  /** 블록 키 — 이어 말하기 줄의 읽을 영어를 머리말 없이 줄 en 그대로(guideLineEn 대신) */
+  bareLeads: ReadonlySet<string>;
+  /** 줄 키 → 그 줄 영어 대신 읽을 글자(슬래시 대안 중 외울 틀 쪽 — 정리 함수·쪼개기는 그대로 거친다) */
+  picks: ReadonlyMap<string, string>;
+}
+
 export interface ToeicGuideScriptOptions {
   /** "영어만"의 따라 말할 틈 — 기본 끔(§12-4 검토 반영). "전부"에서는 켜도 0이다 */
   pause?: boolean;
   pauseLevel?: ToeicShadowPauseLevel;
+  /**
+   * 같은 자리 다른 표현 빼기(§12-13-1 — 2026-10-02). 함수 입력이라 선택 칸이다. **없으면(또는 네 칸이 모두 비면) 지금과 글자까지 같은 대본**.
+   */
+  skip?: ToeicGuideScriptSkip;
+}
+
+/** 조각 만들기 — 정리 → 라틴 없는 영어는 버림 → splitForTts(…, 300), 틈은 마지막 조각에만. 대본·머리말 🔊(toeicGuideLeadPieces)이 같은 함수 */
+function guidePieces(
+  raw: string | null | undefined,
+  lang: ToeicGuideLang,
+  section: number,
+  block: number | null,
+  line: number | "lead" | null,
+  pauseMs: (cleaned: string) => number,
+): ToeicGuideScriptPiece[] {
+  if (raw === null || raw === undefined) return [];
+  const cleaned = lang === "en-US" ? cleanGuideEnForTts(raw) : cleanGuideKoForTts(raw);
+  if (cleaned === "") return [];
+  if (lang === "en-US" && !hasLatin(cleaned)) return [];
+  const pieces = splitForTts(cleaned, TTS_TEXT_MAX_CHARS);
+  const pause = pauseMs(cleaned);
+  return pieces.map((text, k) => ({ text, lang, section, block, line, pauseAfterMs: k === pieces.length - 1 ? pause : 0 }));
 }
 
 /**
@@ -222,19 +277,22 @@ export function buildToeicGuideScript(
   const englishOnly = mode === "english-only";
   const withPause = englishOnly && opts.pause === true;
   const level = opts.pauseLevel ?? TOEIC_SHADOW_PAUSE_LEVEL_DEFAULT;
+  const skip = opts.skip;
 
   const push = (raw: string | null | undefined, lang: ToeicGuideLang, section: number, block: number | null, line: number | "lead" | null) => {
-    if (raw === null || raw === undefined) return;
-    const cleaned = lang === "en-US" ? cleanGuideEnForTts(raw) : cleanGuideKoForTts(raw);
-    if (cleaned === "") return;
-    if (lang === "en-US" && !hasLatin(cleaned)) return;
-    const pieces = splitForTts(cleaned, TTS_TEXT_MAX_CHARS);
-    const pause = lang === "en-US" && withPause ? shadowPauseMs(cleaned, level) : 0;
-    pieces.forEach((text, k) => out.push({ text, lang, section, block, line, pauseAfterMs: k === pieces.length - 1 ? pause : 0 }));
+    out.push(...guidePieces(raw, lang, section, block, line, (cleaned) => (lang === "en-US" && withPause ? shadowPauseMs(cleaned, level) : 0)));
+  };
+
+  /** 줄의 읽을 영어 — bareLeads 블록이면 머리말 없이 줄 en, framePicks가 있으면 그 글자, 그 밖은 guideLineEn */
+  const lineEn = (b: ToeicGuideBlock, ln: ToeicGuideLine, s: number, bi: number, li: number | "lead"): string | null => {
+    if (skip && li !== "lead" && skip.bareLeads.has(toeicGuideBlockKey(s, bi))) return ln.en;
+    const pick = skip?.picks.get(toeicGuideLineKey(s, bi, li));
+    return pick !== undefined ? pick : guideLineEn(b, ln);
   };
 
   const pushLine = (b: ToeicGuideBlock, ln: ToeicGuideLine, s: number, bi: number, li: number | "lead") => {
-    push(guideLineEn(b, ln), "en-US", s, bi, li);
+    if (skip && skip.lines.has(toeicGuideLineKey(s, bi, li))) return;
+    push(lineEn(b, ln, s, bi, li), "en-US", s, bi, li);
     if (!englishOnly) push(ln.ko, "ko-KR", s, bi, li);
     if (ln.example) {
       push(ln.example.en, "en-US", s, bi, li);
@@ -248,6 +306,7 @@ export function buildToeicGuideScript(
       push(sec.introKo, "ko-KR", s, null, null);
     }
     sec.blocks.forEach((b, bi) => {
+      if (skip && skip.blocks.has(toeicGuideBlockKey(s, bi))) return;
       switch (b.kind) {
         case "heading":
           if (!englishOnly) push(b.textKo, "ko-KR", s, bi, null);
@@ -263,7 +322,7 @@ export function buildToeicGuideScript(
           if (!englishOnly) push(b.captionKo, "ko-KR", s, bi, null);
           if (b.style === "completions") {
             // 머리말 영어는 줄마다 합성 문장에 들어 있다 — 따로 읽지 않는다. 한국어 머리말만 한 번.
-            if (!englishOnly && b.lead) push(b.lead.ko, "ko-KR", s, bi, "lead");
+            if (!englishOnly && b.lead && !(skip && skip.lines.has(toeicGuideLineKey(s, bi, "lead")))) push(b.lead.ko, "ko-KR", s, bi, "lead");
           } else if (b.lead) {
             pushLine(b, b.lead, s, bi, "lead");
           }
@@ -273,6 +332,18 @@ export function buildToeicGuideScript(
     });
   });
   return out;
+}
+
+/**
+ * 접힌 이어 말하기 머리말의 🔊(§12-13-1 — bareBlocks). 원래 대본에는 머리말 영어 조각이 따로 없어(줄마다 합성 문장 안에만 있다)
+ * 탭할 때 이것을 만든다 — `lead.en` 한 조각 en-US + "전부"면 `lead.ko` 한 조각 ko-KR(같은 정리 함수·쪼개기, 틈 없음). 미리 받지 않는다.
+ * completions 블록이 아니거나 머리말이 없으면 빈 배열.
+ */
+export function toeicGuideLeadPieces(block: ToeicGuideBlock, section: number, blockIndex: number, mode: ToeicGuideScriptMode): ToeicGuideScriptPiece[] {
+  if (block.kind !== "lines" || block.style !== "completions" || !block.lead) return [];
+  const none = () => 0;
+  const en = guidePieces(block.lead.en, "en-US", section, blockIndex, "lead", none);
+  return mode === "english-only" ? en : [...en, ...guidePieces(block.lead.ko, "ko-KR", section, blockIndex, "lead", none)];
 }
 
 /** 줄 🔊 조각 = 대본에서 그 줄 주소로 거른 것(§12-4 — 섹션 재생·프리페치와 같은 글자) */

@@ -472,3 +472,162 @@
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
+
+/* ── 2026-10-02 외울 틀 강조 · 같은 자리 다른 표현 접기(docs/harness/toeic.md §12-13-1) — 기존 변수만 ── */
+
+/* 머리 두 줄 */
+.frameHead {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+.frameHeadLink {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink);
+  font-size: var(--fs-vocab-example);
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: left;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.legend {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-caption);
+  line-height: 1.5;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.legendFrame {
+  padding: 0 4px;
+  border-left: 3px solid var(--accent);
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+
+/* 외울 틀 줄 — 왼쪽 강조 띠(레이아웃이 밀리지 않게 그림자로) */
+.frameLine {
+  box-shadow: inset 3px 0 0 var(--accent);
+  padding-left: 10px;
+}
+.frameRows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 2px;
+}
+.frameRow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px dashed var(--accent);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.frameRowHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.frameEn {
+  min-width: 0;
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+/* 같은 자리 다른 표현 — 닫힌 접기 */
+.altFold {
+  min-width: 0;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+}
+.altSummary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-height: 40px;
+  padding: 4px 10px;
+  color: var(--ink-3);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.altBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 8px 8px;
+}
+.altItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  opacity: 0.9;
+}
+.altBlockFold {
+  scroll-margin-top: calc(var(--streak-h, 0px) + var(--guide-bar-h, 96px) + 8px);
+}
+.altBlockBody {
+  margin: 0 8px 8px;
+}
+.altPointer {
+  margin: 0 0 0 6px;
+  font-size: var(--fs-caption);
+}
+.repChip {
+  max-width: 100%;
+  min-height: 32px;
+  padding: 2px 8px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-chip);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+/* ① 끝 — 📘 교재 표현 목록(읽기 전용) */
+.exprFold {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+  padding: 0 12px;
+}
+.exprFoldSummary {
+  display: flex;
+  align-items: center;
+  min-height: var(--tap-min);
+  color: var(--ink);
+  font-size: var(--fs-section-title);
+  font-weight: 700;
+  cursor: pointer;
+}
+.exprFold[open] {
+  padding-bottom: 12px;
+}
+.frameLine.active {
+  box-shadow: inset 3px 0 0 var(--accent), 0 0 0 1px var(--accent);
+}

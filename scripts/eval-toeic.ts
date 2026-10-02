@@ -33,6 +33,7 @@ import {
   TOEIC_SPEAKING_POINTS_JSON_SCHEMA,
   buildFeedbackZod,
   buildPointsZod,
+  hasUnfilledSlot,
   toeicExprExtractionSchema,
   toeicImportFileSchema,
   toeicMockInfoSchema,
@@ -40,6 +41,7 @@ import {
   toeicMockPictureSchema,
   toeicMockReadSchema,
   toeicMockRespondSchema,
+  type ToeicAnswerFlow,
   type ToeicBookQuiz,
   type ToeicExprEntry,
   type ToeicExprExtraction,
@@ -65,6 +67,7 @@ import {
   TOEIC_IMAGE_PROMPT_SUFFIX,
   TOEIC_MOCK_CALL_OPTIONS,
   TOEIC_MOCK_COMMON,
+  TOEIC_MOCK_FLOW_RULES,
   TOEIC_MOCK_INFO_TASK,
   TOEIC_MOCK_OPINION_TASK,
   TOEIC_MOCK_PICTURE_TASK,
@@ -75,14 +78,18 @@ import {
   TOEIC_POINTS_CALL_OPTIONS,
   TOEIC_POINTS_SYSTEM_PROMPT,
   TOEIC_POINTS_USER_TEMPLATE,
+  TOEIC_FEEDBACK_PLACEHOLDERS,
+  TOEIC_MOCK_PLACEHOLDERS,
   buildFeedbackUserMessage,
   buildMockSystemPrompt,
   buildMockUserMessage,
   buildPointsUserMessage,
   buildSceneImagePrompt,
+  formatAnswerFlow,
   normalizeMockExpressions,
   toeicMockCallLabel,
 } from "../lib/ai/toeic/prompts";
+import { TOEIC_ANSWER_FLOW_STEP_MIN_RATIO, answerFlowExpressions, checkAnswerAgainstFlow, isWeakFlowCheck } from "../lib/toeic-template";
 import { cleanKeyExpressions, cleanToeicExtraction, mergeToeicExtractions } from "../lib/ai/toeic/extract-merge";
 import { applyPointsResults, isToeicSetEnriched, planPointsChunks } from "../lib/ai/toeic/points";
 import {
@@ -215,6 +222,8 @@ import { runToeicGuideAppChecks } from "./eval-toeic-guides-app";
 import { runToeicGuideS2Checks } from "./eval-toeic-guides-s2";
 // 유형별 공략 S3(T9 한 문제 연습 · T12 실전 적용 — 연습 레코드·녹음 풀·연습 화면 순수 함수·틀 점검·파일 백엔드·소스 대조). 픽스처는 지어낸 것.
 import { runToeicGuideS3Checks } from "./eval-toeic-guides-s3";
+// 템플릿 중심 재정렬(§12-13 — 2026-10-02) 순수 층·정규화·가져오기·파일 저장소 왕복·라우트 소스 대조·실제 파일 개수
+import { runToeicTemplateCentricChecks } from "./eval-toeic-template-centric";
 
 // .env.local / .env 로드 (없으면 무시). 이미 설정된 환경 변수가 우선한다(빈 값으로 미리 둔 키는 덮지 않는다).
 for (const envFile of [".env.local", ".env"]) {
@@ -271,6 +280,7 @@ function makeRng(seed: number): () => number {
 }
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+const eqJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
 /**
  * cloze 불변 점검(QA P2-1) — 가린 문제 문장에 정답이 **단어로** 남아 있는가(대소문자 무시).
@@ -996,16 +1006,16 @@ function runMockPostChecks(): CheckResult[] {
     add("자료 Q9 = 표(제목·meta·rows \"left — right\"·notes) + callerIntro + 둘째 질문", m9.includes("Greenfield Business Forum") && m9.includes("Registration fee: $45") && m9.includes("11:30 - 1:00 — Lunch break") && m9.includes("* Lunch is not included.") && m9.includes(parts.info!.callerIntro) && m9.includes(parts.info!.questions[1].question), "");
     add("자료 Q11 = 질문", m11.includes(parts.opinion!.question) && !m11.includes(parts.opinion!.sampleAnswer), "");
     add("자료 Q1–2·빠진 파트 → null", buildFeedbackMaterial(parts, 1) === null && buildFeedbackMaterial({ ...parts, info: null }, 8) === null, "");
-    const input = buildFeedbackInput({ parts, expressionsUsed: ["in the long run"] }, 11, TRANSCRIPT_Q11);
-    add("buildFeedbackInput: Q11 모범답변·표현·전사문 묶음 / Q2 null", input?.sampleAnswer === OPINION_ANSWER && input.expressions.join() === "in the long run" && buildFeedbackInput({ parts, expressionsUsed: [] }, 2, "x y") === null, "");
+    const input = buildFeedbackInput({ parts, expressionsUsed: ["in the long run"], answerFlows: [] }, 11, TRANSCRIPT_Q11);
+    add("buildFeedbackInput: Q11 모범답변·표현·전사문 묶음 / Q2 null", input?.sampleAnswer === OPINION_ANSWER && input.expressions.join() === "in the long run" && input.answerFlow === null && buildFeedbackInput({ parts, expressionsUsed: [], answerFlows: [] }, 2, "x y") === null, "");
 
-    const msg = buildFeedbackUserMessage({ q: 9, material: m9, sampleAnswer: "S {transcript} S", expressions: [], transcript: "T {material} T" });
+    const msg = buildFeedbackUserMessage({ q: 9, material: m9, sampleAnswer: "S {transcript} S", expressions: [], answerFlow: null, transcript: "T {material} T" });
     add(
       "D 사용자 메시지: Q9 (정보 활용) · 답변 시간 15초 · 만점 3, 표현 없으면 \"없음\", 단일 패스 치환",
       msg.startsWith("문항: Q9 (정보 활용) · 답변 시간 15초 · 만점 3\n수험자가 본 자료:\n") && msg.includes("활용할 표현: 없음\n") && msg.includes("모범답변(참고용):\nS {transcript} S\n") && msg.endsWith("답변 전사문:\nT {material} T"),
       JSON.stringify(msg.split("\n")[0]),
     );
-    const msg11 = buildFeedbackUserMessage({ q: 11, material: m11, sampleAnswer: OPINION_ANSWER, expressions: ["in the long run", "free of charge"], transcript: TRANSCRIPT_Q11 });
+    const msg11 = buildFeedbackUserMessage({ q: 11, material: m11, sampleAnswer: OPINION_ANSWER, expressions: ["in the long run", "free of charge"], answerFlow: null, transcript: TRANSCRIPT_Q11 });
     add("D 사용자 메시지: Q11 답변 60초·만점 5·표현 \" / \"로", msg11.startsWith("문항: Q11 (의견 말하기) · 답변 시간 60초 · 만점 5") && msg11.includes("활용할 표현: in the long run / free of charge"), JSON.stringify(msg11.split("\n")[0]));
   }
   {
@@ -1014,10 +1024,10 @@ function runMockPostChecks(): CheckResult[] {
   }
   // 사용자 메시지 C (§4-7)
   {
-    const msg = buildMockUserMessage({ targetGrade: "IH", topicHints: ["장보기", " 여행 ", "장보기"], expressions: ["free of charge", "in  the long run"] });
-    add("C 사용자 메시지: 등급·주제 \", \"·표현 \" / \"", msg === "목표 등급: IH\n주제 힌트: 장보기, 여행\n활용할 표현: free of charge / in the long run", JSON.stringify(msg));
-    const none = buildMockUserMessage({ targetGrade: "AL", topicHints: [], expressions: [] });
-    add("C 사용자 메시지: 없으면 \"없음\"", none === "목표 등급: AL\n주제 힌트: 없음\n활용할 표현: 없음", JSON.stringify(none));
+    const msg = buildMockUserMessage({ targetGrade: "IH", topicHints: ["장보기", " 여행 ", "장보기"], expressions: ["free of charge", "in  the long run"], answerFlow: null });
+    add("C 사용자 메시지: 등급·주제 \", \"·표현 \" / \"·흐름 없음", msg === "목표 등급: IH\n주제 힌트: 장보기, 여행\n활용할 표현: free of charge / in the long run\n답변 흐름:\n없음", JSON.stringify(msg));
+    const none = buildMockUserMessage({ targetGrade: "AL", topicHints: [], expressions: [], answerFlow: null });
+    add("C 사용자 메시지: 없으면 \"없음\"", none === "목표 등급: AL\n주제 힌트: 없음\n활용할 표현: 없음\n답변 흐름:\n없음", JSON.stringify(none));
     const many = Array.from({ length: 30 }, (_, i) => `expression number ${i}`);
     add("normalizeMockExpressions: 상한 24·멱등", normalizeMockExpressions(many).length === 24 && normalizeMockExpressions(normalizeMockExpressions(many)).join() === normalizeMockExpressions(many).join(), "");
   }
@@ -2204,12 +2214,221 @@ function runBundleBoundaryChecks(): CheckResult[] {
     "toeic-drill.ts",
     "toeic-attempt-rules.ts",
     "toeic-drill-view.ts",
+    "toeic-template-quiz.ts",
   ];
   for (const f of files) {
     const src = readFileSync(new URL(`../lib/${f}`, import.meta.url), "utf-8");
     const bad = src.split("\n").filter((l) => /^\s*import\s+(?!type\b)[^;]*from\s+["'][^"']*(\/ai\/|\/store|openai|zod)["']/.test(l));
     add(`lib/${f}: lib/ai·store·openai·zod 값 import 없음`, bad.length === 0, bad.length === 0 ? "type만" : bad.join(" / "));
   }
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// 15-1. 템플릿 중심 재정렬 — 호출 C·D의 답변 흐름(§12-13-3·§12-13-5 — AI 층). 지어낸 틀만 쓴다
+// ---------------------------------------------------------------------------
+
+/** 스냅숏용 지어낸 흐름(사진 묘사) — 단계 셋 + 소재 둘 */
+const FLOW_PIC: ToeicAnswerFlow = {
+  part: "picture",
+  steps: [
+    { stepKo: "장면 열기", frames: [{ key: "venue-open", expression: "The photo was snapped at ~" }] },
+    { stepKo: "눈에 띄는 것", frames: [{ key: "act-mid", expression: "In the middle, ~ is ~" }, { key: "wear", expression: "~ has on ~" }] },
+    { stepKo: "인상", frames: [{ key: "feel", expression: "My overall take is that ~" }] },
+  ],
+  banks: [{ key: "weather", expression: "The sky looks ~" }, { key: "crowd", expression: "A small crowd is gathered near ~" }],
+};
+const FLOW_PIC_TEXT =
+  "1. 장면 열기: The photo was snapped at ~\n2. 눈에 띄는 것: In the middle, ~ is ~ / ~ has on ~\n3. 인상: My overall take is that ~\n소재 틀: The sky looks ~ / A small crowd is gathered near ~";
+/** 의견 말하기 흐름 — OPINION_ANSWER 픽스처 글에 실제로 들어 있는 틀 셋(허용 목록 반례용) */
+const FLOW_OPINION_FIXTURE: ToeicAnswerFlow = {
+  part: "opinion",
+  steps: [
+    { stepKo: "입장", frames: [{ key: "agree-that", expression: "I agree that ~" }] },
+    { stepKo: "이유", frames: [{ key: "first-reason", expression: "First, ~" }] },
+    { stepKo: "둘째 이유", frames: [{ key: "second-helps", expression: "Second, it helps ~" }] },
+  ],
+  banks: [],
+};
+const FLOW_RESPOND: ToeicAnswerFlow = {
+  part: "respond",
+  steps: [{ stepKo: "빈도", frames: [{ key: "around-times", expression: "I go there around ~ times each ~" }] }],
+  banks: [],
+};
+
+function runTemplateFlowAiChecks(): CheckResult[] {
+  const results: CheckResult[] = [];
+  const add = makeAdder(results, "템플릿 중심 — 호출 C·D 흐름");
+
+  // ── 사용자 메시지 자리 값·스냅숏(§4-7·§5-2) ──
+  add("formatAnswerFlow: 단계 셋 + 소재 둘 — 글자 그대로", formatAnswerFlow(FLOW_PIC) === FLOW_PIC_TEXT, JSON.stringify(formatAnswerFlow(FLOW_PIC)));
+  add(
+    "formatAnswerFlow: 소재 없음 → 마지막 줄 없음 · 빈 단계는 줄이 없고 번호가 이어짐 · null·빈 흐름 → 없음",
+    formatAnswerFlow({ ...FLOW_PIC, banks: [] }) === FLOW_PIC_TEXT.split("\n").slice(0, 3).join("\n") &&
+      formatAnswerFlow({ part: "picture", steps: [{ stepKo: "가", frames: [] }, { stepKo: "나", frames: [{ key: "x", expression: "Next to ~ is ~" }] }], banks: [] }) === "1. 나: Next to ~ is ~" &&
+      formatAnswerFlow(null) === "없음" &&
+      formatAnswerFlow({ part: "picture", steps: [], banks: [] }) === "없음" &&
+      formatAnswerFlow({ part: "picture", steps: [{ stepKo: "가", frames: [] }], banks: [] }) === "없음",
+    "",
+  );
+  add("formatAnswerFlow: 틀 글자에 { } / 없음(~ 형태)", !/[{}/]/.test(formatAnswerFlow(FLOW_PIC).replace(/ \/ /g, " ")), "");
+  add(
+    "플레이스홀더 표 둘에 answerFlow가 있고 그 글자가 두 템플릿 안에 있다",
+    TOEIC_MOCK_USER_TEMPLATE.includes(TOEIC_MOCK_PLACEHOLDERS.answerFlow) &&
+      TOEIC_FEEDBACK_USER_TEMPLATE.includes(TOEIC_FEEDBACK_PLACEHOLDERS.answerFlow) &&
+      TOEIC_MOCK_PLACEHOLDERS.answerFlow === TOEIC_FEEDBACK_PLACEHOLDERS.answerFlow,
+    "",
+  );
+  {
+    const withFlow = buildMockUserMessage({ targetGrade: "IH", topicHints: ["공원"], expressions: ["in the long run"], answerFlow: FLOW_PIC });
+    add(
+      "C 사용자 메시지(흐름 있음) 스냅숏",
+      withFlow === `목표 등급: IH\n주제 힌트: 공원\n활용할 표현: in the long run\n답변 흐름:\n${FLOW_PIC_TEXT}`,
+      JSON.stringify(withFlow.slice(0, 120)),
+    );
+    const noFlow = buildMockUserMessage({ targetGrade: "IH", topicHints: ["공원"], expressions: ["in the long run"], answerFlow: null });
+    add("C 사용자 메시지(흐름 없음) — 마지막 두 줄이 답변 흐름: / 없음", noFlow.endsWith("\n답변 흐름:\n없음") && noFlow.split("\n").length === 5, JSON.stringify(noFlow));
+  }
+  {
+    const material = buildFeedbackMaterial(mockParts(), 3) ?? "";
+    const d = buildFeedbackUserMessage({ q: 3, material, sampleAnswer: "S", expressions: ["in the long run"], answerFlow: FLOW_PIC, transcript: "T" });
+    const exprLine = d.split("\n").find((l) => l.startsWith("활용할 표현:")) ?? "";
+    add(
+      "D 사용자 메시지(흐름 있음) 스냅숏 — 활용할 표현 줄과 답변 전사문 사이, 흐름 틀은 활용할 표현 줄에 없다(검토 S4)",
+      d === `문항: Q3 (사진 묘사) · 답변 시간 30초 · 만점 3\n수험자가 본 자료:\n${material}\n모범답변(참고용):\nS\n활용할 표현: in the long run\n답변 흐름:\n${FLOW_PIC_TEXT}\n답변 전사문:\nT` &&
+        exprLine === "활용할 표현: in the long run" && !FLOW_PIC.steps.some((st) => st.frames.some((f) => exprLine.includes(f.expression))),
+      JSON.stringify(d.split("\n")[0]),
+    );
+    const d0 = buildFeedbackUserMessage({ q: 3, material, sampleAnswer: "S", expressions: [], answerFlow: null, transcript: "T" });
+    add("D 사용자 메시지(흐름 없음) — 답변 흐름: / 없음 두 줄", d0.includes("\n활용할 표현: 없음\n답변 흐름:\n없음\n답변 전사문:\nT"), "");
+  }
+
+  // ── 채우지 않은 틀 자리 zod(§4-9·§5-3) ──
+  add("hasUnfilledSlot: ~·～·〜·{·} 중 하나면 참, 없으면 거짓", ["a ~ b", "a ～ b", "a 〜 b", "a {x} b", "a } b"].every(hasUnfilledSlot) && !hasUnfilledSlot("It costs about $15, which is fair."), "");
+  const rejects = (schema: { safeParse: (v: unknown) => { success: boolean } }, v: unknown) => !schema.safeParse(v).success;
+  {
+    const pic = pictureFixture();
+    pic.items[0].sampleAnswer = `${pic.items[0].sampleAnswer} A ~ waits nearby.`;
+    const res = respondFixture();
+    res.questions[0].sampleAnswer = res.questions[0].sampleAnswer.replace("three times", "～ times");
+    const inf = infoFixture();
+    inf.questions[0].sampleAnswer = inf.questions[0].sampleAnswer.replace("Room 300", "{방}");
+    const op = opinionFixture();
+    op.sampleAnswer = op.sampleAnswer.replace("a good idea.", "a {결론} idea.");
+    add(
+      "C2~C5 sampleAnswer에 ~·～·{…} → 거부(파트마다 한 건)",
+      rejects(toeicMockPictureSchema, pic) && rejects(toeicMockRespondSchema, res) && rejects(toeicMockInfoSchema, inf) && rejects(toeicMockOpinionSchema, op),
+      "",
+    );
+    add(
+      "같은 글에서 그 글자를 뺀 것 → 통과(픽스처 그대로)",
+      toeicMockPictureSchema.safeParse(pictureFixture()).success && toeicMockRespondSchema.safeParse(respondFixture()).success && toeicMockInfoSchema.safeParse(infoFixture()).success && toeicMockOpinionSchema.safeParse(opinionFixture()).success,
+      "",
+    );
+    const rd = readFixture();
+    const t = rd.items[0].text.replace("Visit Maple", "Visit ~ Maple");
+    rd.items[0] = { ...rd.items[0], text: t, chunks: chunkWords(t, 5) };
+    add("C1 text의 ~는 판정하지 않는다(read는 대상 밖)", toeicMockReadSchema.safeParse(rd).success, issuesOf(toeicMockReadSchema.safeParse(rd)));
+  }
+  {
+    const z = buildFeedbackZod({ maxScore: 5, transcript: TRANSCRIPT_Q11 });
+    const fb1 = feedbackFixture();
+    fb1.improvedAnswer = "I agree that {입장} is better.";
+    const fb2 = feedbackFixture();
+    fb2.fixes[0].better = "I can get ～ in the morning";
+    add("D improvedAnswer의 {·fixes[].better의 ～ → 거부", rejects(z, fb1) && rejects(z, fb2), "");
+    const zt = buildFeedbackZod({ maxScore: 5, transcript: "I like ~ tea a lot because it is warm" });
+    const fb3 = { ...feedbackFixture(), fixes: [{ said: "I like ~ tea", better: "I really like tea", whyKo: "자연스럽게" }] };
+    const r3 = zt.safeParse(fb3);
+    add("said에 ~가 있어도 이 규칙으로는 거부하지 않는다(전사문 구간)", r3.success, issuesOf(r3));
+  }
+  {
+    const schemaSrc = readFileSync(new URL("../lib/ai/toeic/schemas.ts", import.meta.url), "utf-8");
+    const calls = (schemaSrc.match(/checkFilledSlots\(ctx, /g) ?? []).length;
+    add(
+      "판정 함수 하나(hasUnfilledSlot — schemas.ts)를 C2~C5 sampleAnswer·D improvedAnswer·fixes[].better가 부른다(소스 대조)",
+      (schemaSrc.match(/export function hasUnfilledSlot\(/g) ?? []).length === 1 && /if \(hasUnfilledSlot\(s\)\)/.test(schemaSrc) && calls === 5,
+      `checkFilledSlots 호출 ${calls}`,
+    );
+  }
+
+  // ── 후처리 허용 목록(검토 S4) — calls.ts와 같은 조합 ──
+  {
+    const flowExprs = answerFlowExpressions(FLOW_OPINION_FIXTURE);
+    const many = Array.from({ length: 25 }, (_, i) => `phrase number ${i}`);
+    const gen = opinionFixture();
+    gen.usedExpressions = [
+      { expression: "i agree that ~", span: "I agree that it is better" },
+      { expression: "FIRST, ~", span: "First, working from home saves" },
+      { expression: "Second, it helps ~", span: "Second, it helps people balance" },
+      { expression: "never sent", span: "saves a lot of time" },
+    ];
+    const allow = [...flowExprs, ...normalizeMockExpressions([...many, "first, ~"])];
+    const rec = toMockRecordPart("opinion", gen, allow);
+    add(
+      "toMockRecordPart: 활용할 표현 25개 + 흐름 틀 3개 — 흐름 틀 usedExpressions가 남고 목록·흐름 밖 표현은 버린다(합친 목록을 24에서 자르지 않는다)",
+      eqJson(rec.usedExpressions.map((u) => u.expression), ["I agree that ~", "First, ~", "Second, it helps ~"]),
+      JSON.stringify(rec.usedExpressions.map((u) => u.expression)),
+    );
+    add(
+      "같은 키가 활용할 표현(first, ~)과 흐름(First, ~)에 다른 표기로 있으면 저장 표기는 흐름 쪽(흐름 틀을 앞에)",
+      rec.usedExpressions.some((u) => u.expression === "First, ~") && !rec.usedExpressions.some((u) => u.expression === "first, ~"),
+      "",
+    );
+    const wrong = toMockRecordPart("opinion", gen, normalizeMockExpressions([...many, ...flowExprs]));
+    add("반례: 합친 목록을 normalizeMockExpressions에 다시 넣으면 흐름 틀이 잘린다(그래서 calls.ts는 그렇게 하지 않는다)", wrong.usedExpressions.length === 0, String(wrong.usedExpressions.length));
+    const fb = postprocessFeedback({ ...feedbackFixture(), tryExpressions: ["i agree that ~", "made up", "in the long run", "first, ~", "Second, it helps ~"] }, [...flowExprs, "in the long run"]);
+    add("postprocessFeedback: 흐름 틀 tryExpressions는 남고 표기는 흐름 쪽, 최대 3", eqJson(fb.tryExpressions, ["I agree that ~", "in the long run", "First, ~"]), JSON.stringify(fb.tryExpressions));
+    const callsSrc = readFileSync(new URL("../lib/ai/toeic/calls.ts", import.meta.url), "utf-8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    add(
+      "calls.ts: C 허용 목록 = [...answerFlowExpressions(흐름), ...normalizeMockExpressions(활용할 표현)] · D = [...answerFlowExpressions(input.answerFlow), ...input.expressions] · 합친 목록을 다시 정규화하지 않는다",
+      /toMockRecordPart\(part, raw, \[\.\.\.answerFlowExpressions\(answerFlow\), \.\.\.normalizeMockExpressions\(input\.expressions\)\]\)/.test(callsSrc) &&
+        /postprocessFeedback\(raw, \[\.\.\.answerFlowExpressions\(input\.answerFlow\), \.\.\.input\.expressions\]\)/.test(callsSrc) &&
+        !/normalizeMockExpressions\(\s*\[\s*\.\.\.answerFlowExpressions/.test(callsSrc),
+      "",
+    );
+    add(
+      "calls.ts: generateMockPart가 hasFlow를 answerFlow !== null로 넘기고(read는 null) 사용자 메시지에도 같은 흐름 · D는 흐름을 expressions에 섞지 않는다",
+      /const answerFlow = part === "read" \? null : input\.answerFlow;/.test(callsSrc) &&
+        /buildMockSystemPrompt\(part, answerFlow !== null\)/.test(callsSrc) &&
+        /buildMockUserMessage\(\{ \.\.\.input, answerFlow \}\)/.test(callsSrc) &&
+        /buildFeedbackUserMessage\(input\)/.test(callsSrc),
+      "",
+    );
+  }
+
+  // ── buildFeedbackInput — 저장된 흐름(검토 B1) ──
+  {
+    const parts = mockParts();
+    const flows = [FLOW_PIC, FLOW_RESPOND];
+    const q3 = buildFeedbackInput({ parts, expressionsUsed: ["in the long run"], answerFlows: flows }, 3, "x y z");
+    const q5 = buildFeedbackInput({ parts, expressionsUsed: [], answerFlows: flows }, 5, "x y z");
+    const q7 = buildFeedbackInput({ parts, expressionsUsed: [], answerFlows: flows }, 7, "x y z");
+    const q11 = buildFeedbackInput({ parts, expressionsUsed: [], answerFlows: flows }, 11, "x y z");
+    const old = buildFeedbackInput({ parts, expressionsUsed: [], answerFlows: [] }, 3, "x y z");
+    add(
+      "buildFeedbackInput: 그 문항 파트의 저장된 흐름(Q5–7 세 문항 같은 흐름), 흐름이 없는 파트·옛 문서 → null, 흐름 틀은 expressions에 섞지 않는다",
+      q3?.answerFlow === FLOW_PIC && q5?.answerFlow === FLOW_RESPOND && q7?.answerFlow === FLOW_RESPOND && q11?.answerFlow === null && old?.answerFlow === null && eqJson(q3?.expressions, ["in the long run"]),
+      "",
+    );
+    // 만들 때 고르지 않았던 파트(흐름은 저장, 파트는 나중에 채움)의 문항 → 저장된 그 흐름
+    const later = buildFeedbackInput({ parts: { ...parts, respond: null }, expressionsUsed: [], answerFlows: flows }, 5, "x y z");
+    const filled = buildFeedbackInput({ parts, expressionsUsed: [], answerFlows: flows }, 6, "x y z");
+    add("고르지 않았던 파트(나중에 채움)의 문항도 저장된 흐름을 받는다 — 채우기 전은 null(문항 없음)", later === null && filled?.answerFlow === FLOW_RESPOND, "");
+  }
+
+  // ── 모범답변 점검 상수 — 화면 경고와 실호출 점검이 같은 값 ──
+  add(
+    "TOEIC_ANSWER_FLOW_STEP_MIN_RATIO 0.75 — isWeakFlowCheck·실호출 점검이 같은 상수(소스 대조)",
+    TOEIC_ANSWER_FLOW_STEP_MIN_RATIO === 0.75 &&
+      (() => {
+        const src = readFileSync(new URL("./eval-toeic.ts", import.meta.url), "utf-8");
+        const live = src.slice(src.lastIndexOf("async function " + "runLiveChecks("));
+        const tpl = readFileSync(new URL("../lib/toeic-template.ts", import.meta.url), "utf-8");
+        return /TOEIC_ANSWER_FLOW_STEP_MIN_RATIO/.test(live) && /< TOEIC_ANSWER_FLOW_STEP_MIN_RATIO/.test(tpl);
+      })(),
+    "",
+  );
   return results;
 }
 
@@ -2224,6 +2443,7 @@ const SPEC_SYNC_TARGETS: readonly SpecSyncTarget[] = [
   { constName: "TOEIC_POINTS_SYSTEM_PROMPT", source: SRC, specLabel: "§3-1 호출 B 시스템 프롬프트", text: TOEIC_POINTS_SYSTEM_PROMPT, mode: "block" },
   { constName: "TOEIC_POINTS_USER_TEMPLATE", source: SRC, specLabel: "§3-2 호출 B 사용자 메시지 형식", text: TOEIC_POINTS_USER_TEMPLATE, mode: "block" },
   { constName: "TOEIC_MOCK_COMMON", source: SRC, specLabel: "§4-1 호출 C 공통 머리말", text: TOEIC_MOCK_COMMON, mode: "block" },
+  { constName: "TOEIC_MOCK_FLOW_RULES", source: SRC, specLabel: "§4-1 호출 C 흐름 규칙", text: TOEIC_MOCK_FLOW_RULES, mode: "block" },
   { constName: "TOEIC_MOCK_READ_TASK", source: SRC, specLabel: "§4-2 C1 read", text: TOEIC_MOCK_READ_TASK, mode: "block" },
   { constName: "TOEIC_MOCK_PICTURE_TASK", source: SRC, specLabel: "§4-3 C2 picture", text: TOEIC_MOCK_PICTURE_TASK, mode: "block" },
   { constName: "TOEIC_MOCK_RESPOND_TASK", source: SRC, specLabel: "§4-4 C3 respond", text: TOEIC_MOCK_RESPOND_TASK, mode: "block" },
@@ -2247,11 +2467,22 @@ function runSpecSyncChecks(): CheckResult[] {
     detail: o.summary,
   }));
   const add = makeAdder(results, "프롬프트 ↔ 스펙");
+  // §12-13-5(2026-10-02) — 옛 항목 "호출 C 조립 = 머리말 + 과제 절"을 흐름 유무 두 갈래로 교체
   add(
-    "호출 C 조립 = TOEIC_MOCK_COMMON + \"\\n\\n\" + 파트 과제 절(5개)",
-    TOEIC_MOCK_PARTS.every((p) => buildMockSystemPrompt(p) === `${TOEIC_MOCK_COMMON}\n\n${TOEIC_MOCK_TASKS[p]}`) && new Set(Object.values(TOEIC_MOCK_TASKS)).size === 5,
+    "시스템 프롬프트 조립(흐름 없음) = TOEIC_MOCK_COMMON + \"\\n\\n\" + 파트 과제 절(5개) — 옛 바이트 그대로, 한 인자 호출과 같다",
+    TOEIC_MOCK_PARTS.every((p) => buildMockSystemPrompt(p, false) === `${TOEIC_MOCK_COMMON}\n\n${TOEIC_MOCK_TASKS[p]}` && buildMockSystemPrompt(p) === buildMockSystemPrompt(p, false)) &&
+      new Set(Object.values(TOEIC_MOCK_TASKS)).size === 5,
     "",
   );
+  add(
+    "시스템 프롬프트 조립(흐름 있음) = 위 + \"\\n\\n\" + TOEIC_MOCK_FLOW_RULES — 흐름 규칙이 맨 끝(과제 절보다 뒤)",
+    TOEIC_MOCK_PARTS.every((p) => {
+      const sys = buildMockSystemPrompt(p, true);
+      return sys === `${TOEIC_MOCK_COMMON}\n\n${TOEIC_MOCK_TASKS[p]}\n\n${TOEIC_MOCK_FLOW_RULES}` && sys.endsWith(TOEIC_MOCK_FLOW_RULES) && sys.indexOf(TOEIC_MOCK_TASKS[p]) < sys.indexOf(TOEIC_MOCK_FLOW_RULES);
+    }),
+    "",
+  );
+  add("spec-sync 원문 대상 = 15개(머리말·흐름 규칙·과제 절 5·사용자 템플릿·사진 접미사·A 2·B 2·D 2)", SPEC_SYNC_TARGETS.length === 15, String(SPEC_SYNC_TARGETS.length));
   add("관문 P 프롬프트 = imagePrompt + 접미사", buildSceneImagePrompt("  A park.  ") === `A park. ${TOEIC_IMAGE_PROMPT_SUFFIX}`, "");
   return results;
 }
@@ -2348,24 +2579,111 @@ async function runLiveChecks(): Promise<CheckResult[]> {
     add("B 발화 포인트(7개)", false, e instanceof Error ? e.message : String(e));
   }
 
-  // C — 파트 1개(EVAL_TOEIC_PART, 기본 opinion)
+  // C — 파트 1개(EVAL_TOEIC_PART, 기본 opinion) + **지어낸 답변 흐름**(§12-13-5 — 호출 수는 그대로). 조립 점검은 FAIL이 아니라 알림이다.
   const part = (TOEIC_MOCK_PARTS as readonly string[]).includes(process.env.EVAL_TOEIC_PART ?? "") ? (process.env.EVAL_TOEIC_PART as (typeof TOEIC_MOCK_PARTS)[number]) : "opinion";
+  const flow = part === "read" ? null : LIVE_FLOWS[part];
   try {
-    const r = await calls.generateMockPart(part, { targetGrade: "IH", topicHints: ["직장 생활"], expressions: ["in the long run", "free of charge"] });
-    add(`C 문항 생성(${part})`, r !== null, "zod 통과");
+    const t0 = Date.now();
+    const r = await calls.generateMockPart(part, { targetGrade: "IH", topicHints: ["직장 생활"], expressions: ["in the long run", "free of charge"], answerFlow: flow });
+    const ms = Date.now() - t0;
+    add(`C 문항 생성(${part})`, r !== null, `zod 통과 · ${ms}ms(입력·출력 토큰은 위 callWithSchema 로그 줄)`);
+    if (flow !== null) for (const line of liveFlowReport(part, r, flow)) results.push({ book: "실호출(게이트)", check: `C 흐름 조립 알림(${part})`, pass: true, detail: line });
   } catch (e) {
     add(`C 문항 생성(${part})`, false, e instanceof Error ? e.message : String(e));
   }
 
-  // D — 픽스처 전사문 1개(Q11)
+  // D — 픽스처 전사문 1개(Q11) + 저장된 흐름(지어낸 의견 말하기 흐름)
   try {
-    const input = buildFeedbackInput({ parts: mockParts(), expressionsUsed: ["in the long run"] }, 11, TRANSCRIPT_Q11)!;
+    const input = buildFeedbackInput({ parts: mockParts(), expressionsUsed: ["in the long run"], answerFlows: [LIVE_FLOWS.opinion] }, 11, TRANSCRIPT_Q11)!;
+    const t0 = Date.now();
     const fb = await calls.generateFeedback(input);
-    add("D 피드백(Q11 픽스처)", fb.score >= 0 && fb.score <= 5, `score=${fb.score} fixes=${fb.fixes.length}`);
+    const ms = Date.now() - t0;
+    const chk = checkAnswerAgainstFlow(fb.improvedAnswer, LIVE_FLOWS.opinion);
+    add("D 피드백(Q11 픽스처)", fb.score >= 0 && fb.score <= 5, `score=${fb.score} fixes=${fb.fixes.length} · ${ms}ms`);
+    results.push({
+      book: "실호출(게이트)",
+      check: "D 개선 답변 흐름 알림(Q11)",
+      pass: true,
+      detail: `개선 답변 단계 ${chk.stepsUsed}/${chk.stepsTotal}(기준 ${TOEIC_ANSWER_FLOW_STEP_MIN_RATIO}) · 순서 ${chk.inOrder ? "맞음" : "다름"} · 틀 ${chk.used.length} · ${countWords(fb.improvedAnswer)}단어 · tryExpressions ${fb.tryExpressions.length}`,
+    });
   } catch (e) {
     add("D 피드백(Q11 픽스처)", false, e instanceof Error ? e.message : String(e));
   }
   return results;
+}
+
+/**
+ * 실호출 점검용 **지어낸** 답변 흐름(§12-13-5) — 단계 다섯·소재 둘(의견 말하기). 시작·마무리 틀은 과제 절의 따옴표 예시(§4-6 "For these
+ * reasons, ~" 등)와 **다른 글자**로 만들었다 — 같은 글자면 과제 절과 흐름의 충돌이 시험되지 않는다.
+ */
+const LIVE_FLOWS: Record<Exclude<(typeof TOEIC_MOCK_PARTS)[number], "read">, ToeicAnswerFlow> = {
+  opinion: {
+    part: "opinion",
+    steps: [
+      { stepKo: "입장", frames: [{ key: "live-side-with", expression: "Personally, I side with ~" }] },
+      { stepKo: "첫째 이유", frames: [{ key: "live-main-point", expression: "My main point is that ~" }] },
+      { stepKo: "예시", frames: [{ key: "live-case", expression: "A good case is when ~" }] },
+      { stepKo: "둘째 이유", frames: [{ key: "live-on-top", expression: "On top of that, ~" }] },
+      { stepKo: "마무리", frames: [{ key: "live-wrap", expression: "To wrap up, I ~" }] },
+    ],
+    banks: [
+      { key: "live-budget", expression: "It frees up my budget for ~" },
+      { key: "live-worries", expression: "It keeps my worries low when ~" },
+    ],
+  },
+  picture: {
+    part: "picture",
+    steps: [
+      { stepKo: "장면 열기", frames: [{ key: "live-snapped", expression: "The photo was snapped at ~" }] },
+      { stepKo: "인물", frames: [{ key: "live-middle", expression: "Right in the middle, ~ is ~" }, { key: "live-has-on", expression: "~ has on ~" }] },
+      { stepKo: "주변", frames: [{ key: "live-behind", expression: "Behind them, I can spot ~" }] },
+      { stepKo: "인상", frames: [{ key: "live-feel", expression: "All in all, it feels like ~" }] },
+    ],
+    banks: [{ key: "live-sky", expression: "The sky looks ~" }],
+  },
+  respond: {
+    part: "respond",
+    steps: [
+      { stepKo: "직답", frames: [{ key: "live-roughly", expression: "I'd say roughly ~" }] },
+      { stepKo: "이유", frames: [{ key: "live-mostly", expression: "That's mostly because ~" }] },
+      { stepKo: "마무리", frames: [{ key: "live-so-yeah", expression: "So that's why I ~" }] },
+    ],
+    banks: [],
+  },
+  info: {
+    part: "info",
+    steps: [
+      { stepKo: "확인", frames: [{ key: "live-checked", expression: "I just checked, and ~" }] },
+      { stepKo: "정정", frames: [{ key: "live-actually", expression: "Actually, that has been changed to ~" }] },
+      { stepKo: "나열", frames: [{ key: "live-two-sessions", expression: "There are two sessions you can join: ~ and ~" }] },
+    ],
+    banks: [],
+  },
+};
+
+/** 과제 절의 따옴표 영어(§4-3·§4-5·§4-6) — 흐름이 있을 때 모범답변에 나오면 알린다(실패 아님) */
+const TASK_EXAMPLE_PHRASES: Record<string, readonly string[]> = {
+  picture: ["This picture was taken"],
+  info: ["first,", "then,", "after that", "You have to pay"],
+  opinion: ["For these reasons"],
+  respond: [],
+};
+
+/** C 흐름 조립 알림 줄(실호출 — 개수·비율만, FAIL 아님) */
+function liveFlowReport(part: string, rec: unknown, flow: ToeicAnswerFlow): string[] {
+  const answers: string[] = [];
+  const r = rec as { items?: { sampleAnswer?: string }[]; questions?: { sampleAnswer?: string }[]; sampleAnswer?: string };
+  if (Array.isArray(r.items)) for (const it of r.items) if (typeof it.sampleAnswer === "string") answers.push(it.sampleAnswer);
+  if (Array.isArray(r.questions)) for (const q of r.questions) if (typeof q.sampleAnswer === "string") answers.push(q.sampleAnswer);
+  if (typeof r.sampleAnswer === "string") answers.push(r.sampleAnswer);
+  const banks = new Set(flow.banks.map((f) => f.key));
+  return answers.map((a, i) => {
+    const chk = checkAnswerAgainstFlow(a, flow);
+    const perStep = flow.steps.map((_st, si) => chk.used.filter((u) => u.step === si).length).join("/");
+    const examples = (TASK_EXAMPLE_PHRASES[part] ?? []).filter((p) => a.toLowerCase().includes(p.toLowerCase())).length;
+    const mockPart = part as Exclude<(typeof TOEIC_MOCK_PARTS)[number], "read">;
+    return `#${i + 1}: 단계 ${chk.stepsUsed}/${chk.stepsTotal}(기준 ${TOEIC_ANSWER_FLOW_STEP_MIN_RATIO}) · 순서 ${chk.inOrder ? "맞음" : "다름"} · 미달 ${isWeakFlowCheck(chk, mockPart) ? "예" : "아니오"} · 단계당 틀 ${perStep} · 소재 틀 ${chk.used.filter((u) => banks.has(u.key)).length} · 과제 절 예시 글자 ${examples} · ${countWords(a)}단어`;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2393,10 +2711,12 @@ async function main(): Promise<void> {
   all.push(...(await runAttemptChecks()));
   all.push(...(await runMicSessionChecks()));
   all.push(...runBundleBoundaryChecks());
+  all.push(...runTemplateFlowAiChecks());
   all.push(...runToeicGuideChecks());
   all.push(...runToeicGuideAppChecks());
   all.push(...runToeicGuideS2Checks());
   all.push(...runToeicGuideS3Checks());
+  all.push(...runToeicTemplateCentricChecks());
   all.push(...runSpecSyncChecks());
   all.push(...runJsonSchemaSyncChecks());
 

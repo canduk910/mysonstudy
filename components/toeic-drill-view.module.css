@@ -316,3 +316,33 @@
   gap: 6px;
   margin-top: 2px;
 }
+
+/* 답변 흐름 접기 — 단계의 나머지 틀("+n")·소재 틀(§12-13-3) */
+.flowMore {
+  margin-top: 4px;
+}
+.flowMoreSummary {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+  cursor: pointer;
+}
+.flowMoreList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.flowMoreItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-left: 2px solid var(--line-strong);
+}

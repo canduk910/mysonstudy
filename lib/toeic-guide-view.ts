@@ -2,7 +2,8 @@
  * lib/toeic-guide-view.ts — 유형별 공략 **화면**이 판단하는 자리를 모은 순수 함수 (docs/harness/toeic.md §12-4·§12-5-1·§12-5-2·§12-5-7·§12-8)
  *
  * 폴더 목록(틀 n·익힘 m)·폴더 탭(기본 탭·`?tab=`)·틀 탭(열지 못한 틀·이어서 하기·배지 문구)·따라 말하기 바(범위 여섯·지금 위치·
- * 다음/이 예문 머리·이어 듣기 기억·설정 기억)·읽기 탭(블록 🧩 칩·교재 틀 연결 주소·`goto` 블록 찾기)이 판단하는 것을 여기 한 곳에 둔다.
+ * 다음/이 예문 머리·이어 듣기 기억·설정 기억)·읽기 탭(블록 🧩 칩·교재 틀 연결 주소·`goto` 블록 찾기 · 2026-10-02 외울 틀 강조·같은 자리
+ * 다른 표현 접기 판정 guideReadMarks — §12-13-1)·③ 틀 시험 러너 주소(§12-13-2)가 판단하는 것을 여기 한 곳에 둔다.
  * 화면 컴포넌트는 판단하지 않고 소비만 한다(§6-3·§18-1 관용구) — eval-toeic "공략 화면 순수 함수"가 이 모듈을 잠근다.
  *
  * 틀·대본의 규칙 자체(흐름 순서·대본·예상 시간·이어 듣기 위치·연결 표)는 lib/toeic-template.ts·lib/toeic-guide.ts가 단일 정의처다 —
@@ -12,12 +13,16 @@
  * lib/toeic-quiz·lib/ai는 `import type`만. localStorage·window를 읽지 않는다(문자열을 받아 문자열을 돌려준다 — 저장은 화면 몫). 정규식 lookbehind 금지.
  */
 
-import { TOEIC_GUIDE_PARTS, type ToeicGuidePart } from "./toeic-guide";
+import { TOEIC_GUIDE_PARTS, toeicGuideBlockKey, toeicGuideLineKey, type ToeicGuidePart } from "./toeic-guide";
 import {
   TOEIC_SHADOW_REPEAT_DEFAULT,
   aggregateToeicTemplateStats,
   clampShadowRepeat,
+  expandSlashAlternatives,
   flattenTemplateFlow,
+  frameEndsWithSlot,
+  frameToExpression,
+  guideLineTemplateKeys,
   shadowResumeIndex,
   type ToeicShadowPauseLevel,
   type ToeicShadowPiece,
@@ -28,21 +33,21 @@ import {
 import { isRenderableToeicTemplate } from "./toeic-record";
 import { collapseSpaces, expressionKey } from "./toeic-text";
 import { isStatMastered, type WordStat } from "./vocab-mastery";
-import type { ToeicQuizMode, ToeicQuizSessionLike } from "./toeic-quiz";
+import type { ToeicQuizMode, ToeicQuizSessionLike, ToeicTemplateChoiceMode } from "./toeic-quiz";
 import type { ToeicGuideBlock, ToeicGuideSection, ToeicTemplate, ToeicTemplateGuideRef } from "./ai/toeic/schemas";
 
 // ---------------------------------------------------------------------------
 // 폴더 탭 (§12-8)
 // ---------------------------------------------------------------------------
 
-/** 탭 순서 = 학습 흐름(① 읽기 ② 템플릿 훈련 ③ 표현 시험 ④ 한 문제 연습) */
+/** 탭 순서 = 학습 흐름(① 읽기 ② 템플릿 훈련 ③ 틀 시험 ④ 한 문제 연습 — ③은 2026-10-02 교재 표현 시험 → 틀 시험, 탭 id `quiz` 그대로) */
 export const TOEIC_GUIDE_TABS = ["read", "templates", "quiz", "drill"] as const;
 export type ToeicGuideTab = (typeof TOEIC_GUIDE_TABS)[number];
 
 export const TOEIC_GUIDE_TAB_LABELS_KO: Record<ToeicGuideTab, string> = {
   read: "📖 공략 읽기",
   templates: "🧩 템플릿 훈련",
-  quiz: "📝 표현 시험",
+  quiz: "👀 틀 시험", // §12-13-2 — 사용자 표현 그대로(이름은 사용자 확인 대상 §12-12 27, 주소 `?tab=quiz`는 그대로)
   drill: "🎤 한 문제 연습",
 };
 
@@ -428,6 +433,8 @@ export function slotToneMap(slotNames: readonly string[]): Map<string, number> {
 /** 읽기 탭 `?goto=` 값 — 답변 틀 단계(템플릿 줄 label) / 이어 말하기 머리말 */
 export const TOEIC_GUIDE_GOTO_TEMPLATE_PREFIX = "t:";
 export const TOEIC_GUIDE_GOTO_LEAD_PREFIX = "l:";
+/** 읽기 탭 `?goto=k:{틀 key}`(§12-13-1 — 2026-10-02) — 그 틀의 첫 외울 틀 줄. 주소에 교재 글 대신 앱이 만든 틀 key만 실린다 */
+export const TOEIC_GUIDE_GOTO_KEY_PREFIX = "k:";
 
 /** 폴더 주소 */
 export function toeicGuideFolderHref(part: ToeicGuidePart, params: Record<string, string> = {}): string {
@@ -436,11 +443,15 @@ export function toeicGuideFolderHref(part: ToeicGuidePart, params: Record<string
 }
 
 /**
- * 📘 교재 틀 칩의 연결 하나 → 갈 주소. expression → ③ 탭 그 표현(`?tab=quiz&expr=`), template·lead → ① 탭 그 블록(`?tab=read&goto=`).
+ * 📘 교재 틀 칩의 연결 하나 → 갈 주소. template·lead → ① 탭 그 블록(`?tab=read&goto=t:…|l:…`). expression → (2026-10-02, §12-13-1)
+ * `templateKey`를 주면 ① 탭 그 틀의 외울 틀 줄(`?tab=read&goto=k:{key}` — ③ 표현 목록이 사라졌다), 주지 않으면 옛 주소(`?tab=quiz&expr=`).
  * 다른 유형의 연결이면 그 유형 폴더로 간다(주소가 유형을 담는다).
  */
-export function guideRefHref(ref: ToeicTemplateGuideRef): string {
-  if (ref.kind === "expression") return toeicGuideFolderHref(ref.part, { tab: "quiz", expr: ref.expression });
+export function guideRefHref(ref: ToeicTemplateGuideRef, templateKey?: string): string {
+  if (ref.kind === "expression") {
+    if (templateKey !== undefined && templateKey !== "") return toeicGuideFolderHref(ref.part, { tab: "read", goto: `${TOEIC_GUIDE_GOTO_KEY_PREFIX}${templateKey}` });
+    return toeicGuideFolderHref(ref.part, { tab: "quiz", expr: ref.expression });
+  }
   if (ref.kind === "template") return toeicGuideFolderHref(ref.part, { tab: "read", goto: `${TOEIC_GUIDE_GOTO_TEMPLATE_PREFIX}${ref.step}` });
   return toeicGuideFolderHref(ref.part, { tab: "read", goto: `${TOEIC_GUIDE_GOTO_LEAD_PREFIX}${ref.leadEn}` });
 }
@@ -453,10 +464,35 @@ export function guideRefLabelKo(ref: ToeicTemplateGuideRef, currentPart: ToeicGu
 
 /**
  * 읽기 탭 `?goto=` → 그 블록(섹션·블록 번호). `t:{label}` = 그 label의 템플릿 줄이 든 style "template" 블록, `l:{leadEn}` = 머리말이
- * 같은(공백 정리) completions 블록. 못 찾으면 null.
+ * 같은(공백 정리) completions 블록, `k:{틀 key}`(§12-13-1) = `marks`의 외울 틀 줄 중 그 key가 든 첫 줄(문서 순서)의 블록 — 템플릿 label·
+ * 머리말 연결도 frameLines에 들어 있어 블록 머리 칩의 블록을 함께 덮는다. `marks`는 **선택 인자**다 — 없으면 `k:`는 null이고 `t:`·`l:`은
+ * 지금과 같다. 못 찾으면 null.
  */
-export function findGuideGotoBlock(sections: readonly ToeicGuideSection[], goto: string | null | undefined): { section: number; block: number } | null {
+export function findGuideGotoBlock(
+  sections: readonly ToeicGuideSection[],
+  goto: string | null | undefined,
+  marks?: Pick<ToeicGuideReadMarks, "frameLines">,
+): { section: number; block: number } | null {
   if (!goto) return null;
+  if (goto.startsWith(TOEIC_GUIDE_GOTO_KEY_PREFIX)) {
+    if (!marks) return null;
+    const key = goto.slice(TOEIC_GUIDE_GOTO_KEY_PREFIX.length);
+    let best: { section: number; block: number; line: number } | null = null;
+    for (const [addr, keys] of marks.frameLines) {
+      if (!keys.includes(key)) continue;
+      const [sv, bv, lv] = addr.split(":");
+      const hit = { section: Number(sv), block: Number(bv), line: lv === "lead" ? -1 : Number(lv) };
+      if (!Number.isInteger(hit.section) || !Number.isInteger(hit.block) || hit.section < 0 || hit.section >= sections.length) continue;
+      if (
+        best === null ||
+        hit.section < best.section ||
+        (hit.section === best.section && (hit.block < best.block || (hit.block === best.block && hit.line < best.line)))
+      ) {
+        best = hit;
+      }
+    }
+    return best ? { section: best.section, block: best.block } : null;
+  }
   const isT = goto.startsWith(TOEIC_GUIDE_GOTO_TEMPLATE_PREFIX);
   const isL = goto.startsWith(TOEIC_GUIDE_GOTO_LEAD_PREFIX);
   if (!isT && !isL) return null;
@@ -483,9 +519,13 @@ export function guideGotoAddr(hit: { section: number; block: number } | null): s
  * 그 섹션. 목표 섹션을 첫 렌더(서버 HTML 포함)부터 열어 두어야 마운트 직후 스크롤이 닫힌 `<details>` 안 블록(상자 없음 —
  * scrollIntoView가 아무것도 안 한다)을 만나지 않는다(QA final P2-1 — 앱 안 이동·새로 불러오기·다른 폴더 전부 마운트 경로다).
  */
-export function guideReadInitialOpen(sections: readonly ToeicGuideSection[], goto: string | null | undefined): number[] {
+export function guideReadInitialOpen(
+  sections: readonly ToeicGuideSection[],
+  goto: string | null | undefined,
+  marks?: Pick<ToeicGuideReadMarks, "frameLines">,
+): number[] {
   const out = sections.length > 0 ? [0] : [];
-  const hit = findGuideGotoBlock(sections, goto);
+  const hit = findGuideGotoBlock(sections, goto, marks);
   if (hit && !out.includes(hit.section)) out.push(hit.section);
   return out;
 }
@@ -506,6 +546,257 @@ export function guideBlockTemplateKeys(links: ToeicTemplateGuideLinks, block: To
     push(links.leads.get(collapseSpaces(block.lead.en)));
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// ① 공략 읽기 — 외울 틀 강조 · 같은 자리 다른 표현 접기 (§12-13-1 — 2026-10-02)
+// ---------------------------------------------------------------------------
+
+/** 줄 표시 판정 결과 — 키는 lib/toeic-guide의 toeicGuideLineKey("s:b:l"·"s:b:lead")·toeicGuideBlockKey("s:b")와 같은 모양 */
+export interface ToeicGuideReadMarks {
+  /** 줄 키 → 외울 틀 key들(파일 순서) */
+  frameLines: Map<string, string[]>;
+  /** 줄 키 → coveredBy key들(같은 자리 다른 표현 — 줄 단위 접기. bareBlocks의 머리말 줄도 여기) */
+  altLines: Map<string, string[]>;
+  /** 블록 키 → coveredBy key들(블록 통째 접기) */
+  altBlocks: Map<string, string[]>;
+  /** 블록 키 → coveredBy key들(이어 말하기 — 머리말 줄만 접고 조각은 머리말 없이 남긴다, 규칙 4) */
+  bareBlocks: Map<string, string[]>;
+  /** 줄 키 → 듣기에 쓸 영어(외울 틀 줄 중 슬래시 대안의 다른 쪽이 같은 자리 다른 표현인 줄만, 규칙 1) */
+  framePicks: Map<string, string>;
+}
+
+function addKeys(map: Map<string, string[]>, k: string, keys: readonly string[]): void {
+  const list = map.get(k) ?? [];
+  for (const key of keys) if (!list.includes(key)) list.push(key);
+  if (list.length > 0) map.set(k, list);
+}
+
+/** 템플릿 label → 연결 key들(label 그대로, 없으면 trim — guideBlockTemplateKeys와 같은 조회) */
+function labelKeys(links: ToeicTemplateGuideLinks, label: string | null): string[] {
+  if (label === null) return [];
+  return links.templateLabels.get(label) ?? links.templateLabels.get(label.trim()) ?? [];
+}
+
+/**
+ * 공략 읽기 줄 표시 판정(§12-13-1) — 외울 틀 강조·같은 자리 다른 표현 접기. 순수 함수(AI 0).
+ * @param links          templateLinksForGuide(틀 은행, 유형) — 외울 틀이 가리키는 교재 대상
+ * @param alternateLinks templateAlternateLinks(틀 은행, 유형) — 같은 자리 다른 표현(값은 coveredBy)
+ * @param partTemplates  그 유형 렌더 가능한 틀(key·frameEn — 규칙 4가 대표 틀의 끝을 본다)
+ *
+ * 판정 규칙(위에서부터 먼저 맞는 것):
+ * 1. 외울 틀이 이긴다 — 한 줄이 두 표에 다 걸리면 frameLines. 그 줄을 expandSlashAlternatives로 펼친 글자 중 하나라도 같은 자리 다른
+ *    표현이면 framePicks = 펼친 글자 중 외울 틀에 맞은 첫 글자(일치 변형만 있는 슬래시 줄은 없음 — 줄 전체를 읽는다).
+ * 2. list 블록의 머리말·줄과 text 블록의 줄: 영어의 `~` 모양 표현 키(guideLineTemplateKeys 규칙)가 links → 외울 틀, alternateLinks → 줄 접기.
+ * 3. template 블록의 줄: label이 links → 그 label 줄 전부 외울 틀(alt 줄 포함 — 접지 않는다), alternateLinks → 그 줄들 접기.
+ * 4. completions 블록: 머리말(공백 정리)이 links.leads → 머리말 줄 외울 틀. alternateLinks.leads면 대표 틀(coveredBy 첫 key)이 partTemplates에
+ *    있고 끝이 자리(frameEndsWithSlot)면 머리말 줄만 altLines + 블록을 bareBlocks(조각은 남긴다), 그 밖은 블록 통째 altBlocks.
+ * 5. list 블록의 머리말이 같은 자리 다른 표현이면 블록 통째.
+ * 6. 한 블록의 판정 대상 줄(영어가 있는 줄 — 머리말 포함)이 모두 같은 자리 다른 표현이면 블록 통째(접기 하나로). bareBlocks 조각은 대안이
+ *    아니다. text 블록은 제목·본문이 없을 때만 통째로 올린다(규칙 7 — 교재 설명·팁은 접지 않는다. 있으면 줄 단위 접기로 둔다).
+ * 7. heading, text의 제목·본문, 캡션은 판정하지 않는다.
+ * 틀 은행이 없으면(두 표가 비면) 모든 판정이 빈다.
+ */
+export function guideReadMarks(
+  sections: readonly ToeicGuideSection[],
+  links: ToeicTemplateGuideLinks,
+  alternateLinks: ToeicTemplateGuideLinks,
+  partTemplates: readonly Pick<ToeicTemplate, "key" | "frameEn">[],
+): ToeicGuideReadMarks {
+  const marks: ToeicGuideReadMarks = { frameLines: new Map(), altLines: new Map(), altBlocks: new Map(), bareBlocks: new Map(), framePicks: new Map() };
+  const frameOf = new Map(partTemplates.map((t) => [t.key, t.frameEn] as const));
+
+  /** 규칙 1·2 — 영어 한 줄. 결과 "frame" | "alt" | null(판정 없음) */
+  const judgeEn = (en: string | null, lineKey: string): "frame" | "alt" | null => {
+    if (en === null || en.trim() === "") return null;
+    const frameKeys = guideLineTemplateKeys(links, en);
+    if (frameKeys.length > 0) {
+      addKeys(marks.frameLines, lineKey, frameKeys);
+      if (en.includes("/")) {
+        const variants = expandSlashAlternatives(en);
+        const hasAlt = variants.some((v) => alternateLinks.expressions.has(frameKeyOf(v)));
+        const pick = variants.find((v) => links.expressions.has(frameKeyOf(v)));
+        if (hasAlt && pick !== undefined) marks.framePicks.set(lineKey, pick);
+      }
+      return "frame";
+    }
+    const altKeys = guideLineTemplateKeys(alternateLinks, en);
+    if (altKeys.length > 0) {
+      addKeys(marks.altLines, lineKey, altKeys);
+      return "alt";
+    }
+    return null;
+  };
+
+  sections.forEach((sec, s) => {
+    sec.blocks.forEach((b, bi) => {
+      const blockKey = toeicGuideBlockKey(s, bi);
+      if (b.kind === "heading") return;
+      if (b.kind === "text") {
+        const results = b.lines.map((ln, li) => judgeEn(ln.en, toeicGuideLineKey(s, bi, li)));
+        const judged = results.filter((r) => r !== null);
+        const plain = (b.titleKo === null || b.titleKo.trim() === "") && (b.bodyKo === null || b.bodyKo.trim() === "");
+        if (plain && judged.length > 0 && judged.every((r) => r === "alt")) promoteBlock(marks, blockKey, b.lines.map((_, li) => toeicGuideLineKey(s, bi, li)));
+        return;
+      }
+      if (b.style === "template") {
+        b.lines.forEach((ln, li) => {
+          const lineKey = toeicGuideLineKey(s, bi, li);
+          const fk = labelKeys(links, ln.label);
+          if (fk.length > 0) {
+            addKeys(marks.frameLines, lineKey, fk);
+            return;
+          }
+          const ak = labelKeys(alternateLinks, ln.label);
+          if (ak.length > 0) addKeys(marks.altLines, lineKey, ak);
+        });
+        const enLineKeys = b.lines.flatMap((ln, li) => (ln.en !== null && ln.en.trim() !== "" ? [toeicGuideLineKey(s, bi, li)] : []));
+        if (enLineKeys.length > 0 && enLineKeys.every((k) => marks.altLines.has(k))) promoteBlock(marks, blockKey, b.lines.map((_, li) => toeicGuideLineKey(s, bi, li)));
+        return;
+      }
+      if (b.style === "completions") {
+        const leadEn = b.lead?.en ?? null;
+        if (leadEn === null || leadEn.trim() === "") return;
+        const leadKey = toeicGuideLineKey(s, bi, "lead");
+        const lk = collapseSpaces(leadEn);
+        const fk = links.leads.get(lk) ?? [];
+        if (fk.length > 0) {
+          addKeys(marks.frameLines, leadKey, fk);
+          return;
+        }
+        const ak = alternateLinks.leads.get(lk) ?? [];
+        if (ak.length === 0) return;
+        const repFrame = frameOf.get(ak[0]);
+        if (repFrame !== undefined && frameEndsWithSlot(repFrame)) {
+          addKeys(marks.altLines, leadKey, ak);
+          addKeys(marks.bareBlocks, blockKey, ak);
+        } else {
+          addKeys(marks.altBlocks, blockKey, ak);
+        }
+        return;
+      }
+      // list 블록 — 머리말 + 줄(규칙 2·5·6)
+      const leadKey = toeicGuideLineKey(s, bi, "lead");
+      const leadResult = b.lead ? judgeEn(b.lead.en, leadKey) : null;
+      const lineKeys: string[] = [];
+      const results: ("frame" | "alt" | null)[] = [];
+      b.lines.forEach((ln, li) => {
+        const k = toeicGuideLineKey(s, bi, li);
+        lineKeys.push(k);
+        results.push(judgeEn(ln.en, k));
+      });
+      const allKeys = [...(b.lead ? [leadKey] : []), ...lineKeys];
+      // 규칙 5 — 머리말이 같은 자리 다른 표현이면 블록 통째(줄은 그 머리말 틀의 예다). 단 외울 틀 줄이 섞인 블록은 올리지 않는다
+      // (외울 틀을 접기 안에 숨기지 않는다 — 줄 단위 접기로 둔다)
+      if (leadResult === "alt" && !results.includes("frame")) {
+        promoteBlock(marks, blockKey, allKeys);
+        return;
+      }
+      const judged = [leadResult, ...results].filter((r) => r !== null);
+      if (judged.length > 0 && judged.every((r) => r === "alt")) promoteBlock(marks, blockKey, allKeys);
+    });
+  });
+  return marks;
+}
+
+/** `~` 모양 표현 키(guideLineTemplateKeys와 같은 규칙 — frameToExpression 뒤 표현 키) */
+function frameKeyOf(text: string): string {
+  return expressionKey(frameToExpression(text));
+}
+
+/** 줄 단위 접기를 블록 통째로 올린다 — 그 블록 줄들의 altLines를 지우고 coveredBy key들을 altBlocks에 모은다(외울 틀 줄은 건드리지 않는다) */
+function promoteBlock(marks: ToeicGuideReadMarks, blockKey: string, lineKeys: readonly string[]): void {
+  const keys: string[] = [];
+  for (const k of lineKeys) {
+    for (const key of marks.altLines.get(k) ?? []) if (!keys.includes(key)) keys.push(key);
+    marks.altLines.delete(k);
+  }
+  addKeys(marks.altBlocks, blockKey, keys);
+}
+
+/** ① 머리 "이 읽기에 나온 것 m개" — frameLines 값의 합집합(템플릿 label·머리말 연결 포함). 틀 은행이 없으면 빈 집합 */
+export function guideReadFrameKeys(marks: Pick<ToeicGuideReadMarks, "frameLines">): Set<string> {
+  const out = new Set<string>();
+  for (const keys of marks.frameLines.values()) for (const k of keys) out.add(k);
+  return out;
+}
+
+/** 대본 빼기 옵션(lib/toeic-guide ToeicGuideScriptSkip)을 판정에서 만든다 — 화면·eval이 같은 변환을 쓴다 */
+export function guideReadScriptSkip(marks: ToeicGuideReadMarks): { blocks: Set<string>; lines: Set<string>; bareLeads: Set<string>; picks: Map<string, string> } {
+  return {
+    blocks: new Set(marks.altBlocks.keys()),
+    lines: new Set(marks.altLines.keys()),
+    bareLeads: new Set(marks.bareBlocks.keys()),
+    picks: new Map(marks.framePicks),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// ③ 틀 시험 러너 주소 (§12-13-2 — 주소에 교재 단계·묶음 이름을 싣지 않는다, 번호 i)
+// ---------------------------------------------------------------------------
+
+export const TOEIC_TEMPLATE_CHOICE_SCOPES = ["all", "step", "group", "wrong"] as const;
+export type ToeicTemplateChoiceScope = (typeof TOEIC_TEMPLATE_CHOICE_SCOPES)[number];
+
+export interface ToeicTemplateChoiceQuizParams {
+  modes: ToeicTemplateChoiceMode[];
+  scope: ToeicTemplateChoiceScope;
+  /** scope step = 그 유형 흐름의 단계 번호(0부터), group = templateFlowOrder 묶음 번호(0부터). 그 밖 null */
+  i: number | null;
+  /** scope wrong = 그 모드의 틀린 틀만 */
+  wrong: ToeicTemplateChoiceMode | null;
+}
+
+const CHOICE_MODES_LOCAL: readonly ToeicTemplateChoiceMode[] = ["tpl-ko-frame", "tpl-frame-ko", "tpl-cloze"];
+
+/** ③ 러너 주소 `/toeic/guides/[part]/templates/quiz?modes=…&scope=…&i=…&wrong=…` — 이름이 아니라 번호만 싣는다(검토 S13) */
+export function toeicTemplateChoiceQuizHref(part: ToeicGuidePart, p: Partial<ToeicTemplateChoiceQuizParams>): string {
+  const params: Record<string, string> = {};
+  const modes = (p.modes ?? []).filter((m) => CHOICE_MODES_LOCAL.includes(m));
+  if (modes.length > 0) params.modes = modes.join(",");
+  const scope = p.scope ?? "all";
+  params.scope = scope;
+  if ((scope === "step" || scope === "group") && p.i !== null && p.i !== undefined && Number.isInteger(p.i) && p.i >= 0) params.i = String(p.i);
+  if (scope === "wrong" && p.wrong) params.wrong = p.wrong;
+  const qs = new URLSearchParams(params).toString();
+  return `/toeic/guides/${part}/templates/quiz${qs ? `?${qs}` : ""}`;
+}
+
+/** 러너 주소 풀기 — 모르는 값은 기본으로(모드 셋 다·유형 전체). wrong 범위에 모드가 없거나 모르면 유형 전체 */
+export function parseTemplateChoiceQuizParams(get: (name: string) => string | null | undefined): ToeicTemplateChoiceQuizParams {
+  const modesRaw = (get("modes") ?? "").split(",").map((x) => x.trim());
+  const modes = CHOICE_MODES_LOCAL.filter((m) => modesRaw.includes(m));
+  const scopeRaw = get("scope") ?? "all";
+  let scope: ToeicTemplateChoiceScope = (TOEIC_TEMPLATE_CHOICE_SCOPES as readonly string[]).includes(scopeRaw) ? (scopeRaw as ToeicTemplateChoiceScope) : "all";
+  const iRaw = get("i");
+  const iNum = iRaw !== null && iRaw !== undefined && /^\d+$/.test(iRaw) ? Number(iRaw) : null;
+  const wrongRaw = get("wrong") ?? "";
+  const wrong = CHOICE_MODES_LOCAL.find((m) => m === wrongRaw) ?? null;
+  if (scope === "wrong" && wrong === null) scope = "all";
+  return { modes: modes.length > 0 ? modes : [...CHOICE_MODES_LOCAL], scope, i: scope === "step" || scope === "group" ? iNum : null, wrong: scope === "wrong" ? wrong : null };
+}
+
+/**
+ * 러너 범위의 틀(흐름 순서) — `groups` = templateFlowOrder(틀 은행, 유형)(렌더 가능한 틀). step = 단계 묶음들의 단계 이름을 처음 나온 순서로
+ * 번호 매긴 것 중 i번째 단계의 틀, group = i번째 묶음의 틀. **번호가 범위 밖이거나 없으면 유형 전체**(scope "all"로 읽는다).
+ */
+export function templateChoiceScopeTemplates(
+  groups: readonly ToeicTemplateFlowGroup[],
+  params: Pick<ToeicTemplateChoiceQuizParams, "scope" | "i">,
+): { templates: ToeicTemplate[]; scope: ToeicTemplateChoiceScope } {
+  const all = flattenTemplateFlow(groups);
+  if (params.scope === "group") {
+    const g = params.i !== null ? groups[params.i] : undefined;
+    return g ? { templates: [...g.templates], scope: "group" } : { templates: all, scope: "all" };
+  }
+  if (params.scope === "step") {
+    const steps: string[] = [];
+    for (const g of groups) if (g.kind === "step" && g.stepKo !== null && !steps.includes(g.stepKo)) steps.push(g.stepKo);
+    const stepKo = params.i !== null ? steps[params.i] : undefined;
+    if (stepKo === undefined) return { templates: all, scope: "all" };
+    return { templates: groups.filter((g) => g.kind === "step" && g.stepKo === stepKo).flatMap((g) => g.templates), scope: "step" };
+  }
+  return { templates: all, scope: params.scope === "wrong" ? "wrong" : "all" };
 }
 
 /** ③ 탭 `?expr=` → 표현 목록 번호(expressionKey 같음 — 대소문자·공백 차이 무시). 없으면 -1 */

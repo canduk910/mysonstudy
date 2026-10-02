@@ -1,0 +1,264 @@
+/* ③ 👀 틀 시험 — 유형 폴더 탭과 한 판 러너(docs/harness/toeic.md §12-13-2). 성인 학습자용, 토큰 재사용(새 색조 없음).
+   5지선다 보기·진행 막대·끝 화면의 기본 모양은 표현 시험 CSS(toeic-quiz.module.css)를 같이 쓰고, 여기는 틀 시험에만 있는 것만 둔다. */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.lead {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.55;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.leadLink {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink);
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+}
+.boxTitle {
+  margin: 0;
+  font-size: var(--fs-section-title);
+  font-weight: 700;
+  color: var(--ink);
+}
+.rowLabel {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+}
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.chip {
+  max-width: 100%;
+  min-height: 40px;
+  padding: 4px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+  text-align: left;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.chip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.chipOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.groupFold > summary {
+  min-height: var(--tap-min);
+  display: flex;
+  align-items: center;
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+  cursor: pointer;
+}
+.groupFold[open] > summary {
+  margin-bottom: 6px;
+}
+.startRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.caption {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-caption);
+  line-height: 1.5;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+/* 틀린 틀(오답노트) · 최근 틀 시험 */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+.itemEn {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.itemKo {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.5;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.itemFoot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.cardLink {
+  min-height: 36px;
+  padding: 2px 10px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-chip);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+.recentRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--line);
+  font-size: var(--fs-vocab-example);
+  color: var(--ink-2);
+}
+.recentScore {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+/* 러너 — 빈칸 문제 줄(자리 이름 칩) · 답한 뒤 틀 줄 · 예문 */
+.clozeLine {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.7;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.blank {
+  display: inline-block;
+  min-width: 3.2em;
+  margin: 0 2px;
+  border-bottom: 2px solid var(--accent);
+  color: var(--accent-ink);
+  font-weight: 700;
+  text-align: center;
+}
+.slotName {
+  margin: 0 2px;
+  padding: 0 6px;
+  border: 1px dashed var(--accent);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--accent-ink);
+  font-size: 0.8em;
+  font-weight: 700;
+  word-break: keep-all;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.groupLine {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-meta-chip);
+}
+.frameBox {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  background: var(--bg);
+}
+.frameRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+.frameRow > p {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.exampleEn {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.exampleKo {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-vocab-example);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.stopBtn {
+  align-self: flex-start;
+  min-height: 40px;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  color: var(--ink-3);
+  font-size: var(--fs-meta-chip);
+  cursor: pointer;
+}
+.modeScore {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
