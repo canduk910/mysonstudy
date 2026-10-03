@@ -16,6 +16,7 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
+import ToeicRecUploadDrain from "@/components/toeic-rec-upload-drain";
 
 export const metadata: Metadata = {
   title: "아빠의 영어 — 은우학습",
@@ -25,6 +26,8 @@ export const metadata: Metadata = {
 export default function ToeicHubPage() {
   return (
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
+      {/* 내 녹음 업로드 대기열 계기(§13-6 이행 — 응시한 기기에서 아빠의 영어를 열면 못 올린 녹음이 올라간다) */}
+      <ToeicRecUploadDrain />
       <header className="mb-8">
         <div className="flex items-center justify-between gap-3">
           <Link href="/" className="u-navbtn">

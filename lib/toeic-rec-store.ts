@@ -1,21 +1,29 @@
 /**
- * lib/toeic-rec-store.ts — 모의고사 답변 녹음의 **기기 보관소** (IndexedDB, 클라이언트 전용) (docs/harness/toeic.md §0-2·§6-4·§8)
+ * lib/toeic-rec-store.ts — 모의고사 답변 녹음의 **기기 보관소** (IndexedDB, 클라이언트 전용) (docs/harness/toeic.md §6-4·§13-3·§13-6)
  *
- * 녹음은 **기기에만** 둔다 — 서버에는 전사문·점수·피드백만(원본 미저장 원칙 SPEC §13, Firestore 문서 1MB, 버킷 없음).
- * 결과 화면이 여기서 녹음을 꺼내 다시 듣기(▶)와 AI 채점 업로드를 한다. 다른 기기·브라우저에서는 없다 — 화면이
- * "녹음은 응시한 기기에만 있어요"로 안내한다.
+ * 2026-10-03(§13)부터 녹음 원본은 **서버(GCS 비공개 버킷)에 보관**한다 — 이 기기 보관소는 **업로드 대기열 + 빠른 재생 캐시**다.
+ * 응시 중 문항 녹음이 끝나면 먼저 여기 저장하고(네트워크가 끊겨도 잃지 않게), lib/toeic-rec-upload가 백그라운드로 올린다.
+ * 메타의 `upload`가 대기열 상태다 — "pending"(아직 서버에 없음/모름) · "done"(서버가 받음) · "gone"(다시 보내도 받지 않음 — 캐시로만).
+ * 필드가 없는 옛 메타는 "pending"으로 읽혀(§13-6 이행) 처음 토익 화면을 여는 순간부터 올라간다. DB 버전·store 이름은 그대로다.
+ * 결과 화면은 이 기기 사본 → 서버 사본 순으로 소리를 찾는다(다른 기기에서는 서버 사본).
  *
  * 규칙(lib/tts-cache.ts 관용구):
- * - DB `eunwoo-toeic-rec`, 키 `{attemptId}:{q}`. 같은 키에 다시 쓰면 바꾼다("이 문항 다시").
+ * - DB `eunwoo-toeic-rec`, 키 `{attemptId}:{q}`. 같은 키에 다시 쓰면 바꾼다("이 문항 다시" — 새 녹음은 다시 "pending").
  * - **최근 응시 5회분만** 남긴다(응시마다 가장 최근 녹음 시각으로 순위, 6번째부터 통째로 지운다) — 한 회 11문항 × 최대 ~1MB.
  *   **풀마다 따로** 센다(docs/harness/toeic.md §12-7-6): 메타 `pool`이 "mock"(모의고사 — 필드가 없는 옛 메타도)·"drill"(유형별 공략
  *   한 문제 연습). 실전 응시 뒤 채점 전에 연습을 여러 번 해도 실전 녹음이 밀려 지워지지 않게 — 같은 pickAttemptsToEvict를 풀별로 부른다.
+ *   **"pending" 녹음이 하나라도 있는 응시는 정리에서 뺀다**(toeicRecPinnedAttempts, §13-3) — 서버에 없는 녹음을 지우면 영영 잃는다.
+ *   고정된 응시는 순위 칸을 차지하지 않는다. 오래 오프라인이면 5회분을 넘어 늘 수 있다 — 잃는 것보다 낫다.
  * - 목록·정리는 메타 store만 읽는다(녹음 바이트를 한꺼번에 메모리에 올리지 않는다). 바이트는 `rec` store에 따로.
  * - **조용한 실패**: IndexedDB를 못 쓰는 환경(프라이빗 모드 등)이면 메모리에만 두고(이 탭의 마지막 응시분) 정상 동작한다.
- *   응시 → 결과 화면은 같은 탭 안 이동이라 메모리만으로도 다시 듣기·채점이 된다(새로고침하면 사라진다).
+ *   응시 → 결과 화면은 같은 탭 안 이동이라 메모리만으로도 다시 듣기·채점·업로드가 된다(올리기 전에 탭을 닫으면 사라진다).
  *
  * 순수 함수(pickAttemptsToEvict)는 브라우저 전역 없이 돌아 eval이 잠근다. ⚠️ 모듈 최상위에서 indexedDB를 읽지 않는다.
  */
+
+import { toeicRecPinnedAttempts, toeicRecUploadStateOf, type ToeicRecUploadState } from "./toeic-rec-rules";
+
+export type { ToeicRecUploadState };
 
 export const TOEIC_REC_DB_NAME = "eunwoo-toeic-rec";
 const DB_VERSION = 1;
@@ -43,9 +51,16 @@ export interface ToeicRecordingMeta {
   mimeType: string;
   durationMs: number;
   size: number;
-  /** 저장 시각(epoch ms) — 응시 순위 */
+  /** 저장 시각(epoch ms) — 응시 순위, 서버 업로드의 recordedAt(같은 문항 녹음끼리 새것 가르기) */
   createdAt: number;
+  /** 업로드 대기열 상태(§13-3). 옛 메타에는 없다 — 읽을 때 toeicRecUploadStateOf로 "pending" */
+  upload: ToeicRecUploadState;
+  /** 서버가 받은 시각(epoch ms). pending·gone이면 null */
+  uploadedAt: number | null;
 }
+
+/** 저장할 때 넘기는 녹음 — 대기열 필드는 저장이 "pending"으로 채운다 */
+export type NewToeicRecording = Omit<ToeicRecording, "upload" | "uploadedAt">;
 
 export interface ToeicRecording extends ToeicRecordingMeta {
   blob: Blob;
@@ -148,14 +163,18 @@ function isMeta(v: unknown): v is ToeicRecordingMeta {
 async function listAllMeta(db: IDBDatabase): Promise<ToeicRecordingMeta[]> {
   const all = await reqToPromise(db.transaction(STORE_META, "readonly").objectStore(STORE_META).getAll());
   // 옛 메타(pool 없음)는 모의고사 풀로 읽는다(§12-7-6)
-  return (all as unknown[]).filter(isMeta).map((m) => ({ ...m, pool: toeicRecPoolOf(m) }));
+  // 옛 메타(upload 없음)는 "pending"(§13-6 이행), uploadedAt 없음은 null
+  return (all as unknown[])
+    .filter(isMeta)
+    .map((m) => ({ ...m, pool: toeicRecPoolOf(m), upload: toeicRecUploadStateOf(m), uploadedAt: typeof m.uploadedAt === "number" ? m.uploadedAt : null }));
 }
 
 /**
  * 녹음 한 문항 저장. 반환: "idb"(기기에 남음) / "memory"(IndexedDB 불가 — 이 탭에서만). 던지지 않는다.
  * 저장 뒤 풀마다 최근 5회분만 남기고 지운다(지금 응시는 늘 남긴다 — §12-7-6).
  */
-export async function saveToeicRecording(rec: ToeicRecording): Promise<"idb" | "memory"> {
+export async function saveToeicRecording(input: NewToeicRecording): Promise<"idb" | "memory"> {
+  const rec: ToeicRecording = { ...input, upload: "pending", uploadedAt: null };
   rememberInMemory(rec);
   if (!hasIdb()) return "memory";
   let db: IDBDatabase | null = null;
@@ -170,6 +189,8 @@ export async function saveToeicRecording(rec: ToeicRecording): Promise<"idb" | "
       durationMs: rec.durationMs,
       size: rec.size,
       createdAt: rec.createdAt,
+      upload: "pending",
+      uploadedAt: null,
     };
     const tx = db.transaction([STORE_REC, STORE_META], "readwrite");
     tx.objectStore(STORE_REC).put(rec.blob, key);
@@ -185,7 +206,10 @@ export async function saveToeicRecording(rec: ToeicRecording): Promise<"idb" | "
 }
 
 async function evict(db: IDBDatabase, current: string): Promise<void> {
-  const metas = await listAllMeta(db);
+  // 아직 서버에 올리지 못한("pending") 녹음이 있는 응시는 정리 대상에서 먼저 뺀다(§13-3) — 순위 칸도 차지하지 않는다
+  const all = await listAllMeta(db);
+  const pinned = toeicRecPinnedAttempts(all);
+  const metas = all.filter((m) => !pinned.has(m.attemptId));
   const drop = new Set(pickAttemptsToEvictByPool(metas, TOEIC_REC_KEEP_ATTEMPTS, current));
   if (drop.size === 0) return;
   const tx = db.transaction([STORE_REC, STORE_META], "readwrite");
@@ -229,4 +253,65 @@ export async function listToeicRecordings(attemptId: string): Promise<ToeicRecor
 export async function getToeicRecording(attemptId: string, q: number): Promise<ToeicRecording | null> {
   const list = await listToeicRecordings(attemptId);
   return list.find((r) => r.q === q) ?? null;
+}
+
+// ───────────────────────── 업로드 대기열(§13-3) — lib/toeic-rec-upload가 쓴다 ─────────────────────────
+
+/** "pending" 녹음 메타 — 오래된 순(createdAt 오름차순). IndexedDB가 안 되면 메모리분. 던지지 않는다. */
+export async function listPendingToeicRecordings(): Promise<ToeicRecordingMeta[]> {
+  const fromMemory = (): ToeicRecordingMeta[] =>
+    [...memory.values()].filter((r) => r.upload === "pending").map(({ blob: _b, ...m }) => m);
+  if (!hasIdb()) return fromMemory().sort((a, b) => a.createdAt - b.createdAt);
+  let db: IDBDatabase | null = null;
+  try {
+    db = await openDb();
+    const metas = (await listAllMeta(db)).filter((m) => m.upload === "pending");
+    // IndexedDB 쓰기가 실패해 메모리에만 있는 녹음을 보탠다(같은 탭)
+    for (const m of fromMemory()) if (!metas.some((x) => x.attemptId === m.attemptId && x.q === m.q)) metas.push(m);
+    return metas.sort((a, b) => a.createdAt - b.createdAt);
+  } catch {
+    return fromMemory().sort((a, b) => a.createdAt - b.createdAt);
+  } finally {
+    db?.close();
+  }
+}
+
+/** 녹음 바이트 한 문항(같은 녹음 — createdAt이 같을 때만). 없으면 null. 던지지 않는다. */
+export async function getToeicRecordingBlob(attemptId: string, q: number, createdAt: number): Promise<Blob | null> {
+  const r = await getToeicRecording(attemptId, q);
+  return r && r.createdAt === createdAt ? r.blob : null;
+}
+
+/**
+ * 대기열 상태 바꾸기 — **같은 녹음일 때만**(메타의 createdAt이 올린 녹음과 같을 때). 올리는 사이 "이 문항 다시"로 새 녹음이 들어왔으면
+ * 새 녹음을 done으로 바꾸지 않는다(새 녹음은 pending으로 남아 다음 차례에 올라간다). 던지지 않는다.
+ */
+export async function setToeicRecUploadState(
+  attemptId: string,
+  q: number,
+  createdAt: number,
+  upload: ToeicRecUploadState,
+  uploadedAt: number | null,
+): Promise<void> {
+  const key = toeicRecKey(attemptId, q);
+  const mem = memory.get(key);
+  if (mem && mem.createdAt === createdAt) memory.set(key, { ...mem, upload, uploadedAt });
+  if (!hasIdb()) return;
+  let db: IDBDatabase | null = null;
+  try {
+    db = await openDb();
+    const tx = db.transaction(STORE_META, "readwrite");
+    const store = tx.objectStore(STORE_META);
+    // 읽기와 쓰기를 같은 트랜잭션의 onsuccess 안에서 — 약속 사이에 트랜잭션이 닫히는 구형 Safari를 피한다
+    const req = store.get(key);
+    req.onsuccess = () => {
+      const cur = req.result as unknown;
+      if (isMeta(cur) && cur.createdAt === createdAt) store.put({ ...cur, upload, uploadedAt }, key);
+    };
+    await txDone(tx);
+  } catch {
+    // 조용한 실패 — 다음 비우기에서 서버가 reused로 답한다(멱등)
+  } finally {
+    db?.close();
+  }
 }

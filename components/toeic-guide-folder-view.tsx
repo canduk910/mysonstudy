@@ -27,6 +27,7 @@ import { TOEIC_GUIDE_TAB_LABELS_KO, resolveGuideTab, type ToeicGuideTab } from "
 import type { ToeicTemplateQuizMode } from "@/lib/toeic-quiz";
 import type { ToeicTemplateBadge } from "@/lib/toeic-template";
 import type { ToeicRecentTemplateTest } from "@/lib/toeic-template-test-view";
+import { useToeicRecUploadDrain } from "@/components/use-toeic-rec-uploads";
 import s from "./toeic-guide-folder-view.module.css";
 
 /** 폴더 탭(학습 흐름 순서 — ① 읽기 ② 템플릿 훈련 ③ 틀 시험 ④ 한 문제 연습) */
@@ -95,6 +96,8 @@ export default function ToeicGuideFolderView({ data }: { data: ToeicGuideFolderD
   const focusTpl = tab === "templates" ? params.get("tpl") : null;
   const goto = tab === "read" ? params.get("goto") : null;
   const initialRange = tab === "templates" && params.get("range") === "wrong" ? "wrong" : null;
+  // 내 녹음 업로드 대기열 계기(§13-3 ②·③) — 한 문제 연습 폴더(④ 탭)가 열려 있는 동안만
+  useToeicRecUploadDrain(tab === "drill");
 
   // 폰에서 탭 줄은 가로로 넘친다(탭 넷) — 고른 탭이 줄 밖에 있으면 줄만 가로로 밀어 보이게 한다(페이지는 스크롤하지 않는다)
   useEffect(() => {

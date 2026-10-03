@@ -103,6 +103,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       startedAt,
       finishedAt: null,
       answers: [],
+      recordings: [], // 내 녹음 서버 보관 메타(§13-5) — 문항 녹음 업로드가 채운다(answers 밖)
     });
     return json({
       ok: true,

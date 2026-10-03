@@ -51,6 +51,7 @@ import { isToeicSetEnriched } from "./ai/toeic/points";
 import { isToeicQuizMode, isToeicTemplateBankMode } from "./toeic-quiz";
 import { TOEIC_DEFAULT_TARGET_GRADE, TOEIC_MOCK_PARTS, TOEIC_QUESTION_COUNT, TOEIC_TARGET_GRADES, type ToeicMockPart } from "./toeic-mock";
 import { toeicAttemptQuestions } from "./toeic-attempt-rules";
+import { normalizeToeicStoredRecordings } from "./toeic-rec-rules";
 
 // ---------------------------------------------------------------------------
 // 작은 방어 헬퍼
@@ -446,5 +447,7 @@ export function normalizeToeicAttemptRecord(v: unknown): ToeicAttemptRecord {
     startedAt: isoOr(r.startedAt, EPOCH),
     finishedAt: strOrNull(r.finishedAt),
     answers: Array.isArray(r.answers) ? r.answers.map(normalizeToeicAnswer) : [],
+    // 내 녹음 서버 보관 메타(§13-5) — 모르는 키를 버리는 정규화라 명시적으로 옮긴다. 옛 문서 = [], 깨진 항목만 버림, 같은 q는 늦은 녹음 하나
+    recordings: normalizeToeicStoredRecordings(r.recordings),
   };
 }

@@ -2,8 +2,8 @@
  * 모의고사 응시 결과 `/toeic/attempts/[id]` (아빠의 영어 T5, docs/harness/toeic.md §5·§8) — 서버 컴포넌트.
  *
  * 응시 기록과 그 모의고사를 읽어 문항별 화면 자료(buildToeicQuestionViews)와 함께 클라이언트 결과 화면에 넘긴다.
- * 내 녹음 ▶(IndexedDB — 응시한 기기에만)·AI 채점 받기(WAV 정규화 → `POST /api/toeic/attempts/[id]/score`)·피드백 표시·
- * 추정 총점은 클라이언트(ToeicAttemptView)가 한다. 없는 응시·모의고사는 404(모의고사를 지우면 응시도 함께 지워진다).
+ * 내 녹음 ▶(이 기기 IndexedDB 사본 → 서버 보관 사본 순, §13-8)·AI 채점 받기(WAV 정규화 → `POST /api/toeic/attempts/[id]/score`)·피드백 표시·
+ * 추정 총점·🎧 비교(§13-9)는 클라이언트(ToeicAttemptView)가 한다. 비교 ③에 쓸 같은 모의고사 응시 기록(최신 20회, 줄인 자료)을 여기서 읽어 넘긴다. 없는 응시·모의고사는 404(모의고사를 지우면 응시도 함께 지워진다).
  *
  * 문항 범위는 응시 기록의 `questions`(시작 라우트가 적었다 — 연습의 사진 묘사는 [3], 옛 문서는 파트 문항, §12-3).
  * 유형별 공략의 **한 문제 연습**(모의고사 문서의 drillPart — §12-7-5·§12-7-9):
@@ -31,6 +31,7 @@ import { guideTemplatesForPart } from "@/lib/toeic-guide-view";
 import { toeicTakeHref } from "@/lib/toeic-mock-contract";
 import { TOEIC_MOCK_PARTS, type ToeicMockPart } from "@/lib/toeic-mock";
 import { isRenderableToeicMock, isRenderableToeicTemplateBank } from "@/lib/toeic-record";
+import { TOEIC_COMPARE_ATTEMPTS_MAX, pickToeicCompareAttempts, toToeicCompareAttempt } from "@/lib/toeic-compare";
 
 export const dynamic = "force-dynamic";
 
@@ -74,6 +75,10 @@ export default async function ToeicAttemptPage({ params }: AttemptPageProps) {
     }
   }
 
+  // ── 🎧 비교 ③ 다시 풀기 기록(§13-9) — 같은 모의고사(연습은 같은 연습 문서)의 응시를 최신 20회까지, **줄인 자료**만 넘긴다(피드백 본문 없음) ──
+  const sameMock = await store.listToeicAttemptsByMock(mock.id);
+  const history = pickToeicCompareAttempts(sameMock, attempt.id, TOEIC_COMPARE_ATTEMPTS_MAX).map(toToeicCompareAttempt);
+
   // ── 한 문제 연습이면 끝 버튼 줄 ──
   let drill: ToeicAttemptDrillInfo | null = null;
   if (mock.drillPart !== null && toeicDrillUnitForMockPart(mock.drillPart)) {
@@ -103,6 +108,7 @@ export default async function ToeicAttemptPage({ params }: AttemptPageProps) {
         drill={drill}
         checks={checks}
         answerFlows={mock.answerFlows}
+        history={history}
       />
     </main>
   );

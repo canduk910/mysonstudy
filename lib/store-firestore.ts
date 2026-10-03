@@ -100,6 +100,7 @@ import {
   type NewToeicSet,
   type ToeicAnswerScorePatch,
   type ToeicAttemptRecord,
+  type SetToeicAttemptRecordingResult,
   type ToeicImageRecord,
   type ToeicMockRecord,
   type ToeicQuizRecord,
@@ -163,6 +164,8 @@ import {
 } from "./ai/english/schemas";
 // store.ts는 이 파일을 값으로 import하므로(FirestoreStore), 가드는 별도 모듈에 둔다 — 순환 방지
 import { assertDestructiveAllowed } from "./prod-guard";
+import { applyToeicAttemptRecording, decideToeicRecordingUpload, isToeicRecAttemptId, type ToeicStoredRecording } from "./toeic-rec-rules";
+import { deleteAttemptRecordings } from "./toeic-rec-blob";
 import { isFirestoreDocId } from "./reorder-contract";
 
 // ---------------------------------------------------------------------------
@@ -1568,6 +1571,11 @@ export class FirestoreStore implements StudyStore {
       this.toeicImages().where("mockId", "==", id).get(),
       this.toeicAttempts().where("mockId", "==", id).get(),
     ]);
+    // 딸린 것 먼저(docs/harness/toeic.md §13-7): 응시마다 녹음 접두사를 지운다(보관소가 스스로 prod-guard deleteToeicRecordings).
+    // 하나라도 실패하면 던진다 — 문서를 지우지 않는다(가리키는 문서 없는 목소리가 버킷에 남지 않게). 다시 누르면 처음부터(멱등).
+    for (const d of attemptSnap.docs) {
+      if (isToeicRecAttemptId(d.id)) await deleteAttemptRecordings(d.id);
+    }
     const refs = [...imageSnap.docs.map((d) => d.ref), ...attemptSnap.docs.map((d) => d.ref), ref]; // 모의고사를 **마지막에**
     const db = getDb();
     for (let i = 0; i < refs.length; i += BATCH_LIMIT) {
@@ -1700,6 +1708,22 @@ export class FirestoreStore implements StudyStore {
       const next = applyAttemptAnswer(toToeicAttempt(snap.id, snap.data()!), q, patch);
       tx.update(ref, { answers: next.answers });
       return next;
+    });
+  }
+
+  async setToeicAttemptRecording(id: string, recording: ToeicStoredRecording): Promise<SetToeicAttemptRecordingResult | null> {
+    const ref = this.toeicAttempts().doc(id);
+    // 판정(decideToeicRecordingUpload)과 쓰기를 한 트랜잭션에 — 같은 문항 두 업로드가 겹쳐도 메타를 쓰는 쪽이 하나다.
+    // recordings 필드만 바꾼다(answers·finishedAt 그대로 — 닫힘 판정 불변).
+    return getDb().runTransaction(async (tx): Promise<SetToeicAttemptRecordingResult | null> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      const current = toToeicAttempt(snap.id, snap.data()!);
+      const decision = decideToeicRecordingUpload(current, recording.q, { sha256: recording.sha256, recordedAtMs: Date.parse(recording.recordedAt) });
+      if (decision !== "store") return { outcome: decision, record: current };
+      const next = normalizeToeicAttemptRecord(applyToeicAttemptRecording(current, recording));
+      tx.update(ref, { recordings: next.recordings });
+      return { outcome: "stored", record: next };
     });
   }
 

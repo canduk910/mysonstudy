@@ -38,6 +38,8 @@ export type DestructiveOp =
   // 아빠의 영어(docs/harness/toeic.md §7) — 표현집 세트(+그 시험 세션), 모의고사(+생성 사진·응시 기록) 연쇄 삭제
   | "deleteToeicSet"
   | "deleteToeicMock"
+  // 내 녹음 서버 보관(docs/harness/toeic.md §13-7) — 녹음 보관소(GCS)의 응시 접두사 지우기. deleteToeicMock 연쇄 안에서 문서보다 먼저 불린다
+  | "deleteToeicRecordings"
   // 은우 자유대화(docs/harness/english.md §12-4·§12-6) — 대화 기록 하나(스크립트·설명) + 딸린 주제 일러스트(talkImages) 연쇄 삭제
   | "deleteTalkSession";
 

@@ -225,6 +225,9 @@ import { runToeicGuideS2Checks } from "./eval-toeic-guides-s2";
 import { runToeicGuideS3Checks } from "./eval-toeic-guides-s3";
 // 템플릿 중심 재정렬(§12-13 — 2026-10-02) 순수 층·정규화·가져오기·파일 저장소 왕복·라우트 소스 대조·실제 파일 개수
 import { runToeicTemplateCentricChecks } from "./eval-toeic-template-centric";
+// 내 녹음 서버 보관 + 비교(§13-10) — 업로드 계약·바이트 판정·객체 키·경로 게이트·교체 판정·레코드·파일 백엔드 왕복·삭제 연쇄·대기열·비교·틀 범위·소스 대조.
+// 네트워크·GCS 0(파일 백엔드는 자식 프로세스의 임시 폴더). 픽스처는 전부 지어낸 것.
+import { runToeicRecordingChecks } from "./eval-toeic-recordings";
 
 // .env.local / .env 로드 (없으면 무시). 이미 설정된 환경 변수가 우선한다(빈 값으로 미리 둔 키는 덮지 않는다).
 for (const envFile of [".env.local", ".env"]) {
@@ -1748,6 +1751,7 @@ async function runAttemptChecks(): Promise<CheckResult[]> {
     startedAt: "2026-09-26T00:00:00.000Z",
     finishedAt: null,
     answers: [],
+    recordings: [],
   };
   const quit = applyAttemptFinish(attemptBase, { finishedAt: null, answers: filled });
   add(
@@ -2216,6 +2220,10 @@ function runBundleBoundaryChecks(): CheckResult[] {
     "toeic-attempt-rules.ts",
     "toeic-drill-view.ts",
     "toeic-template-quiz.ts",
+    // 내 녹음 서버 보관 + 비교(§13-10 ⑪) — 결과·응시 화면이 import한다
+    "toeic-rec-rules.ts",
+    "toeic-compare.ts",
+    "toeic-rec-upload.ts",
   ];
   for (const f of files) {
     const src = readFileSync(new URL(`../lib/${f}`, import.meta.url), "utf-8");
@@ -2756,6 +2764,7 @@ async function main(): Promise<void> {
   all.push(...runToeicGuideS2Checks());
   all.push(...runToeicGuideS3Checks());
   all.push(...runToeicTemplateCentricChecks());
+  all.push(...runToeicRecordingChecks());
   all.push(...runSpecSyncChecks());
   all.push(...runJsonSchemaSyncChecks());
 

@@ -55,6 +55,7 @@ import { answerFlowExpressions } from "@/lib/toeic-template";
 import { expressionKey } from "@/lib/toeic-text";
 import { TTS_TEXT_MAX_CHARS } from "@/lib/tts-shared";
 import { splitForTts } from "@/lib/tts-split";
+import { useToeicRecUploadDrain } from "@/components/use-toeic-rec-uploads";
 import s from "./toeic-mock-detail-view.module.css";
 
 /** 응시 기록 한 줄(서버 페이지가 줄여 넘긴다) — 누르면 응시 결과 화면(`/toeic/attempts/[id]`) */
@@ -132,6 +133,8 @@ export default function ToeicMockDetailView({
 }) {
   const router = useRouter();
   const id = mock.id;
+  // 내 녹음 업로드 대기열 계기(§13-3 ②·③) — 이 기기에 못 올린 녹음이 있으면 학습 보기를 여는 동안 이어서 올린다
+  useToeicRecUploadDrain();
   const missing = missingToeicMockParts(mock.parts);
   const complete = missing.length === 0;
 

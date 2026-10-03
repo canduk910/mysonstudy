@@ -1146,6 +1146,126 @@ export function findTemplatesInTranscript(
   return { found, unmatchable };
 }
 
+export interface ToeicTemplateRunSpan {
+  /** 틀 key */
+  key: string;
+  /** 고정 조각마다 글자 범위 [start, end) — 원문 안, 조각끼리 겹치지 않음(앞 조각 뒤에서 찾는다) */
+  runs: { start: number; end: number }[];
+}
+
+/**
+ * 원문 낱말 토큰(공백으로 끊은 것)의 글자 범위 — 앞뒤 문장부호는 범위에서 뺀다(밑줄이 쉼표·마침표까지 긋지 않게).
+ * 낱말 글자가 하나도 없는 토큰(문장부호뿐)도 위치를 지키려고 빈 범위로 둔다.
+ */
+function textTokens(text: string): { start: number; end: number }[] {
+  const out: { start: number; end: number }[] = [];
+  const re = /\S+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    let start = m.index;
+    let end = m.index + m[0].length;
+    while (start < end && !/[A-Za-z0-9]/.test(text[start])) start++;
+    while (end > start && !/[A-Za-z0-9]/.test(text[end - 1])) end--;
+    out.push(start < end ? { start, end } : { start: m.index, end: m.index });
+  }
+  return out;
+}
+
+/**
+ * 정규화 낱말 j → 원문 토큰 범위 [첫 토큰, 끝 토큰]. 정규화는 토큰을 합치기도 한다(twenty five → 25, a hundred → 100) — 그래서 낱말마다
+ * "앞 k개 토큰을 정규화한 낱말 수"로 경계를 잡는다: 낱말 j의 첫 토큰 = 낱말 수가 처음 j보다 커지는 토큰, 끝 토큰 = 낱말 수가 처음
+ * j+1보다 커지기 직전 토큰. 축약형(it's → it is|has)처럼 토큰 하나가 낱말 둘이 되면 두 낱말이 같은 토큰을 가리킨다.
+ */
+function wordTokenMap(text: string, tokens: readonly { start: number; end: number }[]): { first: number; last: number }[] {
+  const raw = (text.match(/\S+/g) ?? []) as string[];
+  const counts: number[] = [];
+  for (let k = 0; k < raw.length; k++) counts.push(normalizeTemplateWords(raw.slice(0, k + 1).join(" ")).length);
+  const total = counts.length > 0 ? counts[counts.length - 1] : 0;
+  const map: { first: number; last: number }[] = [];
+  for (let j = 0; j < total; j++) {
+    const first = counts.findIndex((c) => c > j);
+    const nextStart = counts.findIndex((c) => c > j + 1);
+    const last = nextStart < 0 ? tokens.length - 1 : Math.max(first, nextStart - 1);
+    map.push({ first, last });
+  }
+  return map;
+}
+
+/**
+ * 틀 고정 조각의 **글자 범위**(§13-9 ② 글자 나란히) — findTemplatesInTranscript와 **같은 일치 규칙**(두 낱말 이상 고정 조각이 모두 순서대로,
+ * 낱말 같음은 sameTemplateWord)이라 찾은 key 집합이 같다(eval이 잠근다). 결과는 첫 조각 위치 순. 틀끼리는 범위가 겹칠 수 있다
+ * (화면이 겹친 구간을 한 번만 칠한다 — templateSpanSegments).
+ */
+export function templateRunSpans(text: string, templates: readonly Pick<ToeicTemplate, "key" | "frameEn">[]): ToeicTemplateRunSpan[] {
+  const src = text ?? "";
+  const heard = normalizeTemplateWords(src);
+  if (heard.length === 0) return [];
+  const tokens = textTokens(src);
+  const map = wordTokenMap(src, tokens);
+  const charRange = (from: number, len: number): { start: number; end: number } | null => {
+    const a = map[from];
+    const b = map[from + len - 1];
+    if (!a || !b || a.first < 0 || b.last < 0) return null;
+    const s0 = tokens[a.first];
+    const e0 = tokens[b.last];
+    if (!s0 || !e0) return null;
+    return { start: s0.start, end: Math.max(s0.start, e0.end) };
+  };
+  const out: (ToeicTemplateRunSpan & { at: number })[] = [];
+  const seen = new Set<string>();
+  for (const t of templates) {
+    if (seen.has(t.key)) continue;
+    seen.add(t.key);
+    const runs = frameFixedWordRuns(t.frameEn).filter((r) => r.length >= 2);
+    if (runs.length === 0) continue;
+    let pos = 0;
+    let first = -1;
+    const spans: { start: number; end: number }[] = [];
+    let ok = true;
+    for (const r of runs) {
+      const at = findRun(heard, r, pos, sameTemplateWord);
+      if (at < 0) {
+        ok = false;
+        break;
+      }
+      if (first < 0) first = at;
+      pos = at + r.length;
+      const range = charRange(at, r.length);
+      if (range && range.end > range.start) {
+        const prev = spans[spans.length - 1];
+        // 한 토큰이 두 조각에 걸치면(축약형) 앞 조각 뒤로 민다 — 한 틀 안 조각끼리 겹치지 않게
+        if (prev && range.start < prev.end) range.start = prev.end;
+        if (range.end > range.start) spans.push(range);
+      }
+    }
+    if (ok) out.push({ key: t.key, runs: spans, at: first });
+  }
+  out.sort((a, b) => a.at - b.at);
+  return out.map(({ key, runs }) => ({ key, runs }));
+}
+
+/** 글자 범위들 → 화면 조각(겹친 구간은 한 번만, 그 구간의 key들을 함께) */
+export function templateSpanSegments(text: string, spans: readonly ToeicTemplateRunSpan[]): { text: string; keys: string[] }[] {
+  const src = text ?? "";
+  const cuts = new Set<number>([0, src.length]);
+  for (const sp of spans) for (const r of sp.runs) {
+    cuts.add(Math.max(0, Math.min(src.length, r.start)));
+    cuts.add(Math.max(0, Math.min(src.length, r.end)));
+  }
+  const points = [...cuts].sort((a, b) => a - b);
+  const out: { text: string; keys: string[] }[] = [];
+  for (let i = 0; i + 1 < points.length; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    if (b <= a) continue;
+    const keys = spans.filter((sp) => sp.runs.some((r) => r.start <= a && r.end >= b)).map((sp) => sp.key);
+    const prev = out[out.length - 1];
+    if (prev && prev.keys.join("\u0001") === keys.join("\u0001")) prev.text += src.slice(a, b);
+    else out.push({ text: src.slice(a, b), keys });
+  }
+  return out;
+}
+
 /**
  * 단계 커버리지(§12-5-5 검토 B2) — 그 유형 흐름의 **단계**마다 `{ stepKo, used }`(단계 안 묶음들의 틀 중 찾은 key — foundKeys 순서).
  * 소재 묶음은 세지 않는다. 흐름이 없으면 빈 배열.

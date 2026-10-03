@@ -8,7 +8,8 @@
  * "시작" 탭 안에서 **동기로**: AudioContext 생성/resume · unlockSpeechPlayback · 오디오 세션 playback · 지시문·질문 프리페치(en-US) ·
  *   첫 단계(지시문 speakQueue) — 그다음 `POST /api/toeic/mocks/[id]/attempts`로 attemptId(녹음 IndexedDB 키).
  * 문항 하나: 지시문(파트 첫 문항, en-US + 한국어 캡션) → 표 읽기(Q8 앞 45초) → 질문 음성(Q10은 두 번) → 준비 → 비프 → 녹음 + 답변
- *   카운트다운(녹음 start 이벤트에서 시작) → 저장(IndexedDB) → 다음. 단계 전이는 순수 엔진(lib/toeic-mock nextPhase·beginAnswer).
+ *   카운트다운(녹음 start 이벤트에서 시작) → 저장(IndexedDB) → 백그라운드 서버 보관(lib/toeic-rec-upload — §13-3, 동시 1개, 실패해도
+ *   응시는 계속 — 진단 줄 "서버 ✓ / 올리는 중 / 대기", 끝 화면 "녹음 n개 중 m개를 서버에 보관했어요") → 다음. 단계 전이는 순수 엔진(lib/toeic-mock nextPhase·beginAnswer).
  * 끝/그만두기: `POST /api/toeic/attempts/[id]/finish` → 녹음된 문항이 1개 이상이면 STREAK_REFRESH_EVENT → "결과 보기".
  *
  * ── 규칙 ──────────────────────────────────────────────────────────────────────
@@ -69,6 +70,8 @@ import {
 import { toeicImageUrl } from "@/lib/toeic-mock-contract";
 import type { ToeicSetBackLink } from "@/lib/toeic-guide-view";
 import { saveToeicRecording, type ToeicRecPool } from "@/lib/toeic-rec-store";
+import { drainToeicRecUploads } from "@/lib/toeic-rec-upload";
+import { useToeicRecUploadStates } from "@/components/use-toeic-rec-uploads";
 import { TTS_TEXT_MAX_CHARS } from "@/lib/tts-shared";
 import { splitForTts } from "@/lib/tts-split";
 import s from "./toeic-take-view.module.css";
@@ -215,6 +218,8 @@ export default function ToeicTakeView({
   const [support, setSupport] = useState<ReturnType<typeof detectMicSupport> | null>(null);
   const [scale, setScale] = useState(1);
   const [diag, setDiag] = useState<MicDiag | null>(null);
+  /** 문항별 서버 보관 진행(§13-3 — "서버 ✓ / 올리는 중 / 대기") */
+  const uploadStates = useToeicRecUploadStates(attemptId);
 
   // ── 콜백이 읽는 최신 값(타이머·음성 콜백은 탭 밖 — 클로저가 낡지 않게) ──
   const phaseRef = useRef<ToeicPhaseState | null>(null);
@@ -301,7 +306,9 @@ export default function ToeicTakeView({
     (aid: string, q: number, r: RecordingResult & { createdAt: number }) => {
       const p = saveToeicRecording({ attemptId: aid, pool: recPool, q, blob: r.blob, mimeType: r.mimeType, durationMs: r.durationMs, size: r.size, createdAt: r.createdAt })
         .then((where) => patchAnswer(q, { stored: where }))
-        .catch(() => patchAnswer(q, { stored: "memory" }));
+        .catch(() => patchAnswer(q, { stored: "memory" }))
+        // 서버 보관(§13-3) — 기기에 저장된 직후 대기열을 백그라운드로 비운다(동시 1개, 실패는 응시를 멈추지 않는다)
+        .finally(() => void drainToeicRecUploads());
       savesRef.current.push(p);
     },
     [patchAnswer, recPool],
@@ -822,6 +829,12 @@ export default function ToeicTakeView({
   const view = phase?.q ? viewByQ.get(phase.q) : undefined;
   const remain = phase ? remainingMs(phase, now) : null;
   const recordedCount = qs.filter((q) => answers[q]?.status === "recorded").length;
+  const uploadedCount = qs.filter((q) => answers[q]?.status === "recorded" && uploadStates[q]?.state === "done").length;
+  /** 문항별 서버 보관 표시(§13-3) */
+  const uploadLabel = (q: number, short = false): string => {
+    const st = uploadStates[q]?.state;
+    return st === "done" ? (short ? "✓" : "서버 ✓") : st === "uploading" ? "올리는 중" : st === "gone" ? "서버 안 받음" : "대기";
+  };
   const totalMin = Math.max(
     1,
     Math.round(questions.reduce((sum, v) => sum + v.prepSec + v.answerSec + v.readingSec + (v.questionPlays > 0 ? 8 * v.questionPlays : 0) + (v.directions ? 20 : 0), 0) / 60),
@@ -865,7 +878,7 @@ export default function ToeicTakeView({
             <h1 className={s.title}>{titleKo}</h1>
             <p className={s.lead}>
               {questions.length}문항 · 약 {totalMin}분. 문항마다 질문을 듣고 준비한 뒤, <strong>삐— 소리가 나면</strong> 답을 말하세요. 녹음은
-              이 기기에만 저장되고, 끝난 뒤 결과 화면에서 다시 듣거나 AI 채점을 받을 수 있어요.
+              이 기기에 먼저 저장하고 문항마다 서버에도 보관해요 — 끝난 뒤 결과 화면(다른 기기에서도)에서 다시 듣거나 AI 채점을 받을 수 있어요.
             </p>
           </div>
 
@@ -940,8 +953,14 @@ export default function ToeicTakeView({
           <p className={s.kicker}>{scopeLabelKo}</p>
           <h1 className={s.title}>{completed ? "🎉 끝났어요" : "그만뒀어요"}</h1>
           <p className={s.lead}>
-            녹음 {recordedCount} / {qs.length}문항{mode === "nomic" ? " (녹음 없이 연습)" : ""}. 녹음은 이 기기에만 있어요 — 결과 화면에서 다시 듣고 AI 채점을 받을 수 있어요.
+            녹음 {recordedCount} / {qs.length}문항{mode === "nomic" ? " (녹음 없이 연습)" : ""}. 결과 화면에서 다시 듣고 AI 채점을 받을 수 있어요.
           </p>
+          {recordedCount > 0 && (
+            <p className={s.caption} data-testid="rec-upload-summary" aria-live="polite">
+              🗄️ 녹음 {recordedCount}개 중 {uploadedCount}개를 서버에 보관했어요
+              {uploadedCount < recordedCount ? " — 나머지는 결과 화면에서 이어서 올려요." : "."}
+            </p>
+          )}
           <ul className={s.answerList}>
             {qs.map((q) => {
               const a = answers[q];
@@ -954,6 +973,7 @@ export default function ToeicTakeView({
                     {a ? ANSWER_STATUS_KO[a.status] : "안 함"}
                     {a?.status === "recorded" && a.durationMs ? ` · ${(a.durationMs / 1000).toFixed(1)}초` : ""}
                   </span>
+                  {a?.status === "recorded" && <span className={s.caption}>{uploadLabel(q)}</span>}
                 </li>
               );
             })}
@@ -1155,6 +1175,15 @@ export default function ToeicTakeView({
             {diag.durationMs !== null ? `${(diag.durationMs / 1000).toFixed(1)}초` : "–"} · {kb(diag.size)} · 세션 {diag.audioSession ?? "API 없음"}
             {diag.error ? ` · 오류 ${diag.error}` : ""}
             {attemptId ? "" : " · 응시 기록 만드는 중"}
+            {recordedCount > 0 && (
+              <span data-testid="rec-upload-diag">
+                {" · 서버 "}
+                {qs
+                  .filter((q) => answers[q]?.status === "recorded")
+                  .map((q) => `Q${q} ${uploadLabel(q, true)}`)
+                  .join(" · ")}
+              </span>
+            )}
           </p>
         )}
       </div>

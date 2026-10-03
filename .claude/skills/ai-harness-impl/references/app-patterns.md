@@ -98,7 +98,7 @@
 
 - `assertDestructiveAllowed(op)`은 `NODE_ENV === "production"`이거나 `ALLOW_PROD_DESTRUCTIVE === "1"`일 때만 통과시키고, 그 밖에는 `ProdGuardError`(code `"prod_guard"`)를 던진다. 라우트는 `isProdGuardError(e)`로 판별해 403 `prod_guard`를 준다.
 - 가드를 부르는 곳은 **Firestore 구현(`lib/store-firestore.ts`)뿐이다.** 파일 백엔드는 로컬 데이터라 가드하지 않는 것이 관용구다.
-- `DestructiveOp`는 10종이다. `deleteBook`·`deleteCard`·`deleteExplanation`·`deleteVocabBook`·`deleteJaVocabBook`(대화 삭제 `deleteJaDialog`도 이 이름으로 막는다)·`undoWorkoutEvent`·`closeWorkoutCycle`·`deleteToeicSet`(세트 + 그 시험 세션)·`deleteToeicMock`(모의고사 + 생성 사진 + 응시 기록)·`deleteTalkSession`(은우 자유대화 기록 + 딸린 주제 일러스트 `talkImages` — 연쇄 삭제를 이 op 하나로 막는다).
+- `DestructiveOp`는 11종이다. `deleteBook`·`deleteCard`·`deleteExplanation`·`deleteVocabBook`·`deleteJaVocabBook`(대화 삭제 `deleteJaDialog`도 이 이름으로 막는다)·`undoWorkoutEvent`·`closeWorkoutCycle`·`deleteToeicSet`(세트 + 그 시험 세션)·`deleteToeicMock`(모의고사 + 생성 사진 + 응시 기록)·`deleteToeicRecordings`(그 응시들의 녹음 — GCS 보관소의 접두사 지우기가 스스로 부른다, 문서보다 먼저 — toeic.md §13-7)·`deleteTalkSession`(은우 자유대화 기록 + 딸린 주제 일러스트 `talkImages` — 연쇄 삭제를 이 op 하나로 막는다).
 - 대상을 가르는 기준은 "삭제 API냐"가 아니라 **"가족 기록을 되돌릴 수 없게 잃느냐"**다. 그래서 운동 기록 취소(`undoWorkoutEvent`, 첫 줄에서 가드)와 사건 있는 활성 사이클 닫기(`startWorkoutCycle` 트랜잭션 안, `tx.set` 전에 `closedHadEvents`일 때)가 대상이다. 최초 생성, 사건 0개 사이클의 제자리 교체, 기록(append), 편집(이름·재정렬·해설 재생성)은 대상이 아니다.
 - **가드는 삭제만 막는다.** 생성과 수정은 Firestore에 붙은 채로 그대로 실데이터가 된다. 가드는 마지막 방어선일 뿐이고, 로컬 실행을 안전하게 만드는 것은 §13이다.
 - 새 파괴적 작업을 만들면 세 가지를 한다. `DestructiveOp`에 이름을 추가하고, Firestore 메서드에서 쓰기 전에 가드를 부르고, 라우트에 403 분기를 둔다.

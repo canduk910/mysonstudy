@@ -26,7 +26,7 @@
 | **교재 내용의 저장소 반입** | **하지 않는다.** 교재 10쪽 전사본은 git 밖(`data/private/`, gitignore)에 두고 앱의 **"파일로 가져오기"**로 넣는다 | 기본값 | 이 저장소는 **PUBLIC**이다. 교재 사진·전사를 커밋하면 출판물이 공개된다. `public/*.json`은 PIN 게이트를 우회해 더 나쁘다(`proxy.ts` 정적 확장자 예외) |
 | 모의고사 문항 | **AI가 새로 만든다**(호출 C). 기출·ETS 샘플 문항은 넣지 않는다 | 기본값 | 기출 저작권은 ETS에 있다(YBM 고지). 형식·시간만 맞춘다 |
 | Q3–4 사진 | AI 이미지 생성(관문 P). 실패하면 장면 설명(`sceneKo`)으로 대신하고 "사진 다시 만들기" | 기본값 | 실제 시험은 사진을 보고 말한다. 텍스트만으로는 연습이 되지 않는다 |
-| 녹음 | **기기에만** 둔다(IndexedDB). 서버에는 전사문·점수·피드백만 | 기본값 | 원본 미저장 원칙(SPEC §13), Firestore 문서 1MB, 버킷 없음 |
+| 녹음 | 모의고사·한 문제 연습 응시 녹음은 **서버(비공개 GCS 버킷)에 원본 그대로, 기간 제한 없이** 보관하고 결과 화면에서 비교한다(2026-10-03 사용자 결정 — §13). 기기 IndexedDB 사본은 업로드 대기열 + 빠른 재생 캐시다. 문서(Firestore)에는 녹음 메타만 | 요구 | Firestore 문서 1MiB라 오디오는 버킷에. 처음 설계(2026-09)는 "기기에만"이었다(원본 미저장 원칙 SPEC §13) — 학습자가 성인 본인이고 비교가 목적이라 이 녹음에 한해 바꿨다. 틀 테스트·마이크 점검 녹음은 여전히 보관하지 않는다 |
 | AI 채점 | 응시 후 **버튼을 눌러야** 돈다(문항당 전사 1회 + 피드백 1회) | 기본값 | 비용이 드는 경로를 자동으로 태우지 않는다 |
 | 목표 등급 | 모의고사를 만들 때 IM3 / **IH(기본)** / AL 중 고른다 — 모범답변의 길이·수준이 달라진다 | 기본값 | 모범답변이 너무 어렵거나 쉬우면 따라 말하기가 안 된다 |
 | 스트릭 | 아빠 줄에 **"영어" 트랙**을 따로 둔다(표현 시험·모의고사 응시) | 기본값 | 트랙을 합치면 한쪽만 한 날도 이어져 보인다(SPEC §17-7 원칙) |
@@ -98,11 +98,17 @@ lib/toeic-transcribe.ts           ← 관문 T (서버 전용)
 lib/toeic-*-contract.ts           ← 라우트↔화면 경계 타입(클라이언트 import 안전)
 lib/toeic-record.ts               ← 렌더 가능 판정 단일 정의처
 lib/mic-session.ts                ← 녹음(클라이언트 전용): 오디오 세션 전환·MediaRecorder·WAV 정규화
-lib/toeic-rec-store.ts            ← 녹음 IndexedDB 보관(클라이언트 전용)
+lib/toeic-rec-store.ts            ← 녹음 IndexedDB 보관 = 업로드 대기열 + 재생 캐시(클라이언트 전용, §13-3)
+lib/toeic-rec-rules.ts            ← 녹음 서버 보관 판정 순수 함수(객체 키·바이트 판정·교체 판정·정규화·대기열 판정 — 클라이언트 import 안전, §13)
+lib/toeic-rec-blob.ts             ← 녹음 보관소 두 벌(GCS 버킷 / 로컬 data/recordings — 서버 전용, 백엔드는 lib/store-backend 판정 하나)
+lib/toeic-rec-upload.ts           ← 업로드 대기열 비우기(클라이언트 전용, 동시 1개·재시도 2·10·30초)
+lib/toeic-compare.ts              ← 결과 화면 🎧 비교 판정 순수 함수(대상·다시 풀기 기록·점수 변화)
+lib/store-backend.ts              ← 저장 백엔드 판정 단일 정의처(lib/store가 resolveStoreBackend로 다시 내보낸다)
 app/toeic/**                      ← 화면
 app/api/toeic/**                  ← 라우트
 scripts/eval-toeic.ts             ← 오프라인 검증 + spec-sync + (게이트) 실호출 점검
 scripts/eval-toeic-guides*.ts     ← 유형별 공략 eval 조각 넷(순수 층·앱 층·S2·S3 — eval-toeic.ts가 불러 한 번에 돈다, §12-10)
+scripts/eval-toeic-recordings.ts  ← 내 녹음 서버 보관 + 비교 eval 12묶음(오프라인, GCS 0 — eval-toeic.ts가 runToeicRecordingChecks()로 부른다, §13-10)
 scripts/eval-toeic-template-centric.ts ← 템플릿 중심 재정렬 eval(순수 층·레코드·가져오기·파일 저장소 왕복·라우트/앱 소스 대조·번들 경계·실제 파일 개수 — eval-toeic.ts가 runToeicTemplateCentricChecks()로 부른다, §12-13-5, 2026-10-02)
 ```
 
@@ -769,7 +775,7 @@ A realistic candid photograph for an English speaking test picture-description t
 
 ### 5-0. 흐름
 
-응시가 끝나면 녹음은 기기(IndexedDB)에 남는다. 사용자가 **"AI 채점 받기"**를 누르면 문항마다(동시 2개):
+응시가 끝나면 녹음은 기기(IndexedDB)와 서버(GCS 비공개 버킷 — 응시 중 문항마다 올린다, §13)에 있다. 다른 기기에서는 서버 사본을 내려받아 같은 정규화를 거쳐 채점한다(채점 라우트 계약은 그대로다 — §13-8). 사용자가 **"AI 채점 받기"**를 누르면 문항마다(동시 2개):
 
 1. 클라이언트가 녹음을 **16kHz mono 16-bit WAV로 정규화**(`lib/mic-session.ts`) — iOS Safari의 `audio/mp4`가 전사 API에서 형식 오류·잘림을 내는 보고가 반복돼, 서버에 ffmpeg가 없는 이 배포에서는 클라이언트 정규화가 안전하다. 디코드에 실패하면 원본을 그대로 올린다.
 2. `POST /api/toeic/attempts/[id]/score` (multipart: `q`, `audio`) → 관문 T 전사(`language: "en"`, **기대 문장을 prompt로 넣지 않는다** — 전사가 모범답변 쪽으로 끌려가 점수가 부풀려진다).
@@ -968,7 +974,7 @@ zod(`buildFeedbackZod({maxScore, transcript})`): `score` 정수 0~만점(Q11=5, 
 - 질문 음성이 끝내 재생되지 않으면 그 문항을 멈추고 **"다시 듣기"·"질문 보기"** 버튼을 띄운다(Q8–10은 평소 텍스트를 숨긴다). 판정은 `speakQueue`의 끝 사유만으로 하지 않는다 — 1~2조각 큐는 전부 무음이어도 `"done"`으로 끝나기 때문에, `onEnd`의 둘째 인자 `{ sounded }`(소리를 낸 조각 수)로 순수 함수 `toeicSpeechOutcome`(`lib/toeic-mock.ts`)이 다시 판정한다. 질문은 조각 하나라도 무음이면 멈추고, 지시문은 전부 무음일 때만 멈춘다.
 - 마이크 대기에는 상한이 있다(`lib/mic-session.ts`의 `MIC_*_TIMEOUT_MS` — 답변 녹음의 `getUserMedia` 8초, 시작 전 마이크 점검 15초, 녹음기 start 5초, stop 3초). 상한을 넘기면 캡처 계수를 되돌리고 오디오 세션을 `"playback"`으로 되돌린다. 늦게 도착한 스트림은 즉시 트랙을 멈춘다 — 응답 없는 권한 요청 하나 때문에 세션이 시험 내내 `play-and-record`에 갇히지 않게 한다.
 - 녹음 규칙(`lib/mic-session.ts`): **재생과 마이크 캡처를 시간상 겹치지 않는다** — 질문 음성·비프가 끝난 뒤 `navigator.audioSession.type = "play-and-record"`(지원 시) → `getUserMedia` → `MediaRecorder.start()` → 답변 타이머는 녹음 `start` 이벤트에서 시작 → 끝나면 `stop()` → 트랙 `stop()` → **그다음에** `"playback"`(녹음 중에 바꾸면 트랙이 끊긴다). 녹음 중 화면이 숨겨지면 즉시 멈추고 "중단됨"으로 표시한다. 시작 탭에서 동기로 오디오 컨텍스트·재생 잠금 해제·질문 음성 프리페치·마이크 점검을 한다.
-- 녹음은 기기(IndexedDB `eunwoo-toeic-rec`, 키 `{attemptId}:{q}`)에만 두고 **최근 응시 5회분**만 남긴다. 다른 기기·브라우저에서는 "녹음은 응시한 기기에만 있어요"로 안내한다.
+- 녹음은 먼저 기기(IndexedDB `eunwoo-toeic-rec`, 키 `{attemptId}:{q}`)에 두고 문항마다 백그라운드로 서버에 올린다(§13-3). 기기 사본은 풀마다 **최근 응시 5회분**만 남기되 아직 못 올린(pending) 녹음이 있는 응시는 지우지 않는다. 다른 기기·브라우저는 서버 사본으로 듣고 채점한다(§13-8). 서버에도 없으면 "이 녹음은 아직 서버에 올라가지 않았어요 — 응시한 기기에서 결과 화면을 열면 올라가요".
 - 유형 연습: 파트 하나만 같은 형식으로 응시한다(`scope: "part"`).
 
 ---
@@ -1128,6 +1134,7 @@ interface ToeicAttemptRecord {
 - 응시 시작에 레코드를 만들고(녹음 IndexedDB 키로 id가 필요하다), 끝나거나 그만둘 때 `answers`의 `recorded`·`durationMs`를 채운다. 채점은 문항별로 그 문항만 갱신한다(파일: `mutate`, Firestore: 문서 읽기 → 그 문항만 바꿔 쓰기 — 같은 응시의 두 문항이 동시에 채점돼도 서로 덮지 않게 `runTransaction`).
 - 시작할 때 `answers`는 빈 배열이고, 끝/그만두기가 **응시 범위의 모든 문항**을 채운다(녹음 안 된 문항은 `recorded:false`). 그래서 "닫힌 응시" = `finishedAt !== null || answers.length > 0`이다(`lib/toeic-attempt-rules.ts`). 끝/그만두기는 **한 번만** 받는다 — 이미 닫힌 응시에 다시 오면 409(`already_finished`)로 거절하고 쓰지 않는다(판정은 원자 단위 안). 재시도·다른 탭의 늦은 요청이 "끝까지"를 "중단"으로 바꾸거나 채점된 문항의 `recorded`를 뒤집지 못하게 하려는 것이고, 화면은 409를 성공으로 본다. 채점은 닫힌 응시의 녹음된 문항에만 한다(아니면 409).
 - 모의고사를 지우면 응시 기록도 지운다.
+- **2026-10-03(§13-5)**: 응시 기록에 `recordings: ToeicStoredRecording[]`(서버에 보관한 녹음의 메타 — q마다 하나)를 더한다. `answers`가 아니라 따로 두는 것은 응시 중 업로드가 "닫힌 응시" 판정(`answers.length > 0`)을 뒤집지 않게 하려는 것이다. 모의고사를 지우면 녹음 객체도 먼저 지운다(§13-7).
 
 ### 7-6. 교재 10쪽 미리 넣기 — "파일로 가져오기"
 
@@ -1158,14 +1165,14 @@ interface ToeicAttemptRecord {
 /toeic/mocks                    모의고사 목록 + 새로 만들기(목표 등급·파트·주제)
 /toeic/mocks/[id]               모의고사 학습 보기(자료·모범답변·🔊) + 응시(실전 11문항 / 유형 연습) + 응시 기록
 /toeic/mocks/[id]/take          응시 화면(전면 오버레이 — 타이머·질문 음성·녹음)
-/toeic/attempts/[id]            응시 결과(내 녹음 ▶ · 전사 · 점수 · 피드백 · 모범답변 · AI 채점 받기 · 추정 등급)
+/toeic/attempts/[id]            응시 결과(내 녹음 ▶(이 기기 → 서버 사본) · 🗄️ 서버 보관 n/m · 전사 · 점수 · 피드백 · 모범답변 · AI 채점 받기 · 추정 등급 · 🎧 비교 — §13-8·§13-9)
 /toeic/guides                   유형별 공략 — 유형 폴더 4개 + 📂 파일로 가져오기(2026-09-27 — 폴더 탭·틀 테스트·👀 틀 시험 러너 `/toeic/guides/[part]/templates/quiz`(2026-10-02)는 §12-8)
 
 /api/toeic/sets/extract         호출 A (사진별 병렬, 저장 없음)
 /api/toeic/sets                 POST 저장 · import · reorder · [id] DELETE/rename · [id]/points(호출 B) · [id]/quiz
 /api/toeic/mocks                POST 생성(호출 C 파트별 병렬 — 2026-10-02부터 파트마다 답변 흐름, 문서에 네 파트 흐름 저장) · reorder · [id] DELETE/rename · [id]/regenerate?part= · [id]/image(관문 P) · [id]/attempts
 /api/toeic/images/[id]          GET 생성 사진
-/api/toeic/attempts/[id]        finish · score(관문 T + 호출 D / Q1–2 대조)
+/api/toeic/attempts/[id]        finish · score(관문 T + 호출 D / Q1–2 대조) · recordings/[q] PUT·GET(내 녹음 서버 보관 — PIN 게이트 뒤 프록시, §13-4)
 /api/toeic/guides               import · templates/transcribe(관문 T) · templates/sessions(2026-10-02: 모드 다섯 — 말하기 둘 + 👀 고르기·빈칸 셋) · [part]/drills(호출 C) — §12-8
 ```
 
@@ -1178,7 +1185,7 @@ interface ToeicAttemptRecord {
   - 저장 응답의 `droppedKeyExpressions`(검토에서 표현을 고치거나 빼서 QUIZ가 가리킬 표현을 잃은 수)가 있으면 곧장 넘어가지 않고 완료 화면에서 묶음별로 알린다. QUIZ 문장은 남는다. 표현 연결이 모두 풀린 QUIZ의 말하기 항목 키는 QUIZ 번호가 된다(§6-1).
   - "다시 읽기"는 다시 눌러 나아질 때만 보인다 — 네트워크 예외, `retriable:true` 500, 본문이 JSON이 아닌 5xx(게이트웨이). 키 없음(501)·입력 오류(400)는 이유만 알린다.
 - 응시 화면: 문항 번호·파트·단계·남은 시간을 크게, 준비 중에는 메모장(선택), 녹음 중에는 레벨 미터. 마이크 거부·미지원이면 **"녹음 없이 연습"**(타이머만)으로 계속할 수 있다.
-- 응시 결과: 추정 등급은 "추정(참고용)", Q1–2는 "발음·억양은 채점하지 않았어요". 녹음이 이 기기에 없으면 AI 채점 버튼을 막고 이유를 말한다.
+- 응시 결과: 추정 등급은 "추정(참고용)", Q1–2는 "발음·억양은 채점하지 않았어요". 녹음이 이 기기에도 서버에도 없으면 AI 채점 버튼을 막고 이유를 말한다(§13-8).
 - 진단 캡션(선택 표시): 마지막 녹음의 mimeType·길이·크기·정규화 여부·전사 상태(SPEC §16-5의 TTS 진단 관용구) — 서버 로그를 못 보는 폰에서 판정하려고.
 
 ---
@@ -1188,7 +1195,7 @@ interface ToeicAttemptRecord {
 - **오프라인(기본, 무비용)**: zod 반례(exampleSpan이 예문 밖·index 누락/중복·useIn part 중복·frames에 `___` 없음·chunks 불일치·stressWords가 지문에 없음·feedback `said`가 전사문 밖·순서 바꿈·사이 단어 뺌·단어 조각(쉼표 하나 빠진 인용은 통과)·점수 범위·잘린 항목의 빈 뜻은 판독만 통과·세트 안 표현 중복은 가져오기에서 거부), 후처리(keyExpressions 정리·DAY 묶기·번호 병합·usedExpressions 정리·빈 자리만 채우기), 시험 출제(모드별 조건·보기 5개 상이·정답 포함·뜻이 같은 표현과 대소문자만 다른 보기 제외·보기 2개 미만이면 출제 불가·`cloze` 가림·`speak` 항목 키), **모드별 숙련도 분리**(반례로 잠금), 형식표·단계 전이(Q10 2회 재생·Q8 앞 표 읽기 45초·파트 첫 문항만 지시문), Q1–2 대조(숫자 표기 통일·약어 마침표 p.m. = PM·빠짐/치환 계산), 추정 총점(raw 0~35 전 구간 리터럴 표·정수 아닌 문항 번호 방어)·등급 구간, 스트릭 트랙 분리(은우·일본어·운동·영어가 서로 섞이지 않음), **가져오기 파일 검증**(`data/private/toeic-preset-hackers-core.json`이 있으면 zod 통과·10세트·140표현·20 QUIZ, 없으면 SKIP — 공개 저장소에 없으므로 CI 기준은 SKIP).
 - **spec-sync**: 호출 A·B·C(머리말 + 파트 5)·D의 시스템 프롬프트·사용자 메시지 형식·사진 프롬프트 접미사를 이 문서와 **바이트 대조**, JSON Schema 8개는 **의미 동치**(JSON.parse → deepEqual, 일본어 관용구). 2026-10-02: 원문 대상이 14 → 15(새 `TOEIC_MOCK_FLOW_RULES` — 라벨 "§4-1 호출 C 흐름 규칙")이고 JSON 8은 그대로, 값 셋(§4-7·§5-1·§5-2)이 바뀌었다(§4-1 머리말은 검토 반영으로 옛 글자 그대로). 스펙이 먼저 바뀐 동안 그 셋이 FAIL이었고, 같은 날 T15 구현이 `prompts.ts`를 같은 문자열로 맞춰 **15/15 PASS**다 — 스펙과 코드는 한 커밋으로 묶는다(문서만 먼저 나가면 main의 eval이 붉다). 템플릿 중심 재정렬의 새 항목은 §12-13-5.
 - **실호출 점검(게이트)**: `EVAL_TOEIC=1`일 때만 — 호출 A(사진 1장)·B(7개)·C(파트 1개)·D(픽스처 전사문 1개). 비용이 드는 검증은 **사용자 동의 후 오케스트레이터가 실행**한다.
-- **유형별 공략(§12-10)** 항목은 `scripts/eval-toeic-guides.ts`(순수 층 — `runToeicGuideChecks`)·`eval-toeic-guides-app.ts`(S1 앱 층)·`eval-toeic-guides-s2.ts`(틀 테스트·표현 시험)·`eval-toeic-guides-s3.ts`(한 문제 연습)에 있고 `eval-toeic.ts`가 불러 한 번에 돈다. 2026-09-28 기준 오프라인 **985항목**(표현집·모의고사 357 + 유형별 공략 628)이었고, 2026-10-02 템플릿 중심 재정렬 뒤 **1167항목**이다(새 eval 조각 `scripts/eval-toeic-template-centric.ts`와 `eval-toeic.ts`의 "템플릿 중심 — 호출 C·D 흐름" — §12-13-5·§12-13-7) — 두 가져오기 파일(`data/private/toeic-preset-hackers-core.json`·`data/private/toeic-strategy/toeic-guides.json`)이 있는 로컬 기준이고, 없으면 각 묶음이 SKIP 1건으로 바뀐다(공개 저장소·CI 기준). 게이트는 새로 두지 않았다(§12-10 끝).
+- **유형별 공략(§12-10)** 항목은 `scripts/eval-toeic-guides.ts`(순수 층 — `runToeicGuideChecks`)·`eval-toeic-guides-app.ts`(S1 앱 층)·`eval-toeic-guides-s2.ts`(틀 테스트·표현 시험)·`eval-toeic-guides-s3.ts`(한 문제 연습)에 있고 `eval-toeic.ts`가 불러 한 번에 돈다. 2026-09-28 기준 오프라인 **985항목**(표현집·모의고사 357 + 유형별 공략 628)이었고, 2026-10-02 템플릿 중심 재정렬 뒤 **1167항목**이다(새 eval 조각 `scripts/eval-toeic-template-centric.ts`와 `eval-toeic.ts`의 "템플릿 중심 — 호출 C·D 흐름" — §12-13-5·§12-13-7) — 두 가져오기 파일(`data/private/toeic-preset-hackers-core.json`·`data/private/toeic-strategy/toeic-guides.json`)이 있는 로컬 기준이고, 없으면 각 묶음이 SKIP 1건으로 바뀐다(공개 저장소·CI 기준). 게이트는 새로 두지 않았다(§12-10 끝). 2026-10-03 내 녹음 서버 보관 + 비교(§13-10 — `scripts/eval-toeic-recordings.ts` 12묶음, GCS 0) 뒤 **1308항목**이다.
 
 ---
 
@@ -3057,3 +3064,286 @@ interface ToeicAnswerFlowCheck {
 - 실호출 품질 — `EVAL_TOEIC=1`(사용자 동의 뒤, SPEC §20-10 확인 15): 모범답변·개선 답변이 흐름 단계·틀 글자를 실제로 따르는가, Q5·Q8 개선 답변 길이, 과제 절 예시 글자 대신 외운 틀로 시작하는가, 채우지 않은 자리 재요청 빈도, 입력이 늘어난 뒤의 지연·토큰. 스텁은 흐름 첫 틀을 일부러 넣으므로 이것을 대신하지 못한다.
 - 실제 Firestore — `answerFlows`·`alternates`·틀 시험 세션의 코덱(정규화 경로는 코드로, 배열 속 배열 0은 eval로 확인). 배포 뒤 첫 "같은 파일 다시 가져오기"가 프로덕션의 첫 확인이다.
 - iPhone 실기기(SPEC §20-10 실기기 13~16)와 실제 소리(헤드리스는 음소거 — 재생 이벤트·요청 글로만 판정).
+
+---
+
+## 13. 내 녹음 서버 보관 + 비교 (2026-10-03)
+
+> 제품 흐름·비용·실기기 확인은 SPEC §20-11에 있다. 이 절은 **저장 위치·업로드 계약·레코드 필드·기기 대기열·삭제·비교 화면 판단·eval**을 정한다. 새 AI 호출과 새 프롬프트는 없다. spec-sync 대상(원문 15 + JSON 8 + 호출 옵션 문장)도 그대로다. 이 절의 문장 예시는 모두 지어낸 것이다.
+>
+> **구현 반영(2026-10-03, R1~R5)** — 이 절이 바꾼 옛 문장(§0-2 "녹음" 줄, §7-5, §5-0, `lib/toeic-rec-store.ts` 머리 주석, SPEC §1·§13·§20-4~§20-6)은 같은 작업에서 고쳤다. 구현이 정한 스펙 공백은 §13-14에 있다. 인프라(§13-11 I1~I5)는 오케스트레이터 몫이다 — 버킷이 없으면 프로덕션 업로드는 500 `storage_failed`로 끝나고 녹음은 기기 대기열에 남는다(잃지 않는다).
+
+### 13-0. 결정 (사용자 확정 2026-10-03)
+
+사용자 원문: "토익스피킹 모의고사는 내 음성도 저장해서 비교해볼 수 있게 하자."
+
+| 항목 | 결정 | 출처 | 근거 |
+|---|---|---|---|
+| 무엇을 보관하나 | **아빠의 모의고사 응시와 한 문제 연습 응시**의 답변 녹음(같은 `toeicAttempts`) | 요구 | 비교의 재료다. 틀 테스트(§12-5)·마이크 점검 녹음은 넣지 않는다 — 틀 테스트는 응시 기록이 없고 전사만 하고 버리는 연습이다 |
+| 어디에 | **서버** — Google Cloud Storage 비공개 버킷. 어느 기기에서나 들을 수 있다 | 요구 | Firestore 문서는 1MiB가 상한이라 오디오를 담을 수 없다 |
+| 얼마나 | **기간 제한 없이 모두**. 수명 주기 규칙을 두지 않는다 | 요구 | — |
+| 원칙 변경 범위 | "녹음은 서버에 두지 않는다"(§0-2·§7-5, SPEC §1·§13·§20-4·§20-6)를 **아빠 모의고사·한 문제 연습 녹음에 한해** 바꾼다. 은우 쪽은 그대로다 — 자유대화 음성은 계속 저장하지 않는다(SPEC §21) | 요구 | 학습자가 성인 본인이고, 비교가 목적이다 |
+| 비교 | ① 내 답 → 개선 답변(없으면 모범답변) 이어 듣기 ② 글자 나란히(내 전사문 ↔ 모범답변, 내가 쓴 틀·빠진 단계 표시 — 🧩 틀 점검 함수 재사용) ③ 같은 문제 다시 풀기 기록 비교(같은 `mockId`·같은 `q` — 지난 녹음 ↔ 이번 녹음, 점수 변화) | 요구 | — |
+| 기기 녹음(IndexedDB) | 지우지 않는다. **업로드 대기열 + 빠른 재생 캐시**로 역할이 바뀐다 | 기본값 | 응시 중 네트워크가 끊겨도 녹음을 잃지 않으려면 기기에 먼저 있어야 한다 |
+| 업로드 시점 | **문항 녹음이 끝날 때마다 백그라운드로** 올린다(응시 중). 실패한 것은 기기 대기열에 남겨 다음 기회에 다시 올린다 | 기본값 | §13-3 |
+| 저장 형식 | **녹음한 원본 그대로**(iPhone `audio/mp4` AAC, 그 밖 webm/ogg opus). 채점용 WAV는 저장하지 않는다 | 기본값 | §13-2 |
+| 재생 경로 | PIN 게이트 뒤 **프록시 라우트**(`GET …/recordings/[q]`). 서명 URL·공개 URL은 쓰지 않는다 | 기본값 | §13-4 |
+| 기존 기기 녹음 이행 | 이미 기기에 있는 녹음(풀마다 최근 5회분)도 **올린다** | 기본값 | 그 기기에만 있는 유일한 사본이다 — §13-6 |
+
+### 13-1. 저장 위치 — 버킷·경로·백엔드
+
+- **버킷**: `gs://eunwoo-bookcard-toeic-rec`. 위치 `asia-northeast3`(Cloud Run과 같은 리전 — 리전 간 전송이 없다), 클래스 Standard, **균일한 버킷 수준 접근**(객체 ACL 없음), **공개 접근 방지 강제**, 객체 버전 관리 끔, 수명 주기 규칙 없음, 소프트 삭제는 GCS 기본값(7일)을 그대로 둔다(잘못 지운 녹음을 7일 안에 되살릴 수 있다 — 2026-08-17 사고의 교훈). 생성·IAM은 오케스트레이터가 gcloud로 한다(§13-11).
+- **버킷 이름 env** `TOEIC_REC_BUCKET` — 빈 값·공백이면 기본값 `eunwoo-bookcard-toeic-rec`(SPEC §11 빈 값 폴백 관용구 `?.trim() ||`). 비밀이 아니지만 env로 두는 이유는 이름이 이미 쓰이고 있어 다른 이름으로 만들 경우 코드를 고치지 않으려는 것이다.
+- **백엔드 선택은 스토어와 하나다.** 녹음 보관소는 `lib/store.ts`의 백엔드 판정(`resolveStoreBackend` — 이번에 export해 한 곳에서 쓴다)을 그대로 따른다. `firestore`이면 GCS, `file`이면 로컬 디렉터리다. 따로 판정하면 "문서는 파일, 녹음은 프로덕션 버킷" 같은 섞인 상태가 생긴다.
+  - 로컬 디렉터리: env `TOEIC_REC_DIR`(빈 값이면 `data/recordings`). `data/`는 `.gitignore`·`.gcloudignore`(물려받음) 대상이라 커밋·배포 업로드에 섞이지 않는다. eval은 이 env를 스크래치 디렉터리로 돌린다.
+  - 개발 환경인데 GCS(=프로덕션 버킷)를 잡으면 `getStore()`와 같은 경고를 찍는다. 생성·덮어쓰기는 막지 않고(스토어와 같다), 지우기는 prod-guard가 막는다(§13-7).
+- **SDK**: `firebase-admin/storage`(`getStorage(app).bucket(name)`). Firestore가 이미 쓰는 같은 앱(ADC — Cloud Run 런타임 서비스 계정)을 쓰므로 **새 의존성이 0**이다. `@google-cloud/storage`는 `firebase-admin`의 전이 의존성으로만 있으니 직접 import하지 않는다.
+- **객체 키**(순수 함수 `toeicRecObjectKey(attemptId, q, recordedAtMs)`, `lib/toeic-rec-rules.ts`):
+
+  ```
+  attempts/{attemptId}/{q}/{recordedAtMs}
+  ```
+
+  - `attemptId`는 `^[A-Za-z0-9_-]{1,64}$`(스토어가 만든 UUID가 통과한다)여야 하고, `q`는 1~11 정수, `recordedAtMs`는 양의 정수다. 어긋나면 키를 만들지 않는다(던진다 — 라우트는 그 앞에서 400). 파일 백엔드에서 경로 밖으로 나가는 키(`..`·`/`)를 이 검사가 막는다.
+  - **확장자를 붙이지 않는다.** 형식은 객체 메타데이터(`contentType`)와 응시 기록(§13-5)에 있다.
+  - **한 녹음 = 한 객체, 객체는 바꾸지 않는다.** 같은 문항을 "이 문항 다시"로 새로 녹음하면 `recordedAtMs`가 다른 새 객체가 생기고, 응시 기록의 메타가 새 객체를 가리킨다. 같은 경로를 덮어쓰면 늦게 도착한 옛 업로드가 새 녹음을 덮는 경합(객체는 옛것, 메타는 새것)이 생긴다. 키를 녹음마다 다르게 하면 "어느 것이 지금 녹음인가"는 메타 트랜잭션 하나가 정한다.
+  - 대체된 옛 객체는 **업로드 라우트가 지우지 않는다** — 업로드 경로에 지우는 동작을 두지 않기 위해서다. 응시가 지워질 때 접두사째 지워진다(§13-7). 다시 녹음은 드물어 비용이 거의 없다.
+
+### 13-2. 형식 · 크기
+
+- **원본을 그대로 보관한다**(녹음기 `recorder.mimeType` — `lib/mic-session.ts`가 고른 것). 근거:
+  - 크기 — 원본(AAC·Opus)은 60초에 1MB 안팎이고, 16kHz mono 16-bit WAV는 60초 1.92MB다. 실전 한 회(답변 시간 합 330초)면 원본 약 5MB, WAV 약 10.6MB다.
+  - 응시 중 CPU를 쓰지 않는다 — WAV 정규화(`toWav16kMono`)는 디코드·리샘플이라 응시 중(다음 질문 음성·비프 타이밍)에 돌리면 iPhone에서 소리가 밀릴 수 있다. 원본은 이미 Blob으로 있다.
+  - 재생 호환 — 가족이 녹음하는 기기는 대부분 iPhone이고 `audio/mp4`(AAC)는 iPhone·iPad·Android·데스크톱 어디서나 재생된다. Chrome·Android가 만든 webm/opus는 iPhone Safari의 재생 지원이 버전마다 달라 **실기기 확인 항목**이다(SPEC §20-11 실기기). 재생에 실패하면 화면이 "이 기기에서 재생할 수 없는 형식(webm)이에요"를 보인다(§13-8).
+  - 손실 없음 — 원본에서 WAV는 언제든 다시 만들 수 있지만 반대는 안 된다.
+- **채점용 WAV는 저장하지 않는다.** 채점은 지금처럼 클라이언트가 원본을 WAV로 정규화해 `score` 라우트에 올린다(§5-0 1). 다른 기기에서 채점할 때는 서버 사본을 내려받아 같은 정규화를 거친다(§13-8).
+- **받는 형식**(`TOEIC_REC_STORE_TYPES`, `lib/toeic-attempt-contract.ts` — 기본 타입, 파라미터 무시): `audio/mp4`·`audio/m4a`·`audio/x-m4a`·`audio/webm`·`audio/ogg`·`audio/wav`(WAV는 장래 대비 — 지금 녹음기는 내지 않는다). 채점 업로드의 `TOEIC_SCORE_AUDIO_TYPES`에는 ogg가 없다(Firefox 녹음은 WAV 정규화를 거쳐 채점된다) — 보관 목록은 별도 상수다.
+- **바이트로 형식을 확인한다**(순수 함수 `sniffToeicAudioType(bytes)`): 앞 12바이트로 `mp4`(4~8바이트 `ftyp`) · `webm`(`1A 45 DF A3`) · `ogg`(`OggS`) · `wav`(`RIFF`…`WAVE`)를 가른다. 선언한 타입의 계열과 다르거나 넷 다 아니면 400이다. 저장하는 `contentType`은 **바이트로 판정한 계열의 대표 타입**(`audio/mp4`·`audio/webm`·`audio/ogg`·`audio/wav`)이다 — 클라이언트가 붙인 타입을 그대로 믿어 내려주지 않는다(오디오라고 올린 HTML이 같은 출처에서 열리는 길을 막는다).
+- **크기 상한**: 한 파일 `TOEIC_SCORE_AUDIO_MAX_BYTES`(4MB)를 **그대로** 쓴다(새 숫자를 두지 않는다 — 계약 파일의 단일 정의). 가장 긴 Q11(60초 + 녹음 여유 15초 = 75초)이 128kbps라도 1.2MB다. 빈 파일은 400.
+- **길이**: 클라이언트가 보낸 `durationMs`는 정수 1 ~ `maxToeicRecordingMs(q)`(`lib/toeic-attempt-rules.ts` — 끝내기 라우트와 같은 상한)여야 한다.
+
+### 13-3. 업로드 시점 — 응시 중 문항마다, 기기를 대기열로
+
+- **문항 녹음이 끝나 IndexedDB에 저장된 직후**(`saveToeicRecording`이 끝난 뒤) 그 녹음을 대기열에 올리고 백그라운드로 보낸다. 근거:
+  - 끝낼 때 한꺼번에 보내면 화면이 숨겨지는 순간(pagehide)이 마지막 기회가 되는데, 오디오는 keepalive 본문 한도(진행 중인 keepalive 합 64KiB — app-patterns §16)를 넘어 **보낼 수 없다**. 문항마다 보내면 응시 도중 폰이 꺼져도 끝난 문항은 이미 서버에 있다.
+  - 11개를 끝에 몰아 보내면 결과 화면을 여는 순간 대역폭이 몰린다. 문항마다 0.2~1MB씩 나눠 보내면 응시 흐름과 겹쳐도 가볍다. 질문 음성은 시작 탭에서 미리 받아 두므로(SPEC §20-4) 업로드와 다투지 않는다.
+  - 업로드는 바이트를 바꾸지 않으므로(정규화 없음) 응시 중 CPU 부담이 없다.
+- **기기 대기열 = 녹음 메타의 상태**(`lib/toeic-rec-store.ts` 메타에 필드 둘을 더한다 — IndexedDB 버전·store 이름은 그대로, 업그레이드 없음):
+
+  ```ts
+  type ToeicRecUploadState = "pending" | "done" | "gone";
+  interface ToeicRecordingMeta {
+    // …지금 필드(attemptId·pool·q·mimeType·durationMs·size·createdAt) 그대로
+    upload: ToeicRecUploadState;   // 옛 메타(필드 없음) = "pending" — §13-6 이행
+    uploadedAt: number | null;     // 서버가 받은 시각(epoch ms). pending·gone이면 null
+  }
+  ```
+
+  - `"pending"`: 아직 서버에 없다(또는 모른다). `"done"`: 서버가 받았거나(`stored`·`reused`) 더 새 녹음이 이미 있다(`superseded`). `"gone"`: 다시 보내도 받지 않는다(응시·문항이 없음·잠김·형식 거부) — 대기열에서 빠지고, 기기 사본은 캐시로만 남는다.
+  - 판정은 순수 함수 `toeicRecUploadStateOf(meta)`(옛 메타 → "pending")와 `nextToeicRecUploadAction(result)`(§13-4 응답 → done·gone·retry)이 한다.
+- **대기열 비우기** `drainToeicRecUploads()`(`lib/toeic-rec-upload.ts`, 클라이언트 전용):
+  - 모듈 안 진행 중 약속 하나로 **한 번에 하나만** 돈다(중복 호출은 합류). 동시 업로드는 1개다 — 응시 중 질문 음성·녹음과 대역폭을 다투지 않게.
+  - `"pending"` 메타를 오래된 순으로 하나씩 읽어 바이트를 꺼내 `PUT`한다. 재시도할 실패(네트워크 예외·5xx·`retriable:true`·401 `locked`)는 한 번의 비우기 안에서 2초·10초·30초 뒤 최대 3번 다시 하고, 그래도 안 되면 그 항목을 남긴 채 멈춘다(다음 계기에 다시).
+  - **계기**: ① 응시 화면의 녹음 저장 직후 ② 응시 결과 화면·모의고사 학습 보기·한 문제 연습 폴더(④ 탭)가 열릴 때 ③ 그 화면들이 열려 있는 동안 `online` 이벤트와 `visibilitychange`(보임). 토익 밖 화면에서는 돌지 않는다.
+  - **keepalive를 쓰지 않는다**(본문이 한도를 넘는다). pagehide에 남은 항목은 기기에 남아 다음 계기에 간다.
+  - IndexedDB를 못 쓰는 환경(프라이빗 모드)은 지금처럼 메모리 폴백이다 — 메모리 사본도 같은 함수로 올리고, 올리기 전에 탭을 닫으면 그 녹음은 사라진다(지금과 같은 한계, 화면이 사실대로 알린다).
+- **기기 보관 정리(eviction)가 올리지 않은 녹음을 지우지 않게 한다.** 지금 정리는 풀마다 최근 5회분만 남긴다(§12-7-6). 서버에 없는 녹음을 지우면 영영 잃는다. 그래서 **`"pending"` 녹음이 하나라도 있는 응시는 정리 대상에서 뺀다** — 순수 함수 `toeicRecPinnedAttempts(metas)`(pending이 있는 응시 id 집합)를 구해, 그 응시들을 `pickAttemptsToEvictByPool`에 넘기는 목록에서 먼저 빼고, 나머지에서 지금 규칙(풀마다 최근 5회분 + 지금 응시)을 그대로 적용한다. 고정된 응시는 순위 칸을 차지하지 않는다. 오래 오프라인이면 기기 보관이 5회분을 넘어 늘 수 있다 — 잃는 것보다 낫다.
+- **응시 화면 표시**: 진단 캡션에 문항마다 "서버 ✓ / 올리는 중 / 대기"를 더하고, 끝 화면에 "녹음 n개 중 m개를 서버에 보관했어요"(남으면 "나머지는 결과 화면에서 이어서 올려요")를 적는다. 업로드 실패가 응시 흐름을 멈추게 하지 않는다.
+
+### 13-4. 라우트 — 업로드 `PUT` · 재생 `GET`
+
+경로 `/api/toeic/attempts/[id]/recordings/[q]` — `q`는 `^\d{1,2}$`(1~11). **경로 조각에 점을 쓰지 않는다** — `proxy.ts`의 정적 확장자 예외(`STATIC_FILE`)가 PIN 게이트를 건너뛰게 할 수 있다(§12-8 관용구). 지금 그 정규식에는 오디오 확장자가 없지만, 누가 더하더라도 녹음 경로는 확장자가 없으니 열리지 않는다(eval이 둘 다 잠근다 — §13-10). PIN 게이트(`/api/*` 401 `locked`)가 두 라우트 모두에 걸린다. AI를 부르지 않으므로 키 검사가 없다.
+
+**`PUT` — 한 문항 녹음 올리기** (multipart: `audio` 파일, `durationMs`, `recordedAt` — 기기에서 녹음이 끝난 시각 epoch ms 정수. 필드 이름은 계약 상수)
+
+검사 순서: 400(형식 — multipart·q·필드·받는 타입·바이트 판정·빈 파일) · 413(크기) → 404(`attempt_not_found` · `question_not_found` — `attempt.questions`에 없는 q, §12-7-4의 기존 관용구) → 판정(아래) → 객체 쓰기 → 메타 저장(원자 단위).
+
+- **판정** 순수 함수 `decideToeicRecordingUpload(attempt, q, incoming: {sha256, recordedAtMs})`(`lib/toeic-rec-rules.ts`) — 지금 그 문항 메타(`attempt.recordings`의 q 항목)와 그 문항 답(`attempt.answers`)을 보고:
+
+  | 지금 | 들어온 것 | 결과 |
+  |---|---|---|
+  | 메타 없음 | 무엇이든 | `store` — 닫힌 응시여도 받는다(늦게 온 대기열·이행분) |
+  | 메타 있음, 같은 `sha256` | — | `reused` — 쓰지 않고 200(재시도·연타) |
+  | 메타 있음, 들어온 `recordedAtMs`가 더 이르거나 같음 | 다른 바이트 | `superseded` — 쓰지 않고 200(이미 더 새 녹음이 있다 — 늦게 도착한 옛 업로드) |
+  | 메타 있음, 더 새 녹음, **그 문항이 아직 전사되지 않음**(`transcript === null`) | 다른 바이트 | `store` — 메타를 새 객체로 바꾼다("이 문항 다시") |
+  | 메타 있음, 더 새 녹음, **그 문항이 이미 전사됨** | 다른 바이트 | `locked` — 409 `recording_locked`(채점된 녹음과 보관된 녹음이 어긋나지 않게. §5-0 "응시가 끝난 뒤 녹음은 바뀌지 않는다"를 서버가 지킨다) |
+
+  - 열린 응시인지 닫힌 응시인지는 판정에 넣지 않는다 — 다시 녹음은 응시 중에만 생기고, 그 업로드가 끝내기보다 늦게 도착해도 받아야 한다. 잠그는 기준은 "전사됐는가" 하나다.
+  - `answers`의 `recorded`가 false인 문항(끝내기가 녹음 없음으로 적은 문항)의 녹음도 받는다 — 목소리를 잃지 않는 쪽이다. 채점 조건(`recorded`)은 바꾸지 않는다.
+- 라우트는 판정을 **두 번** 한다 — 객체를 쓰기 전에 한 번(쓸 필요 없는 `reused`·`superseded`·`locked`면 쓰지 않는다), 메타를 쓰는 원자 단위 안에서 한 번 더(두 요청이 동시에 와도 메타를 쓰는 쪽이 하나다). 원자 단위는 스토어 메서드 `setToeicAttemptRecording(id, recording)`이다(파일 `mutate`, Firestore `runTransaction` — §7-5의 채점 저장과 같은 관용구). 판정은 그 안에서 같은 순수 함수를 부른다.
+- **순서는 객체 먼저, 메타 나중.** 객체만 쓰이고 메타 저장이 실패하면 대기열 재시도가 같은 키로 다시 쓴다(같은 키 = 같은 바이트, 멱등). 메타가 객체보다 먼저 생기면 "있는 줄 알았는데 없는" 녹음이 생긴다.
+- `sha256`은 서버가 바이트로 계산한다(클라이언트 값을 받지 않는다).
+- 로그에는 응시 id·q·바이트 수·결과·ms만 남긴다. 바이트·파일 이름은 남기지 않는다.
+- 응답(`ToeicRecordingPutResponse`, `lib/toeic-attempt-contract.ts` 단일 정의):
+  - 200 `{ ok:true, q, outcome:"stored"|"reused"|"superseded", recording: ToeicStoredRecording }` — `superseded`면 `recording`은 서버에 있는 더 새 녹음의 메타다
+  - 400 `{ ok:false, error:"invalid_input", messageKo }`
+  - 413 `{ ok:false, error:"audio_too_large", messageKo }`
+  - 404 `{ ok:false, error:"attempt_not_found"|"question_not_found", messageKo }`
+  - 409 `{ ok:false, error:"recording_locked", messageKo }`
+  - 500 `{ ok:false, error:"storage_failed"|"save_failed", messageKo, retriable:true }`
+- 기기 대기열의 응답 해석(`nextToeicRecUploadAction`): 200 → done · 404·409·400·413 → gone · 401·500·네트워크 예외·JSON 아닌 5xx(게이트웨이) → retry.
+
+**`GET` — 한 문항 녹음 내려받기**
+
+- 응시(404 `attempt_not_found`) → 그 문항 메타(없으면 404 `recording_not_found`) → 객체(없으면 404 `recording_missing` — 메타는 있는데 객체가 없다. 화면은 "서버 사본이 없어요"로 보이고, 기기에 사본이 있으면 대기열에 다시 올린다) → 200 본문 전체.
+- 헤더: `content-type` = 메타의 `mimeType`(바이트로 판정한 것), `content-length`, **`cache-control: private, no-store`**(Firebase Hosting CDN이 PIN 게이트 뒤 응답을 공유 캐시에 담지 않게 — `GET /api/toeic/images/[id]`보다 한 걸음 더 막는다), `x-content-type-options: nosniff`, `content-disposition: inline`. Range는 받지 않는다(늘 200 전체 — 4MB 이하).
+- 500 `{ ok:false, error:"storage_failed", messageKo, retriable:true }`.
+- **화면은 이 주소를 `<audio src>`에 직접 넣지 않는다.** `fetch` → `Blob` → `URL.createObjectURL`로 재생한다(지금 IndexedDB 녹음을 재생하는 방식과 같다). iOS Safari의 미디어 요소는 Range(206) 응답을 기대하고, 탭 안 `play()` 전에 내려받기가 끝나 있어야 하므로(§13-8) 화면이 미리 받는 편이 단순하다.
+
+**프록시를 고른 이유(서명 URL을 쓰지 않는다)**
+
+- **PIN 게이트가 그대로 걸린다.** 서명 URL은 유효 시간 동안 누구나 여는 링크라 PIN 게이트를 건너뛴다(대화·로그·기록에 남으면 그대로 열린다).
+- **권한이 하나 줄어든다.** Cloud Run에는 서비스 계정 키 파일이 없어, 서명하려면 런타임 서비스 계정에 자기 자신에 대한 `roles/iam.serviceAccountTokenCreator`(signBlob)를 더 줘야 한다. 프록시는 버킷 객체 권한 하나면 된다.
+- **CORS 설정이 필요 없다.** `fetch`로 Blob을 받으려면 `storage.googleapis.com`에 버킷 CORS를 열어야 한다. 프록시는 같은 출처다.
+- **비용·시간 차이가 없다.** 한 파일 0.2~1.2MB라 Cloud Run을 거쳐도 60초 상한과 무관하고, 인터넷 전송 요금은 GCS 직송이든 Cloud Run이든 같은 부류다(§13-9).
+
+### 13-5. 응시 기록에 메타 — `ToeicAttemptRecord.recordings`
+
+```ts
+interface ToeicStoredRecording {
+  q: number;                 // 1..11 — attempt.questions 안
+  objectKey: string;         // §13-1 "attempts/{attemptId}/{q}/{recordedAtMs}"
+  mimeType: string;          // 바이트로 판정한 대표 타입(audio/mp4 | audio/webm | audio/ogg | audio/wav)
+  size: number;              // 바이트, 1..TOEIC_SCORE_AUDIO_MAX_BYTES
+  sha256: string;            // 소문자 hex 64자(서버 계산)
+  durationMs: number;        // 기기가 잰 녹음 길이(1..maxToeicRecordingMs(q))
+  recordedAt: string;        // 기기 녹음 끝 시각(ISO — 버전 비교에만 쓴다)
+  uploadedAt: string;        // 서버가 받은 시각(ISO)
+}
+
+interface ToeicAttemptRecord {
+  // …§7-5·§12-3 필드 그대로
+  recordings: ToeicStoredRecording[];   // 2026-10-03 — q 오름차순, q마다 하나(지금 녹음). 옛 문서 = []
+}
+```
+
+- **`answers`에 넣지 않고 따로 둔다.** 응시 중에는 `answers`가 빈 배열이고, "닫힌 응시" 판정이 `finishedAt !== null || answers.length > 0`이다(§7-5). 응시 중 업로드가 `answers`에 항목을 만들면 응시가 닫힌 것으로 바뀌어 끝내기가 409로 거절된다. 끝내기(`applyAttemptFinish`)와 채점(`applyAttemptAnswer`)도 `recordings`를 건드리지 않는다.
+- 크기: 한 항목 약 250바이트, 11개여도 3KB 안팎이라 문서 1MiB와 무관하다. 배열 속 배열이 없어 Firestore 코덱(§12-3)이 필요 없다.
+- 정규화(`normalizeToeicAttemptRecord`, `lib/toeic-normalize.ts`)는 모르는 키를 버리므로 `recordings`를 명시적으로 옮긴다 — 배열이 아니면 `[]`, 항목 모양(q 정수·문자열·숫자 자리)이 깨진 것은 그 항목만 버리고, 같은 q가 둘이면 `recordedAt`이 늦은 것 하나만 남긴다. 생성(`createToeicAttempt` — `New*`가 필수 필드라 tsc가 생성부를 잡는다)은 `[]`로 시작한다.
+- **"녹음 서버 보관" 판정은 메타가 있는가 하나다** — `toeicStoredRecordingOf(attempt, q)`. 화면 문구·채점 버튼 자격·비교 버튼이 모두 이 함수를 쓴다.
+
+### 13-6. 기존 기기 녹음의 이행
+
+- 배포 뒤 아빠 iPhone에 남아 있는 녹음(풀마다 최근 5회분 — 모의고사·연습)은 옛 메타라 `upload` 필드가 없다 → `"pending"`으로 읽혀 **처음 토익 화면(§13-3 계기 ②)을 여는 순간부터 대기열로 올라간다.** 별도 버튼·스크립트가 없다.
+- 이 녹음들의 응시는 이미 닫혔고 채점된 문항도 있다. 서버에 메타가 없으므로 판정은 `store`다(§13-4 표 첫 줄) — 채점된 문항이어도 처음 한 번은 받는다. 기기의 녹음은 응시 뒤 바뀌지 않았으므로(§5-0) 채점에 쓴 그 녹음이다.
+- 응시를 이미 지운 녹음(모의고사 삭제)은 404 → `"gone"` → 정리 대상으로 돌아간다.
+- 응시한 기기에서만 일어난다 — 다른 기기에는 옛 녹음이 없다. 그 기기를 열지 않으면 이행되지 않는다(SPEC §20-11에서 아빠에게 안내).
+- 프라이빗 모드 메모리 사본은 이미 없다(탭을 닫으면 사라졌다).
+
+### 13-7. 삭제 — 모의고사 삭제의 연쇄에 녹음을 더한다
+
+- 녹음을 따로 지우는 화면·라우트는 두지 않는다. 지금처럼 **모의고사(연습 문서 포함)를 지우면** 생성 사진·응시 기록과 함께 그 응시들의 녹음이 지워진다(§7-5·§20-6 연쇄). 응시 하나만 지우는 기능은 지금도 없다(스트릭 과거가 사라진다 — §12-8).
+- **순서 — 딸린 것 먼저**: `deleteToeicMock`(두 백엔드)이 그 모의고사의 응시 id를 모은 뒤 ① 응시마다 녹음 접두사 `attempts/{attemptId}/`를 지우고(대체된 옛 객체까지 — §13-1) ② 그다음 사진·응시·모의고사 문서를 지금 순서대로 지운다. ①이 하나라도 실패하면 **문서를 지우지 않고** 던진다 → 라우트 500 `delete_failed`(다시 누르면 접두사 지우기부터 다시 — 이미 지운 것은 0건이라 멱등). 반대 순서면 문서는 사라지고 녹음만 남아, 가리키는 문서 없는 목소리가 버킷에 영영 남는다.
+- **prod-guard**: 녹음 보관소의 지우기 함수(`deleteAttemptRecordings(attemptId)`)는 GCS 백엔드일 때 스스로 `assertDestructiveAllowed("deleteToeicRecordings")`를 부른다(새 `DestructiveOp` — 지금 10개 → 11개). `deleteToeicMock`이 이미 먼저 막지만, 녹음 지우기가 다른 자리에서 불려도 막히게 한 겹 더 둔다. 파일 백엔드는 가드가 없다(지금 규칙과 같다).
+- 소프트 삭제(7일)로 버킷에서 잘못 지운 녹음을 되살릴 수 있다 — 되살린 녹음을 가리킬 응시 문서는 Firestore 쪽 복구가 따로 필요하다(PITR 꺼짐 — CLAUDE.md 서문).
+- **알려진 틈(고아 객체)**: 업로드가 객체를 쓴 직후 같은 응시가 지워지면 메타 저장이 404로 끝나 객체 하나가 남을 수 있다. 업로드 라우트는 지우지 않으므로(§13-1) 남은 객체는 다음 정리 도구 몫이다 — 이번 범위에 정리 도구는 두지 않는다(가족 규모에서 드물고, 크기는 1MB 안팎).
+
+### 13-8. 결과 화면 — 서버 사본 재생 · 다른 기기 채점
+
+- **소리 출처의 우선순위**: 이 기기 IndexedDB 사본 → 서버 사본(`recordings` 메타가 있을 때). 같은 녹음이면 기기 사본이 즉시 재생되고 데이터를 쓰지 않는다.
+- **서버 사본은 미리 받는다.** 결과 화면이 열리면 기기 사본이 없고 서버 사본이 있는 문항을 동시 2개로 내려받아 페이지 메모리에 Blob URL로 둔다(언마운트에 `revokeObjectURL`). 받는 동안 ▶는 "불러오는 중…"으로 막는다 — iOS에서 탭 안 `play()` 전에 `await fetch`를 하면 사용자 동작 맥락을 잃어 재생이 거부된다. 실전 한 회 서버 사본은 약 5MB다.
+- 형식 재생 실패(`<audio>` `error` — 예: iPhone에서 webm)면 그 문항에 "이 기기에서 재생할 수 없는 형식(webm)이에요 — 녹음한 기기에서 들어 보세요"를 보인다. 채점(WAV 정규화)도 같은 디코더라 실패하면 지금처럼 원본을 올린다(§5-0 1).
+- **"AI 채점 받기" 대상**이 넓어진다 — 녹음됐고(`recorded`), 아직 점수가 없고, **기기 사본 또는 서버 사본**이 있는 문항. 서버 사본뿐이면 내려받은 Blob → `toWav16kMono` → `POST …/score`(계약 그대로 — multipart `q`·`audio`). 채점 라우트는 바뀌지 않는다.
+  - 채점 라우트가 서버 사본을 직접 읽어 전사하는 길("저장본 채점 모드")은 두지 않는다. 서버에 ffmpeg가 없어 iPhone `audio/mp4`를 그대로 전사에 보내야 하는데, 그 경로가 형식 오류·잘림을 내는 보고 때문에 WAV 정규화를 클라이언트에 둔 것이다(§5-0 1). 내려받기 한 번(0.2~1.2MB)이 그 위험보다 싸다.
+- **문구가 바뀌는 곳**: "녹음은 응시한 기기에만 있어요" 계열 셋(머리의 채점 불가 안내, 문항 카드의 "녹음은 응시한 기기에만 있어요.", "녹음 n문항은 이 기기에 없어요") → 서버 사본이 있으면 사라지고, 없을 때만 "이 녹음은 아직 서버에 올라가지 않았어요 — 응시한 기기에서 결과 화면을 열면 올라가요"로 바꾼다.
+- 머리에 한 줄 "🗄️ 녹음 서버 보관 n/m"(m = 녹음된 문항 수). 이 기기에 `"pending"` 녹음이 있으면 "지금 올리기"(대기열 비우기 — §13-3).
+- 진단 줄에 "서버 ✓ 312KB · audio/mp4" / "서버 없음"을 더한다(§8 진단 캡션 관용구).
+
+### 13-9. 비교 화면 — 결과 화면의 문항 카드에 셋
+
+새 화면·새 경로는 없다. 결과 화면(`/toeic/attempts/[id]`, `components/toeic-attempt-view.tsx`)의 문항 카드에 접기 하나 **"🎧 비교"**를 두고 그 안에 ①②③을 둔다. 실전 11문항 결과가 길어지지 않게 닫힌 접기다(틀 점검 접기와 같은 관용구 — 연습 결과도 닫힌 채로 시작한다).
+
+**① 이어 듣기 — "▶ 내 답 → 개선 답변"**
+
+- 비교 대상(`pickToeicCompareTarget(question, answer)`, `lib/toeic-compare.ts`, 순수): Q3–11은 AI 피드백의 `improvedAnswer`가 있으면 그것(내 답을 고친 문장이라 차이가 잘 들린다), 없으면 모범답변. Q1–2는 **지문**(내 읽기 → 지문 낭독). 접기 안 칩 "비교 대상: 개선 답변 / 모범답변"으로 바꿀 수 있고, 마지막 선택은 기기 `localStorage` `toeic-compare-target:v1`에 기억한다(try/catch — 실패하면 기본값).
+- **iOS 탭 규칙**: 탭 핸들러 안에서 동기로 ① 지금 재생을 모두 멈추고 ② `unlockSpeechPlayback()`(§18-2 — 뒤이은 탭 밖 `speakQueue`가 소리 나게) ③ 화면 하나뿐인 공용 `<audio>` 요소에 내 녹음 Blob URL을 넣고 `play()`. `ended`에서 600ms 쉬고 `speakQueue(enPieces(대상), { … })`(en-US — 결과 화면이 모범답변·개선 답변을 이미 프리페치한다(SPEC §20-5). Q1–2 지문은 그 프리페치 목록에 더한다). ■ 하나가 둘 다 멈춘다(`runRef` 세대 관용구 — 늦게 온 `ended`가 멈춘 뒤 다음 단계를 시작하지 않게).
+- 녹음이 아직 내려받는 중이면 버튼을 막는다(위 §13-8 — 탭 안 `await` 금지). 녹음이 어디에도 없으면 버튼을 숨기고 대상만 🔊로 둔다.
+- 오디오 세션: 결과 화면은 녹음하지 않으므로 세션을 건드리지 않는다(`lib/mic-session.ts` 밖에서 `audioSession`을 바꾸지 않는 규칙 그대로).
+
+**② 글자 나란히 — 내 전사문 ↔ 비교 대상**
+
+- 왼쪽(폰은 위) "내 답(들린 대로)" = 전사문, 오른쪽(폰은 아래) = ①과 같은 비교 대상. 배치는 CSS 격자 하나 — 768px 미만은 한 열(위아래), 768px 이상(iPad 세로·가로)은 두 열. 페이지 가로 스크롤 없음, 칸 안에서 줄바꿈.
+- **틀 표시**(AI 0 — 🧩 틀 점검 함수 재사용):
+  - 내 답에서 쓴 틀: `findTemplatesInTranscript`(§12-5-5)와 **같은 일치 규칙**으로 고정 조각의 글자 범위를 돌려주는 새 순수 함수 `templateRunSpans(text, templates)`(`lib/toeic-template.ts` — 같은 모듈 안 `normalizeTemplateWords`·`sameTemplateWord`·조각 찾기를 공유한다)로 칩 색 밑줄.
+  - 비교 대상에서 쓴 틀: 같은 함수로 대상 문장의 틀 조각 — **내가 쓰지 않은 틀**은 다른 표시("이 틀을 쓸 수 있었어요")로 구분한다.
+  - 빠진 단계(Q3–4·Q11): `drillTemplateCheck`(§12-7-9) 결과의 `missingSteps`를 한 줄로("빠진 단계: 마무리"). "쓸 수 있었던 틀" 목록은 바로 아래 "🧩 틀 점검" 접기에 이미 있으므로 되풀이하지 않고 그쪽으로 링크한다.
+  - 틀 은행이 없거나 그 유형 틀이 0이면 표시 없이 글자만 나란히 둔다(틀 점검과 같은 조건).
+- Q1–2: 왼쪽 = 전사문, 오른쪽 = 지문, 표시는 지금의 `readDiff`(빠진 단어·바뀐 단어)를 지문 쪽에 입힌다(새 계산 없음).
+- 채점 전(전사문 없음): 왼쪽에 "AI 채점을 받으면 내 답이 글자로 나와요"와 오른쪽 대상만. 전사만 따로 하는 버튼은 두지 않는다(비용 원칙 — 전사는 채점 버튼으로만).
+
+**③ 다시 풀기 기록 — 같은 모의고사·같은 문항**
+
+- 대상: 같은 `mockId`의 **다른 응시** 중 닫혔고(§7-5) 그 문항을 녹음한(`recorded`) 것. 실전 응시·유형 연습(파트 응시)·한 문제 연습("같은 문제 다시" — 같은 연습 문서)이 모두 같은 `mockId`를 쓰므로 그대로 모인다.
+- 결과 페이지(서버)가 `listToeicAttemptsByMock(mockId)`로 읽어 **줄인 자료**만 넘긴다 — 응시마다 `{id, startedAt, finishedAt, scope, answers:[{q, recorded, score, transcript}], recordings}`(피드백 본문은 넘기지 않는다). 최신 20회까지만 본다(`TOEIC_COMPARE_ATTEMPTS_MAX`).
+- 순수 함수 `toeicQuestionHistory(attempts, currentId, q, { max })`(`lib/toeic-compare.ts`): 이번 응시를 포함해 그 문항의 기록을 **시간순**(오래된 → 최신)으로, 최근 `max` = 5개(`TOEIC_COMPARE_HISTORY_MAX` — 이번 응시는 늘 포함). 행마다 `{attemptId, startedAt, isCurrent, score, maxScore, transcript, hasRecording}`. `hasRecording` = 서버 메타가 있거나 이 기기에 사본이 있음(화면이 기기 쪽을 합친다).
+- **점수 변화** `toeicScoreDelta(history)`: 이번 점수 − **이번보다 앞선 가장 가까운 채점된** 행의 점수. 어느 쪽이든 점수가 없으면 null. 문항 카드 머리 칩 "▲1 (지난번 2)" / "▼1" / "＝" — null이면 칩 없음. 이번보다 **뒤**의 응시(옛 결과를 다시 연 경우)는 목록에는 보이지만 변화 계산에 쓰지 않는다.
+- 접기 안 타임라인: 행마다 "10월 1일 · 2/3 · ▶ · 글자" (이번 행은 "이번"). "글자"는 그 응시 전사문(채점됐을 때만)을 펼친다. 이전 행마다 **"▶ 그때 → 이번"**: 그 응시 녹음 다음 이번 녹음을 이어 튼다 — **같은 공용 `<audio>` 요소**의 `src`를 `ended`에서 바꿔 `play()`한다(iOS는 탭으로 한 번 재생한 요소의 다음 `play()`를 탭 밖에서도 허락한다. 새 요소를 탭 밖에서 만들면 거부된다). 두 녹음은 접기를 여는 탭에서 미리 받는다(§13-8 규칙 — 서버 사본, 기기 사본이 있으면 그것).
+- **응시 전체 변화**(결과 머리 한 줄, `toeicAttemptDelta(current, previous)`): 실전 응시는 같은 모의고사의 바로 앞 실전 응시와 **둘 다 추정 총점이 있을 때만** "추정 140 → 150 (+10)". 그 밖(유형 연습·한 문제 연습, 또는 어느 한쪽이 덜 채점됨)은 **둘 다 채점된 같은 문항들의 합**으로 "같은 문항 3개 합 5 → 7"(겹치는 채점 문항이 없으면 줄 없음). 추정 총점은 지금처럼 "추정(참고용)"을 붙인다.
+
+### 13-10. eval (오프라인 — `scripts/eval-toeic-recordings.ts`, `eval-toeic.ts`가 불러 한 번에 돈다, 실호출 0)
+
+모든 바이트 픽스처는 손으로 만든 머리 바이트(+ 0 채움)이고, 문장 픽스처는 지어낸 영어다. 네트워크·GCS를 부르지 않는다 — 파일 백엔드를 `TOEIC_REC_DIR`=스크래치 디렉터리로 돌린다(`STORE_BACKEND=file` 고정).
+
+1. **업로드 계약 zod·바이트 판정**: 받는 타입·빈 파일·4MB 경계(4MB 통과, +1바이트 413)·`durationMs` 경계(0 거부, `maxToeicRecordingMs(q)` 통과, +1 거부)·`recordedAt` 정수 아님 거부·q 0/12/"3.5"/"03a" 거부. `sniffToeicAudioType` — mp4·webm·ogg·wav 머리 각각 통과, 선언 `audio/mp4`인데 webm 바이트 거부, HTML 바이트(`<!doctype`) 거부, 저장 `contentType`이 선언이 아니라 판정 계열(예: 선언 `audio/x-m4a` → `audio/mp4`).
+2. **객체 키**: `toeicRecObjectKey` 형식 리터럴, `attemptId`에 `..`·`/`·`.`·빈 값·65자 → 던짐, q 범위, `recordedAtMs` 0·음수·소수 → 던짐. 결과에 점이 없다.
+3. **경로·게이트**: 녹음 라우트 파일 경로(`app/api/toeic/attempts/[id]/recordings/[q]/route.ts`)와 화면이 만드는 주소(`toeicRecordingHref`)의 마지막 조각에 점이 없다. `proxy.ts`의 `STATIC_FILE` 정규식이 `/api/toeic/attempts/x/recordings/3`에 맞지 않고, 오디오 확장자(`m4a|mp4|webm|wav|ogg`)를 포함하지 않는다(소스 대조 — 누가 더하면 실패).
+4. **판정 표**(`decideToeicRecordingUpload`): §13-4 표 다섯 줄 각각 + 범위 밖 q · 열린/닫힌 응시가 결과를 바꾸지 않음 · `recorded:false` 문항도 `store`.
+5. **레코드**: 옛 응시 문서(`recordings` 없음) → `[]`, 깨진 항목만 버림, 같은 q 둘 → 늦은 `recordedAt` 하나. `applyAttemptFinish`·`applyAttemptAnswer`가 `recordings`를 그대로 둔다. 응시 중 `setToeicAttemptRecording`이 `answers`를 만들지 않는다 → 닫힘 판정이 false로 남는다(반례로 잠금 — `answers`에 넣는 구현이면 실패).
+6. **파일 백엔드 왕복**: 쓰기 → 읽기 같은 바이트·타입, 없는 키 null, 접두사 지우기가 그 응시만(옆 응시는 남음), 경로 밖 쓰기 시도 거부. 동시 두 업로드(같은 q, 옛 녹음이 늦게 도착) → 메타가 새 녹음을 가리킨다.
+7. **삭제 연쇄**: 파일 백엔드 `deleteToeicMock` → 그 모의고사 응시들의 녹음 디렉터리가 사라지고 다른 모의고사의 것은 남는다. 녹음 지우기를 실패하게 한 주입에서 문서가 그대로다(순서 반례). 새 `DestructiveOp` `deleteToeicRecordings`가 유니온에 있고 GCS 지우기 함수 소스가 그것을 부른다(소스 대조).
+8. **기기 대기열 순수 함수**: `toeicRecUploadStateOf`(옛 메타 → pending), `nextToeicRecUploadAction`(상태코드·오류 이름 표 전부), `toeicRecPinnedAttempts` + 정리 — pending이 있는 응시는 6번째 이후여도 남고 순위 칸을 차지하지 않는다, done만 있는 응시는 지금 규칙(풀마다 5) 그대로, 풀 분리(§12-7-6) 회귀 없음.
+9. **비교 순수 함수**: `pickToeicCompareTarget`(개선 답변 우선·없으면 모범답변·Q1–2 지문), `toeicQuestionHistory`(시간순·최근 5·이번 포함·열린 응시와 녹음 안 된 문항 제외), `toeicScoreDelta`(앞선 가장 가까운 채점 행, 뒤 응시 무시, null 경우), `toeicAttemptDelta`(실전 둘 다 총점 → 총점 차, 아니면 겹치는 채점 문항 합, 겹침 0 → null).
+10. **틀 범위**: `templateRunSpans`가 찾은 틀 key 집합 == `findTemplatesInTranscript`의 key 집합(픽스처 여럿), 범위가 글자 안·겹치지 않음·범위의 낱말이 고정 조각과 `sameTemplateWord`로 같음.
+11. **소스 대조**: `GET` 라우트가 `private, no-store`와 `nosniff`를 싣는다. 결과 화면 소스에 녹음 API 주소를 `src=`로 넣는 곳이 없다. 업로드 모듈이 `keepalive`를 쓰지 않는다. 클라이언트 번들 경계 — `lib/toeic-rec-rules.ts`·`lib/toeic-compare.ts`·`lib/toeic-rec-upload.ts`는 `firebase-admin`·`lib/store`·`/ai/` 값 import가 없다(기존 "번들 경계" 목록에 등록). 녹음 보관소 모듈(`lib/toeic-rec-blob.ts`)은 백엔드를 `resolveStoreBackend`로만 고른다(판정 함수 두 벌 금지).
+12. **회귀**: `eval:streak`(업로드는 스트릭과 무관 — 배선 정규식 그대로), 지금 `eval:toeic` 전 항목.
+
+### 13-11. 인프라 작업 (오케스트레이터가 gcloud로 — 사용자 확인 뒤)
+
+| # | 작업 | 확인 |
+|---|---|---|
+| I1 | 버킷 생성 — `asia-northeast3`, Standard, 균일 접근, 공개 접근 방지, 버전 관리 끔, 수명 주기 없음 | `buckets describe`에 `uniform_bucket_level_access: true`·`public_access_prevention: enforced`·`location: ASIA-NORTHEAST3`·`lifecycle` 없음 |
+| I2 | 소프트 삭제 정책 확인(기본 7일 유지) | `soft_delete_policy.retentionDurationSeconds` = 604800 |
+| I3 | Cloud Run 런타임 서비스 계정 확인(비어 있으면 기본 Compute SA) | `services describe … serviceAccountName` |
+| I4 | 그 서비스 계정에 **버킷 범위** `roles/storage.objectAdmin`(프로젝트 범위가 아니다) | `buckets get-iam-policy`에 그 한 줄. `allUsers`·`allAuthenticatedUsers` 없음 |
+| I5 | (이름이 기본값과 다를 때만) 서비스 env `TOEIC_REC_BUCKET` | 새 리비전 env |
+| I6 | 배포 뒤 연기 확인 — 앱에서 짧은 유형 연습 1회 → 결과 화면 "🗄️ 녹음 서버 보관 n/n" → 다른 기기에서 ▶ | 버킷에 `attempts/{id}/…` 객체 |
+
+`github-deployer`(CI) 서비스 계정에는 버킷 권한이 필요 없다(배포는 코드만 올린다). 명령 초안은 빌드 리포트에 있다.
+
+### 13-12. 로드맵
+
+| 단계 | 내용 | AI 호출 | 비고 |
+|---|---|---|---|
+| **R0** | 인프라 I1~I5 | 0 | 오케스트레이터(gcloud), 사용자 확인 뒤 |
+| **R1** | 서버 보관 — 녹음 보관소 두 벌(GCS·파일)·`resolveStoreBackend` export·`recordings` 필드(타입·정규화·생성부)·`setToeicAttemptRecording`·`PUT`/`GET` 라우트·계약·삭제 연쇄·`DestructiveOp`·eval 1~7·11 | 0 | ai-engineer(순수 규칙·eval) + app-builder(라우트·스토어) |
+| **R2** | 기기 대기열 — 메타 필드 둘·`drainToeicRecUploads`·계기·정리 고정·이행·응시 화면 표시·eval 8 | 0 | R1 뒤. 실기기: 응시 중 업로드가 소리·타이머를 흔들지 않는가 |
+| **R3** | 결과 화면 서버 사본 — 미리 받기·재생·다른 기기 채점·문구·진단 | T·D(채점 버튼 — 지금과 같음) | R2 뒤 |
+| **R4** | 비교 ①② — 이어 듣기·글자 나란히·`templateRunSpans`·eval 9(일부)·10 | 0 | R3 뒤 |
+| **R5** | 비교 ③ — 다시 풀기 기록·점수 변화·응시 전체 변화·eval 9 | 0 | R3 뒤(R4와 독립) |
+
+R1~R2는 한 커밋으로 묶어도 되지만 R1만 먼저 나가도 해가 없다(라우트만 있고 아무도 올리지 않는다). 스펙(이 절)의 옛 문장 정리(§13 머리말)는 R2와 같은 커밋에서 한다 — 그때부터 "녹음은 기기에만"이 사실이 아니게 된다.
+
+### 13-13. 열린 결정 — 스펙에는 기본값을 썼다
+
+1. **응시 중 업로드**(기본) vs 끝낸 뒤 결과 화면에서 한꺼번에 — 응시 중 소리가 흔들리면(실기기) 끝낸 뒤로 미룬다(대기열 계기 ①만 빼면 된다).
+2. **원본만 보관**(기본) vs 채점 때 만든 WAV도 보관 — webm 녹음을 iPhone에서 들어야 할 일이 잦으면 WAV 사본을 더한다(크기 약 2배).
+3. **기존 기기 녹음 이행**(기본: 올린다) vs 새 응시부터.
+4. **대체된 다시 녹음 객체**(기본: 모의고사를 지울 때까지 남김) vs 메타가 바뀔 때 지움(업로드 경로에 지우기가 생긴다).
+5. **이어 듣기 순서**(기본: 내 답 → 대상) — "대상 → 내 답" 버튼을 더할지.
+6. **다시 풀기 기록 수**(기본: 문항마다 최근 5, 응시 20회까지 읽음).
+7. **서버 사본 재생 방식**(기본: 미리 받아 Blob) vs `<audio src>` + Range(206) 스트리밍 — 셀룰러에서 미리 받기(실전 한 회 약 5MB)가 부담이면 Range를 구현한다.
+8. **녹음 비트레이트**(기본: 녹음기 기본값 그대로 — 실기기 검증이 끝난 `lib/mic-session.ts`를 건드리지 않는다) vs `audioBitsPerSecond` 64kbps로 크기 절반.
+9. **전용 런타임 서비스 계정**(기본: 지금 서비스 계정에 버킷 범위 권한만) — 기본 Compute SA가 프로젝트 범위 Editor를 쥐고 있으면 그것을 좁히는 일은 이번 범위 밖이다.
+10. **고아 객체 정리 도구**(기본: 없음 — §13-7 알려진 틈).
+
+### 13-14. 구현이 정한 것 (2026-10-03)
+
+- **백엔드 판정 위치**: `resolveStoreBackend`는 `lib/store-backend.ts`에 두고 `lib/store.ts`가 다시 내보낸다. 스토어의 삭제 연쇄(`deleteToeicMock`)가 녹음 보관소를 부르므로, 보관소가 `lib/store.ts`를 import하면 순환이 된다. 판정 함수는 여전히 한 벌이다(eval ⑪이 보관소 소스에 env 직접 판정이 없음을 잠근다).
+- **계기에 허브 추가**: §13-3 계기 ②(결과·학습 보기·연습 폴더 ④)에 **아빠의 영어 허브 `/toeic`**을 더했다(`components/toeic-rec-upload-drain.tsx`). SPEC §20-11의 이행 안내("응시한 iPhone에서 아빠의 영어를 한 번 열면")와 맞추려는 것이다. 토익 밖 화면에서는 여전히 돌지 않는다.
+- **재시도 대기 깨우기**: 비우기가 2·10·30초 대기 중일 때 다시 불리면(지금 올리기·online·보임) 새 비우기를 만들지 않고 **대기를 깨워 바로 다시 해 본다**. 대기열은 여전히 한 번에 하나다.
+- **같은 녹음만 상태를 바꾼다**: 기기 메타의 대기열 상태는 메타의 `createdAt`이 올린 녹음과 같을 때만 바꾼다(올리는 사이 "이 문항 다시"로 들어온 새 녹음을 done으로 덮지 않는다). 한 번의 비우기 안에서 같은 녹음은 한 번만 다룬다(IndexedDB 쓰기가 조용히 실패해도 끝없이 다시 올리지 않게).
+- **바이트가 없는 메타는 gone**: 대기열 메타는 있는데 바이트가 없으면(정리·교체) 그 메타를 "gone"으로 바꾸고 넘어간다.
+- **`recording_missing` 재대기열은 두지 않았다**: 화면은 이 기기 사본이 있으면 서버 사본을 받지 않으므로(§13-8 우선순위) "기기에 사본이 있는데 서버 객체가 없다"를 화면이 알 길이 없다. 그 경우는 고아 정리 도구와 함께 다룬다(열린 결정 10).
+- **응시 id 모양이 아닌 경로**(`[id]`가 `^[A-Za-z0-9_-]{1,64}$` 밖)는 PUT·GET 모두 404 `attempt_not_found`(그런 응시는 만들어지지 않는다). 삭제 연쇄도 모양이 아닌 응시 id는 녹음 지우기를 건너뛴다.
+- **화면 문구**: 응시 화면 진단 줄 "· 서버 Q5 ✓ · Q6 올리는 중 · Q7 대기", 끝 화면 "🗄️ 녹음 n개 중 m개를 서버에 보관했어요(— 나머지는 결과 화면에서 이어서 올려요)", 결과 머리 "🗄️ 녹음 서버 보관 n/m" + "⬆️ 지금 올리기 (k)", 응시 전체 변화 "📈 지난 실전보다 추정 a → b (±d) · 추정(참고용)" / "📈 지난번과 같은 문항 n개 합 a → b (±d)". 앞선 응시는 같은 범위(scope)끼리 고른다(`toeicPreviousAttempt`).
+- **eval**: `scripts/eval-toeic-recordings.ts` 12묶음 → `eval:toeic` 오프라인 **1308항목**(1170 → 1308). 파일 백엔드 묶음은 자식 프로세스(임시 cwd, `TOEIC_REC_DIR`=임시 폴더)에서 돌고 저장소 `data/db.json`·`data/recordings` 무접촉을 확인한다.

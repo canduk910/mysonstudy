@@ -8,6 +8,7 @@
  * - `POST /api/toeic/mocks/[id]/attempts`  응시 시작 — 녹음 IndexedDB 키로 attemptId가 필요해 시작에 만든다(§7-5)
  * - `POST /api/toeic/attempts/[id]/finish`  끝/그만두기 — 문항별 recorded·durationMs(한 번만 받는다 — lib/toeic-attempt-rules)
  * - `POST /api/toeic/attempts/[id]/score`   AI 채점 한 문항(multipart: q, audio) — 관문 T 전사 + 호출 D / Q1–2 대조
+ * - `PUT|GET /api/toeic/attempts/[id]/recordings/[q]`  내 녹음 서버 보관 한 문항 올리기·내려받기(§13-4 — PIN 게이트 뒤 프록시)
  *
  * ── 클라이언트 번들 경계 ──────────────────────────────────────────────────────
  * `lib/ai/*`·`lib/store`는 **`import type` / `export type`만** 한다. 값은 런타임 의존이 0인 순수 모듈(`lib/toeic-mock.ts`·
@@ -24,10 +25,11 @@ import type {
   ToeicUsedExpression,
 } from "./ai/toeic/schemas";
 import type { ToeicAttemptRecord } from "./store";
+import type { ToeicStoredRecording } from "./toeic-rec-rules";
 import { TOEIC_READ_KIND_KO, toeicMockPartLabelKo } from "./toeic-mock-contract";
 import { TOEIC_MOCK_PART_NAME_KO, toeicPartQuestions, toeicQuestionFormat, type ToeicMockPart } from "./toeic-mock";
 
-export type { ToeicAnswer, ToeicAttemptRecord, ToeicAttemptScope, ToeicFeedback, ToeicInfoTable, ToeicReadDiff };
+export type { ToeicAnswer, ToeicAttemptRecord, ToeicAttemptScope, ToeicFeedback, ToeicInfoTable, ToeicReadDiff, ToeicStoredRecording };
 
 type Issue = { path: string; message: string };
 
@@ -371,4 +373,60 @@ export function buildToeicQuestionView(parts: ToeicMockParts, q: number): ToeicQ
 /** 응시 범위의 문항들 → 화면 자료(순서 그대로) */
 export function buildToeicQuestionViews(parts: ToeicMockParts, qs: readonly number[]): ToeicQuestionView[] {
   return qs.map((q) => buildToeicQuestionView(parts, q));
+}
+
+// ===========================================================================
+// 내 녹음 서버 보관 — `PUT`·`GET /api/toeic/attempts/[id]/recordings/[q]` (docs/harness/toeic.md §13-2·§13-4·§13-5)
+// ===========================================================================
+
+/**
+ * 보관 업로드가 받는 형식(기본 타입, 파라미터 무시) → 바이트 판정 계열(대표 타입). 채점 업로드의 TOEIC_SCORE_AUDIO_TYPES와 **별도 상수**다 —
+ * 보관은 Firefox 녹음(ogg)도 받는다(채점은 WAV 정규화를 거친다). WAV는 장래 대비(지금 녹음기는 내지 않는다).
+ * 저장하는 contentType은 선언이 아니라 **바이트로 판정한 계열**(sniffToeicAudioType)이다.
+ */
+export const TOEIC_REC_STORE_TYPES: Readonly<Record<string, "audio/mp4" | "audio/webm" | "audio/ogg" | "audio/wav">> = {
+  "audio/mp4": "audio/mp4",
+  "audio/m4a": "audio/mp4",
+  "audio/x-m4a": "audio/mp4",
+  "audio/webm": "audio/webm",
+  "audio/ogg": "audio/ogg",
+  "audio/wav": "audio/wav",
+  "audio/x-wav": "audio/wav",
+  "audio/wave": "audio/wav",
+  "audio/vnd.wave": "audio/wav",
+};
+
+/** multipart 필드 이름(라우트·대기열 공용 — 단일 정의) */
+export const TOEIC_REC_FIELD_AUDIO = "audio";
+export const TOEIC_REC_FIELD_DURATION_MS = "durationMs";
+/** 기기에서 녹음이 끝난 시각(epoch ms 정수) — 같은 문항 녹음끼리 어느 쪽이 새것인지 가를 때만 쓴다 */
+export const TOEIC_REC_FIELD_RECORDED_AT = "recordedAt";
+
+/** 녹음 한 문항 주소 — 마지막 조각에 **점이 없다**(proxy.ts 정적 확장자 예외를 피한다, §13-4) */
+export function toeicRecordingHref(attemptId: string, q: number): string {
+  return `/api/toeic/attempts/${encodeURIComponent(attemptId)}/recordings/${Math.trunc(q)}`;
+}
+
+/** `PUT` 응답(§13-4) */
+export type ToeicRecordingPutResponse =
+  | {
+      ok: true;
+      q: number;
+      /** stored: 새로 저장 · reused: 같은 바이트가 이미 있음 · superseded: 이미 더 새 녹음이 있음(recording이 그 메타) */
+      outcome: "stored" | "reused" | "superseded";
+      recording: ToeicStoredRecording;
+    }
+  | {
+      ok: false;
+      error: "invalid_input" | "audio_too_large" | "attempt_not_found" | "question_not_found" | "recording_locked" | "storage_failed" | "save_failed";
+      messageKo: string;
+      retriable?: boolean;
+    };
+
+/** `GET` 오류 응답(200은 오디오 바이트) */
+export interface ToeicRecordingGetErrorResponse {
+  ok: false;
+  error: "attempt_not_found" | "recording_not_found" | "recording_missing" | "storage_failed";
+  messageKo: string;
+  retriable?: boolean;
 }

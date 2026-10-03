@@ -27,6 +27,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { resolveStoreBackend, type StoreBackend } from "./store-backend";
 import type { Card, Chapter, SceneDigestItem, SceneSourceKind } from "./ai/english/schemas";
 // 수학 설명 기록(M4)이 통째로 안는 타입들 — **전부 `import type`이다.**
 // `lib/ai/math/pipeline.ts`는 openai 클라이언트를 값으로 끌고 오므로 값 import를
@@ -96,6 +97,14 @@ import { applyPointsResults } from "./ai/toeic/points";
 import { applyFillPart, applyPictureImage, decideFillPart, decidePictureImage } from "./toeic-mock-apply";
 // 응시 끝/그만두기는 한 번만 — 두 백엔드가 같은 판정으로(lib/toeic-attempt-rules.ts, 런타임 import는 순수 lib/toeic-mock뿐)
 import { decideAttemptFinish } from "./toeic-attempt-rules";
+// 내 녹음 서버 보관(§13) — 판정은 순수 모듈 한 곳, 녹음 지우기는 보관소(스토어와 같은 백엔드 판정)
+import {
+  applyToeicAttemptRecording,
+  decideToeicRecordingUpload,
+  isToeicRecAttemptId,
+  type ToeicStoredRecording,
+} from "./toeic-rec-rules";
+import { deleteAttemptRecordings } from "./toeic-rec-blob";
 // 유형별 공략 가져오기(§12-2-5) — 다시 가져오기 판정은 두 백엔드가 같은 순수 함수로(원자 단위 **안에서**, 모두 읽은 뒤)
 import { decideGuideUpsert, type ToeicGuideImportItem, type ToeicGuideUpsertDecision } from "./ai/toeic/guide-import";
 import {
@@ -637,7 +646,10 @@ export interface ToeicImageRecord {
   createdAt: string;
 }
 
-/** 모의고사 응시(§7-5). 녹음은 기기(IndexedDB)에만 — 서버에는 전사문·점수·피드백만. */
+/**
+ * 모의고사 응시(§7-5). 녹음 원본은 문서 밖 — 녹음 보관소(GCS 비공개 버킷 / 로컬 파일, lib/toeic-rec-blob)에 두고 문서에는 메타만
+ * (`recordings`, docs/harness/toeic.md §13-5). 기기 IndexedDB 사본은 업로드 대기열 + 빠른 재생 캐시다.
+ */
 export interface ToeicAttemptRecord {
   id: string;
   mockId: string;
@@ -652,7 +664,19 @@ export interface ToeicAttemptRecord {
   /** null = 중간에 그만둠 */
   finishedAt: string | null;
   answers: ToeicAnswer[];
+  /**
+   * 서버에 보관한 답변 녹음 메타(2026-10-03, §13-5) — q 오름차순, q마다 하나(지금 녹음). 옛 문서 = [].
+   * **answers 밖에 둔다** — 응시 중 업로드가 answers에 항목을 만들면 "닫힌 응시" 판정(answers.length > 0)이 뒤집혀 끝내기가 409가 된다.
+   * 끝내기(applyAttemptFinish)·채점(applyAttemptAnswer)은 이 필드를 건드리지 않는다. 쓰는 곳은 setToeicAttemptRecording 하나.
+   */
+  recordings: ToeicStoredRecording[];
 }
+
+/** 녹음 메타 저장 결과(§13-4) — 판정은 lib/toeic-rec-rules decideToeicRecordingUpload(원자 단위 **안에서** 다시). 없는 응시면 스토어가 null. */
+export type SetToeicAttemptRecordingResult = {
+  outcome: "stored" | "reused" | "superseded" | "locked" | "question_not_found";
+  record: ToeicAttemptRecord;
+};
 
 /** 표현집·모의고사 삭제 결과 — deleteVocabBook과 같은 규약 */
 export interface DeleteToeicResult {
@@ -1241,6 +1265,12 @@ export interface StudyStore {
    * 동시에 채점돼도(동시 2개, §5-0) 서로 덮지 않는다. 그 q가 answers에 없으면 덧붙인다. 없는 id면 null.
    */
   updateToeicAttemptAnswer(id: string, q: number, patch: ToeicAnswerScorePatch): Promise<ToeicAttemptRecord | null>;
+  /**
+   * 녹음 메타 한 줄 저장(§13-4) — **판정과 쓰기가 한 원자 단위**(파일: mutate, Firestore: runTransaction). 안에서
+   * decideToeicRecordingUpload를 다시 불러 store일 때만 recordings의 그 q를 바꾼다(answers·finishedAt은 건드리지 않는다).
+   * 객체는 라우트가 **먼저** 썼다. 없는 id면 null.
+   */
+  setToeicAttemptRecording(id: string, recording: ToeicStoredRecording): Promise<SetToeicAttemptRecordingResult | null>;
 
   // ---- talkSessions — 은우 자유대화 (docs/harness/english.md §12-4, SPEC §21) ----
   // 은우 단어장 컬렉션과 섞지 않는다. 삭제는 Firestore에서 prod-guard(`deleteTalkSession`).
@@ -2602,6 +2632,13 @@ class JsonFileStore implements BookCardStore {
   }
 
   async deleteToeicMock(id: string): Promise<DeleteToeicResult> {
+    // 딸린 것 먼저(§13-7): 그 모의고사 응시들의 녹음을 먼저 지운다 — 하나라도 실패하면 던지고 문서를 지우지 않는다(가리키는 문서 없는
+    // 목소리가 남지 않게). 다시 누르면 접두사 지우기부터 다시(이미 지운 것은 0건 — 멱등).
+    const before0 = await readDb();
+    if (!before0.toeicMocks.some((m) => m.id === id)) return { ok: false };
+    for (const a of before0.toeicAttempts) {
+      if (a.mockId === id && isToeicRecAttemptId(a.id)) await deleteAttemptRecordings(a.id);
+    }
     return this.mutate((db) => {
       const before = db.toeicMocks.length;
       db.toeicMocks = db.toeicMocks.filter((m) => m.id !== id);
@@ -2737,6 +2774,20 @@ class JsonFileStore implements BookCardStore {
       const next = applyAttemptAnswer(db.toeicAttempts[i], q, patch);
       db.toeicAttempts[i] = next;
       return next;
+    });
+  }
+
+  async setToeicAttemptRecording(id: string, recording: ToeicStoredRecording): Promise<SetToeicAttemptRecordingResult | null> {
+    // 판정과 쓰기가 한 mutate — 같은 문항 두 업로드가 겹쳐도(큐 직렬화) 메타를 쓰는 쪽이 하나다.
+    return this.mutate((db): SetToeicAttemptRecordingResult | null => {
+      const i = db.toeicAttempts.findIndex((x) => x.id === id);
+      if (i < 0) return null;
+      const current = normalizeToeicAttemptRecord(db.toeicAttempts[i]);
+      const decision = decideToeicRecordingUpload(current, recording.q, { sha256: recording.sha256, recordedAtMs: Date.parse(recording.recordedAt) });
+      if (decision !== "store") return { outcome: decision, record: current };
+      const next = normalizeToeicAttemptRecord(applyToeicAttemptRecording(current, recording));
+      db.toeicAttempts[i] = next;
+      return { outcome: "stored", record: next };
     });
   }
 
@@ -2882,24 +2933,8 @@ export function applyAttemptAnswer(current: ToeicAttemptRecord, q: number, patch
 // 백엔드 선택 + 싱글턴 접근자 (M3)
 // ---------------------------------------------------------------------------
 
-export type StoreBackend = "firestore" | "file";
-
-/** 파일 상단 주석의 선택 규칙 — env 명시 > 자격증명 자동 감지 > file */
-function resolveStoreBackend(): StoreBackend {
-  const env = process.env.STORE_BACKEND;
-  if (env === "firestore" || env === "file") return env;
-  if (env) {
-    console.warn(
-      `[store] STORE_BACKEND="${env}"는 알 수 없는 값이에요 (firestore|file) — 자동 감지로 진행합니다.`,
-    );
-  }
-  const hasGcpCredentials = Boolean(
-    process.env.GOOGLE_APPLICATION_CREDENTIALS || // 로컬: 서비스 계정 키 파일 경로
-      process.env.K_SERVICE || // Cloud Run이 주입 — 서비스 계정 ADC 사용 가능
-      process.env.GOOGLE_CLOUD_PROJECT, // 그 외 GCP 환경 일반 신호
-  );
-  return hasGcpCredentials ? "firestore" : "file";
-}
+// 판정은 lib/store-backend.ts 한 곳 — 녹음 보관소(lib/toeic-rec-blob)도 같은 함수를 본다(docs/harness/toeic.md §13-1).
+export { resolveStoreBackend, type StoreBackend };
 
 declare global {
   // dev(HMR)에서 모듈 재평가로 인스턴스가 늘어나는 것을 막기 위한 전역 캐시

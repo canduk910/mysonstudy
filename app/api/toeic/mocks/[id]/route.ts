@@ -8,7 +8,8 @@
  *
  * DELETE — 모의고사와 **그 생성 사진·응시 기록까지** 지운다(스토어가 딸린 문서 먼저, 모의고사 마지막). 확인 단계는 화면이
  * 맡는다. 개발 환경에서 실데이터(firestore) 삭제는 prod-guard가 막는다 → 403(파일 백엔드는 안전). 표현집 DELETE와 같은 규약.
- * (응시 녹음은 기기 IndexedDB에만 있다 — 서버 삭제 범위 밖.)
+ * 응시 녹음(녹음 보관소 — GCS/로컬 파일, §13-7)은 스토어가 **문서보다 먼저** 지우고, 하나라도 실패하면 문서를 지우지 않고 던진다 → 500
+ * delete_failed(다시 누르면 처음부터 — 멱등). 기기 IndexedDB 사본은 기기 정리가 맡는다.
  *
  * 응답 shape (단일 정의처는 `lib/toeic-mock-contract.ts`):
  * - GET 200 { ok:true, mock } / 404 { ok:false, error:"mock_not_found", messageKo }     (ToeicMockGetResponse)
