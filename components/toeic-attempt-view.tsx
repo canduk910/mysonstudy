@@ -43,6 +43,8 @@
  *   응시 날짜·추정 등급·채점 상태)와 문항마다 문제(사진·지문·표·질문)·전사문·점수·피드백 전부·모범답변 접기 속 전부가 들어가고, 버튼·재생·녹음·
  *   🎧 비교·🧩 틀 점검·다시 풀기·설정·진단·서버 줄은 빠진다. 표 보기·모범답변 접기(`data-print-expand`)는 인쇄 직전에 열고 끝나면 이 화면이 연
  *   것만 닫는다(components/use-print-expand — beforeprint·버튼 둘 다).
+ * - **인쇄할 항목**(§16-10): 버튼 아래 체크박스 6개(전사·잘한 점·고칠 문장·빠진 내용·개선 답변·모범답변 — lib/toeic-print-sections).
+ *   끈 항목은 루트의 `data-print-omit-{key}` + 묶음의 `data-print-sec`로 **인쇄에서만** 빠진다(화면 그대로). 기기에 기억(끈 목록).
  */
 
 import Link from "next/link";
@@ -51,6 +53,17 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type React
 import ToeicInfoTableView from "@/components/toeic-info-table";
 import ToeicMicKeepToggle from "@/components/toeic-mic-keep-toggle";
 import { usePrintExpand } from "@/components/use-print-expand";
+import {
+  TOEIC_PRINT_SECTIONS,
+  TOEIC_PRINT_SECTIONS_STORAGE_KEY,
+  TOEIC_PRINT_SECTION_KO,
+  parseToeicPrintOmit,
+  serializeToeicPrintOmit,
+  toeicPrintOmitAttrs,
+  toeicPrintPickSummaryKo,
+  toggleToeicPrintOmit,
+  type ToeicPrintSection,
+} from "@/lib/toeic-print-sections";
 import TtsEngineControl from "@/components/tts-engine-control";
 import TtsSpeedControl from "@/components/tts-speed-control";
 import { toWav16kMono } from "@/lib/mic-session";
@@ -271,6 +284,24 @@ export default function ToeicAttemptView({
   // 🖨️ 인쇄 · PDF 저장(§16) — 접기 펼치기·lazy 사진 받기는 훅이(beforeprint·버튼 둘 다)
   const printRootRef = useRef<HTMLDivElement | null>(null);
   const { printNow, preparing: printPreparing } = usePrintExpand(printRootRef);
+  // 인쇄할 항목(§16-10) — 끈 항목 목록. 첫 렌더는 전부 켬(서버와 같게), 마운트 뒤 기기 기억을 읽는다(try/catch — 실패하면 전부 켬)
+  const [printOmit, setPrintOmit] = useState<ToeicPrintSection[]>([]);
+  useEffect(() => {
+    try {
+      setPrintOmit(parseToeicPrintOmit(window.localStorage.getItem(TOEIC_PRINT_SECTIONS_STORAGE_KEY)));
+    } catch {
+      // 전부 켬
+    }
+  }, []);
+  function setPrintSection(key: ToeicPrintSection, on: boolean) {
+    const next = toggleToeicPrintOmit(printOmit, key, on);
+    setPrintOmit(next);
+    try {
+      window.localStorage.setItem(TOEIC_PRINT_SECTIONS_STORAGE_KEY, serializeToeicPrintOmit(next));
+    } catch {
+      // 기억 못 해도 지금 화면에는 반영된다
+    }
+  }
   /** 받지 못한 사진(404·네트워크) — 그 문항은 장면 설명 줄로 바꾼다(화면·인쇄 공통, QA print 1 F4) */
   const [brokenImgs, setBrokenImgs] = useState<ReadonlySet<number>>(() => new Set());
   const markBrokenImg = useCallback((q: number) => setBrokenImgs((prev) => (prev.has(q) ? prev : new Set(prev).add(q))), []);
@@ -1102,7 +1133,7 @@ export default function ToeicAttemptView({
   }
 
   return (
-    <div className={s.wrap} ref={printRootRef}>
+    <div className={s.wrap} ref={printRootRef} {...toeicPrintOmitAttrs(printOmit)}>
       <div>
         <p className={s.kicker}>{scopeLabelKo}</p>
         <h1 className={s.title}>{mockTitleKo}</h1>
@@ -1166,6 +1197,21 @@ export default function ToeicAttemptView({
             {printPreparing ? "사진 불러오는 중…" : "🖨️ 인쇄 · PDF 저장"}
           </button>
           <span className={s.caption}>인쇄 창에서 &lsquo;PDF로 저장&rsquo;을 고르면 PDF가 돼요(iPhone은 인쇄 화면의 공유 버튼 → 파일에 저장).</span>
+          {/* 인쇄할 항목(§16-10) — 화면 표시는 그대로, 끈 항목은 인쇄에서만 빠진다 */}
+          <fieldset className={s.printPick} data-testid="print-pick">
+            <legend className={s.printPickLegend}>인쇄할 항목</legend>
+            <div className={s.printPickRow}>
+              {TOEIC_PRINT_SECTIONS.map((k) => (
+                <label key={k} className={s.printPickItem}>
+                  <input type="checkbox" checked={!printOmit.includes(k)} onChange={(e) => setPrintSection(k, e.currentTarget.checked)} data-testid={`print-pick-${k}`} />
+                  {TOEIC_PRINT_SECTION_KO[k]}
+                </label>
+              ))}
+            </div>
+            <p className={s.caption} aria-live="polite">
+              {toeicPrintPickSummaryKo(printOmit)}
+            </p>
+          </fieldset>
         </div>
       </div>
 
@@ -1439,7 +1485,7 @@ export default function ToeicAttemptView({
 
             {/* 전사문 */}
             {a?.transcript !== null && a?.transcript !== undefined && (
-              <div className={s.block}>
+              <div className={s.block} data-print-sec="transcript">
                 <p className={s.label}>내가 말한 것(전사)</p>
                 {noResp ? (
                   <p className={s.noResp}>{TOEIC_NO_RESPONSE_KO}</p>
@@ -1455,40 +1501,60 @@ export default function ToeicAttemptView({
             {v.passage && (
               <div className={s.block}>
                 <div className={s.labelRow}>
-                  <p className={s.label}>{readMarks ? "지문 대조" : "지문"}</p>
+                  <p className={s.label}>
+                    {readMarks ? (
+                      <>
+                        {/* 전사를 끄고 인쇄하면 "지문 대조" 대신 "지문"(§16-10) */}
+                        <span className={s.sec} data-print-sec="transcript">
+                          지문 대조
+                        </span>
+                        <span className={s.printAlt} data-print-alt="transcript">
+                          지문
+                        </span>
+                      </>
+                    ) : (
+                      "지문"
+                    )}
+                  </p>
                   {playBtn(`passage-${v.q}`, v.passage, `Q${v.q} 지문`)}
                 </div>
                 {readMarks && a?.readDiff ? (
                   <>
-                    <p className={s.readStats}>
-                      정확도 {Math.round(a.readDiff.accuracy * 100)}% · 빠짐 {readMarks.missingCount} · 바뀜 {readMarks.substitutedCount} · 더 말함{" "}
-                      {readMarks.extra.length}
+                    {/* 전사를 끄고 인쇄하면 대조 표시 대신 지문만(지문은 문제라 언제나 — §16-10) */}
+                    <p className={`${s.passage} ${s.printAlt}`} data-print-alt="transcript" lang="en">
+                      {v.passage}
                     </p>
-                    <p className={s.passage} lang="en">
-                      {readMarks.segments.map((seg, k) =>
-                        seg.space || seg.status === "ok" ? (
-                          <Fragment key={k}>{seg.text}</Fragment>
-                        ) : seg.status === "missing" ? (
-                          <del key={k} className={s.missing} title="빠진 단어">
-                            {seg.text}
-                          </del>
-                        ) : (
-                          <mark key={k} className={s.substituted} title={`들린 말: ${seg.heard ?? ""}`}>
-                            {seg.text}
-                            <span className={s.heard}>({seg.heard})</span>
-                          </mark>
-                        ),
-                      )}
-                    </p>
-                    <p className={s.legend}>
-                      <del className={s.missing}>취소선</del> 빠진 단어 · <mark className={s.substituted}>밑줄</mark> 다르게 들린 단어(괄호 안이 들린 말)
-                      {readMarks.extra.length > 0 && <> · 더 말한 단어: {readMarks.extra.join(", ")}</>}
-                    </p>
-                    <p className={s.notice}>
-                      🔈 {READ_NOTICE_HEAD}
-                      {/* "— 녹음을 다시 들어 보세요"는 화면 조작 안내라 인쇄에서 뺀다(QA print 1 F5) */}
-                      {READ_NOTICE_TAIL && <span className={s.printHide}>{READ_NOTICE_TAIL}</span>}
-                    </p>
+                    <div className={s.sec} data-print-sec="transcript">
+                      <p className={s.readStats}>
+                        정확도 {Math.round(a.readDiff.accuracy * 100)}% · 빠짐 {readMarks.missingCount} · 바뀜 {readMarks.substitutedCount} · 더 말함{" "}
+                        {readMarks.extra.length}
+                      </p>
+                      <p className={s.passage} lang="en">
+                        {readMarks.segments.map((seg, k) =>
+                          seg.space || seg.status === "ok" ? (
+                            <Fragment key={k}>{seg.text}</Fragment>
+                          ) : seg.status === "missing" ? (
+                            <del key={k} className={s.missing} title="빠진 단어">
+                              {seg.text}
+                            </del>
+                          ) : (
+                            <mark key={k} className={s.substituted} title={`들린 말: ${seg.heard ?? ""}`}>
+                              {seg.text}
+                              <span className={s.heard}>({seg.heard})</span>
+                            </mark>
+                          ),
+                        )}
+                      </p>
+                      <p className={s.legend}>
+                        <del className={s.missing}>취소선</del> 빠진 단어 · <mark className={s.substituted}>밑줄</mark> 다르게 들린 단어(괄호 안이 들린 말)
+                        {readMarks.extra.length > 0 && <> · 더 말한 단어: {readMarks.extra.join(", ")}</>}
+                      </p>
+                      <p className={s.notice}>
+                        🔈 {READ_NOTICE_HEAD}
+                        {/* "— 녹음을 다시 들어 보세요"는 화면 조작 안내라 인쇄에서 뺀다(QA print 1 F5) */}
+                        {READ_NOTICE_TAIL && <span className={s.printHide}>{READ_NOTICE_TAIL}</span>}
+                      </p>
+                    </div>
                   </>
                 ) : (
                   <p className={s.passage} lang="en">
@@ -1501,19 +1567,22 @@ export default function ToeicAttemptView({
             {/* Q3–11 피드백 */}
             {a?.feedback && !noResp && (
               <div className={s.feedback}>
-                <p className={s.summary}>{a.feedback.summaryKo}</p>
-                {a.feedback.strengths.length > 0 && (
-                  <>
-                    <p className={s.label}>👍 잘한 점</p>
-                    <ul className={s.list}>
-                      {a.feedback.strengths.map((t, k) => (
-                        <li key={k}>{t}</li>
-                      ))}
-                    </ul>
-                  </>
-                )}
+                {/* 인쇄할 항목 묶음(§16-10) — .sec는 display: contents라 화면 배치는 그대로 */}
+                <div className={s.sec} data-print-sec="strengths">
+                  <p className={s.summary}>{a.feedback.summaryKo}</p>
+                  {a.feedback.strengths.length > 0 && (
+                    <>
+                      <p className={s.label}>👍 잘한 점</p>
+                      <ul className={s.list}>
+                        {a.feedback.strengths.map((t, k) => (
+                          <li key={k}>{t}</li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
+                </div>
                 {a.feedback.fixes.length > 0 && (
-                  <>
+                  <div className={s.sec} data-print-sec="fixes">
                     <p className={s.label}>✏️ 고칠 문장</p>
                     <ul className={s.fixes}>
                       {a.feedback.fixes.map((f, k) => {
@@ -1616,46 +1685,48 @@ export default function ToeicAttemptView({
                         );
                       })}
                     </ul>
-                  </>
+                  </div>
                 )}
                 {a.feedback.missingKo.length > 0 && (
-                  <>
+                  <div className={s.sec} data-print-sec="missing">
                     <p className={s.label}>🧩 빠진 내용</p>
                     <ul className={s.list}>
                       {a.feedback.missingKo.map((t, k) => (
                         <li key={k}>{t}</li>
                       ))}
                     </ul>
-                  </>
-                )}
-                {a.feedback.improvedAnswer && (
-                  <div className={s.answerBox}>
-                    <div className={s.labelRow}>
-                      <p className={s.label}>🌱 내 답을 살린 개선 답변</p>
-                      {playBtn(`improved-${v.q}`, a.feedback.improvedAnswer, `Q${v.q} 개선 답변`)}
-                    </div>
-                    <p className={s.answerText} lang="en">
-                      {a.feedback.improvedAnswer}
-                    </p>
                   </div>
                 )}
-                {a.feedback.tryExpressions.length > 0 && (
-                  <p className={s.tryList}>
-                    <span className={s.label}>📒 넣었으면 좋았을 표현</span>
-                    {/* tryChip: 공략 틀의 `~` 형태(50자 넘음)가 오면 전역 .u-chip의 nowrap이 폰 폭을 넘긴다 — 칩 안에서 줄바꿈(QA final P2-2) */}
-                    {a.feedback.tryExpressions.map((e) => (
-                      <span key={e} className={`u-chip u-chip-accent ${s.tryChip}`} lang="en">
-                        {e}
-                      </span>
-                    ))}
-                  </p>
-                )}
+                <div className={s.sec} data-print-sec="improved">
+                  {a.feedback.improvedAnswer && (
+                    <div className={s.answerBox}>
+                      <div className={s.labelRow}>
+                        <p className={s.label}>🌱 내 답을 살린 개선 답변</p>
+                        {playBtn(`improved-${v.q}`, a.feedback.improvedAnswer, `Q${v.q} 개선 답변`)}
+                      </div>
+                      <p className={s.answerText} lang="en">
+                        {a.feedback.improvedAnswer}
+                      </p>
+                    </div>
+                  )}
+                  {a.feedback.tryExpressions.length > 0 && (
+                    <p className={s.tryList}>
+                      <span className={s.label}>📒 넣었으면 좋았을 표현</span>
+                      {/* tryChip: 공략 틀의 `~` 형태(50자 넘음)가 오면 전역 .u-chip의 nowrap이 폰 폭을 넘긴다 — 칩 안에서 줄바꿈(QA final P2-2) */}
+                      {a.feedback.tryExpressions.map((e) => (
+                        <span key={e} className={`u-chip u-chip-accent ${s.tryChip}`} lang="en">
+                          {e}
+                        </span>
+                      ))}
+                    </p>
+                  )}
+                </div>
               </div>
             )}
 
             {/* 모범답변 */}
             {v.sampleAnswer && (
-              <details className={s.model} data-print-expand="">
+              <details className={s.model} data-print-expand="" data-print-sec="model">
                 <summary className={s.modelSummary}>모범답변(참고용) 보기</summary>
                 <div className={s.labelRow}>
                   <p className={s.label}>모범답변</p>

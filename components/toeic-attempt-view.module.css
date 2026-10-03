@@ -856,6 +856,48 @@
 .printOnly {
   display: none;
 }
+/* 인쇄할 항목(§16-10) — 체크박스 줄(폰 폭에서 줄바꿈), 묶음 래퍼(화면 배치에 끼지 않는다), 전사를 끈 인쇄의 대체 글(평소 숨김) */
+.printPick {
+  flex: 1 1 100%;
+  min-width: 0;
+  margin: 2px 0 0;
+  padding: 8px 12px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+}
+.printPickLegend {
+  padding: 0 4px;
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: var(--fw-bold);
+}
+.printPickRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-bottom: 4px;
+}
+.printPickItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  color: var(--ink);
+  font-size: 15px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.printPickItem input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+.sec {
+  display: contents;
+}
+.printAlt {
+  display: none;
+}
 /* .printHide(화면 전용 줄 — 인쇄에서 숨김)·.recBlock(내 녹음 블록 — 화면은 .block 그대로)은 아래 @media print에만 규칙이 있다 */
 
 /*
@@ -982,5 +1024,23 @@
   }
   .usedFrame {
     text-decoration-style: double;
+  }
+
+  /* 인쇄할 항목(§16-10) — 루트의 data-print-omit-{key}가 그 묶음(data-print-sec)을 뺀다. 문제·머리·점수 칩은 묶음이 아니다 */
+  .wrap[data-print-omit-transcript] [data-print-sec="transcript"],
+  .wrap[data-print-omit-strengths] [data-print-sec="strengths"],
+  .wrap[data-print-omit-fixes] [data-print-sec="fixes"],
+  .wrap[data-print-omit-missing] [data-print-sec="missing"],
+  .wrap[data-print-omit-improved] [data-print-sec="improved"],
+  .wrap[data-print-omit-model] [data-print-sec="model"] {
+    display: none !important;
+  }
+  /* 전사를 끄면 Q1–2는 대조 표시 대신 지문만("지문" 라벨 + 원문) */
+  .wrap[data-print-omit-transcript] .printAlt[data-print-alt="transcript"] {
+    display: revert;
+  }
+  /* 피드백 네 묶음을 모두 끄면 빈 피드백 상자도 뺀다 */
+  .wrap[data-print-omit-strengths][data-print-omit-fixes][data-print-omit-missing][data-print-omit-improved] .feedback {
+    display: none;
   }
 }

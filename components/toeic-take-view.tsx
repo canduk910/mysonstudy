@@ -36,9 +36,9 @@
  *   녹음 시작이 8초 감시·오류로 실패하면 시험을 멈추고 "🎙️ 마이크 다시 켜기"(탭 안에서 연다) / "시간만 재고 계속".
  */
 
+import { Barlow } from "next/font/google";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ToeicInfoTableView from "@/components/toeic-info-table";
 import TtsEngineControl from "@/components/tts-engine-control";
 import TtsSpeedControl from "@/components/tts-speed-control";
 import ToeicMicKeepToggle from "@/components/toeic-mic-keep-toggle";
@@ -90,16 +90,26 @@ import {
 import { TOEIC_BEEP_SEC, cancelToeicBeep, ensureToeicAudio, getToeicAudioContext, resumeToeicAudio, scheduleToeicBeep } from "@/lib/toeic-audio-cue";
 import {
   TOEIC_DIRECTIONS_LANG,
+  TOEIC_MOCK_PARTS,
   beginAnswer,
   firstPhase,
   nextPhase,
-  remainingMs,
   toeicPartDirections,
   toeicSpeechOutcome,
   type ToeicMockPart,
   type ToeicPhaseState,
 } from "@/lib/toeic-mock";
 import { toeicImageUrl } from "@/lib/toeic-mock-contract";
+import {
+  TOEIC_EXAM_CRITERIA_EN,
+  TOEIC_EXAM_PART_TYPE_EN,
+  formatToeicExamClock,
+  toeicExamBandTitle,
+  toeicExamDirectionsTitle,
+  toeicExamPartRange,
+  toeicExamScreenOf,
+  toeicExamTimers,
+} from "@/lib/toeic-exam-screen";
 import type { ToeicSetBackLink } from "@/lib/toeic-guide-view";
 import { deleteToeicRecordingsLocal, listToeicRecordings, saveToeicRecording, type ToeicRecPool } from "@/lib/toeic-rec-store";
 import { toeicRetakeFinishOutcome, toeicRetakeHref } from "@/lib/toeic-retake";
@@ -108,6 +118,12 @@ import { useToeicRecUploadStates } from "@/components/use-toeic-rec-uploads";
 import { TTS_TEXT_MAX_CHARS } from "@/lib/tts-shared";
 import { splitForTts } from "@/lib/tts-split";
 import s from "./toeic-take-view.module.css";
+
+/**
+ * 시험 창 머리 띠 "TOEIC Speaking" 글꼴 — 실제 시험 화면(DIN 계열)과 가장 가까운 Google 글꼴(Barlow 400, 폭·획 굵기 비교 — 리포트).
+ * 이 화면에만 쓴다(next/font가 빌드 때 받아 같은 도메인에서 내준다 — 외부 요청 없음). 본문은 시험처럼 Arial.
+ */
+const examBrand = Barlow({ weight: "400", subsets: ["latin"], display: "swap", variable: "--toeic-exam-brand" });
 
 const TICK_MS = 250;
 const LEVEL_MS = 90;
@@ -175,12 +191,36 @@ function enPieces(text: string | null): { text: string; lang: string }[] {
     .map((t) => ({ text: t, lang: TOEIC_DIRECTIONS_LANG }));
 }
 
-function clock(ms: number | null): string {
-  if (ms === null) return "";
-  const total = Math.max(0, Math.ceil(ms / 1000));
-  const m = Math.floor(total / 60);
-  const sec = total % 60;
-  return m > 0 ? `${m}:${String(sec).padStart(2, "0")}` : `${sec}`;
+type FsDoc = Document & {
+  webkitFullscreenElement?: Element | null;
+  webkitExitFullscreen?: () => Promise<void> | void;
+};
+type FsEl = HTMLElement & { webkitRequestFullscreen?: () => Promise<void> | void };
+
+/** 전체 화면 켜기/끄기(탭) — 지원하지 않거나 거부되면 조용히 무시 */
+function toggleFullscreenQuietly(): void {
+  try {
+    const d = document as FsDoc;
+    if (d.fullscreenElement || d.webkitFullscreenElement) {
+      exitFullscreenQuietly();
+      return;
+    }
+    const el = document.documentElement as FsEl;
+    const r = el.requestFullscreen ? el.requestFullscreen() : el.webkitRequestFullscreen?.();
+    if (r && typeof (r as Promise<void>).catch === "function") (r as Promise<void>).catch(() => {});
+  } catch {
+    /* 무시 */
+  }
+}
+function exitFullscreenQuietly(): void {
+  try {
+    const d = document as FsDoc;
+    if (!d.fullscreenElement && !d.webkitFullscreenElement) return;
+    const r = d.exitFullscreen ? d.exitFullscreen() : d.webkitExitFullscreen?.();
+    if (r && typeof (r as Promise<void>).catch === "function") (r as Promise<void>).catch(() => {});
+  } catch {
+    /* 무시 */
+  }
 }
 
 function kb(n: number | null): string {
@@ -307,6 +347,16 @@ export default function ToeicTakeView({
   const [startAction, setStartAction] = useState<{ href: string; labelKo: string } | null>(null);
   /** 다시 풀기: 고른 문항의 예전 녹음이 이 기기에서 아직 서버에 없다(§15-3 — 다시 풀면 기기 사본이 새 녹음으로 바뀐다) */
   const [pendingOld, setPendingOld] = useState<number[]>([]);
+  // ── 시험 창 표현(§17 — 상태 기계와 무관한 화면 상태) ──
+  /** 실전 전체 응시의 시작 안내("Speaking Test Directions") — 준비 화면의 "▶ 시작"이 열고, 머리 띠 CONTINUE가 start()(탭 안) */
+  const [testDirections, setTestDirections] = useState(false);
+  /** 지금 읽는 질문 큐 조각(시작 전 -1) — Q5 상황 소개를 읽는 동안 상황 화면을 보이려고(toeicExamScreenOf) */
+  const [speakIdx, setSpeakIdx] = useState(-1);
+  const [memoOpen, setMemoOpen] = useState(false);
+  const [volumeOpen, setVolumeOpen] = useState(false);
+  /** 전체 화면 API가 있는가(마운트 뒤 판정 — 렌더 중 document 금지) · 지금 전체 화면인가 */
+  const [fsSupported, setFsSupported] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // ── 콜백이 읽는 최신 값(타이머·음성 콜백은 탭 밖 — 클로저가 낡지 않게) ──
   const phaseRef = useRef<ToeicPhaseState | null>(null);
@@ -476,6 +526,10 @@ export default function ToeicTakeView({
         return;
       }
       const stop = speakQueue(pieces, {
+        // 표현만(§17) — 지금 읽는 조각. 단계 전이에는 쓰지 않는다
+        onItem: (i) => {
+          if (runRef.current === token) setSpeakIdx(i);
+        },
         onEnd: (reason, { sounded }) => {
           if (runRef.current !== token) return;
           speakStopRef.current = null;
@@ -726,6 +780,7 @@ export default function ToeicTakeView({
       const token = ++runRef.current;
       setPhase(st);
       setPause(null);
+      setSpeakIdx(-1);
       expiredForRef.current = null;
       setNow(Date.now());
       if (st.phase !== "beep") cancelBeepTimerOnly();
@@ -867,6 +922,25 @@ export default function ToeicTakeView({
     resumeToeicAudio();
   }, []);
   useToeicWakeLock(stage === "running", onVisible);
+
+  // ── 전체 화면(앱 띠 "⛶ 전체 화면" — 지원할 때만, 실패는 무시) ──
+  useEffect(() => {
+    const d = document as Document & { webkitFullscreenEnabled?: boolean; webkitFullscreenElement?: Element | null };
+    setFsSupported(Boolean(d.fullscreenEnabled || d.webkitFullscreenEnabled));
+    const onChange = () => setIsFullscreen(Boolean(d.fullscreenElement || d.webkitFullscreenElement));
+    document.addEventListener("fullscreenchange", onChange);
+    document.addEventListener("webkitfullscreenchange", onChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", onChange);
+      document.removeEventListener("webkitfullscreenchange", onChange);
+    };
+  }, []);
+  // 응시가 끝나면(끝 화면·오류) 전체 화면에서 나온다 — 결과 화면은 앱 화면이다
+  useEffect(() => {
+    if (stage !== "done" && stage !== "error") return;
+    exitFullscreenQuietly();
+  }, [stage]);
+  useEffect(() => () => exitFullscreenQuietly(), []);
 
   // ── 언마운트: 소리·녹음 정리, 시작했는데 끝을 못 보냈으면 best-effort로 "그만둠" 저장 ──
   useEffect(() => {
@@ -1198,7 +1272,6 @@ export default function ToeicTakeView({
 
   // ── 렌더 ──
   const view = phase?.q ? viewByQ.get(phase.q) : undefined;
-  const remain = phase ? remainingMs(phase, now) : null;
   /** 녹음이 있는 문항 — 녹음됨 + 소리 없음(무음 — 녹음은 남겼다, §15-10) */
   const hasRec = (q: number) => answers[q]?.status === "recorded" || answers[q]?.status === "silent";
   const recordedCount = qs.filter(hasRec).length;
@@ -1240,6 +1313,9 @@ export default function ToeicTakeView({
     Math.round(questions.reduce((sum, v) => sum + v.prepSec + v.answerSec + v.readingSec + (v.questionPlays > 0 ? 8 * v.questionPlays : 0) + (v.directions ? 20 : 0), 0) / 60),
   );
 
+  /** 실전 전체 응시만 시작 안내를 둔다 — 파트 연습·한 문제 연습·다시 풀기는 파트 안내부터(지금 흐름) */
+  const showTestDirections = scope === "full" && !retake;
+
   if (stage === "error") {
     return (
       <div className={s.overlay} role="dialog" aria-modal="true" aria-label="모의고사 응시">
@@ -1262,6 +1338,111 @@ export default function ToeicTakeView({
             </Link>
           </div>
         </div>
+      </div>
+    );
+  }
+
+  /** 시험 창 머리 띠 — "TOEIC Speaking"(왼쪽 위) · 가운데 문항 · 오른쪽 CONTINUE(있으면)·VOLUME */
+  const examBand = (title: string | null, onContinue: (() => void) | null) => (
+    <header className={s.band}>
+      <span className={s.brand}>TOEIC Speaking</span>
+      {title && (
+        <span className={s.bandTitle} data-testid="exam-band-title">
+          {title}
+        </span>
+      )}
+      <span className={s.bandBtns}>
+        {onContinue && (
+          <button type="button" className={s.continueBtn} onClick={onContinue} data-testid="exam-continue">
+            CONTINUE
+          </button>
+        )}
+        <button
+          type="button"
+          className={s.volumeBtn}
+          onClick={() => setVolumeOpen((v) => !v)}
+          aria-expanded={volumeOpen}
+          aria-controls="toeic-exam-volume"
+          aria-label="VOLUME — 소리 설정(질문 음성 속도·엔진)"
+          data-testid="exam-volume"
+        >
+          <span className={s.volumeText}>VOLUME</span>
+          <svg className={s.volumeIcon} viewBox="0 0 16 12" aria-hidden="true">
+            <path d="M1 4h3l4-3v10L4 8H1z" fill="currentColor" />
+            <path d="M10.5 3.5a3.5 3.5 0 0 1 0 5M12.5 1.8a6 6 0 0 1 0 8.4" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+          </svg>
+        </button>
+      </span>
+    </header>
+  );
+  /** VOLUME이 여는 소리 설정 — 준비 화면에 있던 것과 같은 컨트롤(새 기능 없음) */
+  const volumePanel = volumeOpen && (
+    <div className={s.volumePanel} id="toeic-exam-volume" role="dialog" aria-label="소리 설정">
+      <div className={s.volumePanelHead}>
+        <p className={s.cardTitle}>🔈 소리 설정(질문 음성)</p>
+        <button type="button" className={s.barBtn} onClick={() => setVolumeOpen(false)}>
+          닫기
+        </button>
+      </div>
+      <TtsSpeedControl />
+      <TtsEngineControl lang="en-US" />
+    </div>
+  );
+  const fsButton = fsSupported && (
+    <button type="button" className={s.barBtn} onClick={toggleFullscreenQuietly} data-testid="exam-fullscreen">
+      {isFullscreen ? "⛶ 전체 화면 끝" : "⛶ 전체 화면"}
+    </button>
+  );
+
+  if (stage === "intro" && testDirections) {
+    // 실전 전체 응시의 시작 안내 — 문장은 이 앱의 말(교재·ETS 문장을 옮기지 않는다). CONTINUE가 start()를 탭 안에서 부른다
+    return (
+      <div className={`${s.overlay} ${s.examOverlay}`} role="dialog" aria-modal="true" aria-label="모의고사 시작 안내">
+        <div className={s.examStage}>
+          <div className={`${s.win} ${examBrand.variable}`} data-testid="exam-window" data-screen="test-directions">
+            {examBand(null, start)}
+            <div className={`${s.winBody} ${s.dirBody} ${s.dirDense}`} lang="en">
+              <h1 className={s.dirTitle}>Speaking Test Directions</h1>
+              <p className={s.dirText}>
+                This test has {qs.length} questions that measure a wide range of speaking skills. It takes about {totalMin} minutes in total.
+              </p>
+              <ul className={s.criteriaBox}>
+                {TOEIC_MOCK_PARTS.map((part) => (
+                  <li key={part} className={s.criteriaItem}>
+                    <p className={s.criteriaHead}>
+                      {toeicExamPartRange(part)} &lt;{TOEIC_EXAM_PART_TYPE_EN[part]}&gt;
+                    </p>
+                    <p className={s.criteriaText}>• {TOEIC_EXAM_CRITERIA_EN[part]}</p>
+                  </li>
+                ))}
+              </ul>
+              <p className={s.dirText}>Each question shows how much time you have to prepare and how much time you have to speak.</p>
+              <p className={s.dirText}>Try to speak as much as you can in the time given. Speak clearly and follow each set of directions.</p>
+              <p className={s.dirText}>
+                Select <strong>Continue</strong> when you are ready to begin.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className={s.appBar}>
+          <div className={s.appBarRow}>
+            <p className={s.appStatus}>
+              <span className={s.phaseLabel}>시작 안내</span>
+              <span className={s.progress}>CONTINUE를 누르면 시작해요</span>
+              {scale !== 1 && <span className={s.devBadge}>⏩ ×{scale}</span>}
+            </p>
+            <span className={s.appBtns}>
+              {fsButton}
+              <button type="button" className={s.barBtn} onClick={() => setTestDirections(false)}>
+                ← 준비로
+              </button>
+              <button type="button" className={`${s.barBtn} ${s.barBtnStrong}`} onClick={start}>
+                시작
+              </button>
+            </span>
+          </div>
+        </div>
+        {volumePanel}
       </div>
     );
   }
@@ -1366,7 +1547,13 @@ export default function ToeicTakeView({
             </div>
           </details>
 
-          <button type="button" className={`u-btn u-btn-primary ${s.startBtn}`} onClick={start} disabled={!canStart}>
+          <button
+            type="button"
+            className={`u-btn u-btn-primary ${s.startBtn}`}
+            // 실전 전체 응시는 시작 안내(Speaking Test Directions)를 먼저 — 그 화면의 CONTINUE 탭이 start()(오디오 잠금 해제·마이크가 탭 안에, §17)
+            onClick={showTestDirections ? () => setTestDirections(true) : start}
+            disabled={!canStart}
+          >
             {mode === "nomic" ? "▶ 녹음 없이 시작" : "▶ 시작"}
           </button>
           {!canStart && <p className={s.caption}>마이크 점검을 마치거나 "녹음 없이 연습"을 고르면 시작할 수 있어요.</p>}
@@ -1446,10 +1633,11 @@ export default function ToeicTakeView({
     );
   }
 
-  // ── 응시 중 ──
+  // ── 응시 중 — 시험 창(실제 시험 화면 모양, §17) + 창 밖 앱 띠(조작·상태·진단) ──
   const st = phase;
   const q = st?.q ?? null;
   const a = q !== null ? answers[q] : undefined;
+  const recording = st?.phase === "answer" && mode === "mic" && a?.status === "recording";
   const showQuestion =
     !!view &&
     !!view.question &&
@@ -1457,7 +1645,9 @@ export default function ToeicTakeView({
     st !== null &&
     st.phase !== "directions" &&
     st.phase !== "reading";
-  const contentVisible = st !== null && st.phase !== "directions";
+  const introPieces = view && st?.phase === "question" && st.play === 0 ? enPieces(view.spokenIntro).length : 0;
+  const screen = st ? toeicExamScreenOf(st, { introPieces, speakingIndex: speakIdx, paused: pause !== null }) : "question";
+  const timers = st ? toeicExamTimers(st, now) : [];
   const phaseLabel =
     st?.phase === "question" && view && view.questionPlays > 1
       ? `${PHASE_KO.question} (${st.play + 1}/${view.questionPlays})`
@@ -1474,24 +1664,102 @@ export default function ToeicTakeView({
         : st
           ? PHASE_KO[st.phase]
           : "";
+  const listening = (st?.phase === "directions" || st?.phase === "question") && !pause;
+  const memoPhase = q !== null && (st?.phase === "prep" || st?.phase === "answer" || st?.phase === "beep");
+  const timerRow = timers.length > 0 && (
+    <div className={`${s.timerRow} ${view?.part === "opinion" ? s.timerCol : ""}`}>
+      {timers.map((t) => (
+        <div key={t.label} className={s.timerBox} role="timer" aria-label={t.label} data-running={t.running ? "1" : "0"}>
+          <span className={s.timerHead}>{t.label}</span>
+          <span className={s.timerValue}>{formatToeicExamClock(t.ms)}</span>
+        </div>
+      ))}
+    </div>
+  );
 
   return (
-    <div className={s.overlay} role="dialog" aria-modal="true" aria-label="모의고사 응시">
-      <div className={s.inner}>
-        <div className={s.head}>
-          <div className={s.headInfo}>
-            <span className={s.qBadge}>Q{q ?? "–"}</span>
-            <span className={s.partName}>{view?.partNameKo}</span>
-            <span className={s.progress}>
-              {(st?.index ?? 0) + 1} / {qs.length}
-            </span>
-            {scale !== 1 && <span className={s.devBadge}>⏩ ×{scale}</span>}
-          </div>
-          <button type="button" className={s.quitBtn} onClick={() => setQuitConfirm(true)}>
-            그만두기
-          </button>
+    <div className={`${s.overlay} ${s.examOverlay}`} role="dialog" aria-modal="true" aria-label="모의고사 응시">
+      <div className={s.examStage}>
+        <div className={`${s.win} ${examBrand.variable}`} data-testid="exam-window" data-screen={screen}>
+          {examBand(
+            screen === "question" && q !== null ? toeicExamBandTitle(q) : null,
+            // 지시문 음성이 멈췄을 때만 — 앱 띠의 "계속"과 같은 일(실제 시험 안내 화면에는 CONTINUE가 없다)
+            screen === "directions" && pause?.kind === "speech" && pause.phase === "directions" ? continueAfterDirections : null,
+          )}
+          {screen === "directions" ? (
+            <div className={`${s.winBody} ${s.dirBody}`} lang="en">
+              {view && <h2 className={s.dirTitle}>{toeicExamDirectionsTitle(view.part, qs)}</h2>}
+              {view && (
+                <p className={s.dirText}>
+                  <strong>Directions:</strong> {directionsByPart.get(view.part)?.en}
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className={`${s.winBody} ${s.qBody}`} lang="en">
+              {view?.passage && <p className={s.xPassage}>{view.passage}</p>}
+              {view?.picture &&
+                (view.picture.imageId ? (
+                  <figure className={s.xPhoto}>
+                    {/* eslint-disable-next-line @next/next/no-img-element -- PIN 게이트 안 동적 라우트 바이트 */}
+                    <img src={toeicImageUrl(view.picture.imageId)} alt={`Q${view.q} 사진`} width={1536} height={1024} className={s.xPhotoImg} />
+                  </figure>
+                ) : (
+                  <div className={s.xScene} role="group" aria-label="장면 설명" lang="ko">
+                    <p className={s.xSceneCap}>📷 사진 대신 장면 설명</p>
+                    <p>{view.picture.sceneKo}</p>
+                  </div>
+                ))}
+              {view?.intro && <p className={s.xIntro}>{view.intro}</p>}
+              {screen === "question" && view?.table && (
+                <div className={s.xTable}>
+                  <p className={s.xTableTitle}>{view.table.title}</p>
+                  {view.table.meta.map((m, k) => (
+                    <p key={k} className={s.xTableMeta}>
+                      {m}
+                    </p>
+                  ))}
+                  <table className={s.xTableGrid}>
+                    <tbody>
+                      {view.table.rows.map((r, k) => (
+                        <tr key={k}>
+                          <th scope="row">{r.left}</th>
+                          <td>{r.right}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {view.table.notes.map((n, k) => (
+                    <p key={k} className={s.xTableNote}>
+                      {n}
+                    </p>
+                  ))}
+                </div>
+              )}
+              {screen === "question" &&
+                showQuestion &&
+                view?.question &&
+                (view.part === "opinion" ? (
+                  // 의견 질문 — 문단(줄바꿈)마다 따로(실제 시험의 질문 + "근거를 들어 말하라" 둘째 문단 모양)
+                  <div className={s.xOpinion}>
+                    {view.question
+                      .split(/\n+/)
+                      .filter((line) => line.trim() !== "")
+                      .map((line, k) => (
+                        <p key={k}>{line}</p>
+                      ))}
+                  </div>
+                ) : (
+                  <p className={s.xQuestion}>{view.question}</p>
+                ))}
+              {screen === "question" && timerRow}
+            </div>
+          )}
         </div>
+      </div>
 
+      {/* 앱 띠 — 시험 창 밖(조작·상태·진단, 한국어). 시험 창에는 실제 시험에 없는 것을 두지 않는다 */}
+      <div className={s.appBar}>
         {quitConfirm && (
           <div className={s.confirm} role="alertdialog" aria-label="그만두기 확인">
             <p>그만둘까요? 지금까지 녹음한 문항은 저장되고, 결과 화면에서 채점할 수 있어요.</p>
@@ -1505,23 +1773,6 @@ export default function ToeicTakeView({
             </div>
           </div>
         )}
-
-        <div className={`${s.stageCard} ${st?.phase === "answer" && mode === "mic" && a?.status === "recording" ? s.stageRec : ""}`} aria-live="polite">
-          <p className={s.phaseLabel}>{phaseLabel}</p>
-          {remain !== null && <p className={s.timer}>{clock(remain)}</p>}
-          {(st?.phase === "directions" || st?.phase === "question") && !pause && <p className={s.caption}>🔊 듣고 있어요…</p>}
-          {st?.phase === "answer" && mode === "mic" && a?.status === "recording" && (
-            <div className={s.meter} role="meter" aria-label="입력 레벨" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(level * 100)}>
-              <span className={s.meterFill} style={{ width: `${Math.round(level * 100)}%` }} />
-            </div>
-          )}
-          {/* F1 — 녹음 중 3초 넘게 조용하면 바로 알린다(녹음은 멈추지 않는다, §15-10) */}
-          {st?.phase === "answer" && mode === "mic" && a?.status === "recording" && silenceAlert && (
-            <p className={s.silence} role="status" data-testid="silence-alert">
-              🔇 소리가 안 들어와요 — 마이크를 가리지 않았는지 확인해 주세요.
-            </p>
-          )}
-        </div>
 
         {/* F3 — 마이크를 놓은 채 준비·답변에 들어가거나 녹음 시작이 실패했다: 멈추고 탭 안에서 다시 켠다(§15-12) */}
         {micPrompt.phase !== "idle" && (
@@ -1580,83 +1831,84 @@ export default function ToeicTakeView({
             </div>
           </div>
         )}
+        {/* F1 — 녹음 중 3초 넘게 조용하면 바로 알린다(녹음은 멈추지 않는다, §15-10) */}
+        {recording && silenceAlert && (
+          <p className={s.silence} role="status" data-testid="silence-alert">
+            🔇 소리가 안 들어와요 — 마이크를 가리지 않았는지 확인해 주세요.
+          </p>
+        )}
         {notice && <p className={s.warn}>{notice}</p>}
+        {view && !view.available && st?.phase !== "directions" && <p className={s.warn}>이 문항의 자료가 모의고사에 없어요 — 시간만 재요.</p>}
+        {/* 지시문 한국어 캡션 — 시험 창에는 영어만(실제 시험처럼) */}
+        {st?.phase === "directions" && view && <p className={s.barCaption}>{directionsByPart.get(view.part)?.ko}</p>}
 
-        {/* 지시문 — en(읽는 문장) + 한국어 캡션 */}
-        {st?.phase === "directions" && view && (
-          <section className={s.card} aria-label="지시문">
-            <p className={s.cardTitle}>{view.partLabelKo}</p>
-            <p className={s.en} lang="en">
-              {directionsByPart.get(view.part)?.en}
-            </p>
-            <p className={s.caption}>{directionsByPart.get(view.part)?.ko}</p>
-          </section>
-        )}
+        <div className={s.appBarRow}>
+          <p className={s.appStatus} aria-live="polite">
+            {recording && <span className={s.recDot} aria-hidden="true" data-testid="rec-dot" />}
+            <span className={s.qBadge}>Q{q ?? "–"}</span>
+            <span className={s.phaseLabel}>
+              {phaseLabel}
+              {listening ? " 🔊" : ""}
+            </span>
+            <span className={s.progress}>
+              {(st?.index ?? 0) + 1} / {qs.length}
+            </span>
+            {recording && (
+              <span className={s.miniMeter} role="meter" aria-label="입력 레벨" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(level * 100)}>
+                <span className={s.meterFill} style={{ width: `${Math.round(level * 100)}%` }} />
+              </span>
+            )}
+            {scale !== 1 && <span className={s.devBadge}>⏩ ×{scale}</span>}
+          </p>
+          <span className={s.appBtns}>
+            {q !== null && (
+              <button type="button" className={s.barBtn} onClick={() => setMemoOpen((v) => !v)} aria-expanded={memoOpen}>
+                📝 메모
+              </button>
+            )}
+            {fsButton}
+            <button type="button" className={s.quitBtn} onClick={() => setQuitConfirm(true)}>
+              그만두기
+            </button>
+          </span>
+        </div>
 
-        {/* 문항 자료 */}
-        {contentVisible && view && !view.available && <p className={s.warn}>이 문항의 자료가 모의고사에 없어요 — 시간만 재요.</p>}
-        {contentVisible && view?.passage && (
-          <p className={s.passage} lang="en">
-            {view.passage}
-          </p>
-        )}
-        {contentVisible && view?.picture && (
-          view.picture.imageId ? (
-            <figure className={s.photo}>
-              {/* eslint-disable-next-line @next/next/no-img-element -- PIN 게이트 안 동적 라우트 바이트 */}
-              <img src={toeicImageUrl(view.picture.imageId)} alt={`Q${view.q} 사진`} width={1536} height={1024} className={s.photoImg} />
-            </figure>
-          ) : (
-            <div className={s.sceneBox} role="group" aria-label="장면 설명">
-              <p className={s.caption}>📷 사진 대신 장면 설명</p>
-              <p className={s.scene}>{view.picture.sceneKo}</p>
-            </div>
-          )
-        )}
-        {contentVisible && view?.intro && (
-          <p className={s.intro} lang="en">
-            {view.intro}
-          </p>
-        )}
-        {contentVisible && view?.table && <ToeicInfoTableView table={view.table} />}
-        {showQuestion && view?.question && (
-          <p className={s.question} lang="en">
-            {view.question}
-          </p>
-        )}
-
-        {/* 메모장 — 준비·답변 중(저장하지 않는다) */}
-        {q !== null && (st?.phase === "prep" || st?.phase === "answer" || st?.phase === "beep") && (
+        {/* 메모장 — 저장하지 않는다. 문항마다 따로(실제 시험엔 없다 — 앱 띠에서 열 때만) */}
+        {memoOpen && q !== null && (
           <label className={s.memo}>
-            <span className={s.caption}>메모(저장 안 함)</span>
+            <span className={s.caption}>Q{q} 메모(저장 안 함){memoPhase ? "" : " — 준비·답변 때 쓰세요"}</span>
             <textarea
               value={memo[q] ?? ""}
               onChange={(e) => setMemo((prev) => ({ ...prev, [q]: e.target.value }))}
-              rows={3}
+              rows={2}
               className={s.memoInput}
             />
           </label>
         )}
 
         {diag && mode === "mic" && (
-          <p className={s.diag}>
-            진단 · {diag.keep ? `마이크 ${diag.keep.policy === "keep" ? "유지" : downgraded ? "문항마다(이번 응시만 — 소리 문제 2회)" : "문항마다"} · 열기 ${diag.keep.acquisitions}회 · ` : ""}녹음 형식{" "}
-            {diag.mimeType ?? diag.requestedMimeType ?? "기본"} · 마지막{" "}
-            {diag.durationMs !== null ? `${(diag.durationMs / 1000).toFixed(1)}초` : "–"} · {kb(diag.size)} · 세션 {diag.audioSession ?? "API 없음"}
-            {diag.error ? ` · 오류 ${diag.error}` : ""}
-            {attemptId ? "" : " · 응시 기록 만드는 중"}
-            {recordedCount > 0 && (
-              <span data-testid="rec-upload-diag">
-                {" · 서버 "}
-                {qs
-                  .filter(hasRec)
-                  .map((q) => `Q${q} ${uploadLabel(q, true)}`)
-                  .join(" · ")}
-              </span>
-            )}
-          </p>
+          <details className={s.diagBox}>
+            <summary className={s.diagSummary}>진단</summary>
+            <p className={s.diag}>
+              진단 · {diag.keep ? `마이크 ${diag.keep.policy === "keep" ? "유지" : downgraded ? "문항마다(이번 응시만 — 소리 문제 2회)" : "문항마다"} · 열기 ${diag.keep.acquisitions}회 · ` : ""}녹음 형식{" "}
+              {diag.mimeType ?? diag.requestedMimeType ?? "기본"} · 마지막{" "}
+              {diag.durationMs !== null ? `${(diag.durationMs / 1000).toFixed(1)}초` : "–"} · {kb(diag.size)} · 세션 {diag.audioSession ?? "API 없음"}
+              {diag.error ? ` · 오류 ${diag.error}` : ""}
+              {attemptId ? "" : " · 응시 기록 만드는 중"}
+              {recordedCount > 0 && (
+                <span data-testid="rec-upload-diag">
+                  {" · 서버 "}
+                  {qs
+                    .filter(hasRec)
+                    .map((q) => `Q${q} ${uploadLabel(q, true)}`)
+                    .join(" · ")}
+                </span>
+              )}
+            </p>
+          </details>
         )}
       </div>
+      {volumePanel}
     </div>
   );
 }

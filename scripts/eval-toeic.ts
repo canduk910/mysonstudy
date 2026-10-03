@@ -235,6 +235,7 @@ import { runToeicRecordingChecks } from "./eval-toeic-recordings";
 import { runToeicRecManageChecks } from "./eval-toeic-rec-manage";
 // 문항 단위 다시 풀기 + 마이크 유지 대책 F1~F3 + 고칠 문장 녹음 마이크 고정(docs/harness/toeic.md §15-14)
 import { runToeicRetakeChecks, runToeicRetakeLocalStoreChecks } from "./eval-toeic-retake";
+import { runToeicExamScreenChecks } from "./eval-toeic-exam-screen";
 
 // .env.local / .env 로드 (없으면 무시). 이미 설정된 환경 변수가 우선한다(빈 값으로 미리 둔 키는 덮지 않는다).
 for (const envFile of [".env.local", ".env"]) {
@@ -3295,6 +3296,8 @@ async function main(): Promise<void> {
   all.push(...runToeicRecManageChecks());
   all.push(...runToeicRetakeChecks());
   all.push(...(await runToeicRetakeLocalStoreChecks()));
+  all.push(...runToeicExamScreenChecks());
+  all.push(...(await import("./eval-toeic-print")).runToeicPrintChecks()); // 결과 화면 인쇄할 항목(§16-10)
   all.push(...runSpecSyncChecks());
   all.push(...runJsonSchemaSyncChecks());
 

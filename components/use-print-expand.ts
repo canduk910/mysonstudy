@@ -12,6 +12,8 @@
  * - 루트 안의 `loading="lazy"` 사진은 eager로 바꾼다. 버튼 경로는 기다릴 사진이 없으면 **클릭 핸들러 안에서 동기로** `window.print()`를
  *   부른다(iOS Safari·홈 화면 앱은 사용자 제스처 밖 print를 막을 수 있다). 안 받은 사진이 있을 때만 최대 `PRINT_IMAGE_WAIT_MS` 기다린 뒤
  *   부르고, 그사이 화면을 떠났으면(언마운트) 부르지 않는다(QA print 1 F3).
+ * - **인쇄에서 뺀 묶음의 접기는 펼치지 않는다**(§16-10 인쇄할 항목) — 접기가 `data-print-sec="k"` 묶음 안(또는 그 자체)이고 루트에
+ *   `data-print-omit-k`가 있으면 건너뛴다. 이 훅은 묶음 이름을 모른다(속성 규약만 본다).
  */
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
@@ -20,6 +22,12 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 export const PRINT_EXPAND_ATTR = "data-print-expand";
 /** 버튼 경로 — 안 받은 사진을 기다리는 최대 시간 */
 export const PRINT_IMAGE_WAIT_MS = 4000;
+
+/** 인쇄에서 뺀 묶음(`data-print-sec` + 루트의 `data-print-omit-{sec}`) 안의 접기인가 */
+function inOmittedSection(root: HTMLElement, d: HTMLElement): boolean {
+  const sec = d.closest("[data-print-sec]")?.getAttribute("data-print-sec") ?? null;
+  return sec !== null && sec !== "" && root.hasAttribute(`data-print-omit-${sec}`);
+}
 
 /** 훅이 접기를 여닫는다 — 기대 상태를 먼저 적어 뒤따르는 `toggle`을 사용자 조작으로 보지 않게 */
 function setOpen(expected: Map<HTMLDetailsElement, boolean>, d: HTMLDetailsElement, open: boolean) {
@@ -39,7 +47,7 @@ export function usePrintExpand(rootRef: RefObject<HTMLElement | null>): { printN
     const root = rootRef.current;
     if (!root) return;
     for (const d of Array.from(root.querySelectorAll<HTMLDetailsElement>(`details[${PRINT_EXPAND_ATTR}]`))) {
-      if (!d.open) {
+      if (!d.open && !inOmittedSection(root, d)) {
         setOpen(expectedRef.current, d, true);
         openedRef.current.add(d);
       }

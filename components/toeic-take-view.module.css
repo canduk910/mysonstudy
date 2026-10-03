@@ -1,5 +1,7 @@
-/* 모의고사 응시 화면 (아빠의 영어 T4) — 전면 오버레이. 성인 학습자용, 새 색조 없음(토큰만).
- * 녹음 중은 accent 테두리 + ● 글리프로 알린다(빨강 금지 — 파랑 체계, danger는 경고 문구에만). */
+/* 모의고사 응시 화면 (아빠의 영어 T4) — 전면 오버레이. 성인 학습자용.
+ * 준비·끝 화면은 앱 토큰만. 응시 중은 **시험 창**(실제 시험 화면 모양 — docs/harness/toeic.md §17, SPEC §20-15)이 가운데,
+ * 창 밖 아래 얇은 **앱 띠**(조작·상태·진단 — 앱 토큰). 시험 창의 색·글꼴은 실제 시험 그대로라 테마를 따르지 않는다(아래 .win 머리 주석).
+ * 녹음 중 표시는 앱 띠의 작은 점(danger 토큰) + "● 녹음 중" 글자. */
 
 .overlay {
   position: fixed;
@@ -30,13 +32,6 @@
   gap: 10px;
   min-height: var(--tap-min);
 }
-.headInfo {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
 .qBadge {
   display: inline-flex;
   align-items: center;
@@ -50,11 +45,6 @@
   font-size: 14px;
   font-weight: var(--fw-bold);
   font-variant-numeric: tabular-nums;
-}
-.partName {
-  color: var(--ink);
-  font-size: var(--fs-vocab-meaning);
-  font-weight: var(--fw-bold);
 }
 .progress {
   color: var(--ink-3);
@@ -201,38 +191,11 @@
   font-size: 18px;
 }
 
-/* 무대 — 단계 이름과 남은 시간(이 화면의 주인공) */
-.stageCard {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  padding: 16px;
-  border: 2px solid var(--line);
-  border-radius: var(--radius-card);
-  background: var(--bg);
-  text-align: center;
-}
-.stageRec {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
 .phaseLabel {
   margin: 0;
   color: var(--ink-2);
   font-size: var(--fs-vocab-meaning);
   font-weight: var(--fw-bold);
-}
-.stageRec .phaseLabel {
-  color: var(--accent-ink);
-}
-.timer {
-  margin: 0;
-  color: var(--ink);
-  font-size: calc(var(--fs-stat-number) * 2);
-  font-weight: var(--fw-bold);
-  line-height: 1.05;
-  font-variant-numeric: tabular-nums;
 }
 
 .meter {
@@ -285,73 +248,6 @@
 }
 .confirm p {
   margin: 0;
-}
-
-/* 문항 자료 */
-.en {
-  margin: 0;
-  color: var(--ink);
-  font-size: 16px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-.passage {
-  margin: 0;
-  padding: 14px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-box);
-  background: var(--bg);
-  color: var(--ink);
-  font-size: 18px;
-  line-height: 1.75;
-  overflow-wrap: anywhere;
-}
-.intro {
-  margin: 0;
-  color: var(--ink-2);
-  font-size: 16px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-.question {
-  margin: 0;
-  padding: 12px 14px;
-  border-left: 4px solid var(--accent);
-  border-radius: 4px;
-  background: var(--surface);
-  color: var(--ink);
-  font-size: var(--fs-question-en);
-  font-weight: var(--fw-medium);
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-.photo {
-  margin: 0;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-box);
-  background: var(--surface);
-}
-.photoImg {
-  display: block;
-  width: 100%;
-  height: auto;
-}
-.sceneBox {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 14px;
-  border: 1px dashed var(--line-strong);
-  border-radius: var(--radius-box);
-  background: var(--surface);
-}
-.scene {
-  margin: 0;
-  color: var(--ink);
-  font-size: 16px;
-  line-height: 1.6;
-  word-break: keep-all;
 }
 
 .memo {
@@ -414,4 +310,572 @@
   font-size: 15px;
   font-weight: var(--fw-medium);
   word-break: keep-all;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+ * 응시 중 — 시험 창(실제 시험 화면 모양) + 창 밖 앱 띠  (docs/harness/toeic.md §17, SPEC §20-15)
+ *
+ * 가로(Mac·iPad 가로): 창은 3:2로 뷰포트(앱 띠를 뺀 무대)에 맞춰 가장 크게 가운데 — 무대가 크기 컨테이너, 창 크기는
+ *   min(100cqw, 150cqh) × min(100cqh, 100cqw/1.5). 창 안 글자는 창 폭(cqw — 창이 inline-size 컨테이너)에 비례.
+ * 세로(iPad 세로·폰): 창은 폭에 맞추고 3:2를 최소 높이로 — 내용이 길면 창이 늘고 화면이 스크롤된다. 글자는 clamp 하한.
+ * 시험 창 색은 실제 시험 그대로(테마 무관 — color-scheme: light). 창 밖(무대 바탕·앱 띠)은 앱 토큰을 따른다.
+ * ────────────────────────────────────────────────────────────────────────────── */
+.examOverlay {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.examStage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: 16px 16px 10px;
+  container-type: size;
+}
+.win {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: min(100cqw, 150cqh);
+  height: min(100cqh, calc(100cqw / 1.5));
+  overflow: hidden;
+  border: 1px solid #1d1e24;
+  background: #f2f3f5;
+  color: #222326;
+  color-scheme: light;
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+  container-type: inline-size;
+  box-shadow: 0 2px 12px rgba(15, 23, 42, 0.14);
+}
+
+/* 머리 띠 — 남색 → 보라 → 자주 */
+.band {
+  position: relative;
+  flex: 0 0 auto;
+  height: clamp(46px, 7.4cqw, 104px);
+  background: linear-gradient(90deg, #3b3c71 0%, #433f70 34%, #533760 62%, #622d4a 82%, #6c2638 100%);
+  color: #fff;
+}
+.brand {
+  position: absolute;
+  top: clamp(7px, 1.15cqw, 18px);
+  left: clamp(10px, 2.1cqw, 34px);
+  font-family: var(--toeic-exam-brand), "Barlow", Arial, sans-serif;
+  font-size: clamp(13px, 1.75cqw, 30px);
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.bandTitle {
+  position: absolute;
+  left: 50%;
+  bottom: clamp(5px, 0.95cqw, 16px);
+  transform: translateX(-50%);
+  font-size: clamp(13px, 1.7cqw, 29px);
+  font-weight: 400;
+  line-height: 1;
+  white-space: nowrap;
+}
+.bandBtns {
+  position: absolute;
+  top: 50%;
+  right: clamp(8px, 1.4cqw, 24px);
+  display: flex;
+  align-items: center;
+  gap: clamp(8px, 1.5cqw, 26px);
+  transform: translateY(-50%);
+}
+.volumeBtn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  width: clamp(46px, 5.3cqw, 92px);
+  height: clamp(30px, 3.4cqw, 58px);
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  border-radius: 50%;
+  background: radial-gradient(ellipse at 42% 32%, #6474bd 0%, #3a4790 52%, #29326f 100%);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  color: #fff;
+  cursor: pointer;
+}
+.volumeText {
+  font: 700 clamp(7px, 0.8cqw, 13px) / 1 Arial, Helvetica, sans-serif;
+  letter-spacing: 0.02em;
+}
+.volumeIcon {
+  width: clamp(9px, 1cqw, 16px);
+  height: auto;
+}
+.continueBtn {
+  height: clamp(28px, 3cqw, 52px);
+  padding: 0 clamp(10px, 1.4cqw, 24px);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  outline: 1px solid #1c2252;
+  background: linear-gradient(#3a468f, #2a3474);
+  color: #fff;
+  font-family: var(--toeic-exam-brand), "Barlow", Arial, sans-serif;
+  font-size: clamp(11px, 1.2cqw, 21px);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.volumeBtn:focus-visible,
+.continueBtn:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+/* 본문 — 넘치면 창 안에서 스크롤(가로) */
+.winBody {
+  flex: 1 1 auto;
+  min-height: 0;
+  box-sizing: border-box;
+  overflow-y: auto;
+  scrollbar-width: thin; /* 넘치면 스크롤바가 보이게(잘린 걸 알 수 있게) */
+}
+.winBody::-webkit-scrollbar {
+  width: 8px;
+}
+.winBody::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.28);
+}
+/* 안내 화면(베이지) */
+.dirBody {
+  padding: clamp(18px, 4.2cqw, 72px) clamp(16px, 9cqw, 150px) clamp(16px, 3cqw, 48px);
+  background: #d8d5bd;
+  color: #262626;
+}
+.dirTitle {
+  margin: 0 0 clamp(12px, 2.6cqw, 44px);
+  color: #262626;
+  font-size: clamp(17px, 2.1cqw, 36px);
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: center;
+}
+.dirText {
+  margin: 0 0 clamp(8px, 1.6cqw, 26px);
+  font-size: clamp(16px, 1.95cqw, 33px);
+  line-height: 1.45;
+}
+.dirText strong {
+  font-weight: 700;
+}
+.criteriaBox {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(6px, 1.2cqw, 20px);
+  margin: clamp(8px, 1.6cqw, 26px) clamp(0px, 0.8cqw, 14px) clamp(12px, 2.2cqw, 36px);
+  padding: clamp(8px, 1.1cqw, 18px) clamp(10px, 1.3cqw, 22px);
+  border: 1px solid #3a3a3a;
+  list-style: none;
+}
+/* 시작 안내 — 글이 많아 한 화면에 들어가게 촘촘히(실제 시험의 시작 안내도 같은 창 안에 다 들어간다) */
+.dirDense {
+  padding-top: clamp(14px, 2.4cqw, 42px);
+  padding-bottom: clamp(12px, 1.6cqw, 28px);
+}
+.dirDense .dirTitle {
+  margin-bottom: clamp(8px, 1.6cqw, 26px);
+  font-size: clamp(17px, 1.95cqw, 34px);
+}
+.dirDense .dirText {
+  margin-bottom: clamp(5px, 1cqw, 17px);
+  font-size: clamp(14px, 1.62cqw, 28px);
+  line-height: 1.4;
+}
+.dirDense .criteriaBox {
+  gap: clamp(4px, 0.7cqw, 12px);
+  margin: clamp(6px, 1cqw, 16px) clamp(0px, 0.8cqw, 14px) clamp(8px, 1.3cqw, 22px);
+}
+.dirDense .criteriaHead,
+.dirDense .criteriaText {
+  font-size: clamp(13px, 1.52cqw, 26px);
+  line-height: 1.34;
+}
+.criteriaItem {
+  margin: 0;
+}
+.criteriaHead,
+.criteriaText {
+  margin: 0;
+  font-size: clamp(14px, 1.75cqw, 30px);
+  line-height: 1.4;
+}
+.criteriaHead {
+  font-weight: 700;
+}
+.criteriaText {
+  padding-left: 0.2em;
+}
+
+/* 문제 화면(밝은 회색) */
+.qBody {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: clamp(16px, 3.4cqw, 58px) clamp(14px, 8.5cqw, 144px) clamp(14px, 3cqw, 48px);
+  background: #f2f3f5;
+  color: #222326;
+}
+.xPassage {
+  margin: 0;
+  font-size: clamp(16px, 2.05cqw, 36px);
+  line-height: 1.6;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.xPhoto {
+  align-self: center;
+  margin: 0;
+  max-width: 100%;
+  border: 1px solid #50525a;
+  line-height: 0;
+}
+.xPhotoImg {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: 40cqw;
+  object-fit: contain;
+}
+.xScene {
+  align-self: center;
+  max-width: 44em;
+  padding: clamp(10px, 1.8cqw, 30px);
+  border: 1px dashed #6b6e78;
+  background: #fff;
+  font-size: clamp(15px, 1.8cqw, 30px);
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.xScene p {
+  margin: 0;
+}
+.xSceneCap {
+  margin: 0 0 0.5em;
+  color: #555861;
+  font-size: 0.8em;
+}
+.xIntro {
+  margin: 0;
+  font-size: clamp(16px, 1.95cqw, 34px);
+  line-height: 1.45;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.xQuestion {
+  align-self: center;
+  max-width: 34em;
+  margin: clamp(10px, 2.2cqw, 38px) 0 0;
+  font-size: clamp(16px, 1.95cqw, 34px);
+  font-weight: 700;
+  line-height: 1.45;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.xOpinion {
+  margin: clamp(4px, 1cqw, 16px) 0 0;
+}
+.xOpinion p {
+  margin: 0 0 1.5em; /* 실제 화면처럼 문단 사이 빈 줄 하나 */
+  font-size: clamp(16px, 1.95cqw, 34px);
+  line-height: 1.5;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.xOpinion p:last-child {
+  margin-bottom: 0;
+}
+.xTable {
+  margin: 0 calc(-1 * clamp(0px, 6.4cqw, 110px));
+  padding: clamp(10px, 1.6cqw, 26px) clamp(10px, 2cqw, 34px) clamp(10px, 1.4cqw, 24px);
+  border: 1px solid #3a3a3a;
+}
+.xTableTitle {
+  margin: 0;
+  font-size: clamp(16px, 2cqw, 34px);
+  font-weight: 700;
+  line-height: 1.3;
+}
+.xTableMeta,
+.xTableNote {
+  margin: clamp(2px, 0.3cqw, 6px) 0 0;
+  font-size: clamp(14px, 1.7cqw, 29px);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.xTableNote {
+  margin-top: clamp(6px, 1.2cqw, 20px);
+}
+.xTableGrid {
+  width: 100%;
+  margin-top: clamp(6px, 1.4cqw, 24px);
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: clamp(14px, 1.75cqw, 30px);
+}
+.xTableGrid th,
+.xTableGrid td {
+  padding: clamp(3px, 0.4cqw, 7px) clamp(4px, 0.8cqw, 14px);
+  border: 1px solid #333;
+  line-height: 1.35;
+  text-align: center;
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+}
+.xTableGrid th {
+  width: 32%;
+  background: #c9c9c9;
+  font-weight: 700;
+}
+
+/* 타이머 상자 — 검은 머리 칸 + 흰 칸(hh:mm:ss) */
+.timerRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: center;
+  gap: clamp(12px, 3.2cqw, 54px);
+  margin-top: clamp(16px, 4cqw, 68px);
+}
+.timerCol {
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(10px, 2.2cqw, 36px);
+}
+.timerBox {
+  display: flex;
+  flex-direction: column;
+  width: clamp(132px, 15.5cqw, 268px);
+  border: 1px solid #1b1b1b;
+  background: #fff;
+}
+.timerHead,
+.timerValue {
+  display: block;
+  padding: clamp(5px, 0.75cqw, 13px) 4px;
+  font-size: clamp(11px, 1.35cqw, 23px);
+  line-height: 1.1;
+  text-align: center;
+  white-space: nowrap;
+}
+.timerHead {
+  background: #1b1b1b;
+  color: #fff;
+  letter-spacing: 0.01em;
+}
+.timerValue {
+  color: #1b1b1b;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 앱 띠 — 창 밖 아래(조작·상태·진단, 앱 토큰·한국어) */
+.appBar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
+  max-height: 48dvh;
+  overflow-y: auto;
+  padding: 6px 16px calc(8px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+.appBarRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  min-height: 40px;
+}
+.appStatus {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+.appStatus .qBadge {
+  min-width: 34px;
+  height: 24px;
+  font-size: 13px;
+}
+.appStatus .phaseLabel {
+  color: var(--ink);
+  font-size: 14px;
+}
+.appBtns {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.barBtn {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+.barBtnStrong {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.appBtns .quitBtn {
+  min-height: 36px;
+  font-size: 13px;
+}
+.barCaption {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+/* 녹음 중 — 작은 빨간 점(깜빡임은 움직임 줄이기면 끈다) */
+.recDot {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: recBlink 1.2s ease-in-out infinite;
+}
+@keyframes recBlink {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .recDot {
+    animation: none;
+  }
+}
+.miniMeter {
+  position: relative;
+  width: 64px;
+  height: 6px;
+  overflow: hidden;
+  border-radius: var(--radius-chip);
+  background: var(--surface-2);
+}
+.diagBox {
+  color: var(--ink-3);
+}
+.diagSummary {
+  min-height: 24px;
+  color: var(--ink-3);
+  font-size: 12px;
+  cursor: pointer;
+}
+.appBar .memo .memoInput {
+  font-size: 16px; /* iOS 확대 방지 */
+}
+
+/* VOLUME이 여는 소리 설정(준비 화면과 같은 컨트롤) */
+.volumePanel {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+  width: min(360px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+  padding: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.2);
+}
+.volumePanelHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* 세로(iPad 세로·폰) — 창은 폭에 맞추고 3:2는 최소 높이, 내용이 길면 화면이 스크롤 */
+@media (max-aspect-ratio: 1/1) {
+  .examOverlay {
+    overflow-y: auto;
+  }
+  .examStage {
+    flex: 1 0 auto;
+    align-items: flex-start;
+    padding: 12px 12px 10px;
+    container-type: inline-size;
+  }
+  .win {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 3 / 2;
+    overflow: visible;
+  }
+  .winBody {
+    overflow: visible;
+  }
+  .appBar {
+    position: sticky;
+    bottom: 0;
+    max-height: none;
+    overflow: visible;
+    padding-inline: 12px;
+  }
+  .xPhoto {
+    width: 100%;
+    max-width: 640px;
+  }
+  .xPhotoImg {
+    width: 100%;
+    height: auto;
+  }
+}
+/* iPad 세로 — 창이 화면 위에 붙지 않게 가운데(폰은 위에서부터 — 앱 띠와 가깝게) */
+@media (max-aspect-ratio: 1/1) and (min-width: 600px) {
+  .examStage {
+    align-items: center;
+  }
+}
+
+/* 폰 세로 — 창이 앱 띠 위까지 세로를 채운다(본문이 늘고, 타이머는 본문 아래 창 바닥 쪽) */
+@media (max-aspect-ratio: 1/1) and (max-width: 599.98px) {
+  .examStage {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .win {
+    flex: 1 0 auto;
+    aspect-ratio: auto;
+  }
+  .winBody {
+    display: flex;
+    flex-direction: column;
+  }
+  .qBody .timerRow {
+    margin-top: auto;
+    padding-top: 20px;
+  }
 }
