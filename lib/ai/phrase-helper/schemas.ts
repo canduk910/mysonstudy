@@ -158,9 +158,9 @@ export interface PhraseHelperLimits {
 }
 
 export const PHRASE_HELPER_LIMITS: Readonly<Record<PhraseHelperMode, PhraseHelperLimits>> = {
-  toeic: { noteKoMax: 150, usageKoMax: 120, altNoteKoMax: 120, alternativesMax: 2, examplesMin: 2, examplesMax: 3, expressionMax: 40, exampleMin: 5, exampleMax: 25 },
-  japanese: { noteKoMax: 150, usageKoMax: 120, altNoteKoMax: 120, alternativesMax: 2, examplesMin: 2, examplesMax: 3, expressionMax: 100, exampleMin: 4, exampleMax: 60 },
-  "english-kid": { noteKoMax: 100, usageKoMax: 80, altNoteKoMax: 80, alternativesMax: 1, examplesMin: 2, examplesMax: 2, expressionMax: 20, exampleMin: 3, exampleMax: 12 },
+  toeic: { noteKoMax: 150, usageKoMax: 120, altNoteKoMax: 120, alternativesMax: 2, examplesMin: 0, examplesMax: 3, expressionMax: 40, exampleMin: 5, exampleMax: 25 },
+  japanese: { noteKoMax: 150, usageKoMax: 120, altNoteKoMax: 120, alternativesMax: 2, examplesMin: 0, examplesMax: 3, expressionMax: 100, exampleMin: 4, exampleMax: 60 },
+  "english-kid": { noteKoMax: 100, usageKoMax: 80, altNoteKoMax: 80, alternativesMax: 1, examplesMin: 0, examplesMax: 2, expressionMax: 20, exampleMin: 3, exampleMax: 12 },
 };
 
 // ---------------------------------------------------------------------------

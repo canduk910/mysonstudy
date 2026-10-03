@@ -43,7 +43,12 @@ import {
   PHRASE_HELPER_TIMEOUT_MS,
   PHRASE_HELPER_TOEIC_SYSTEM_PROMPT,
   PHRASE_HELPER_USER_TEMPLATE,
+  PHRASE_HELPER_REASK_NOT_KOREAN_NOTE,
+  PHRASE_HELPER_REASK_OUT_OF_SCOPE_NOTE,
+  buildPhraseHelperReaskUserMessage,
   buildPhraseHelperUserMessage,
+  phraseHelperReaskCallLabel,
+  phraseHelperReaskReason,
   phraseHelperAbortSignal,
   phraseHelperCallLabel,
 } from "../lib/ai/phrase-helper/prompts";
@@ -201,7 +206,8 @@ async function runConstantChecks(): Promise<CheckResult[]> {
     const lim = PHRASE_HELPER_LIMITS[mode];
     const p = PHRASE_HELPER_SYSTEM_PROMPTS[mode];
     const alt = p.includes(`[alternatives — 다른 표현 0~${lim.alternativesMax}개]`);
-    const ex = lim.examplesMin === lim.examplesMax ? p.includes(`[examples — 예문 정확히 ${lim.examplesMin}개]`) : p.includes(`[examples — 예문 ${lim.examplesMin}~${lim.examplesMax}개]`);
+    // zod 하한은 일부러 0이다(빈 예문을 거부하면 재요청 때 모델이 out_of_scope로 빠져나간다 — phrase-helper.md §15). 프롬프트 머리는 요청 개수를 말하고, 상한만 zod와 같아야 한다
+    const ex = lim.examplesMin === 0 && (p.includes(`[examples — 예문 정확히 ${lim.examplesMax}개]`) || p.includes(`[examples — 예문 2~${lim.examplesMax}개]`));
     return alt && ex;
   };
   for (const m of PHRASE_HELPER_MODES) add(`개수 폭 == 프롬프트 머리(${m})`, countLine(m), JSON.stringify({ alt: PHRASE_HELPER_LIMITS[m].alternativesMax, ex: [PHRASE_HELPER_LIMITS[m].examplesMin, PHRASE_HELPER_LIMITS[m].examplesMax] }));
@@ -337,8 +343,8 @@ function runZodChecks(): CheckResult[] {
     passes("예문에 main이 그대로 없어도(활용형) 통과 — 강제하지 않는다", (v) => (v.examples[0].en = "They pushed our meeting back again this morning, sadly."));
     passes("not_korean + 안내", (v) => Object.assign(v, notOk("not_korean", "한국어로 넣어 주세요.")));
     passes("out_of_scope + 안내", (v) => Object.assign(v, notOk("out_of_scope", "이 도우미는 한국어를 영어 표현으로 바꿔 줘요.")));
-    rejects("빈 examples", (v) => (v.examples = []), "examples");
-    rejects("예문 1개", (v) => v.examples.pop(), "examples");
+    passes("빈 examples도 통과(ok인데 예문을 빠뜨린 응답 — 거부하면 재요청 때 거절로 빠진다)", (v) => (v.examples = []));
+    passes("예문 1개도 통과", (v) => v.examples.pop());
     rejects("예문 4개", (v) => {
       v.examples.push({ en: "Let's push the meeting back so everyone can join us.", ko: "모두 올 수 있게 회의를 미뤄요." });
       v.examples.push({ en: "My boss asked me to push the meeting back a little.", ko: "상사가 회의를 조금 미뤄 달라고 했어요." });
@@ -387,7 +393,7 @@ function runZodChecks(): CheckResult[] {
       v.alternatives.push({ expression: "It's my favorite!", noteKo: "제일 좋아할 때 써요." });
     }, "alternatives");
     rejects("예문 3개(정확히 2)", (v) => v.examples.push({ en: "I really like playing with my puppy.", ko: "강아지랑 노는 게 정말 좋아." }), "examples");
-    rejects("예문 1개", (v) => v.examples.pop(), "examples");
+    passes("예문 1개도 통과(하한 0)", (v) => v.examples.pop());
     rejects("예문 13단어(아이에게 김)", (v) => (v.examples[0].en = "I really like it when we all go to the big park together."), "examples.0.en");
     rejects("main 21단어", (v) => (v.main!.expression = Array.from({ length: 21 }, () => "fun").join(" ")), "main.expression");
     rejects("usageKo 81자", (v) => (v.main!.usageKo = "가".repeat(81)), "main.usageKo");
@@ -432,7 +438,7 @@ function runZodChecks(): CheckResult[] {
       v.examples.push({ ja: "先生、ちょっと待ってください。", reading: "せんせい、ちょっとまってください。", ko: "선생님, 잠깐 기다려 주세요." });
       v.examples.push({ ja: "駅で、ちょっと待ってください。", reading: "えきで、ちょっとまってください。", ko: "역에서 잠깐 기다려 주세요." });
     }, "examples");
-    rejects("빈 examples", (v) => (v.examples = []), "examples");
+    passes("빈 examples도 통과(하한 0)", (v) => (v.examples = []));
     rejects("대안 3개", (v) => {
       v.alternatives.push({ expression: "少々お待ちください", reading: "しょうしょうおまちください", register: "formal", noteKo: "가게 직원이 쓰는 공손한 말이에요." });
       v.alternatives.push({ expression: "待ってね", reading: "まってね", register: "casual", noteKo: "부드러운 반말이에요." });
@@ -545,10 +551,10 @@ async function runEntryChecks(): Promise<CheckResult[]> {
   const body = src.slice(src.indexOf("export async function explainPhrase"));
   const iNorm = body.indexOf("normalizePhraseHelperInput(input)");
   const iLocal = body.indexOf("phraseHelperLocalResult(mode, text)");
-  const iCall = body.indexOf("callWithSchema(");
-  add("순서: 입력 정리 → 로컬 판정 → callWithSchema", iNorm > 0 && iLocal > iNorm && iCall > iLocal, `${iNorm}/${iLocal}/${iCall}`);
+  const iCall = body.indexOf("await ask(common)");
+  add("순서: 입력 정리 → 로컬 판정 → 첫 호출(ask) · 운영 진입 함수는 explainPhraseWith(callWithSchema, …)", iNorm > 0 && iLocal > iNorm && iCall > iLocal && /return explainPhraseWith\(callWithSchema, mode, input, options\);/.test(body), `${iNorm}/${iLocal}/${iCall}`);
   add("모델 = resolvePhraseHelperModel()(resolveModel 안 씀)", /const model = resolvePhraseHelperModel\(\);/.test(body) && !/resolveModel\(/.test(src), "");
-  add("신호 = phraseHelperAbortSignal(options.signal) · maxRetries = PHRASE_HELPER_SDK_MAX_RETRIES", /signal: phraseHelperAbortSignal\(options\.signal\)/.test(body) && /maxRetries: PHRASE_HELPER_SDK_MAX_RETRIES/.test(body), "");
+  add("신호 = phraseHelperAbortSignal(options.signal) · maxRetries = PHRASE_HELPER_SDK_MAX_RETRIES", /const signal = phraseHelperAbortSignal\(options\.signal\);/.test(body) && (body.match(/phraseHelperAbortSignal\(/g) ?? []).length === 1 && /\n    signal,\n/.test(body) && /maxRetries: PHRASE_HELPER_SDK_MAX_RETRIES/.test(body), "");
   add("모드별: system = PHRASE_HELPER_SYSTEM_PROMPTS[mode] · call = phraseHelperCallLabel(mode) · 사용자 메시지 = buildPhraseHelperUserMessage(text)", /system: PHRASE_HELPER_SYSTEM_PROMPTS\[mode\]/.test(body) && /call: phraseHelperCallLabel\(mode\)/.test(body) && /buildPhraseHelperUserMessage\(text\)/.test(body), "");
   add("일본어 = JA 스키마·JA zod·JA 다듬기 / 영어 = EN 스키마·buildPhraseHelperEnZod(mode)·EN 다듬기", /jsonSchema: PHRASE_HELPER_JA_JSON_SCHEMA, zodSchema: buildPhraseHelperJaZod\(\)/.test(body) && /finalizePhraseHelperJaOutput\(out\)/.test(body) && /jsonSchema: PHRASE_HELPER_EN_JSON_SCHEMA, zodSchema: buildPhraseHelperEnZod\(mode\)/.test(body) && /finalizePhraseHelperEnOutput\(out\)/.test(body), "");
   add("결과 = 다듬은 출력 + mode·input(정리한 글)·source ai·model", (body.match(/mode, input: text, source: "ai", model \}/g) ?? []).length === 2, "");
@@ -568,6 +574,141 @@ async function runEntryChecks(): Promise<CheckResult[]> {
   const short = phraseHelperAbortSignal(null, 10);
   await new Promise((r) => setTimeout(r, 40));
   add("시간 상한이 지나면 끊긴다(외부 신호 없음)", short.aborted, "");
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// 5-1. 다시 묻기 (§14 — 2026-10-03 버그 수정) — 조건 표 + 가짜 호출 주입으로 결정 경로
+// ---------------------------------------------------------------------------
+
+async function runReaskChecks(): Promise<CheckResult[]> {
+  const results: CheckResult[] = [];
+  const add = makeAdder(results, "다시 묻기");
+  const { explainPhraseWith } = await import("../lib/ai/phrase-helper/calls");
+
+  // ① 조건 표 — 독립 참조 모델(스펙 §14-1 표를 그대로 옮긴 것)과 행마다 대조
+  const inputs: [string, string][] = [["성수기", "완성형 한글"], ["ㅋㅋ", "자모만"], ["peak season", "한글 없음"]];
+  const statuses = ["ok", "not_korean", "out_of_scope"] as const;
+  const expected = (mode: PhraseHelperMode, kind: string, status: string): string | null => {
+    if (kind !== "완성형 한글") return null;
+    if (status === "not_korean") return "not_korean";
+    if (status === "out_of_scope") return mode === "english-kid" ? null : "out_of_scope";
+    return null;
+  };
+  const bad: string[] = [];
+  let rows = 0;
+  for (const m of PHRASE_HELPER_MODES) for (const [text, kind] of inputs) for (const st of statuses) {
+    rows++;
+    const got = phraseHelperReaskReason(m, text, st);
+    if (got !== expected(m, kind, st)) bad.push(`${m}/${kind}/${st}: ${got}`);
+  }
+  add(`조건 표 ${rows}행(모드 3 × 입력 3 × status 3) == 스펙 §14-1`, bad.length === 0 && rows === 27, bad.join("; "));
+  add("kid out_of_scope는 어떤 한국어 입력에도 되묻지 않는다", ["성수기", "나쁜 말", "무서운 꿈을 꿨어"].every((t) => phraseHelperReaskReason("english-kid", t, "out_of_scope") === null), "");
+  add("되묻기 메시지 = §4 형식 + 빈 줄 + 이유별 덧붙임", buildPhraseHelperReaskUserMessage("출장", "not_korean") === `입력: 출장\n\n${PHRASE_HELPER_REASK_NOT_KOREAN_NOTE}` && buildPhraseHelperReaskUserMessage("출장", "out_of_scope") === `입력: 출장\n\n${PHRASE_HELPER_REASK_OUT_OF_SCOPE_NOTE}`, "");
+  add("되묻기 라벨 phrase_helper_<mode>_reask", PHRASE_HELPER_MODES.map(phraseHelperReaskCallLabel).join(",") === "phrase_helper_toeic_reask,phrase_helper_japanese_reask,phrase_helper_english_kid_reask", "");
+  add("out_of_scope 덧붙임은 안전 문장(남을 해치거나 괴롭히는 말)을 지닌다 · not_korean 덧붙임은 ok를 지시하지 않는다", PHRASE_HELPER_REASK_OUT_OF_SCOPE_NOTE.includes("남을 해치거나 괴롭히는 말이 아니면") && !/ok/.test(PHRASE_HELPER_REASK_NOT_KOREAN_NOTE), "");
+
+  // ② 가짜 호출 주입 — 호출 기록과 응답 순서
+  type Rec = { call: string; user: string; signal: AbortSignal | undefined; schema: string };
+  const okEn = toeicFixture();
+  const okKid = kidFixture();
+  const okJa = jaFixture();
+  const refuse = (status: "not_korean" | "out_of_scope") => ({ status, noteKo: "이 도우미는 한국어를 바꿔 줘요.", main: null, alternatives: [], examples: [] });
+  const fake = (queue: unknown[], recs: Rec[]) =>
+    (async (args: { call: string; user: { type: string; text?: string }[]; signal?: AbortSignal; jsonSchema: { name: string } }) => {
+      recs.push({ call: args.call, user: args.user.map((u) => u.text ?? "").join(""), signal: args.signal, schema: args.jsonSchema.name });
+      const next = queue.shift();
+      if (next instanceof Error) throw next;
+      if (next === undefined) throw new Error("가짜 응답이 모자람 — 예상보다 많이 불렀다");
+      return clone(next);
+    }) as unknown as Parameters<typeof explainPhraseWith>[0];
+  const run = async (mode: PhraseHelperMode, text: string, queue: unknown[], opts: { signal?: AbortSignal | null } = {}) => {
+    const recs: Rec[] = [];
+    try {
+      const r = await explainPhraseWith(fake(queue, recs), mode, text, opts);
+      return { r, recs, err: null as unknown };
+    } catch (e) {
+      return { r: null, recs, err: e };
+    }
+  };
+
+  {
+    const { r, recs } = await run("toeic", "성수기", [okEn]);
+    add("toeic ok → 1회", recs.length === 1 && r?.status === "ok" && recs[0].call === "phrase_helper_toeic" && recs[0].user === "입력: 성수기", `${recs.length}`);
+  }
+  {
+    const { r, recs } = await run("toeic", "성수기", [refuse("out_of_scope"), okEn]);
+    add("toeic out_of_scope → 되묻기 1회 → ok를 보인다(덧붙임·라벨·같은 신호·같은 스키마)",
+      recs.length === 2 && r?.status === "ok" && recs[1].call === "phrase_helper_toeic_reask" && recs[1].user.endsWith(PHRASE_HELPER_REASK_OUT_OF_SCOPE_NOTE) && recs[0].signal !== undefined && recs[0].signal === recs[1].signal && recs[0].schema === recs[1].schema && recs[1].schema === "phrase_helper_en",
+      recs.map((x) => x.call).join(","));
+  }
+  {
+    const { r, recs } = await run("toeic", "비수기", [refuse("not_korean"), okEn]);
+    add("toeic not_korean(한글 입력) → 되묻기(not_korean 덧붙임) → ok", recs.length === 2 && r?.status === "ok" && recs[1].user.endsWith(PHRASE_HELPER_REASK_NOT_KOREAN_NOTE), "");
+  }
+  {
+    const { r, recs } = await run("japanese", "출장", [refuse("out_of_scope"), okJa]);
+    add("japanese out_of_scope → 되묻기 → ok(JA 스키마 두 번)", recs.length === 2 && r?.status === "ok" && r?.mode === "japanese" && recs.every((x) => x.schema === "phrase_helper_ja") && recs[1].call === "phrase_helper_japanese_reask", "");
+  }
+  {
+    const { r, recs } = await run("japanese", "출장", [refuse("out_of_scope"), refuse("out_of_scope")]);
+    add("되물은 결과가 또 거절이면 그대로 보인다(최대 1회 — 3번째 호출 없음)", recs.length === 2 && r?.status === "out_of_scope" && r?.main === null, `${recs.length}`);
+  }
+  {
+    const { r, recs } = await run("toeic", "성수기", [refuse("not_korean"), refuse("out_of_scope")]);
+    add("not_korean → 되물어 out_of_scope가 와도 더 묻지 않는다", recs.length === 2 && r?.status === "out_of_scope", `${recs.length}`);
+  }
+  {
+    const { r, recs } = await run("english-kid", "나쁜 말", [refuse("out_of_scope")]);
+    add("kid out_of_scope → 되묻지 않는다(1회 — 아이 안전 판정 불변)", recs.length === 1 && r?.status === "out_of_scope", `${recs.length}`);
+  }
+  {
+    const { r, recs } = await run("english-kid", "성수기", [refuse("not_korean"), okKid]);
+    add("kid not_korean(한글 입력) → 되묻기 → ok", recs.length === 2 && r?.status === "ok" && recs[1].call === "phrase_helper_english_kid_reask" && recs[1].user.endsWith(PHRASE_HELPER_REASK_NOT_KOREAN_NOTE), "");
+  }
+  {
+    const { r, recs } = await run("english-kid", "성수기", [refuse("not_korean"), refuse("out_of_scope")]);
+    add("kid 되물은 결과가 out_of_scope면 그대로(되묻기 1회뿐)", recs.length === 2 && r?.status === "out_of_scope", "");
+  }
+  {
+    const { r, recs } = await run("toeic", "ㅋㅋ", [refuse("out_of_scope")]);
+    add("자모만(ㅋㅋ) out_of_scope → 되묻지 않는다", recs.length === 1 && r?.status === "out_of_scope", "");
+  }
+  {
+    const { r, recs, err } = await run("toeic", "성수기", [refuse("out_of_scope"), new Error("upstream 503")]);
+    add("되묻기 실패 → 첫 응답을 돌려준다(던지지 않음)", err === null && recs.length === 2 && r?.status === "out_of_scope", String(err ?? ""));
+  }
+  {
+    const ac = new AbortController();
+    const recs: Rec[] = [];
+    const calls = fake([refuse("out_of_scope")], recs);
+    let err: unknown = null;
+    try {
+      await explainPhraseWith(
+        (async (a: Parameters<typeof calls>[0]) => {
+          if (recs.length === 1) {
+            ac.abort();
+            throw new Error("aborted");
+          }
+          return calls(a);
+        }) as unknown as typeof calls,
+        "toeic",
+        "성수기",
+        { signal: ac.signal },
+      );
+    } catch (e) {
+      err = e;
+    }
+    add("되묻기 중 요청 취소 신호가 끊기면 던진다(라우트 499)", err instanceof Error && err.message === "aborted", String(err));
+  }
+  {
+    const { err, recs } = await run("toeic", "성수기", [new Error("first failed")]);
+    add("첫 호출 실패는 그대로 던진다(되묻지 않음)", err instanceof Error && err.message === "first failed" && recs.length === 1, "");
+  }
+  {
+    const { r, recs } = await run("toeic", "hello", []);
+    add("한글 없음은 여전히 AI 0(로컬)", recs.length === 0 && r?.source === "local", "");
+  }
   return results;
 }
 
@@ -726,14 +867,14 @@ async function runAppChecks(): Promise<CheckResult[]> {
     ["/english/vocab/v1/quizzes", false],
   ];
   const badExam = examRows.filter(([p, b]) => isPhraseHelperExamPath(p) !== b).map(([p, b]) => `${p}→${!b}`);
-  add(`시험 경로 판정 ${examRows.length}행(응시·다시 풀기·표현 시험·틀 시험·틀 테스트·틀 말하기 진행·일본어 단어/한자 시험·은우 단어장 시험 / 목록·오답노트·결과는 아님)`, badExam.length === 0, badExam.join(" / "));
+  add(`시험 경로 판정 ${examRows.length}행(응시·다시 풀기·표현 시험·틀 시험·틀 테스트·틀 말하기 진행·일본어 단어/한자 시험·은우 단어장 시험·오늘의 복습 러너 / 목록·오답노트·결과는 아님)`, badExam.length === 0, badExam.join(" / "));
   add("시험 경로 정규식은 모두 ^…$로 닫혔다(앞뒤 덧붙은 경로를 잘못 막지 않게)", PHRASE_HELPER_EXAM_PATHS.every((x) => x.re.source.startsWith("^") && x.re.source.endsWith("$")), "");
 
   // app/의 시험 라우트 파일이 전부 시험 경로로 판정되는가(새 시험 라우트를 만들고 표에 안 넣으면 FAIL)
   const root = new URL("..", import.meta.url).pathname;
   const pages = execSync(`find app -name page.tsx`, { cwd: root, encoding: "utf-8" }).split("\n").filter(Boolean);
   const routeOf = (f: string) => "/" + f.replace(/^app\//, "").replace(/\/?page\.tsx$/, "").replace(/\[[^\]]+\]/g, "x");
-  const examLike = pages.filter((f) => /\/(quiz|test|take|retake)\/page\.tsx$/.test(f));
+  const examLike = pages.filter((f) => /\/(quiz|test|take|retake|speak)\/page\.tsx$/.test(f));
   const missedExam = examLike.filter((f) => !isPhraseHelperExamPath(routeOf(f)));
   add(`app/의 시험 라우트(quiz·test·take·retake) ${examLike.length}개가 전부 시험 경로`, examLike.length >= 8 && missedExam.length === 0, missedExam.join(", "));
   const helperPages = pages.filter((f) => phraseHelperModeForPath(routeOf(f)) !== null);
@@ -962,6 +1103,8 @@ const SPEC_SYNC_TARGETS: readonly SpecSyncTarget[] = [
   { constName: "PHRASE_HELPER_JAPANESE_SYSTEM_PROMPT", source: SRC, specLabel: "§3-2 japanese 시스템 프롬프트", text: PHRASE_HELPER_JAPANESE_SYSTEM_PROMPT, mode: "block-exact" },
   { constName: "PHRASE_HELPER_KID_SYSTEM_PROMPT", source: SRC, specLabel: "§3-3 english-kid 시스템 프롬프트", text: PHRASE_HELPER_KID_SYSTEM_PROMPT, mode: "block-exact" },
   { constName: "PHRASE_HELPER_USER_TEMPLATE", source: SRC, specLabel: "§4 사용자 메시지 형식", text: PHRASE_HELPER_USER_TEMPLATE, mode: "block-exact" },
+  { constName: "PHRASE_HELPER_REASK_NOT_KOREAN_NOTE", source: SRC, specLabel: "§14-2 not_korean 덧붙임", text: PHRASE_HELPER_REASK_NOT_KOREAN_NOTE, mode: "block-exact" },
+  { constName: "PHRASE_HELPER_REASK_OUT_OF_SCOPE_NOTE", source: SRC, specLabel: "§14-2 out_of_scope 덧붙임", text: PHRASE_HELPER_REASK_OUT_OF_SCOPE_NOTE, mode: "block-exact" },
 ];
 
 const specSyncOutcomes: SpecSyncOutcome[] = [];
@@ -986,7 +1129,7 @@ function runSpecSyncChecks(): CheckResult[] {
   const book = "프롬프트 ↔ 스펙";
   const results: CheckResult[] = specSyncOutcomes.map((o) => ({ book, check: `${o.constName}이 phrase-helper.md 원문 그대로`, pass: o.ok, detail: o.summary }));
   const add = makeAdder(results, book);
-  add("spec-sync 원문 대상 = 4개(시스템 프롬프트 3 + 사용자 메시지 형식)", SPEC_SYNC_TARGETS.length === 4, String(SPEC_SYNC_TARGETS.length));
+  add("spec-sync 원문 대상 = 6개(시스템 프롬프트 3 + 사용자 메시지 형식 + 되묻기 덧붙임 2)", SPEC_SYNC_TARGETS.length === 6, String(SPEC_SYNC_TARGETS.length));
 
   // JSON Schema 의미 동치
   const blocks = extractSpecBlocks(SPEC_URL);
@@ -1070,6 +1213,7 @@ async function main(): Promise<void> {
   all.push(...runZodChecks());
   all.push(...runPostChecks());
   all.push(...(await runEntryChecks()));
+  all.push(...(await runReaskChecks()));
   all.push(...runShapeChecks());
   all.push(...(await runAppChecks()));
   all.push(...runSpecSyncChecks());

@@ -6,7 +6,7 @@
  * (system·jsonSchema·zodSchema·call 라벨)로만 넘긴다.
  *
  * 순서: 입력 정리(거부면 PhraseHelperInputError — AI 0) → 로컬 판정(한글 없음이면 안내 결과 — AI 0) → callWithSchema 1회
- * (+ zod 재요청 1회) → 출력 다듬기. 저장하지 않는다.
+ * (+ zod 재요청 1회) → [첫 응답이 한국어 입력에 대한 잘못된 거절이면 1회 되묻기 — §14] → 출력 다듬기. 저장하지 않는다.
  * - 모델: resolvePhraseHelperModel()(env OPENAI_PHRASE_HELPER_MODEL, 빈 값이면 gpt-6-luna — OPENAI_MODEL로 폴백하지 않는다).
  * - 시간 상한 30초(재요청 포함 전체) + 라우트의 요청 취소 신호(req.signal). 끊기면 SDK가 APIUserAbortError를 던진다.
  * - SDK 자동 재시도 0(retry-after 대기가 신호를 보지 않아 상한을 뚫는다). 상류 429·5xx는 곧바로 던진다 → 라우트 500 retriable.
@@ -15,7 +15,7 @@
  * ⚠️ 클라이언트 컴포넌트에서 import 금지(openai·API 키). 화면은 lib/phrase-helper.ts(클라이언트 안전)의 타입·함수만 쓴다.
  */
 
-import { callWithSchema, textPart } from "../client";
+import { callWithSchema, textPart, type CallWithSchemaArgs } from "../client";
 import {
   normalizePhraseHelperInput,
   phraseHelperLocalResult,
@@ -28,9 +28,12 @@ import {
   PHRASE_HELPER_CALL_OPTIONS,
   PHRASE_HELPER_SDK_MAX_RETRIES,
   PHRASE_HELPER_SYSTEM_PROMPTS,
+  buildPhraseHelperReaskUserMessage,
   buildPhraseHelperUserMessage,
   phraseHelperAbortSignal,
   phraseHelperCallLabel,
+  phraseHelperReaskCallLabel,
+  phraseHelperReaskReason,
 } from "./prompts";
 import {
   PHRASE_HELPER_EN_JSON_SCHEMA,
@@ -57,11 +60,28 @@ export function isPhraseHelperInputError(err: unknown): err is PhraseHelperInput
   return err instanceof PhraseHelperInputError;
 }
 
+/** 공유 래퍼와 같은 모양의 호출 함수 — eval이 가짜를 주입해 결정 경로(되묻기)를 네트워크 없이 본다 */
+export type PhraseHelperCallFn = <T>(args: CallWithSchemaArgs<T>) => Promise<T>;
+
 /**
  * 표현 도우미 — 한국어 단어·구·문장(정리 뒤 1~200자) → 가장 회화적인 표현 1 + 대안 + 예문(모드별 눈높이·언어).
  * 반환은 다듬기까지 끝난 값이다(라우트는 그대로 200 본문 `result`로 내리면 된다). `status`가 ok가 아니어도 정상 결과다(noteKo가 안내).
  */
 export async function explainPhrase(
+  mode: PhraseHelperMode,
+  input: string,
+  options: { signal?: AbortSignal | null } = {},
+): Promise<PhraseHelperResult> {
+  return explainPhraseWith(callWithSchema, mode, input, options);
+}
+
+/**
+ * explainPhrase의 본체 — 호출 함수를 인자로 받는다(운영은 callWithSchema, eval은 가짜).
+ * 되묻기(§14): 첫 응답이 한국어 입력에 대한 not_korean(세 모드) 또는 out_of_scope(toeic·japanese)면 덧붙임을 붙여 **1회** 다시 묻는다.
+ * 두 호출은 같은 끊는 신호 하나(30초 상한 전체)를 쓴다. 되묻기가 실패하면 첫 응답을 돌려준다 — 단 요청 취소 신호가 끊겼으면 던진다.
+ */
+export async function explainPhraseWith(
+  call: PhraseHelperCallFn,
   mode: PhraseHelperMode,
   input: string,
   options: { signal?: AbortSignal | null } = {},
@@ -75,6 +95,7 @@ export async function explainPhrase(
   if (local !== null) return local;
 
   const model = resolvePhraseHelperModel();
+  const signal = phraseHelperAbortSignal(options.signal);
   const common = {
     call: phraseHelperCallLabel(mode),
     system: PHRASE_HELPER_SYSTEM_PROMPTS[mode],
@@ -82,14 +103,28 @@ export async function explainPhrase(
     temperature: PHRASE_HELPER_CALL_OPTIONS.temperature,
     maxOutputTokens: PHRASE_HELPER_CALL_OPTIONS.maxOutputTokens,
     model,
-    signal: phraseHelperAbortSignal(options.signal),
+    signal,
     maxRetries: PHRASE_HELPER_SDK_MAX_RETRIES,
   };
 
+  /** 첫 응답이 잘못된 거절이면 1회 되묻는다(최대 1회). 되묻기 실패는 첫 응답으로 — 취소면 던진다 */
+  async function withReask<T extends { status: string }>(first: T, again: (args: typeof common) => Promise<T>): Promise<T> {
+    const reason = phraseHelperReaskReason(mode, text, first.status);
+    if (reason === null) return first;
+    try {
+      return await again({ ...common, call: phraseHelperReaskCallLabel(mode), user: [textPart(buildPhraseHelperReaskUserMessage(text, reason))] });
+    } catch (err) {
+      if (options.signal?.aborted) throw err;
+      return first;
+    }
+  }
+
   if (mode === "japanese") {
-    const out = await callWithSchema({ ...common, jsonSchema: PHRASE_HELPER_JA_JSON_SCHEMA, zodSchema: buildPhraseHelperJaZod() });
+    const ask = (args: typeof common) => call({ ...args, jsonSchema: PHRASE_HELPER_JA_JSON_SCHEMA, zodSchema: buildPhraseHelperJaZod() });
+    const out = await withReask(await ask(common), ask);
     return { ...finalizePhraseHelperJaOutput(out), mode, input: text, source: "ai", model };
   }
-  const out = await callWithSchema({ ...common, jsonSchema: PHRASE_HELPER_EN_JSON_SCHEMA, zodSchema: buildPhraseHelperEnZod(mode) });
+  const ask = (args: typeof common) => call({ ...args, jsonSchema: PHRASE_HELPER_EN_JSON_SCHEMA, zodSchema: buildPhraseHelperEnZod(mode) });
+  const out = await withReask(await ask(common), ask);
   return { ...finalizePhraseHelperEnOutput(out), mode, input: text, source: "ai", model };
 }
