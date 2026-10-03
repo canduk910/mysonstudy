@@ -69,6 +69,24 @@ export function toeicPrintOmitAttrs(omit: readonly ToeicPrintSection[]): Record<
   return Object.fromEntries(omit.map((k) => [`data-print-omit-${k}`, ""]));
 }
 
+/**
+ * 그 문항의 피드백 상자에 **인쇄될 묶음이 하나라도 있는가**(QA realtest-print 1 P3-1). 없으면 화면이 `.feedback`에 인쇄 숨김을 붙인다 —
+ * 고칠 문장·빠진 내용만 고른 인쇄에서 그 둘이 0개인 문항에 빈 상자(패딩·배경)가 남지 않게.
+ * 잘한 점 묶음은 총평 한 줄이 늘 있어 켜져 있으면 언제나 내용이 있다. 개선 답변 묶음은 개선 답변 또는 넣었으면 좋았을 표현이 있을 때.
+ */
+export function toeicFeedbackPrintsAnything(
+  omit: readonly ToeicPrintSection[],
+  fb: { fixes: readonly unknown[]; missingKo: readonly unknown[]; improvedAnswer: string | null; tryExpressions: readonly unknown[] },
+): boolean {
+  const off = new Set(omit);
+  return (
+    !off.has("strengths") ||
+    (!off.has("fixes") && fb.fixes.length > 0) ||
+    (!off.has("missing") && fb.missingKo.length > 0) ||
+    (!off.has("improved") && (Boolean(fb.improvedAnswer) || fb.tryExpressions.length > 0))
+  );
+}
+
 /** 버튼 옆 안내 — 몇 개를 인쇄하는가 */
 export function toeicPrintPickSummaryKo(omit: readonly ToeicPrintSection[]): string {
   const n = TOEIC_PRINT_SECTIONS.length - new Set(omit).size;

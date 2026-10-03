@@ -21,7 +21,9 @@
  * - 질문 음성은 큐가 돌려준 stop만 쓴다(전역 stopSpeaking 금지). 큐가 "stopped"(외부 pause·소리 못 냄)로 끝나거나, "done"이어도
  *   onEnd의 `sounded`가 모자라면(1~2조각 큐가 무음 — toeicSpeechOutcome) 일시정지 + "다시 듣기"/"질문 보기"(Q8–10은 평소 질문 글을 숨긴다).
  * - 녹음 중 화면이 숨겨지면 즉시 녹음을 버리고 그 문항 "중단됨" — 돌아오면 "이 문항 다시"/"다음 문항으로".
- * - 비프는 준비 종료 시각에 미리 예약(lib/toeic-audio-cue), Wake Lock은 visible 복귀 때 재요청(use-toeic-wake-lock).
+ * - **진행 멘트**(docs/harness/toeic.md §18): 준비·표 읽기 앞 "Begin preparing now.", 비프 앞 파트별 답변 멘트, Q10 둘째 재생 앞 "Now, listen again."
+ *   (`toeicPhaseCue` — lib/toeic-mock). 멘트가 끝난 뒤 그 단계의 시계를 세운다(`playCue` — 안전망 없음·상한 뒤 그대로 진행).
+ * - 비프는 답변 멘트 뒤 그 자리에서(lib/toeic-audio-cue), Wake Lock은 visible 복귀 때 재요청(use-toeic-wake-lock).
  * - **개발 빌드 전용** 시간 배율(localStorage `toeic-debug-timescale`) — production 번들에서는 1로 고정된다.
  * - 유형별 공략 **한 문제 연습**도 이 화면 그대로(docs/harness/toeic.md §12-7-4) — 형식표·시간·질문 음성·녹음 규칙이 실전과 같다.
  *   바뀌는 것은 셋: ① 지시문은 응시하는 그 파트 문항 수로 `toeicPartDirections(part, count)`(사진 1장 연습이면 한 장짜리 문장 —
@@ -92,6 +94,11 @@ import {
   TOEIC_DIRECTIONS_LANG,
   TOEIC_MOCK_PARTS,
   beginAnswer,
+  toeicCueCapMs,
+  toeicCueTexts,
+  toeicHoldForCue,
+  toeicPhaseCue,
+  toeicStartAfterCue,
   firstPhase,
   nextPhase,
   toeicPartDirections,
@@ -254,6 +261,14 @@ const PHASE_KO: Record<ToeicPhaseState["phase"], string> = {
   done: "끝",
 };
 
+/** 진행 멘트를 읽는 동안의 앱 띠 단계 이름(§18) */
+const CUE_LABEL_KO: Partial<Record<ToeicPhaseState["phase"], string>> = {
+  reading: "준비 안내",
+  prep: "준비 안내",
+  beep: "답변 안내",
+  question: "다시 듣기 안내",
+};
+
 const ANSWER_STATUS_KO: Record<AnswerStatus, string> = {
   recording: "녹음 중",
   recorded: "녹음됨",
@@ -352,7 +367,12 @@ export default function ToeicTakeView({
   const [testDirections, setTestDirections] = useState(false);
   /** 지금 읽는 질문 큐 조각(시작 전 -1) — Q5 상황 소개를 읽는 동안 상황 화면을 보이려고(toeicExamScreenOf) */
   const [speakIdx, setSpeakIdx] = useState(-1);
+  /** 진행 멘트("Begin preparing now." 등 — §18)를 읽는 중(앱 띠 단계 이름만 바꾼다) */
+  const [cueOn, setCueOn] = useState(false);
+  /** 진행 멘트 상한 타이머(소리가 안 나도 이 시간 뒤 그대로 진행) */
+  const cueTimerRef = useRef<number | null>(null);
   const [memoOpen, setMemoOpen] = useState(false);
+  const [diagOpen, setDiagOpen] = useState(false);
   const [volumeOpen, setVolumeOpen] = useState(false);
   /** 전체 화면 API가 있는가(마운트 뒤 판정 — 렌더 중 document 금지) · 지금 전체 화면인가 */
   const [fsSupported, setFsSupported] = useState(false);
@@ -541,6 +561,56 @@ export default function ToeicTakeView({
       if (runRef.current === token) speakStopRef.current = stop;
     },
     [advance, setPause, stopSpeech],
+  );
+
+  /** 진행 멘트 상한 타이머만 걷는다(멘트 큐 자체는 stopSpeech — 같은 손잡이 speakStopRef) */
+  const stopCue = useCallback(() => {
+    if (cueTimerRef.current !== null) window.clearTimeout(cueTimerRef.current);
+    cueTimerRef.current = null;
+    setCueOn(false);
+  }, []);
+
+  /**
+   * 진행 멘트(§18) — 지시문·질문과 같은 speakQueue(en-US). 끝나면(끝 알림 · 멈춤 · 소리 못 냄 · 상한 시간) `then`을 **한 번만** 부른다.
+   * 질문 음성의 안전망(일시정지·"질문 보기")은 걸지 않는다 — 멘트가 안 나도 응시를 막지 않는다. 단계가 바뀌었으면(세대 token) 아무것도 하지 않는다.
+   */
+  const playCue = useCallback(
+    (text: string | null, token: number, then: () => void) => {
+      if (!text) {
+        then();
+        return;
+      }
+      stopSpeech();
+      stopCue();
+      let settled = false;
+      const timer = window.setTimeout(() => {
+        if (settled) return;
+        // 상한 — 아직 읽고 있으면 이 멘트의 큐만 끊는다(세대가 바뀌었으면 손잡이는 다른 소리 것이라 건드리지 않는다)
+        const stop = runRef.current === token ? speakStopRef.current : null;
+        if (stop) speakStopRef.current = null;
+        finish();
+        stop?.(); // 멈춘 큐의 onEnd는 settled라 무시된다
+      }, toeicCueCapMs(text, scaleRef.current));
+      function finish() {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        if (cueTimerRef.current === timer) cueTimerRef.current = null;
+        if (runRef.current !== token) return; // 그사이 단계가 바뀌었다(그만두기·건너뛰기·이 문항 다시)
+        setCueOn(false);
+        then();
+      }
+      cueTimerRef.current = timer;
+      setCueOn(true);
+      const stop = speakQueue([{ text, lang: TOEIC_DIRECTIONS_LANG }], {
+        onEnd: () => {
+          if (runRef.current === token) speakStopRef.current = null;
+          finish();
+        },
+      });
+      if (runRef.current === token && !settled) speakStopRef.current = stop;
+    },
+    [stopCue, stopSpeech],
   );
 
   const beginAnswerPhase = useCallback(
@@ -754,6 +824,7 @@ export default function ToeicTakeView({
     (done: boolean) => {
       runRef.current += 1;
       stopSpeech();
+      stopCue();
       cancelBeep();
       const st = phaseRef.current;
       if (recordingRef.current && st?.q) {
@@ -772,18 +843,31 @@ export default function ToeicTakeView({
       prefetchStopRef.current = null;
       void sendFinish();
     },
-    [abortRecording, cancelBeep, dispatchMic, finalizeDiag, patchAnswer, releaseMic, sendFinish, setPause, stopSpeech],
+    [abortRecording, cancelBeep, dispatchMic, finalizeDiag, patchAnswer, releaseMic, sendFinish, setPause, stopCue, stopSpeech],
   );
 
   const enterPhase = useCallback(
     (st: ToeicPhaseState) => {
       const token = ++runRef.current;
+      // 앞 단계의 소리·멘트를 걷는다(평소엔 이미 끝났다 — 건너뛰기·이 문항 다시에서 겹치지 않게)
+      stopSpeech();
+      stopCue();
       setPhase(st);
       setPause(null);
       setSpeakIdx(-1);
       expiredForRef.current = null;
       setNow(Date.now());
-      if (st.phase !== "beep") cancelBeepTimerOnly();
+      cancelBeepTimerOnly();
+      /** 진행 멘트(§18)가 있는 단계 — 멘트를 읽는 동안 시계를 세우지 않고(종료 시각 null), 끝나면 그 단계의 시계를 멘트 끝에서 센다 */
+      const holdThenStart = () => {
+        const held = toeicHoldForCue(st);
+        setPhase(held);
+        playCue(toeicPhaseCue(st), token, () => {
+          const t = Date.now();
+          setNow(t);
+          setPhase(scaled(toeicStartAfterCue(held, t), t));
+        });
+      };
       switch (st.phase) {
         case "directions": {
           const v = st.q !== null ? viewByQ.get(st.q) : undefined;
@@ -793,7 +877,8 @@ export default function ToeicTakeView({
         case "question": {
           const v = st.q !== null ? viewByQ.get(st.q) : undefined;
           const pieces = v ? [...(st.play === 0 ? enPieces(v.spokenIntro) : []), ...enPieces(v.question)] : [];
-          playSpeech(pieces, token, "question");
+          // 두 번째 재생부터(Q10) "Now, listen again." 멘트 뒤 질문 — 멘트는 질문 큐와 따로(멘트가 안 나도 질문 안전망이 걸리지 않게)
+          playCue(toeicPhaseCue(st), token, () => playSpeech(pieces, token, "question"));
           break;
         }
         case "prep": {
@@ -807,32 +892,30 @@ export default function ToeicTakeView({
               break;
             }
           }
-          // 준비 종료 시각에 비프를 **미리 예약**(탭 밖 재생 제약 회피 — 운동 비프 관용구)
+          // "Begin preparing now." → 끝나면 준비 시계(§18). 비프는 이제 준비 끝이 아니라 답변 멘트 뒤라 여기서 예약하지 않는다
           if (beepRef.current) cancelToeicBeep(beepRef.current.nodes);
           beepRef.current = null;
-          resumeToeicAudio(); // 세션 전환·백그라운드로 멈췄을 수 있다(안 되면 비프 단계가 확인한다)
-          const ctx = getToeicAudioContext();
-          if (ctx && st.endsAt !== null) {
-            const at = ctx.currentTime + Math.max(0, st.endsAt - Date.now()) / 1000;
-            beepRef.current = { nodes: scheduleToeicBeep(ctx, at), at };
-          }
+          holdThenStart();
           break;
         }
         case "beep": {
-          // 예약분이 아직 안 울렸으면(컨텍스트가 멈춰 있었다) 지금 울린다 — 늦게 튀어나오지 않게 예약분은 취소
-          const ctx = getToeicAudioContext();
-          const b = beepRef.current;
-          if (ctx && ctx.state === "running" && (!b || ctx.currentTime < b.at - 0.05)) {
-            if (b) cancelToeicBeep(b.nodes);
-            beepRef.current = { nodes: scheduleToeicBeep(ctx, ctx.currentTime + 0.01), at: ctx.currentTime + 0.01 };
-          }
-          beepTimerRef.current = window.setTimeout(() => advance(token), BEEP_GAP_MS);
+          // 답변 멘트("Begin responding now." 등 — §18) → 비프 → 비프 길이 뒤 답변(녹음은 비프 뒤 — 멘트·비프가 녹음에 섞이지 않는다)
+          resumeToeicAudio(); // 세션 전환·백그라운드로 멈췄을 수 있다 — 멘트를 읽는 동안 깨운다
+          playCue(toeicPhaseCue(st), token, () => {
+            const ctx = getToeicAudioContext();
+            if (beepRef.current) cancelToeicBeep(beepRef.current.nodes);
+            beepRef.current = null;
+            if (ctx && ctx.state === "running") beepRef.current = { nodes: scheduleToeicBeep(ctx, ctx.currentTime + 0.01), at: ctx.currentTime + 0.01 };
+            beepTimerRef.current = window.setTimeout(() => advance(token), BEEP_GAP_MS);
+          });
           break;
         }
         case "answer":
           beginAnswerPhase(st, token);
           break;
         case "reading":
+          // Q8 앞 표 읽기 — "Begin preparing now." → 끝나면 읽기 시계(§18)
+          holdThenStart();
           break;
         case "done":
           endTest(true);
@@ -843,7 +926,7 @@ export default function ToeicTakeView({
         beepTimerRef.current = null;
       }
     },
-    [advance, beginAnswerPhase, directionsByPart, dispatchMic, endTest, micKeeper, playSpeech, setPause, setPhase, viewByQ],
+    [advance, beginAnswerPhase, directionsByPart, dispatchMic, endTest, micKeeper, playCue, playSpeech, scaled, setPause, setPhase, stopCue, stopSpeech, viewByQ],
   );
   useEffect(() => {
     enterRef.current = enterPhase;
@@ -970,6 +1053,7 @@ export default function ToeicTakeView({
       if (beepRef.current) cancelToeicBeep(beepRef.current.nodes);
       beepRef.current = null;
       if (beepTimerRef.current !== null) window.clearTimeout(beepTimerRef.current);
+      if (cueTimerRef.current !== null) window.clearTimeout(cueTimerRef.current);
       recordingRef.current?.rec.abort();
       recordingRef.current = null;
       checkRecRef.current?.abort();
@@ -1077,7 +1161,9 @@ export default function ToeicTakeView({
       const k = micKeeper();
       if (k.policy === "keep" && !k.holding()) void k.prime().catch(() => {}); // 실패는 첫 준비 단계의 게이트가 다시 판정한다(F3)
     }
-    const texts: string[] = [];
+    // 진행 멘트(§18 — 실전 5문장)를 **맨 앞에** 둔다: 멘트에는 재생 상한이 있어, 첫 응시(캐시 없음)에 지시문·질문 뒤로 밀려
+    // 합성이 늦으면 멘트가 잘린다(QA cues P3-1). 캐시되면 다음 응시부터 합성 0
+    const texts: string[] = [...toeicCueTexts(qs)];
     for (const part of parts) texts.push(...enPieces(directionsByPart.get(part)?.en ?? null).map((p) => p.text));
     for (const v of questions) texts.push(...enPieces(v.spokenIntro).map((p) => p.text), ...enPieces(v.question).map((p) => p.text));
     prefetchStopRef.current = prefetchSpeech(texts, TOEIC_DIRECTIONS_LANG);
@@ -1154,6 +1240,7 @@ export default function ToeicTakeView({
   function abortStart(message: string) {
     runRef.current += 1;
     stopSpeech();
+    stopCue();
     cancelBeep();
     abortRecording();
     dispatchMic({ type: "skip" });
@@ -1425,10 +1512,11 @@ export default function ToeicTakeView({
           </div>
         </div>
         <div className={s.appBar}>
+          {/* 캡션 자리 — 응시 중 앱 띠와 같은 줄 수(창 크기가 화면마다 출렁이지 않게 — QA P3-5) */}
+          <p className={s.barCaption}>CONTINUE를 누르면 시작해요.</p>
           <div className={s.appBarRow}>
             <p className={s.appStatus}>
               <span className={s.phaseLabel}>시작 안내</span>
-              <span className={s.progress}>CONTINUE를 누르면 시작해요</span>
               {scale !== 1 && <span className={s.devBadge}>⏩ ×{scale}</span>}
             </p>
             <span className={s.appBtns}>
@@ -1648,8 +1736,9 @@ export default function ToeicTakeView({
   const introPieces = view && st?.phase === "question" && st.play === 0 ? enPieces(view.spokenIntro).length : 0;
   const screen = st ? toeicExamScreenOf(st, { introPieces, speakingIndex: speakIdx, paused: pause !== null }) : "question";
   const timers = st ? toeicExamTimers(st, now) : [];
-  const phaseLabel =
-    st?.phase === "question" && view && view.questionPlays > 1
+  const phaseLabel = cueOn && st
+    ? CUE_LABEL_KO[st.phase] ?? "안내"
+    : st?.phase === "question" && view && view.questionPlays > 1
       ? `${PHASE_KO.question} (${st.play + 1}/${view.questionPlays})`
       : st?.phase === "answer"
         ? mode === "nomic"
@@ -1664,7 +1753,7 @@ export default function ToeicTakeView({
         : st
           ? PHASE_KO[st.phase]
           : "";
-  const listening = (st?.phase === "directions" || st?.phase === "question") && !pause;
+  const listening = ((st?.phase === "directions" || st?.phase === "question") && !pause) || cueOn;
   const memoPhase = q !== null && (st?.phase === "prep" || st?.phase === "answer" || st?.phase === "beep");
   const timerRow = timers.length > 0 && (
     <div className={`${s.timerRow} ${view?.part === "opinion" ? s.timerCol : ""}`}>
@@ -1839,8 +1928,15 @@ export default function ToeicTakeView({
         )}
         {notice && <p className={s.warn}>{notice}</p>}
         {view && !view.available && st?.phase !== "directions" && <p className={s.warn}>이 문항의 자료가 모의고사에 없어요 — 시간만 재요.</p>}
-        {/* 지시문 한국어 캡션 — 시험 창에는 영어만(실제 시험처럼) */}
-        {st?.phase === "directions" && view && <p className={s.barCaption}>{directionsByPart.get(view.part)?.ko}</p>}
+        {/* 지시문 한국어 캡션 — 시험 창에는 영어만(실제 시험처럼). 자리는 늘 둔다(가로 배치에서 앱 띠 높이 = 시험 창 크기가 화면마다
+            출렁이지 않게 — QA P3-5). 세로 배치는 빈 자리를 접는다 */}
+        {st?.phase === "directions" && view ? (
+          <p className={s.barCaption}>{directionsByPart.get(view.part)?.ko}</p>
+        ) : (
+          <p className={`${s.barCaption} ${s.barCaptionEmpty}`} aria-hidden="true">
+            {"\u00a0"}
+          </p>
+        )}
 
         <div className={s.appBarRow}>
           <p className={s.appStatus} aria-live="polite">
@@ -1866,6 +1962,11 @@ export default function ToeicTakeView({
                 📝 메모
               </button>
             )}
+            {diag && mode === "mic" && (
+              <button type="button" className={s.barBtn} onClick={() => setDiagOpen((v) => !v)} aria-expanded={diagOpen} aria-controls="toeic-exam-diag">
+                진단
+              </button>
+            )}
             {fsButton}
             <button type="button" className={s.quitBtn} onClick={() => setQuitConfirm(true)}>
               그만두기
@@ -1886,10 +1987,9 @@ export default function ToeicTakeView({
           </label>
         )}
 
+        {/* 진단 줄 — 앱 띠 "진단" 버튼으로 연다(닫혀 있어도 DOM에 있다 — 내용·testid 그대로) */}
         {diag && mode === "mic" && (
-          <details className={s.diagBox}>
-            <summary className={s.diagSummary}>진단</summary>
-            <p className={s.diag}>
+          <p className={s.diag} id="toeic-exam-diag" hidden={!diagOpen}>
               진단 · {diag.keep ? `마이크 ${diag.keep.policy === "keep" ? "유지" : downgraded ? "문항마다(이번 응시만 — 소리 문제 2회)" : "문항마다"} · 열기 ${diag.keep.acquisitions}회 · ` : ""}녹음 형식{" "}
               {diag.mimeType ?? diag.requestedMimeType ?? "기본"} · 마지막{" "}
               {diag.durationMs !== null ? `${(diag.durationMs / 1000).toFixed(1)}초` : "–"} · {kb(diag.size)} · 세션 {diag.audioSession ?? "API 없음"}
@@ -1904,8 +2004,7 @@ export default function ToeicTakeView({
                     .join(" · ")}
                 </span>
               )}
-            </p>
-          </details>
+          </p>
         )}
       </div>
       {volumePanel}

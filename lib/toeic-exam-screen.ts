@@ -8,7 +8,8 @@
  * - 머리 띠 가운데: 문제 화면만 "Question 3 of 11", 정보 활용은 파트 내내 "Questions 8-10 of 11". 안내·상황 화면은 비운다.
  * - 타이머 상자: 표 읽기(Q8 앞)는 PREPARATION TIME 하나(읽기 시간), 그 밖 문제 화면은 PREPARATION·RESPONSE 둘.
  *   진행 중인 쪽만 줄고(종료 시각 기준 남은 시간), 아닌 쪽은 원래 시간 — 준비가 끝난 뒤(비프·답변)의 준비 상자는 0.
- *   종료 시각이 없는 동안(답변 녹음이 아직 시작 전·마이크 다시 켜기 대기)은 원래 시간 그대로다.
+ *   종료 시각이 없는 동안(진행 멘트를 읽는 중·답변 녹음이 아직 시작 전·마이크 다시 켜기 대기)은 원래 시간 그대로다.
+ *   진행 중 상자는 형식표 시간을 넘지 않는다(시계를 막 세운 순간의 한 틱 — QA P3-2).
  * - 숫자는 형식표(lib/toeic-mock TOEIC_MOCK_FORMAT)에서만 읽는다. 문구는 파트 공식 유형명(영어)뿐 — 교재 문장은 없다.
  *
  * 클라이언트 번들 — lib/toeic-mock만 import한다(lib/ai·store·zod 없음).
@@ -108,13 +109,16 @@ export function toeicExamTimers(st: ToeicPhaseState, nowMs: number): ToeicExamTi
   if (st.q === null || st.phase === "directions" || st.phase === "done") return [];
   const f = toeicQuestionFormat(st.q);
   const left = st.endsAt === null ? null : Math.max(0, st.endsAt - nowMs);
+  // 진행 중 상자는 형식표 시간을 넘지 않는다 — 화면의 "지금"은 마지막 틱(최대 250ms 전)이라 시계를 막 세운 순간
+  // ceil((종료 − 지금)/1000)이 한 칸 크게("00:00:16") 보이던 것(QA realtest-print 1 P3-2)
+  const capped = (fullMs: number) => (left === null ? fullMs : Math.min(fullMs, left));
   if (st.phase === "reading") {
-    return [{ label: "PREPARATION TIME", ms: left ?? f.readingSec * 1000, running: left !== null }];
+    return [{ label: "PREPARATION TIME", ms: capped(f.readingSec * 1000), running: left !== null }];
   }
   const prepRunning = st.phase === "prep" && left !== null;
-  const prepMs = st.phase === "prep" ? (left ?? f.prepSec * 1000) : st.phase === "beep" || st.phase === "answer" ? 0 : f.prepSec * 1000;
+  const prepMs = st.phase === "prep" ? capped(f.prepSec * 1000) : st.phase === "beep" || st.phase === "answer" ? 0 : f.prepSec * 1000;
   const respRunning = st.phase === "answer" && left !== null;
-  const respMs = respRunning ? left! : f.answerSec * 1000;
+  const respMs = respRunning ? capped(f.answerSec * 1000) : f.answerSec * 1000;
   return [
     { label: "PREPARATION TIME", ms: prepMs, running: prepRunning },
     { label: "RESPONSE TIME", ms: respMs, running: respRunning },

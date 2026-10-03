@@ -718,6 +718,9 @@
   color: var(--ink);
   font-size: 14px;
 }
+.appStatus .progress {
+  color: var(--ink-2); /* QA P3-6 */
+}
 .appBtns {
   display: flex;
   flex-wrap: wrap;
@@ -745,7 +748,8 @@
 }
 .barCaption {
   margin: 0;
-  color: var(--ink-3);
+  min-height: 1.5em; /* 빈 자리도 한 줄(가로 배치 — 앱 띠 높이 고정, QA P3-5) */
+  color: var(--ink-2); /* QA P3-6 — ink-3은 흰 바탕 대비 약 2.6:1 */
   font-size: 13px;
   line-height: 1.5;
   word-break: keep-all;
@@ -776,15 +780,6 @@
   overflow: hidden;
   border-radius: var(--radius-chip);
   background: var(--surface-2);
-}
-.diagBox {
-  color: var(--ink-3);
-}
-.diagSummary {
-  min-height: 24px;
-  color: var(--ink-3);
-  font-size: 12px;
-  cursor: pointer;
 }
 .appBar .memo .memoInput {
   font-size: 16px; /* iOS 확대 방지 */
@@ -842,6 +837,9 @@
     max-height: none;
     overflow: visible;
     padding-inline: 12px;
+  }
+  .barCaptionEmpty {
+    display: none;
   }
   .xPhoto {
     width: 100%;

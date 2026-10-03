@@ -15,6 +15,7 @@ import {
   TOEIC_PRINT_SECTION_KO,
   parseToeicPrintOmit,
   serializeToeicPrintOmit,
+  toeicFeedbackPrintsAnything,
   toeicPrintOmitAttrs,
   toeicPrintPickSummaryKo,
   toggleToeicPrintOmit,
@@ -37,6 +38,29 @@ export function runToeicPrintChecks(): GuideCheckResult[] {
   add("모르는 키·중복·문자열 아닌 것 버림, 정의 순서", eqJson(parseToeicPrintOmit('["model","x",1,"fixes","model",null]'), ["fixes", "model"]));
   add("직렬화 → 다시 읽기 왕복(정의 순서)", eqJson(parseToeicPrintOmit(serializeToeicPrintOmit(["model", "transcript"])), ["transcript", "model"]) && serializeToeicPrintOmit(["model", "transcript"]) === '["transcript","model"]');
   add("끄기·켜기(새 목록, 중복 없음)", eqJson(toggleToeicPrintOmit([], "fixes", false), ["fixes"]) && eqJson(toggleToeicPrintOmit(["fixes"], "fixes", false), ["fixes"]) && eqJson(toggleToeicPrintOmit(["fixes", "model"], "fixes", true), ["model"]));
+  {
+    const fb = (fixes: number, missing: number, improved: string | null, tries: number) => ({
+      fixes: Array(fixes).fill(0),
+      missingKo: Array(missing).fill(""),
+      improvedAnswer: improved,
+      tryExpressions: Array(tries).fill(""),
+    });
+    const onlyFixMissing: ("strengths" | "improved" | "transcript" | "model")[] = ["strengths", "improved"];
+    add(
+      "빈 피드백 상자(QA P3-1): 고칠 문장·빠진 내용만 고른 인쇄에서 둘 다 0개인 문항 → 인쇄 안 함 · 하나라도 있으면 인쇄",
+      !toeicFeedbackPrintsAnything(onlyFixMissing, fb(0, 0, "Better answer.", 2)) &&
+        toeicFeedbackPrintsAnything(onlyFixMissing, fb(1, 0, null, 0)) &&
+        toeicFeedbackPrintsAnything(onlyFixMissing, fb(0, 1, null, 0)),
+    );
+    add(
+      "빈 피드백 상자: 잘한 점이 켜져 있으면 늘 인쇄(총평) · 개선 답변 묶음은 개선 답변 또는 표현이 있을 때만 · 넷 다 끄면 인쇄 안 함",
+      toeicFeedbackPrintsAnything([], fb(0, 0, null, 0)) &&
+        !toeicFeedbackPrintsAnything(["strengths", "fixes", "missing"], fb(0, 0, null, 0)) &&
+        toeicFeedbackPrintsAnything(["strengths", "fixes", "missing"], fb(0, 0, null, 1)) &&
+        toeicFeedbackPrintsAnything(["strengths", "fixes", "missing"], fb(0, 0, "x", 0)) &&
+        !toeicFeedbackPrintsAnything(["strengths", "fixes", "missing", "improved"], fb(3, 2, "x", 1)),
+    );
+  }
   add("루트 속성 = data-print-omit-{key}", eqJson(toeicPrintOmitAttrs(["fixes", "model"]), { "data-print-omit-fixes": "", "data-print-omit-model": "" }) && eqJson(toeicPrintOmitAttrs([]), {}));
   add(
     "안내 문구 — 전부·일부·없음(문제·점수만)",
@@ -54,6 +78,10 @@ export function runToeicPrintChecks(): GuideCheckResult[] {
     TOEIC_PRINT_SECTIONS.map((k) => `${k}=${secCount(k)}`).join(" "),
   );
   add("결과 화면: 모범답변 접기 자체가 model 묶음(펼치기 훅이 건너뛴다)", /<details className=\{s\.model\} data-print-expand="" data-print-sec="model">/.test(view));
+  add(
+    "결과 화면: 피드백 상자는 인쇄될 묶음이 없으면 인쇄 숨김(toeicFeedbackPrintsAnything — QA P3-1)",
+    /<div className=\{toeicFeedbackPrintsAnything\(printOmit, a\.feedback\) \? s\.feedback : `\$\{s\.feedback\} \$\{s\.printHide\}`\}>/.test(view),
+  );
   add("결과 화면: 루트에 toeicPrintOmitAttrs(printOmit)를 편다", /<div className=\{s\.wrap\} ref=\{printRootRef\} \{\.\.\.toeicPrintOmitAttrs\(printOmit\)\}>/.test(view));
   const bar = view.slice(view.indexOf("<div className={s.printBar}>"), view.indexOf("</fieldset>"));
   add("결과 화면: 체크박스는 인쇄에서 숨는 버튼 줄(.printBar) 안 · 항목마다 하나", bar.includes('data-testid="print-btn"') && /TOEIC_PRINT_SECTIONS\.map\(\(k\) =>[\s\S]*type="checkbox"/.test(bar));

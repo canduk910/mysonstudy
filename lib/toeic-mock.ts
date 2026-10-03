@@ -197,6 +197,90 @@ export function toeicPartDirections(part: ToeicMockPart, count: number): { en: s
 }
 
 // ---------------------------------------------------------------------------
+// 진행 멘트 (docs/harness/toeic.md §18) — 실제 시험이 준비·답변 시작을 알리는 짧은 영어 문장. 상태 기계(아래 단계 전이)는 그대로 두고,
+// 응시 화면이 그 단계에 들어갈 때 먼저 읽는다. 멘트가 **끝난 뒤** 그 단계의 시계를 세운다(준비 시간이 멘트로 깎이지 않게).
+// 녹음은 지금처럼 비프 뒤(답변 멘트 → 비프 → 녹음) — 멘트가 녹음·전사에 섞이지 않는다.
+// ---------------------------------------------------------------------------
+
+/** 준비 시작 — 모든 파트 준비 앞, Q8 앞 표 읽기 앞 */
+export const TOEIC_CUE_PREPARE = "Begin preparing now." as const;
+/** 질문을 다시 들려주기 전(두 번째 재생부터 — Q10) */
+export const TOEIC_CUE_LISTEN_AGAIN = "Now, listen again." as const;
+/** 답변 시작 — 파트마다 */
+export const TOEIC_ANSWER_CUE: Record<ToeicMockPart, string> = {
+  read: "Begin reading aloud now.",
+  picture: "Begin speaking now.",
+  respond: "Begin responding now.",
+  info: "Begin responding now.",
+  opinion: "Begin speaking now.",
+};
+
+/**
+ * 그 단계에 들어갈 때 먼저 읽는 멘트(없으면 null).
+ * - reading(Q8 앞 표 읽기)·prep → "Begin preparing now." — 멘트가 끝나면 읽기·준비 시계를 세운다(`toeicStartAfterCue`)
+ * - beep → 파트별 답변 멘트 — 멘트가 끝나면 비프, 비프 뒤 녹음(답변 시계는 지금처럼 녹음 start에서 `beginAnswer`)
+ * - question의 두 번째 재생부터(play ≥ 1 — Q10) → "Now, listen again." — 끝나면 질문 음성
+ * - 그 밖(directions·첫 질문 재생·answer·done) → null
+ */
+export function toeicPhaseCue(st: Pick<ToeicPhaseState, "phase" | "q" | "play">): string | null {
+  if (st.q === null) return null;
+  switch (st.phase) {
+    case "reading":
+    case "prep":
+      return TOEIC_CUE_PREPARE;
+    case "beep":
+      return TOEIC_ANSWER_CUE[toeicQuestionFormat(st.q).part];
+    case "question":
+      return st.play >= 1 ? TOEIC_CUE_LISTEN_AGAIN : null;
+    default:
+      return null;
+  }
+}
+
+/** 이번 응시에서 읽을 수 있는 멘트 전부(중복 없음, 처음 나오는 순서) — 시작 탭의 프리페치. 실전이면 5개 */
+export function toeicCueTexts(qs: readonly number[]): string[] {
+  const out: string[] = [];
+  const push = (t: string | null) => {
+    if (t && !out.includes(t)) out.push(t);
+  };
+  for (const q of qs) {
+    const f = toeicQuestionFormat(q);
+    if (f.readingSec > 0) push(toeicPhaseCue({ phase: "reading", q, play: 0 }));
+    for (let p = 1; p < f.questionPlays; p++) push(toeicPhaseCue({ phase: "question", q, play: p }));
+    push(toeicPhaseCue({ phase: "prep", q, play: 0 }));
+    push(toeicPhaseCue({ phase: "beep", q, play: 0 }));
+  }
+  return out;
+}
+
+/** 멘트 상한의 바탕·글자당 몫(ms) — 소리가 안 나거나(합성 실패·멈춤) 끝 알림이 오지 않아도 이 시간 뒤 그대로 진행한다 */
+export const TOEIC_CUE_CAP_BASE_MS = 2500;
+export const TOEIC_CUE_CAP_PER_CHAR_MS = 80;
+
+/** 멘트 상한(ms) — 문장 길이 기반. `scale`은 개발 빌드 전용 시간 배율(production 1) */
+export function toeicCueCapMs(text: string, scale = 1): number {
+  const k = Number.isFinite(scale) && scale > 0 && scale <= 1 ? scale : 1;
+  return Math.round((TOEIC_CUE_CAP_BASE_MS + TOEIC_CUE_CAP_PER_CHAR_MS * text.length) * k);
+}
+
+/** 멘트를 읽는 동안의 단계 — 시계를 세우지 않는다(종료 시각 null: 타이머 상자는 원래 시간, 틱은 넘기지 않는다) */
+export function toeicHoldForCue(st: ToeicPhaseState): ToeicPhaseState {
+  return st.endsAt === null ? st : { ...st, endsAt: null };
+}
+
+/**
+ * 멘트가 끝난 시각에서 그 단계의 시계를 세운다 — reading: 읽기 시간, prep: 준비 시간(형식표). 그 밖은 그대로
+ * (beep은 비프 길이 뒤 넘어가고, answer 시계는 녹음 start에서 `beginAnswer`가 세운다).
+ */
+export function toeicStartAfterCue(st: ToeicPhaseState, endedAtMs: number): ToeicPhaseState {
+  if (st.q === null) return st;
+  const f = toeicQuestionFormat(st.q);
+  if (st.phase === "reading") return { ...st, endsAt: endedAtMs + f.readingSec * 1000 };
+  if (st.phase === "prep") return { ...st, endsAt: endedAtMs + f.prepSec * 1000 };
+  return st;
+}
+
+// ---------------------------------------------------------------------------
 // 단계 전이 (§6-4) — directions(파트 첫 문항만) → reading(Q8 앞만) → question(음성 × 재생 횟수) → prep → beep → answer
 // ---------------------------------------------------------------------------
 

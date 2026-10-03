@@ -59,6 +59,7 @@ import {
   TOEIC_PRINT_SECTION_KO,
   parseToeicPrintOmit,
   serializeToeicPrintOmit,
+  toeicFeedbackPrintsAnything,
   toeicPrintOmitAttrs,
   toeicPrintPickSummaryKo,
   toggleToeicPrintOmit,
@@ -1566,7 +1567,7 @@ export default function ToeicAttemptView({
 
             {/* Q3–11 피드백 */}
             {a?.feedback && !noResp && (
-              <div className={s.feedback}>
+              <div className={toeicFeedbackPrintsAnything(printOmit, a.feedback) ? s.feedback : `${s.feedback} ${s.printHide}`}>
                 {/* 인쇄할 항목 묶음(§16-10) — .sec는 display: contents라 화면 배치는 그대로 */}
                 <div className={s.sec} data-print-sec="strengths">
                   <p className={s.summary}>{a.feedback.summaryKo}</p>
