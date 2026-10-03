@@ -90,7 +90,8 @@ export default async function ToeicAttemptPage({ params }: AttemptPageProps) {
 
   return (
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
-      <header className="mb-4">
+      {/* 인쇄(§16)에서는 머리째로 뺀다 — 응시 날짜는 결과 화면의 인쇄 전용 줄이 다시 적는다 */}
+      <header className="print-hide mb-4">
         <div className="flex items-center justify-between gap-3">
           <Link href={back.href} className="u-navbtn">
             {back.labelKo}

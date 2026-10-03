@@ -39,6 +39,10 @@
  *   머리에 "다시 풀기 전 추정 → 지금"(toeicRetakeEstimates).
  * - 모범답변 접기에 **모범답변 점검 줄**("🧩 모범답변의 틀 n개 · 단계 a/b" — 문서에 저장된 흐름으로 잰다, 옛 문서는 줄 없음)과 크게 덜 따랐으면
  *   미달 경고(→ ② 템플릿 훈련). 모범답변 속 강조는 틀 글자에서 온 구간을 🧩 색으로 따로 보인다(흐름 글자 집합에 드는가로 가른다).
+ * - **🖨️ 인쇄 · PDF 저장**(2026-10-03, docs/harness/toeic.md §16 — 서버·AI 0): `window.print()` + 모듈 CSS의 @media print. 인쇄에는 머리(범위·제목·
+ *   응시 날짜·추정 등급·채점 상태)와 문항마다 문제(사진·지문·표·질문)·전사문·점수·피드백 전부·모범답변 접기 속 전부가 들어가고, 버튼·재생·녹음·
+ *   🎧 비교·🧩 틀 점검·다시 풀기·설정·진단·서버 줄은 빠진다. 표 보기·모범답변 접기(`data-print-expand`)는 인쇄 직전에 열고 끝나면 이 화면이 연
+ *   것만 닫는다(components/use-print-expand — beforeprint·버튼 둘 다).
  */
 
 import Link from "next/link";
@@ -46,6 +50,7 @@ import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ToeicInfoTableView from "@/components/toeic-info-table";
 import ToeicMicKeepToggle from "@/components/toeic-mic-keep-toggle";
+import { usePrintExpand } from "@/components/use-print-expand";
 import TtsEngineControl from "@/components/tts-engine-control";
 import TtsSpeedControl from "@/components/tts-speed-control";
 import { toWav16kMono } from "@/lib/mic-session";
@@ -163,6 +168,11 @@ type Clip =
 const clipKey = (attemptId: string, q: number, fixIndex?: number, historyOf?: string) =>
   historyOf !== undefined ? `${attemptId}:${q}:h${historyOf}` : fixIndex === undefined ? `${attemptId}:${q}` : `${attemptId}:${q}:f${fixIndex}`;
 
+/** Q1–2 안내를 둘로 — 앞 구절(채점 범위)은 인쇄에도, " — 녹음을 다시 들어 보세요"(화면 조작)는 화면에만 */
+const READ_NOTICE_CUT = TOEIC_READ_NOTICE_KO.indexOf(" — ");
+const READ_NOTICE_HEAD = READ_NOTICE_CUT < 0 ? TOEIC_READ_NOTICE_KO : TOEIC_READ_NOTICE_KO.slice(0, READ_NOTICE_CUT);
+const READ_NOTICE_TAIL = READ_NOTICE_CUT < 0 ? "" : TOEIC_READ_NOTICE_KO.slice(READ_NOTICE_CUT);
+
 /** 서버 사본 미리 받기 동시 수(§13-8) */
 const SERVER_PREFETCH_CONCURRENCY = 2;
 /** 이어 듣기 — 내 녹음이 끝난 뒤 쉬는 시간(§13-9 ①) */
@@ -258,6 +268,18 @@ export default function ToeicAttemptView({
 }) {
   const router = useRouter();
   const id = attempt.id;
+  // 🖨️ 인쇄 · PDF 저장(§16) — 접기 펼치기·lazy 사진 받기는 훅이(beforeprint·버튼 둘 다)
+  const printRootRef = useRef<HTMLDivElement | null>(null);
+  const { printNow, preparing: printPreparing } = usePrintExpand(printRootRef);
+  /** 받지 못한 사진(404·네트워크) — 그 문항은 장면 설명 줄로 바꾼다(화면·인쇄 공통, QA print 1 F4) */
+  const [brokenImgs, setBrokenImgs] = useState<ReadonlySet<number>>(() => new Set());
+  const markBrokenImg = useCallback((q: number) => setBrokenImgs((prev) => (prev.has(q) ? prev : new Set(prev).add(q))), []);
+  useEffect(() => {
+    // 하이드레이션 전에 이미 실패한 사진(onError를 놓쳤을 수 있다) — complete인데 크기가 0
+    for (const img of Array.from(printRootRef.current?.querySelectorAll<HTMLImageElement>("img[data-q]") ?? [])) {
+      if (img.complete && img.naturalWidth === 0) markBrokenImg(Number(img.dataset.q));
+    }
+  }, [markBrokenImg]);
   const checkTplByKey = useMemo(() => {
     const m = new Map<string, ToeicDrillCheckTemplate>();
     for (const c of Object.values(checks)) for (const t of c?.templates ?? []) if (!m.has(t.key)) m.set(t.key, t);
@@ -1071,9 +1093,16 @@ export default function ToeicAttemptView({
   const firstPart = attempt.parts[0];
   const lastDiag = lastDiagQ !== null ? diags[lastDiagQ] : undefined;
   const lastLocal = [...recs.values()].sort((a, b) => b.rec.q - a.rec.q)[0];
+  /** 인쇄 머리 "채점 n/m문항"(점수가 있는 문항 — Q1–2 대조 포함) */
+  const scoredCount = qs.filter((q) => answers[q]?.score !== null && answers[q]?.score !== undefined).length;
+  function onPrint() {
+    stopAllPlayback(); // 재생 중이면 멈추고 인쇄(인쇄 창이 떠 있는 동안 소리가 이어지지 않게)
+    if (fixRec.active) void fixRec.stop();
+    printNow();
+  }
 
   return (
-    <div className={s.wrap}>
+    <div className={s.wrap} ref={printRootRef}>
       <div>
         <p className={s.kicker}>{scopeLabelKo}</p>
         <h1 className={s.title}>{mockTitleKo}</h1>
@@ -1116,16 +1145,28 @@ export default function ToeicAttemptView({
           </p>
         )}
         {retakenUnscored.length > 0 && (
-          <p className={s.tplSummary} data-testid="retake-unscored">
+          <p className={`${s.tplSummary} ${s.printHide}`} data-testid="retake-unscored">
             ↻ 다시 푼 {retakenUnscored.map((q) => `Q${q}`).join("·")}를 채점하면 추정 등급을 다시 계산해요
             {retakeEst && retakeEst.before.complete ? ` (다시 풀기 전 추정 ${retakeEst.before.scaled} · ${retakeEst.before.band})` : ""}.
           </p>
         )}
         {openRetake && (
-          <p className={s.caption} data-testid="retake-open">
+          <p className={`${s.caption} ${s.printHide}`} data-testid="retake-open">
             ↻ 다시 풀기 진행 중({openRetake.questions.map((q) => `Q${q}`).join("·")}) — 다른 탭·기기에서 열었다면 그쪽을 끝내 주세요.
           </p>
         )}
+        {/* 인쇄에만 보이는 줄 — 응시 날짜(페이지 머리는 인쇄에서 빠진다)·채점 상태 */}
+        <p className={s.printOnly} data-testid="print-meta">
+          응시 {formatKst(attempt.startedAt)} · 채점 {scoredCount} / {qs.length}문항
+          {estimate.complete ? ` · 추정 ${estimate.scaled} / 200 · ${estimate.band}` : ""}
+        </p>
+        {/* 🖨️ 인쇄 · PDF 저장(§16) — 인쇄 창에서 "PDF로 저장"을 고르면 PDF. 인쇄에서는 이 줄째로 빠진다 */}
+        <div className={s.printBar}>
+          <button type="button" className="u-btn u-btn-secondary" onClick={onPrint} disabled={printPreparing} data-testid="print-btn">
+            {printPreparing ? "사진 불러오는 중…" : "🖨️ 인쇄 · PDF 저장"}
+          </button>
+          <span className={s.caption}>인쇄 창에서 &lsquo;PDF로 저장&rsquo;을 고르면 PDF가 돼요(iPhone은 인쇄 화면의 공유 버튼 → 파일에 저장).</span>
+        </div>
       </div>
 
       {/* 추정 총점 */}
@@ -1224,8 +1265,10 @@ export default function ToeicAttemptView({
       )}
 
       {/* 문항별 */}
-      {questions.map((v) => {
+      {questions.map((v, vi) => {
         const a = answers[v.q];
+        // Q8–10은 같은 표 — 인쇄에서는 범위 안 첫 문항에만 싣고 나머지는 "표는 Qn과 같아요" 한 줄(§16)
+        const tableFirstQ = v.table ? (questions.slice(0, vi).find((x) => x.part === v.part && x.table !== null)?.q ?? null) : null;
         const local = recs.get(v.q);
         const job = jobs[v.q];
         const diag = diags[v.q];
@@ -1265,12 +1308,27 @@ export default function ToeicAttemptView({
                 {source !== null && <span className={s.caption}>다시 푼 답이에요(예전 답은 🎧 비교 ③)</span>}
               </p>
             )}
+            {/* 인쇄에는 조작 줄(.retakeRow)이 빠지므로 "다시 푼 답" 표시만 따로 남긴다(QA print 1 F5) */}
+            {source !== null && (
+              <p className={`${s.printOnly} ${s.caption}`} data-testid={`print-retaken-${v.q}`}>
+                ↻ 다시 푼 답이에요
+              </p>
+            )}
 
             {/* 자료 요약 */}
             {v.picture &&
-              (v.picture.imageId ? (
+              (v.picture.imageId && !brokenImgs.has(v.q) ? (
                 // eslint-disable-next-line @next/next/no-img-element -- PIN 게이트 안 동적 라우트 바이트
-                <img src={toeicImageUrl(v.picture.imageId)} alt={`Q${v.q} 사진`} width={1536} height={1024} loading="lazy" className={s.photo} />
+                <img
+                  src={toeicImageUrl(v.picture.imageId)}
+                  alt={`Q${v.q} 사진`}
+                  width={1536}
+                  height={1024}
+                  loading="lazy"
+                  className={s.photo}
+                  data-q={v.q}
+                  onError={() => markBrokenImg(v.q)}
+                />
               ) : (
                 <p className={s.scene}>📷 {v.picture.sceneKo}</p>
               ))}
@@ -1280,19 +1338,20 @@ export default function ToeicAttemptView({
               </p>
             )}
             {v.table && (
-              <details className={s.tableBox}>
+              <details className={tableFirstQ === null ? s.tableBox : `${s.tableBox} ${s.printHide}`} data-print-expand="">
                 <summary className={s.tableSummary}>표 보기</summary>
                 <ToeicInfoTableView table={v.table} />
               </details>
             )}
+            {tableFirstQ !== null && <p className={`${s.printOnly} ${s.caption}`}>표는 Q{tableFirstQ}과 같아요.</p>}
             {v.question && (
               <p className={s.question} lang="en">
                 {v.question}
               </p>
             )}
 
-            {/* 내 녹음 */}
-            <div className={s.block}>
+            {/* 내 녹음(인쇄에서는 통째로 빠진다 — 플레이어·서버 줄·지우기·진단) */}
+            <div className={`${s.block} ${s.recBlock}`}>
               <p className={s.label}>내 녹음</p>
               {myClip?.status === "ready" ? (
                 <>
@@ -1425,7 +1484,11 @@ export default function ToeicAttemptView({
                       <del className={s.missing}>취소선</del> 빠진 단어 · <mark className={s.substituted}>밑줄</mark> 다르게 들린 단어(괄호 안이 들린 말)
                       {readMarks.extra.length > 0 && <> · 더 말한 단어: {readMarks.extra.join(", ")}</>}
                     </p>
-                    <p className={s.notice}>🔈 {TOEIC_READ_NOTICE_KO}</p>
+                    <p className={s.notice}>
+                      🔈 {READ_NOTICE_HEAD}
+                      {/* "— 녹음을 다시 들어 보세요"는 화면 조작 안내라 인쇄에서 뺀다(QA print 1 F5) */}
+                      {READ_NOTICE_TAIL && <span className={s.printHide}>{READ_NOTICE_TAIL}</span>}
+                    </p>
                   </>
                 ) : (
                   <p className={s.passage} lang="en">
@@ -1592,7 +1655,7 @@ export default function ToeicAttemptView({
 
             {/* 모범답변 */}
             {v.sampleAnswer && (
-              <details className={s.model}>
+              <details className={s.model} data-print-expand="">
                 <summary className={s.modelSummary}>모범답변(참고용) 보기</summary>
                 <div className={s.labelRow}>
                   <p className={s.label}>모범답변</p>

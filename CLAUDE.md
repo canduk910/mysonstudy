@@ -54,6 +54,7 @@
 | 2026-10-02 | **텍스트 AI 모델 교체**: 토익 출제(호출 C — 실전·파트 다시 만들기·한 문제 연습)·채점(호출 D)은 새 env `OPENAI_TOEIC_MODEL`(기본 `gpt-6.1-sol`, `lib/ai/toeic/model.ts`), 나머지 텍스트 호출은 기본 `gpt-6-luna`(`DEFAULT_OPENAI_MODEL`·`DEFAULT_TALK_CARDS_MODEL`, 검산은 메인 따름). 두 모델은 temperature를 400으로 거부해(실측) 이름 계열로 처음부터 빼고 보낸다(`isKnownTemperatureRejectingModel`). 실호출 점검: luna 사진 판독·strict 구조화 3.4초, 화면 카드 2.7~3.9초(6초 상한 안), sol Q11 출제 24초·채점 21초(60초 상한 안). 프로덕션은 Cloud Run env `OPENAI_MODEL`이 코드 기본값보다 우선 — 배포 뒤 env를 함께 바꾼다. 하네스 references의 화면 카드 모델 문장 갱신 | lib/ai, .env.example, docs(SPEC §11·§20·§21, HARNESS, english.md, toeic.md), README, .claude/skills references, CLAUDE.md | 사용자 요청 — "토익스피킹 관련 출제/채점만 6.1-sol, 나머지는 모두 luna" |
 
 <!-- BEGIN:nextjs-agent-rules -->
+| 2026-10-03 | **토익 결과(첨삭) 화면 인쇄 · PDF 저장**: 결과 화면 머리 아래 🖨️ 버튼 → `window.print()`(사진이 다 받아졌으면 클릭 안에서 동기, 아니면 최대 4초 기다림 — 그새 화면을 떠나면 인쇄 안 함). 화면 모듈 CSS의 `@media print`가 문제·사진·표·전사·점수·첨삭 전부·개선 답변·모범답변 접기를 남기고 버튼·재생·녹음 블록·🎧 비교·🧩 틀 점검·다시 풀기·설정·진단·화면 안내를 뺀다. 닫힌 표·모범답변 접기는 `components/use-print-expand.ts`가 인쇄 동안만 연다(사용자가 만진 접기는 손대지 않음 — iOS afterprint 누락 대비). 전역 CSS 변경 0(북카드 인쇄 무회귀). QA `qa_report_toeic_print_1.md` P1·P2 0 → P3 6 수정. `docs/harness/toeic.md` §16·SPEC §20-14. eval:toeic 1610 | components(toeic-attempt-view·use-print-expand), app/toeic/attempts/[id], scripts/eval-toeic-guides-s3.ts(소스 검사 패턴), docs/harness/toeic.md, docs/SPEC.md, CLAUDE.md | 사용자 요청 — "시험결과 첨삭화면에 인쇄(PDF출력)기능을 추가해줄래?" |
 
 # This is NOT the Next.js you know
 

@@ -624,7 +624,8 @@ function runS3SourceChecks(): GuideCheckResult[] {
       !/toeicAttemptQuestions\(/.test(attemptPage),
   );
   const view = codeOnly(read("components/toeic-attempt-view.tsx"));
-  const modelBlock = view.slice(view.indexOf("<details className={s.model}>"), view.indexOf("</details>", view.indexOf("<details className={s.model}>")));
+  // 접기 머리는 속성이 붙을 수 있다(인쇄 펼치기 data-print-expand — docs/harness/toeic.md §16) — 여는 태그 앞부분으로 찾는다
+  const modelBlock = view.slice(view.indexOf("<details className={s.model}"), view.indexOf("</details>", view.indexOf("<details className={s.model}")));
   add(
     "결과 화면: 모범답변 접기 안 tipKo 아래에 묘사 포인트(keyPointsKo)·답변 뼈대(outlineKo — 번호 목록), 비어 있지 않으면 보인다",
     before(modelBlock, "v.tipKo", "v.keyPointsKo.length > 0") && before(modelBlock, "v.keyPointsKo.length > 0", "v.outlineKo.length > 0") && /<ol className=\{s\.olist\}>/.test(modelBlock),
