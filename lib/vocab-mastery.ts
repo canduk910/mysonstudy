@@ -20,6 +20,7 @@
  */
 
 import type { VocabQuizRecord } from "./store";
+import { isSeparateMasteryMode, type VocabQuizMode } from "./vocab-quiz";
 
 /**
  * 졸업 문턱 — **마지막 2회 연속 정답**이면 그 단어를 졸업(mastered)으로 본다(계획 §V5).
@@ -83,12 +84,31 @@ export function isStatMastered(stat: { streak: number }): boolean {
 export function aggregateWordStats(
   quizzes: readonly VocabQuizRecord[],
 ): Record<string, WordStat> {
+  // 관계 문제(V8)·그림 보고 말하기(2026-10-03) 세션은 def→word 숙련도의 **다른 축**이라 제외한다 — 관계 문항의 답(연결된 상대
+  // 단어)이나 말하기 회상 결과가 그 단어의 정의→단어 통계로 새어 들면 안 된다(P2 무오염). def-to-word·wrong-review만 센다.
+  return foldWordStats(quizzes, (mode) => !isSeparateMasteryMode(mode));
+}
+
+/**
+ * **한 모드만** 접는다 — 따로 세는 모드(`VOCAB_SEPARATE_MASTERY_MODES`)의 숙련도(예: 그림 보고 말하기)를 다른 모드와 섞지 않고 낸다.
+ * 시도·streak 정의는 aggregateWordStats와 같은 코어(foldWordStats)다. 입력 순서 규약도 같다(startedAt 오름차순).
+ */
+export function aggregateWordStatsForMode(
+  quizzes: readonly VocabQuizRecord[],
+  mode: VocabQuizMode,
+): Record<string, WordStat> {
+  return foldWordStats(quizzes, (m) => m === mode);
+}
+
+/** 집계 코어 — include가 true인 모드의 세션만 시간순으로 접는다(두 export가 같은 시도·streak 정의를 보게). */
+function foldWordStats(
+  quizzes: readonly VocabQuizRecord[],
+  include: (mode: string) => boolean,
+): Record<string, WordStat> {
   // 단어별 정답 이력을 **시간순으로** 쌓는다(세션 순서 = startedAt 오름차순을 그대로 소비).
   const histories = new Map<string, boolean[]>();
   for (const quiz of quizzes) {
-    // 관계 문제(V8) 세션은 def→word 숙련도의 **다른 축**이라 제외한다 — 관계 문항의 답(연결된 상대
-    // 단어)이 그 단어의 정의→단어 통계로 새어 들면 안 된다(P2 무오염). def-to-word·wrong-review만 센다.
-    if (quiz.mode === "relation") continue;
+    if (!include(quiz.mode)) continue;
     for (const item of quiz.items) {
       if (item.answered !== true) continue; // 시도 = answered===true인 문항만
       let h = histories.get(item.word);

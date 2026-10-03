@@ -13,6 +13,7 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
+import ReviewTodayCard from "@/components/review-today-card";
 
 export const metadata: Metadata = {
   title: "영어 · 은우학습",
@@ -29,6 +30,9 @@ export default function EnglishHubPage() {
       </header>
 
       {/* 큰 진입 버튼 3개 — 루트 과목 선택과 같은 .u-entry. 북카드를 주요(accent)로 둔다. 자유대화는 한 줄 전체 */}
+      {/* 📅 오늘의 복습(SPEC §23) — 간격 반복 큐 진입. 개수는 마운트 뒤 읽는다 */}
+      <ReviewTodayCard area="english" tone="kid" />
+
       <div className="grid gap-3 sm:grid-cols-2">
         <Link href="/english/books" className="u-entry u-entry-primary">
           <span className="u-entry-icon" aria-hidden>

@@ -13,6 +13,7 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
+import ReviewTodayCard from "@/components/review-today-card";
 
 export const metadata: Metadata = {
   title: "아빠의 일본어 — 은우학습",
@@ -33,6 +34,9 @@ export default function JapaneseHubPage() {
           JLPT 단어장으로 어휘를 쌓고, 듀오링고 대화를 찍어 복습하고, 모은 한자를 한국 한자음으로 익혀요. 따로따로 써도 돼요.
         </p>
       </header>
+
+      {/* 📅 오늘의 복습(SPEC §23) — 간격 반복 큐 진입. 개수는 마운트 뒤 읽는다 */}
+      <ReviewTodayCard area="japanese" tone="adult" />
 
       <div className="grid gap-3 sm:grid-cols-2">
         <Link href="/japanese/vocab" className="u-entry u-entry-primary">

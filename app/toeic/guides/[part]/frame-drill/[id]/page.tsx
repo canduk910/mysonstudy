@@ -35,7 +35,12 @@ export default async function ToeicFrameDrillResultPage({ params }: ResultPagePr
   const { part, id } = await params;
   if (!isFramePart(part) || !isToeicFrameDrillDocId(id)) notFound();
   const store = getStore();
-  const [session, bank] = await Promise.all([store.getToeicFrameDrillSession(id), store.getToeicFrameDrillBank().catch(() => null)]);
+  const [session, bank, island] = await Promise.all([
+    store.getToeicFrameDrillSession(id),
+    store.getToeicFrameDrillBank().catch(() => null),
+    store.listToeicIslandEntries().catch(() => []), // 🏝️ 이미 담긴 문항(§21) — 못 읽어도 결과는 그대로
+  ]);
+  const islandSavedIds = island.filter((e) => e.origin.kind === "frame_drill" && e.origin.sessionId === id).map((e) => e.id);
   if (!session || session.part !== part) notFound();
   const topicNames = (bank?.topics ?? []).filter((t) => session.topicKeys.includes(t.key)).map((t) => t.nameKo);
   const backHref = toeicFrameDrillTabHref(part);
@@ -57,7 +62,7 @@ export default async function ToeicFrameDrillResultPage({ params }: ResultPagePr
         </div>
         <h1 className="t-book-title mt-3">🗣️ 틀 말하기 결과</h1>
       </header>
-      <ToeicFrameDrillResult initial={session} topicNamesKo={topicNames} backHref={backHref} retryHref={retryHref} />
+      <ToeicFrameDrillResult initial={session} topicNamesKo={topicNames} backHref={backHref} retryHref={retryHref} islandSavedIds={islandSavedIds} />
     </main>
   );
 }

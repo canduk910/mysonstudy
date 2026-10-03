@@ -134,6 +134,28 @@ import {
   type ReviewWordSource,
 } from "../lib/vocab-review";
 import type { VocabQuizRecord } from "../lib/store";
+// 그림 보고 말하기(2026-10-03, §14) — 판정 정규화·관대함 경계·도움 단계·결과 매핑·단어 고르기·모드 분리·전사 무유도(소스)
+import {
+  KID_SPEAK_EXTRA_WORDS,
+  KID_SPEAK_FUNCTION_WORDS,
+  KID_SPEAK_FUZZY_MIN_LEN,
+  KID_SPEAK_MASTERY_STREAK,
+  KID_SPEAK_PLURAL_MIN_LEN,
+  KID_SPEAK_MODE,
+  KID_SPEAK_REVEAL_STEP,
+  KID_SPEAK_SESSION_MAX,
+  judgeKidSpeech,
+  kidSpeakHint,
+  kidSpeakItemResult,
+  kidSpeakRank,
+  pickKidSpeakWords,
+  type KidSpeakOutcome,
+  type KidSpeakVerdict,
+} from "../lib/kid-speak";
+import { KID_SPEAK_TRANSCRIBE_LANGUAGE, KID_SPEAK_TRANSCRIBE_SDK_MAX_RETRIES, transcribeKidWord } from "../lib/kid-speak-transcribe";
+import { VOCAB_QUIZ_MODES, VOCAB_QUIZ_MODE_LABELS_KO, isSeparateMasteryMode } from "../lib/vocab-quiz";
+import { aggregateWordStatsForMode } from "../lib/vocab-mastery";
+import { weaknessRank as toeicWeaknessRank } from "../lib/toeic-quiz";
 // 호출 D(보강) 정의 불변 순수 함수 — 오프라인 eval이 잠근다(§8-5)
 import {
   buildEnrichRequestItems,
@@ -6972,6 +6994,256 @@ function printTable(results: CheckResult[]): void {
   console.log("");
 }
 
+// ---------------------------------------------------------------------------
+// 그림 보고 말하기(§14) 오프라인 점검 — 실호출 0회. 판정 표는 근거(lib/kid-speak.ts 머리 주석)의 경계를 값으로 잠근다.
+// ---------------------------------------------------------------------------
+
+async function runKidSpeakChecks(): Promise<CheckResult[]> {
+  const results: CheckResult[] = [];
+  const book = "그림 보고 말하기";
+  const add = (check: string, pass: boolean, detail = "") => results.push({ book, check, pass, detail });
+  const codeOnly = (rel: string) =>
+    readFileSync(new URL(`../${rel}`, import.meta.url), "utf-8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/[^\n]*/g, "$1");
+
+  // ── 판정 표 — [말한 글, 정답, 기대 판정] ──
+  const rows: [string, string, KidSpeakVerdict][] = [
+    // 정규화: 대소문자·구두점·관사·군말·기능어 덧말
+    ["apple", "apple", "correct"],
+    ["Apple!", "apple", "correct"],
+    ["APPLE.", "apple", "correct"],
+    ["An apple.", "apple", "correct"],
+    ["the apple", "apple", "correct"],
+    ["Um, apple", "apple", "correct"],
+    ["Uh... um... apple?", "apple", "correct"],
+    ["It's an apple.", "apple", "correct"],
+    ["Is it apple?", "apple", "correct"],
+    ["I think it's apple", "apple", "correct"], // 기능어 3(i·think·its) ≤ 4
+    ["It's my apple", "apple", "correct"],
+    ["This is a dog", "dog", "correct"],
+    ["apple, apple, apple, apple!", "apple", "correct"], // 정답 되풀이는 늘어놓기가 아니다
+    // 숫자 — 전사가 숫자로 적는다(양쪽)
+    ["6", "six", "correct"],
+    ["Six.", "6", "correct"],
+    ["13", "thirteen", "correct"],
+    ["twenty", "20", "correct"],
+    ["7", "six", "wrong"],
+    // 복수형: 정답 4글자 이상·정확히 s/es(s·x·z·ch·sh·o 뒤)/ies + 불규칙 표
+    ["apples", "apple", "correct"],
+    ["Berries!", "berry", "correct"],
+    ["box", "boxes", "correct"],
+    ["dishes", "dish", "correct"],
+    ["potatoes", "potato", "correct"],
+    ["mice", "mouse", "correct"],
+    ["mouse", "mice", "correct"],
+    ["children", "child", "correct"],
+    ["feet", "foot", "correct"],
+    ["teeth", "tooth", "correct"],
+    ["men", "man", "correct"],
+    ["women", "woman", "correct"],
+    // 거짓 정답 막기 — 다른 진짜 단어(QA review_1 P3-D 반례)
+    ["plane", "planet", "close"], // 빼기 — 정답 아님
+    ["mutton", "button", "close"], // 첫 글자 바꿈 — 정답 아님
+    ["bandana", "banana", "close"], // 넣기 — 정답 아님
+    ["cares", "car", "wrong"], // 3글자 정답은 복수형도 0, es는 r 뒤에 안 붙는다
+    ["his", "hi", "wrong"],
+    ["uses", "us", "wrong"],
+    ["cats", "cat", "close"], // 3글자 이하는 허용 0 — 거의만
+    ["cap", "cat", "close"],
+    ["bat", "cat", "close"],
+    ["pear", "bear", "close"],
+    ["house", "horse", "close"],
+    ["hose", "horse", "close"],
+    ["planet", "plant", "close"],
+    // 6글자 이상·같은 길이·첫 글자 같은 한 글자 바꿈만 정답
+    ["elephent", "elephant", "correct"],
+    ["elepant", "elephant", "close"], // 빼기
+    ["beautifull", "beautiful", "close"], // 넣기
+    ["color", "colour", "close"], // 넣기·빼기는 close
+    ["elefant", "elephant", "close"], // 두 글자 차이(ph→f)
+    ["elefent", "elephant", "wrong"], // 세 글자 차이
+    ["appel", "apple", "close"], // 이웃 자리 바꿈 = 거리 1
+    // 다른 단어·늘어놓기
+    ["dog", "cat", "wrong"],
+    ["banana", "apple", "wrong"],
+    ["cat dog apple", "apple", "list"],
+    ["apple banana", "apple", "list"],
+    ["banana grape", "apple", "list"],
+    ["cat dog bird fish", "dog", "list"],
+    ["apple banana grape orange", "apple", "list"],
+    // 빈 것 — 도움 단계를 올리지 않는다
+    ["", "dog", "empty"],
+    ["...", "dog", "empty"],
+    ["The.", "dog", "empty"],
+    ["Um.", "dog", "empty"],
+    ["It is.", "dog", "empty"],
+    // 띄어쓰기·하이픈·여러 낱말
+    ["ice cream", "ice-cream", "correct"],
+    ["icecream", "ice cream", "correct"],
+    ["look after", "look after", "correct"],
+    ["I look after", "look after", "correct"],
+    ["look", "look after", "wrong"],
+    // 괄호(있어도 없어도)·빗금(어느 쪽이든)
+    ["interested in", "(be) interested in", "correct"],
+    ["be interested in", "(be) interested in", "correct"],
+    ["color", "color/colour", "correct"],
+    ["colour", "color/colour", "correct"],
+    // 정답 안의 관사 / 관사 생략 허용
+    ["a lot", "a lot", "correct"],
+    ["lot", "a lot", "correct"],
+    ["don't", "dont", "correct"],
+  ];
+  const bad = rows
+    .map(([said, ans, want]) => ({ said, ans, want, got: judgeKidSpeech(said, ans).verdict }))
+    .filter((r) => r.got !== r.want)
+    .map((r) => `"${r.said}"/${r.ans}: ${r.got}≠${r.want}`);
+  add(`판정 표 ${rows.length}행(정규화·숫자·기능어 덧말 ≤${KID_SPEAK_EXTRA_WORDS}·복수형(규칙·불규칙)·거짓 정답 반례·${KID_SPEAK_FUZZY_MIN_LEN}글자↑ 같은 길이 한 글자 바꿈·close·늘어놓기·괄호·빗금·빈 것)`, bad.length === 0, bad.join(" / "));
+  add(
+    "관대함 상수: 기능어 덧말 4낱말·한 글자 바꿈은 6글자 이상·복수형은 4글자 이상",
+    KID_SPEAK_EXTRA_WORDS === 4 && KID_SPEAK_FUZZY_MIN_LEN === 6 && KID_SPEAK_PLURAL_MIN_LEN === 4,
+    `${KID_SPEAK_EXTRA_WORDS}/${KID_SPEAK_FUZZY_MIN_LEN}/${KID_SPEAK_PLURAL_MIN_LEN}`,
+  );
+  add("기능어 목록에 내용어가 없다(정답이 될 만한 명사 없음 — it·is·this·my·think …)", !["apple", "cat", "dog", "six", "one"].some((w) => KID_SPEAK_FUNCTION_WORDS.includes(w)), "");
+  const long = judgeKidSpeech("x".repeat(80), "apple");
+  add("들린 글 표시는 40자로 자른다(긴 엉뚱한 전사가 화면을 밀지 않게)", [...long.heard].length === 41 && long.heard.endsWith("…") && long.verdict === "wrong", long.heard.length.toString());
+
+  // ── 도움 단계 ──
+  const h0 = kidSpeakHint("apple", 0);
+  const h1 = kidSpeakHint("apple", 1);
+  const h2 = kidSpeakHint("apple", 2);
+  const h3 = kidSpeakHint("apple", 3);
+  const cellsText = (h: ReturnType<typeof kidSpeakHint>) => (h?.cells ?? []).map((c) => c.ch).join("");
+  add(
+    "도움: 0 없음 → 1 첫 글자만 → 2 글자 수 밑줄(첫 글자만 보임) → 3 정답 전부",
+    h0 === null && h1?.first === "a" && h1.cells === null && cellsText(h2) === "a____" && cellsText(h3) === "apple" && KID_SPEAK_REVEAL_STEP === 3,
+    `${JSON.stringify(h1)} ${cellsText(h2)} ${cellsText(h3)}`,
+  );
+  const hIce = kidSpeakHint("ice cream", 2);
+  const hBe = kidSpeakHint("(be) interested in", 2);
+  add(
+    "도움 밑줄: 낱말마다 첫 글자·띄어쓰기·괄호는 그대로, 글자 칸만 밑줄",
+    cellsText(hIce) === "i__ c____" && (hIce?.cells ?? []).filter((c) => c.letter).length === 8 && cellsText(hBe) === "(b_) i_________ i_" && hBe?.first === "b",
+    `${cellsText(hIce)} | ${cellsText(hBe)}`,
+  );
+
+  // ── 결과 매핑 — VocabQuizItem 3상태 ──
+  const map: [KidSpeakOutcome, boolean, boolean | null][] = [
+    ["said", true, true],
+    ["said-hint", true, true],
+    ["self-good", true, true],
+    ["revealed", false, true],
+    ["self-unsure", false, true],
+    ["self-miss", false, true],
+    ["unanswered", false, null],
+  ];
+  const badMap = map.filter(([o, c, a]) => {
+    const r = kidSpeakItemResult(o);
+    return r.correct !== c || r.answered !== a;
+  });
+  add("결과 매핑 7가지(혼자·도움 받고 = 맞힘, 정답 공개·헷갈림·몰랐음 = 틀림, 그만하기 = 미응답)", badMap.length === 0, badMap.map((m) => m[0]).join(", "));
+
+  // ── 단어 고르기 — 약한 단어부터·상한·중복 0 ──
+  let seed = 7;
+  const rng = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648;
+  };
+  const pool = Array.from({ length: 14 }, (_, i) => ({ word: `w${i}`, definitionEn: `def ${i}`, emoji: null }));
+  pool.push({ word: "w0", definitionEn: "dup", emoji: null });
+  const stats = {
+    w0: { total: 2, wrong: 0, streak: 2 }, // 졸업(3)
+    w1: { total: 3, wrong: 2, streak: 0 }, // 틀림 미졸업(0) — 오답 많음
+    w2: { total: 1, wrong: 1, streak: 0 }, // 틀림 미졸업(0)
+    w3: { total: 1, wrong: 0, streak: 1 }, // 해 봄·틀린 적 없음(2)
+  };
+  const picked = pickKidSpeakWords(pool, stats, { rng });
+  const words = picked.map((p) => p.word);
+  add(
+    `단어 고르기: 상한 ${KID_SPEAK_SESSION_MAX}·중복 0·틀린 것(오답 많은 순) 먼저·졸업은 뒤로 밀려 빠진다`,
+    picked.length === KID_SPEAK_SESSION_MAX && new Set(words).size === words.length && words[0] === "w1" && words[1] === "w2" && !words.includes("w0"),
+    words.join(","),
+  );
+  const shapes = [undefined, { total: 0, wrong: 0, streak: 0 }, { total: 2, wrong: 0, streak: 2 }, { total: 3, wrong: 1, streak: 2 }, { total: 2, wrong: 1, streak: 1 }, { total: 1, wrong: 0, streak: 1 }, { total: 4, wrong: 4, streak: 0 }];
+  const rankDiff = shapes.filter((st) => kidSpeakRank(st) !== toeicWeaknessRank(st));
+  add("약함 순위 = 토익 weaknessRank(같은 규칙 두 곳 — 모든 통계 모양에서 같은 값)·졸업 문턱 = MASTERY_STREAK", rankDiff.length === 0 && KID_SPEAK_MASTERY_STREAK === MASTERY_STREAK, JSON.stringify(rankDiff));
+
+  // ── 모드 분리 — 다른 모드 숙련도와 섞지 않는다 ──
+  const qz = (startedAt: string, mode: VocabQuizMode, items: { word: string; correct: boolean; answered: boolean | null }[]): VocabQuizRecord => ({
+    id: startedAt,
+    bookId: "b1",
+    mode,
+    startedAt,
+    finishedAt: startedAt,
+    items,
+  });
+  const sessions = [
+    qz("2026-10-01T01:00:00.000Z", "def-to-word", [{ word: "fix", correct: true, answered: true }]),
+    qz("2026-10-02T01:00:00.000Z", "def-to-word", [{ word: "fix", correct: true, answered: true }]),
+    qz("2026-10-03T01:00:00.000Z", KID_SPEAK_MODE, [{ word: "fix", correct: false, answered: true }, { word: "cool", correct: true, answered: true }]),
+  ];
+  const defAgg = aggregateWordStats(sessions);
+  add(
+    "모드 분리: aggregateWordStats(5지선다 숙련도)는 picture-speak을 세지 않는다(fix total2·streak2 그대로, cool 없음)",
+    defAgg.fix?.total === 2 && defAgg.fix.wrong === 0 && defAgg.fix.streak === 2 && defAgg.cool === undefined,
+    JSON.stringify(defAgg),
+  );
+  const spAgg = aggregateWordStatsForMode(sessions, KID_SPEAK_MODE);
+  add(
+    "모드 분리: aggregateWordStatsForMode(picture-speak)는 그 모드만(fix total1·wrong1, cool total1)",
+    spAgg.fix?.total === 1 && spAgg.fix.wrong === 1 && spAgg.fix.streak === 0 && spAgg.cool?.total === 1 && spAgg.cool.streak === 1,
+    JSON.stringify(spAgg),
+  );
+  const cands = buildReviewCandidates(sessions);
+  const fixCand = cands.find((c) => c.word === "fix");
+  add(
+    "모드 분리: buildReviewCandidates(복습 후보)도 picture-speak을 세지 않는다(stats·recency)",
+    fixCand?.wrong === 0 && fixCand.lastWrongOrder === 0 && fixCand.lastSeenOrder === 2 && !cands.some((c) => c.word === "cool"),
+    JSON.stringify(fixCand),
+  );
+  add(
+    "모드 표: VOCAB_QUIZ_MODES에 picture-speak·라벨 있음·따로 세는 모드는 relation·picture-speak뿐(def-to-word·wrong-review는 아님)",
+    (VOCAB_QUIZ_MODES as readonly string[]).includes(KID_SPEAK_MODE) &&
+      VOCAB_QUIZ_MODE_LABELS_KO[KID_SPEAK_MODE] === "그림 말하기" &&
+      isSeparateMasteryMode("relation") && isSeparateMasteryMode(KID_SPEAK_MODE) && !isSeparateMasteryMode("def-to-word") && !isSeparateMasteryMode("wrong-review"),
+    "",
+  );
+  const quizRoute = codeOnly("app/api/english/vocab/[id]/quiz/route.ts");
+  add("저장 라우트: mode는 VOCAB_QUIZ_MODES enum 하나로 받는다(picture-speak이 따로 목록을 두지 않음)", /mode: z\.enum\(VOCAB_QUIZ_MODES\)/.test(quizRoute), "");
+
+  // ── 전사 무유도·관문 W 계약(소스) ──
+  const gw = codeOnly("lib/kid-speak-transcribe.ts");
+  add(
+    "관문 W: prompt 없음·language en·재시도 0·관문 T 모델 해석 재사용",
+    !/\bprompt\b/.test(gw) && KID_SPEAK_TRANSCRIBE_LANGUAGE === "en" && /language: KID_SPEAK_TRANSCRIBE_LANGUAGE/.test(gw) && KID_SPEAK_TRANSCRIBE_SDK_MAX_RETRIES === 0 && /resolveToeicTranscribeModel\(\)/.test(gw),
+    "",
+  );
+  const route = codeOnly("app/api/english/vocab/speak-transcribe/route.ts");
+  const keyAt = route.indexOf("if (!hasKidSpeakTranscribeApiKey())");
+  add(
+    "전사 라우트: 키 검사(501)가 본문 읽기보다 먼저·audio 하나만 읽는다(정답을 받지 않는다)·req.signal 전달",
+    keyAt > 0 && keyAt < route.indexOf("await readBodyCapped(req") && (route.match(/form\.get\(/g) ?? []).length === 1 && /transcribeKidWord\(.*, req\.signal\)/.test(route),
+    "",
+  );
+  const runner = codeOnly("components/vocab-speak-quiz-runner.tsx");
+  add(
+    "러너: 전사 요청에 audio 하나만(정답 없음)·프리페치 없음·한국어 뜻을 받지 않음·표현 도우미 블록",
+    (runner.match(/fd\.append\(/g) ?? []).length === 1 && /fd\.append\(KID_SPEAK_AUDIO_FIELD/.test(runner) && !runner.includes("prefetchSpeech") && !/definitionKo|meanings/.test(runner) && /\n\s+usePhraseHelperBlock\(\);/.test(runner),
+    "",
+  );
+  const page = codeOnly("app/english/vocab/[id]/speak/page.tsx");
+  add("페이지: 러너에 word·definitionEn·emoji만 넘긴다(meanings·definitionKo 없음)", !/definitionKo|\.meanings/.test(page) && /\(\{ word: e\.word, definitionEn: e\.definitionEn as string, emoji: e\.imageEmoji \?\? null \}\)/.test(page), "");
+  add("러너: 녹음은 lib/mic-session startRecording(owner)·재생 멈춘 뒤 시작·시작 탭에서 재생 잠금 해제", /startRecording\(\{[\s\S]*owner: KID_SPEAK_MIC_OWNER/.test(runner) && runner.indexOf("stopSpeaking(); // 재생과 캡처") < runner.indexOf("startRecording({") && /unlockSpeechPlayback\(\); \/\/ 시작 탭/.test(readFileSync(new URL("../components/vocab-speak-quiz-runner.tsx", import.meta.url), "utf-8")), "");
+
+  // 키가 없으면 네트워크 없이 no_api_key
+  const savedKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "";
+  const nk = await transcribeKidWord({ bytes: new ArrayBuffer(8), fileName: "word.wav", type: "audio/wav" });
+  if (savedKey === undefined) delete process.env.OPENAI_API_KEY;
+  else process.env.OPENAI_API_KEY = savedKey;
+  add("관문 W: 키가 없으면 호출 없이 no_api_key", !nk.ok && nk.error === "no_api_key", JSON.stringify(nk));
+
+  return results;
+}
+
 async function main(): Promise<void> {
   const allResults: CheckResult[] = [];
 
@@ -6988,6 +7260,8 @@ async function main(): Promise<void> {
   allResults.push(...runRelatedSuggestChecks());
   // 단어장 정복 V1(§7) — 병합 순수 함수·zod 제약·그림 우선순위 (실호출 0회)
   allResults.push(...runVocabbookChecks());
+  // 그림 보고 말하기(§14) — 판정 경계·도움·결과 매핑·고르기·모드 분리·전사 무유도(소스) (실호출 0회)
+  allResults.push(...(await runKidSpeakChecks()));
   // 자유대화(§12) — 스펙 대조(스키마·옵션·세션 표)·지시문 조립·세션 설정·리듀서·문장 나누기·호출 I zod·낭독 대본·스트릭 입력 (실호출 0회)
   allResults.push(...runTalkChecks());
   allResults.push(...(await runTalkCardsSignalChecks()));

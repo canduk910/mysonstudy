@@ -36,6 +36,7 @@ import {
   type TestStatusSession,
 } from "../lib/test-status";
 import { templateSessionsForPart } from "../lib/toeic-guide-view";
+import { reviewStreakSessions, reviewTodayLabel } from "../lib/review-schedule";
 
 interface CheckResult {
   book: string;
@@ -384,11 +385,11 @@ const TODAY = "2026-09-21";
   //    누가 영어 날짜를 일본어·은우 계산에 섞거나(한 집합), 영어 트랙에 은우 vocabQuizzes를 넣으면 여기서 걸린다.
   const route = readFileSync(new URL("../app/api/streak/route.ts", import.meta.url), "utf-8");
   // 2026-10-03 소재별 틀 말하기(toeic.md §20-9) — 셋째 인자 frameDrills(토익 컬렉션 toeicFrameDrills)만 더해졌다
-  const wiredEnglish = /computeStreak\(toeicStreakSessions\(toeicQuizzes, toeicAttempts, frameDrills\), today\)/.test(route) && /const frameDrills = toeicFrameDrills \?\? \[\];/.test(route);
+  const wiredEnglish = /computeStreak\(\[\.\.\.toeicStreakSessions\(toeicQuizzes, toeicAttempts, frameDrills\), \.\.\.reviewStreakSessions\(reviewsOf\("toeic"\)\)\], today\)/.test(route) && /const frameDrills = toeicFrameDrills \?\? \[\];/.test(route);
   // 은우 계산식 — §17-9부터 단어장 시험 + 자유대화(talkStreakSessions)다. 그 밖의 것(토익·일본어)은 여기 섞이지 않는다(noLeak).
-  const eunwooUntouched = /computeStreak\(\[\.\.\.vocab, \.\.\.talkStreakSessions\(talks\)\], today\)/.test(route);
-  const jaUntouched = /computeStreak\(\[\.\.\.jaVocab, \.\.\.jaKanji\], today\)/.test(route);
-  const noLeak = !/toeicStreakSessions\([^)]*\b(vocab|jaVocab|jaKanji)\b/.test(route) && !/computeStreak\(\[[^\]]*toeic/i.test(route);
+  const eunwooUntouched = /computeStreak\(\[\.\.\.vocab, \.\.\.talkStreakSessions\(talks\), \.\.\.reviewStreakSessions\(reviewsOf\("english"\)\)\], today\)/.test(route);
+  const jaUntouched = /computeStreak\(\[\.\.\.jaVocab, \.\.\.jaKanji, \.\.\.reviewStreakSessions\(reviewsOf\("japanese"\)\)\], today\)/.test(route);
+  const noLeak = !/toeicStreakSessions\([^)]*\b(vocab|jaVocab|jaKanji)\b/.test(route) && !/computeStreak\(\[\.\.\.(?:vocab|jaVocab)\b[^\]]*toeic/i.test(route);
   add(
     "영어 트랙",
     "⑥ /api/streak 배선: 영어=toeicStreakSessions(토익 컬렉션 — 표현 시험·응시 + 틀 말하기)만, 은우(단어장+자유대화 §17-9)·일본어 계산식 그대로",
@@ -398,7 +399,7 @@ const TODAY = "2026-09-21";
   // ⑥-2 틀 말하기 배선(toeic.md §20-9) — 읽기 실패는 null → [](표현 시험·응시만으로), 라벨은 셋 중 가장 늦게 시작한 판
   const frameFallback = /listToeicFrameDrillSessions\(\)\.catch\(/.test(route);
   const frameLabel = /toeicFrameDrillStreakLabel\(tFrame, TOEIC_LABEL_NAMES\.guidePartKo\)/.test(route) && /it\.outcome === "spoken"/.test(route);
-  const frameNoLeak = !/computeStreak\(\[[^\]]*frameDrills/.test(route) && (route.match(/frameDrills\)/g) ?? []).length === 1;
+  const frameNoLeak = !/computeStreak\(\[\.\.\.(?:vocab|jaVocab)\b[^\]]*frameDrills/.test(route) && (route.match(/frameDrills\)/g) ?? []).length === 1;
   add(
     "영어 트랙",
     "⑥-2 /api/streak 틀 말하기: 영어 트랙 셋째 인자로만·읽기 실패 폴백·오늘 라벨(말한 문항 ≥1 판)",
@@ -534,7 +535,7 @@ const TODAY = "2026-09-21";
   // ⑥ 라우트 배선(정적) — 은우 = 단어장 시험 + 대화, 대화 읽기 실패는 null → [](단어장만), 대화가 아빠 계산식에 들어가지 않는다,
   //    라벨은 가장 늦게 시작한 것(isCountedTalkSession 거른 오늘 대화 vs 오늘 시험)
   const route = readFileSync(new URL("../app/api/streak/route.ts", import.meta.url), "utf-8");
-  const wired = /computeStreak\(\[\.\.\.vocab, \.\.\.talkStreakSessions\(talks\)\], today\)/.test(route);
+  const wired = /computeStreak\(\[\.\.\.vocab, \.\.\.talkStreakSessions\(talks\), \.\.\.reviewStreakSessions\(reviewsOf\("english"\)\)\], today\)/.test(route);
   const fallback = /listAllTalkSessions\(\)\.catch\(/.test(route) && /const talks = talkSessions \?\? \[\];/.test(route);
   const noLeakToAppa =
     !/computeStreak\(\[\.\.\.jaVocab[^\]]*talk/i.test(route) &&
@@ -662,6 +663,41 @@ const TODAY = "2026-09-21";
     "⑩ 배선: 영어·일본어·토익 표현집 = 전체 세션 한 번 읽어 대상별 묶기(대상별 쿼리 없음, 일본어 한자 시험·토익 틀 세션 제외) · 공략 폴더 = 기존 틀 은행 세션 재사용 · 세 목록 뷰가 칩 렌더 · 오늘은 페이지마다 한 번",
     wiredEn && wiredJa && wiredTs && wiredTg && views && todayOnce,
     `en=${wiredEn} ja=${wiredJa} toeic=${wiredTs} guides=${wiredTg} views=${views} today1=${todayOnce}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 9) 오늘의 복습(SPEC §23-9) — 복습 1개 이상 끝낸 날을 각 영역 트랙에 센다(영역 = 트랙, 섞지 않는다)
+// ---------------------------------------------------------------------------
+{
+  const B = "오늘의 복습";
+  const rv = (area: "english" | "japanese" | "toeic", itemKey: string, days: string[]) => ({
+    id: itemKey,
+    area,
+    kind: itemKey.split(":")[0],
+    itemKey,
+    history: days.map((on) => ({ on, at: `${on}T03:00:00.000Z`, hintLevel: 0, judge: "got", step: 1 })),
+    lastReviewedOn: days[days.length - 1] ?? null,
+  });
+  const TODAY9 = "2026-10-03";
+  const en = [rv("english", "en-word:apple", ["2026-10-02", TODAY9])];
+  const ja = [rv("japanese", "ja-word:猫", ["2026-10-01"])];
+  // 은우 트랙: 단어장 시험 없이 복습만 이틀 → 2일 연속 · 아빠 일본어 복습은 섞이지 않는다
+  const enInfo = computeStreak(reviewStreakSessions(en as never), TODAY9);
+  const mixed = computeStreak([...reviewStreakSessions(en as never), ...reviewStreakSessions(ja as never)], TODAY9);
+  add(B, "복습만 한 날도 그 영역 트랙에 센다(은우 2일 연속) · 트랙을 섞으면 달라진다(반례 — 라우트는 영역별로 가른다)", enInfo.current === 2 && enInfo.doneToday && mixed.current === 3, `en=${enInfo.current} mixed=${mixed.current}`);
+  add(B, "라벨 `오늘의 복습 · n개`(오늘 복습한 항목 수) · 오늘 안 했으면 null", reviewTodayLabel(en as never, TODAY9) === "오늘의 복습 · 1개" && reviewTodayLabel(ja as never, TODAY9) === null, String(reviewTodayLabel(en as never, TODAY9)));
+  const route = readFileSync(new URL("../app/api/streak/route.ts", import.meta.url), "utf-8");
+  add(
+    B,
+    "/api/streak 배선: 영역별 reviewsOf로 은우·일본어·영어 트랙에 각각 · 복습 일정을 못 읽으면 복습만 빼고 · 라벨은 그 트랙에 다른 기록이 없을 때만",
+    /reviewsOf = \(area: ReviewArea\) => \(reviewSchedules \?\? \[\]\)\.filter\(\(r\) => r\.area === area\)/.test(route) &&
+      /reviewStreakSessions\(reviewsOf\("english"\)\)/.test(route) &&
+      /reviewStreakSessions\(reviewsOf\("japanese"\)\)/.test(route) &&
+      /reviewStreakSessions\(reviewsOf\("toeic"\)\)/.test(route) &&
+      /listReviewSchedules\(\)\.catch/.test(route) &&
+      /appa\.todayLabel === null\) appa\.todayLabel = reviewTodayLabel\(reviewsOf\("japanese"\)/.test(route),
+    "",
   );
 }
 

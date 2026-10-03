@@ -17,6 +17,7 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
+import ReviewTodayCard from "@/components/review-today-card";
 import ToeicRecUploadDrain from "@/components/toeic-rec-upload-drain";
 
 export const metadata: Metadata = {
@@ -40,6 +41,9 @@ export default function ToeicHubPage() {
           토익스피킹 준비 — 표현집으로 답변에 꺼내 쓸 표현을 쌓고, 모의고사로 실전처럼 말해 봐요. 따로따로 써도 돼요.
         </p>
       </header>
+
+      {/* 📅 오늘의 복습(SPEC §23) — 간격 반복 큐 진입. 개수는 마운트 뒤 읽는다 */}
+      <ReviewTodayCard area="toeic" tone="adult" />
 
       <div className="grid gap-3 sm:grid-cols-2">
         <Link href="/toeic/sets" className="u-entry u-entry-primary">
@@ -79,6 +83,17 @@ export default function ToeicHubPage() {
           <span className="u-entry-title">내 녹음</span>
           <span className="u-entry-desc">
             모의고사·연습에서 녹음한 내 답과 고칠 문장 다시 말하기를 응시별로 모아 듣고, 필요 없는 것은 지워요(점수·피드백은 남아요).
+          </span>
+        </Link>
+
+        {/* 🏝️ 나만의 답변 섬(docs/harness/toeic.md §21) — 다섯째 카드도 sm:col-span-2 */}
+        <Link href="/toeic/island" className="u-entry u-entry-secondary sm:col-span-2">
+          <span className="u-entry-icon" aria-hidden>
+            🏝️
+          </span>
+          <span className="u-entry-title">나만의 답변 섬</span>
+          <span className="u-entry-desc">
+            Q5–7·Q11 단골 소재마다 내 경험으로 만든 답변 조각을 모아요. 틀 말하기·모의고사 첨삭에서 담거나 직접 써요.
           </span>
         </Link>
       </div>

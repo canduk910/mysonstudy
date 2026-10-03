@@ -2219,3 +2219,82 @@ A bright, friendly children's picture-book illustration of {scene}. Simple shape
 ## 13. 표현 도우미 — 한국어 → 쉬운 영어 + 예문 (은우, 2026-10-03)
 
 은우 영어 화면의 표현 도우미는 과목 공통 기능의 `english-kid` 모드다 — 프롬프트(1학년 눈높이·아이용 안전 규칙)·JSON Schema·zod·모델(`OPENAI_PHRASE_HELPER_MODEL`, 기본 `gpt-6-luna`)·eval(`npm run eval:phrase`)의 단일 정의처는 **`docs/harness/phrase-helper.md`**다(제품 흐름 SPEC §22). 이 과목의 호출 A~J·spec-sync 대상은 바뀌지 않았다. 단어장 시험 중에는 열 수 없다(phrase-helper.md §9).
+
+## 14. 그림 보고 말하기 — 번역 없는 떠올리기 (은우 단어장, 2026-10-03)
+
+> 사용자 결정(2026-10-03): "언어를 잊지 않는 법" 원리 — 번역을 거치지 말고 **이미지를 떠올린다**, 가린 채 **쥐어짜서 떠올린다**. 단어장 시험은 5지선다(알아보기)뿐이라, 이미 있는 **이모지 + 영영 정의**로 회상(말하기) 모드를 더한다. 제품 흐름은 SPEC §15-5.
+
+**새 AI 호출(callWithSchema) 없음.** 하네스 밖 관문 하나(**관문 W** — 아이 단어 음성 전사)와 순수 함수만 늘었다. 호출 A~J·spec-sync 대상·JSON Schema는 바뀌지 않았다.
+
+### 14-1. 파일 배치
+
+| 파일 | 역할 |
+|---|---|
+| `lib/kid-speak.ts` | 순수 함수(런타임 import 0) — `judgeKidSpeech`(전사문 ↔ 정답 판정)·`kidSpeakHint`(도움 단계)·`kidSpeakItemResult`(끝난 모양 → 저장 3상태)·`pickKidSpeakWords`(약한 단어부터 10개)·`kidSpeakRank` |
+| `lib/kid-speak-contract.ts` | 전사 라우트 계약(엔드포인트·필드·녹음 상한 6초·최소 0.3초·무음 문턱 0.15·업로드 256 KiB·시간 상한·응답 타입) |
+| `lib/kid-speak-transcribe.ts` | **관문 W**(서버 전용) — 영어 단어 전사 |
+| `app/api/english/vocab/speak-transcribe/route.ts` | `POST` multipart `audio` → `{ ok, text }` |
+| `app/english/vocab/[id]/speak/page.tsx` | 서버 — 풀(정의 있는 단어)·이 모드만의 통계, `?mode=wrong` |
+| `components/vocab-speak-quiz-runner.tsx` | 러너(시작 → 문항 → 결과, 마이크·스스로 확인) |
+
+### 14-2. 관문 W — 아이 단어 음성 전사 (하네스 밖)
+
+관문 T(`lib/toeic-transcribe.ts`)·관문 K(`lib/phrase-helper-transcribe.ts`)는 손대지 않고 **모양만 따라** 새로 썼다(각 eval이 두 관문을 소스로 잠근다 — 동작 불변).
+
+- 모델: 관문 T·K와 같은 env `OPENAI_TRANSCRIBE_MODEL`(빈 값이면 `gpt-4o-mini-transcribe`) — `resolveToeicTranscribeModel()`을 그대로 부른다.
+- `language: "en"` 고정, `response_format: "json"`.
+- **`prompt` 없음 — 전사 무유도.** 정답 단어를 넣으면 전사가 그쪽으로 끌려가 **말하지 않은 단어가 맞게 적힌다**. 한 겹 더: **라우트는 정답을 받지 않는다**(multipart `audio` 하나만 읽는다) — 판정은 화면의 순수 함수가 한다. 그래서 정답이 전사로 샐 경로가 구조적으로 없다.
+- 시간 상한 12초 + SDK 재시도 0(아이가 기다리는 호출 — 실패는 🎤를 다시 누른다). 라우트가 `req.signal`을 넘긴다(화면이 끊으면 상류도 멈춤, 499).
+- 키가 없으면 네트워크 없이 `no_api_key` → 라우트 501(본문을 읽기 전에) → 화면은 "스스로 확인"으로 바꾼다.
+- 녹음·전사문은 저장하지 않는다(요청 메모리만). 로그는 모델·바이트·ms·낱말 수뿐 — **아이 목소리·말은 남기지 않는다.**
+
+라우트 응답(단일 정의처 `KidSpeakTranscribeResponse`): 200 `{ok:true,text}` · 400 `invalid_input`(multipart 아님·audio 없음·형식 밖·빈 파일 — 형식 표는 토익 업로드와 같은 wav·mp4·m4a·webm) · 413 `audio_too_large`(선언 길이·스트림 누적·파일 크기 세 곳) · 499 `client_closed` · 500 `transcribe_failed`(`retriable:true`) · 501 `no_api_key`.
+
+### 14-3. 판정 — `judgeKidSpeech(transcript, answer)` → `correct | close | list | wrong | empty`
+
+전사 모델은 아이 발음을 **실제 영어 단어로** 적는다(없는 철자를 지어내기보다 가까운 진짜 단어를 고른다). 그래서 관대함은 **"전사가 같은 말을 다르게 적는 경우"만** 받고 **"다른 진짜 단어"는 받지 않는다** — 맞다고 해 주면 잘못 배운다. (2026-10-03 QA `qa_report_common_review_1.md` P3-D 반례로 경계를 좁혔다.)
+
+| 규칙 | 값 | 근거 |
+|---|---|---|
+| 정규화 | NFKC·소문자·아포스트로피 삭제·영숫자 밖은 띄어쓰기 | "Apple!" = apple, "ice-cream" = "ice cream" |
+| 숫자 | 0~20·30~90·100·1000을 영단어로 — **양쪽** 같은 표 | 전사가 "6"으로 적는다(six ← "6", 정답 "6" ← "six") |
+| 덧말 | 정답 밖 낱말은 **기능어·군말 목록**(`KID_SPEAK_FUNCTION_WORDS` — a·an·the·it·its·is·this·that·my·your·I·think·maybe·um·uh·oh …)만, **4낱말까지**. 정답 안에 든 낱말은 기능어로 치지 않는다 | "It's an apple", "Is it apple?", "I think it's apple" |
+| 늘어놓기 → `list` | 정답 밖에 **내용어**가 하나라도 있거나(정답 구간을 찾았어도), 내용어가 정답 낱말 수보다 많으면 | "cat dog apple"·"apple banana" — 찍기. 저장은 틀림, 도움 단계 오름, 문구 "한 단어만 말해 볼까요?". 정답 낱말 되풀이("apple, apple!")는 정답 |
+| 규칙 복수 | **정답 4글자 이상**에서 정확히 `s`, `es`(s·x·z·ch·sh·o 뒤만), `y→ies`(자음+y) — 양쪽 | apples ↔ apple, boxes, berries. car ← cares·hi ← his·us ← uses는 정답 아님(다른 단어) |
+| 불규칙 복수 | 소수 표(mice·children·feet·teeth·men·women·geese·people·knives·leaves·wolves …) — 길이 무관, 양쪽 | mouse ← mice, man ← men |
+| 한 글자 바꿈 = 정답 | **정답 6글자 이상·같은 길이·첫 글자 같음·한 글자 바꿈만**(`KID_SPEAK_FUZZY_MIN_LEN`) | 넣기·빼기는 다른 진짜 단어를 받는다(planet ← plane, banana ← bandana), 첫 글자 바꿈도(button ← mutton). 남는 것은 전사 오타(elephant ← elephent) |
+| 짧은 낱말 | 5글자 이하는 한 글자 차이 허용 0, **3글자 이하는 복수형도 0** | cat/cap·bear/pear·horse/house — 대개 다른 단어 |
+| close("거의 다 왔어요") | 남은 내용어를 붙인 글자와 정답 거리 ≤ 1(정답 3~5글자)·≤ 2(6글자 이상), **이웃 글자 자리 바꿈도 1** | 저장은 **틀림과 같고** 도움 단계도 오른다 — 문구만 다정하게. appel·colour/color·plane/planet·mutton/button은 여기 |
+| 정답 표기 | 괄호 부분은 있어도 없어도, 빗금은 어느 쪽이든 | "(be) interested in", "color/colour" |
+| 붙여 쓰기 | 내용어를 통째로 붙여 같으면 정답 | "icecream" = "ice cream" |
+| empty | 기능어·군말을 빼고 남은 내용어 0 | 빈 전사·구두점뿐·"The."·"It is." — **도움 단계를 올리지 않고** "다시 말해 볼까요?" |
+
+화면 표시용 `heard`는 앞뒤 공백만 걷고 40자에서 자른다. 반례 표 74행은 `eval:english` "그림 보고 말하기" 묶음에 있다(위 경계마다 정답·close·list·wrong을 값으로 잠근다).
+
+### 14-4. 도움 단계와 저장 모양
+
+- 도움: 0 없음 → 1 **첫 글자**("a(으)로 시작해요") → 2 **글자 수 밑줄**(낱말마다 첫 글자만 보이고 나머지 글자 칸은 `_`, 띄어쓰기·괄호·하이픈은 그대로) → 3 **정답 공개 + 🔊**. 틀리게(또는 거의) 말하거나 💡를 누를 때마다 한 단계.
+- 끝난 모양 → 저장(`kidSpeakItemResult`, `VocabQuizItem` 3상태 그대로): `said`(혼자)·`said-hint`(첫 글자·밑줄 도움 뒤) = **맞힘** — 단서를 받은 떠올리기도 떠올리기다. `revealed`(정답 공개까지) = 틀림. 스스로 확인 😀 `self-good` = 맞힘, 🤔 `self-unsure`·😢 `self-miss` = 틀림(헷갈린 단어는 졸업을 늦추는 쪽). 그만하기로 못 한 단어 = 미응답(`answered:null`).
+- 세션 레코드: 기존 `VocabQuizRecord`(컬렉션 `vocabQuizzes`, 저장 라우트 `POST /api/english/vocab/[id]/quiz`)에 **`mode: "picture-speak"`**. 문항 모양·라우트·정규화는 바뀌지 않았다(모드 값 하나 추가 — Firestore 읽기 폴백도 `VOCAB_QUIZ_MODES`를 그대로 본다). 도움을 몇 단계 받았는지는 저장하지 않는다(문항 모양을 바꾸면 토익·일본어가 옮겨 넣는 같은 타입까지 흔들린다 — 다음 회차 "오늘의 복습" 연결에서 필요하면 그때 정한다).
+
+### 14-5. 모드 분리 — 숙련도를 섞지 않는다
+
+- `lib/vocab-quiz.ts` `VOCAB_SEPARATE_MASTERY_MODES = ["relation", "picture-speak"]` + `isSeparateMasteryMode()` — **한 곳**. `aggregateWordStats`(5지선다 숙련도·오답노트·졸업)와 `buildReviewCandidates`(V6 복습 후보, stats·recency 둘 다)가 이 판정 하나로 뺀다.
+- 이 모드의 숙련도는 `aggregateWordStatsForMode(quizzes, "picture-speak")`(같은 접기 코어 — 시도·streak·졸업 규칙 동일, 연속 2회 졸업).
+- 토익·일본어는 자기 세션을 `"def-to-word"`로 옮겨 넣어 은우 집계 함수를 쓰므로 영향이 없다(`isSeparateMasteryMode("def-to-word") === false`).
+- 단어 고르기의 약함 순위(`kidSpeakRank`)는 토익 `weaknessRank`와 같은 순서다 — 은우 모듈이 토익 모듈을 import하지 않으려고 옮겨 두고 eval이 두 함수를 모든 통계 모양에서 대조한다.
+
+### 14-6. 화면 규칙 (러너)
+
+- **한국어 뜻은 화면에 가지 않는다** — 서버 페이지가 `word·definitionEn·emoji`만 넘긴다(구조로 보장 — eval이 소스로 본다). 이모지가 없으면 그림 칸 없이 정의만(첫 글자 배지는 답의 첫 글자를 미리 알려 주므로 쓰지 않는다).
+- 소리: 🔊는 탭할 때만, **프리페치 없음.** 예외 하나 — 정답이 드러나는 순간(맞혔을 때·정답 공개 때) 정답 단어를 **한 번** 읽는다(따라 말할 소리 — 틀린 뒤 정답을 귀로 듣는 것이 회상 연습의 마무리다). 시작 탭에서 `unlockSpeechPlayback()`, 녹음을 끝내는 탭에서도 한 번 더(전사 뒤 소리가 탭 밖이라).
+- 마이크: `lib/mic-session` `startRecording`(owner `"kid-speak"`, 첫 녹음 권한 대기 15초·그다음 8초), **녹음 전에 재생을 멈춘다**, 6초면 저절로 끝, 0.3초 미만·무음(최고 레벨 < 0.15, 레벨을 믿을 수 있을 때만)은 올리지 않는다(비용 0), WAV 16 kHz mono로 정규화(실패하면 원본). 화면이 숨겨지면 녹음을 버리고, 화면이 사라지면(뒤로가기 — 언마운트) 녹음·전사 요청·소리를 모두 끊는다.
+- 폴백: 마이크 미지원·거부·무응답·장치 없음·전사 501 → **스스로 확인**으로 바꾸고 이유를 1학년 말로 보인다(멈추지 않는다). 전사 500·연결 실패는 "한 번 더 말해 볼까요?"(도움 단계 그대로). 시작 화면에서 처음부터 스스로 확인을 고를 수도 있다(아이패드에 마이크를 안 쓰는 경우).
+- 러너가 떠 있는 동안 표현 도우미 차단 — `usePhraseHelperBlock()` + 경로 `/english/vocab/[id]/speak`(`lib/phrase-helper-scope.ts`, 두 겹).
+- 진입: 단어장 상세 툴바 "🎤 그림 보고 말하기"(영영 뜻이 하나라도 있으면 — 보기 5개가 필요 없다), DAY 오답노트의 "🎤 그림 보고 말하기 — 아직 못 떠올린 단어" 칸(이 모드에서 틀렸고 미졸업, `?mode=wrong`). 기록은 시험 기록 화면에 "그림 말하기" 배지로 함께 보인다. 스트릭 은우 트랙에 센다(답한 문항 ≥ 1 — 기존 단어장 시험 규칙 그대로).
+
+### 14-7. eval (`scripts/eval-english.ts` — 그림 보고 말하기 묶음, 실호출 0회)
+
+판정 표 74행(정규화·숫자·기능어 덧말·규칙/불규칙 복수·거짓 정답 반례 planet/plane·button/mutton·car/cares·hi/his·6글자 이상 같은 길이 한 글자 바꿈·close·늘어놓기 list·괄호·빗금·empty) · 관대함 상수·기능어 목록에 내용어 없음 · 표시 자르기 · 도움 단계 · 결과 매핑 7가지 · 단어 고르기(상한·중복·약한 것 먼저) · 약함 순위 = 토익 `weaknessRank` · 모드 분리(5지선다 숙련도·이 모드 숙련도·복습 후보) · 모드 표 · 저장 라우트 enum · 관문 W 소스(prompt 없음·en·재시도 0·모델 해석 재사용) · 전사 라우트 소스(키 검사 먼저·audio 하나만·signal) · 러너 소스(전사 요청에 audio 하나·프리페치 없음·한국어 뜻 없음·도우미 블록·재생 멈춘 뒤 녹음) · 페이지 소스(넘기는 칸) · 키 없음 → `no_api_key`. 경로 차단은 `eval:phrase`(시험 경로 표·러너 목록).
+
+> 2026-10-03 — **오늘의 복습(간격 반복 + 힌트 사다리)**: 이 과목의 시험 본 항목(은우 단어장 단어 `en-word`)이 1→3→7→14→30일 간격으로 다시 나온다. AI 호출이 없어 이 하네스의 호출·spec-sync와 무관하다 — 규칙·출처·저장·화면은 `docs/SPEC.md` §23(엔진 `lib/review-schedule.ts`, 어댑터 `lib/review-sources.ts`, eval `npm run eval:review`).

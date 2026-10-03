@@ -40,8 +40,22 @@ export const MIN_QUIZ_WORDS = 5;
  * — 관계 문항의 답(연결된 상대 단어)이 그 단어의 정의→단어 통계로 새어 들면 안 되기 때문이다(P2 무오염).
  * 저장·요청 zod·읽기 폴백이 모두 이 상수 하나를 본다(추가는 여기 배열 한 줄이면 세 곳에 함께 반영된다).
  */
-export const VOCAB_QUIZ_MODES = ["def-to-word", "wrong-review", "relation"] as const;
+export const VOCAB_QUIZ_MODES = ["def-to-word", "wrong-review", "relation", "picture-speak"] as const;
 export type VocabQuizMode = (typeof VOCAB_QUIZ_MODES)[number];
+
+/**
+ * **숙련도를 따로 세는 모드** — def→word 숙련도(aggregateWordStats)·복습 후보(buildReviewCandidates)·오답노트에서 뺀다.
+ * - `"relation"`      : 관계 문제(V8) — 답이 연결된 상대 단어라 def→word 축이 아니다.
+ * - `"picture-speak"` : 그림 보고 말하기(2026-10-03, SPEC §15-5, docs/harness/english.md §14) — 고르기(알아보기)가 아니라
+ *                       떠올려 말하기(회상)라 같은 단어라도 다른 축이다. 이 모드의 숙련도는 `aggregateWordStatsForMode(…, "picture-speak")`로 따로 센다.
+ * 두 순수 함수가 이 판정 하나를 본다(목록이 두 벌이면 언젠가 어긋난다).
+ */
+export const VOCAB_SEPARATE_MASTERY_MODES: readonly VocabQuizMode[] = ["relation", "picture-speak"];
+
+/** def→word 숙련도에서 뺄 모드인가(토익·일본어가 옮겨 넣는 "def-to-word"는 false — 그쪽 집계 불변) */
+export function isSeparateMasteryMode(mode: string): boolean {
+  return (VOCAB_SEPARATE_MASTERY_MODES as readonly string[]).includes(mode);
+}
 
 /**
  * 시험 모드 → 한글 라벨 (응시기록 화면의 종류 배지 단일 정의처). 문구를 화면마다 적지 말고 이 상수를 쓴다
@@ -51,6 +65,7 @@ export const VOCAB_QUIZ_MODE_LABELS_KO: Record<VocabQuizMode, string> = {
   "def-to-word": "일반",
   "wrong-review": "오답복습",
   relation: "관계",
+  "picture-speak": "그림 말하기",
 };
 
 /** 랜덤 주입 시그니처 — `Math.random`과 같은 [0,1) 실수 생성기. 테스트가 결정적 rng를 넣는다. */

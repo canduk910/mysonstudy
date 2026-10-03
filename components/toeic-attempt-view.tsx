@@ -123,6 +123,9 @@ import { slotToneMap, toeicGuideFolderHref } from "@/lib/toeic-guide-view";
 import { segmentUsedExpressions, toeicImageUrl, toeicTakeHref, type ToeicUsedExpression } from "@/lib/toeic-mock-contract";
 import type { ToeicMockPart } from "@/lib/toeic-mock";
 import { answerFlowExpressions, frameSlotNames, templateRunSpans, templateSpanSegments } from "@/lib/toeic-template";
+import ToeicIslandSave from "./toeic-island-save";
+import { islandDocId, islandPartOfMockPart } from "@/lib/toeic-island";
+import type { ToeicAttemptIslandData } from "@/lib/toeic-island-contract";
 import { expressionKey } from "@/lib/toeic-text";
 import { markReadAloud } from "@/lib/toeic-read-marks";
 import { deleteToeicRecordingsLocal, listToeicRecordings, type ToeicRecording } from "@/lib/toeic-rec-store";
@@ -264,6 +267,7 @@ export default function ToeicAttemptView({
   checks = {},
   answerFlows = [],
   history = [],
+  island = null,
 }: {
   attempt: ToeicAttemptRecord;
   mockId: string;
@@ -279,8 +283,29 @@ export default function ToeicAttemptView({
   answerFlows?: ToeicAnswerFlow[];
   /** 🎧 비교 ③ — 같은 모의고사 응시(최신 20회, 줄인 자료 — 이번 응시 포함, 시간순) */
   history?: ToeicCompareAttempt[];
+  /** 🏝️ 내 섬에 담기 자료(§21-3 ② — Q5–7·Q11만). null이면 버튼 없음 */
+  island?: ToeicAttemptIslandData | null;
 }) {
   const router = useRouter();
+  // 🏝️ 담기 버튼 하나(Q5–7·Q11 문항만 — 그 밖 유형·자료 없음은 null). 인쇄에서는 뺀다
+  const islandBtn = (q: number, part: ToeicMockPart, fixIndex: number | null) => {
+    const ip = islandPartOfMockPart(part);
+    if (!island || ip === null) return null;
+    const docId = islandDocId({ kind: "attempt", attemptId: attempt.id, q, fixIndex });
+    if (docId === null) return null;
+    return (
+      <span className="print-hide">
+        <ToeicIslandSave
+          origin={{ kind: "attempt", attemptId: attempt.id, q, fixIndex }}
+          part={ip}
+          savedInitially={island.savedIds.includes(docId)}
+          topics={island.topicsByPart[ip] ?? []}
+          suggestedTopicKey={island.suggest[docId] ?? null}
+          testId={`island-save-q${q}-${fixIndex === null ? "imp" : `fix${fixIndex}`}`}
+        />
+      </span>
+    );
+  };
   const id = attempt.id;
   // 🖨️ 인쇄 · PDF 저장(§16) — 접기 펼치기·lazy 사진 받기는 훅이(beforeprint·버튼 둘 다)
   const printRootRef = useRef<HTMLDivElement | null>(null);
@@ -1609,6 +1634,7 @@ export default function ToeicAttemptView({
                             <p className={s.why}>{f.whyKo}</p>
                             <div className={s.fixTools}>
                               {playBtn(`fix-better-${v.q}-${k}`, f.better, `Q${v.q} 고친 문장`)}
+                              {islandBtn(v.q, v.part, k)}
                               <button
                                 type="button"
                                 className={`${s.recBtn} ${act ? s.recOn : ""}`}
@@ -1708,6 +1734,7 @@ export default function ToeicAttemptView({
                       <p className={s.answerText} lang="en">
                         {a.feedback.improvedAnswer}
                       </p>
+                      {islandBtn(v.q, v.part, null)}
                     </div>
                   )}
                   {a.feedback.tryExpressions.length > 0 && (

@@ -120,6 +120,17 @@ import {
   type TalkSessionRecord,
   type ImportToeicFrameDrillResult,
 } from "./store";
+import { islandEntryData, normalizeToeicIslandEntry, sortIslandEntries, type ToeicIslandEntry } from "./toeic-island";
+import {
+  decideReview,
+  normalizeReviewSchedule,
+  reviewDocId,
+  reviewScheduleData,
+  type DecideReviewInput,
+  type DecideReviewResult,
+  type ReviewArea,
+  type ReviewScheduleRecord,
+} from "./review-schedule";
 import {
   TOEIC_FRAME_DRILL_BANK_ID,
   TOEIC_FRAME_DRILL_MAX_BYTES,
@@ -698,6 +709,14 @@ export class FirestoreStore implements StudyStore {
   }
   private toeicFrameDrills(): CollectionReference {
     return getDb().collection("toeicFrameDrills");
+  }
+  // 🏝️ 나만의 답변 섬(toeic.md §21) — 문서 id = 원본 키
+  private toeicIsland(): CollectionReference {
+    return getDb().collection("toeicIsland");
+  }
+  // 📅 오늘의 복습(SPEC §23) — 문서 id = reviewDocId(영역, 항목 키). 세 영역이 한 컬렉션을 쓰고 area 필드로 가른다
+  private reviewSchedules(): CollectionReference {
+    return getDb().collection("reviewSchedules");
   }
   // 은우 자유대화(english.md §12-4·§12-6) — 은우 단어장 컬렉션과 섞지 않는다
   private talkSessions(): CollectionReference {
@@ -2087,6 +2106,87 @@ export class FirestoreStore implements StudyStore {
       if (fin.bank) tx.set(bankRef, frameFirestoreData(fin.bank));
       tx.update(ref, { supply: frameFirestoreData(fin.mark) });
       return fin;
+    });
+  }
+
+  // ---- 🏝️ 나만의 답변 섬 (toeic.md §21) ----
+  // 담기는 `create`(이미 있으면 ALREADY_EXISTS — 확인과 생성이 원자적, 같은 원본 두 번 = 한 개). 편집은 runTransaction 안에서 판정.
+
+  async listToeicIslandEntries(): Promise<ToeicIslandEntry[]> {
+    // 전체를 읽어 메모리 정렬(orderBy는 필드 없는 문서를 뺀다 — 가족 규모)
+    const snap = await this.toeicIsland().get();
+    return sortIslandEntries(snap.docs.map((d) => normalizeToeicIslandEntry(d.id, d.data())).filter((d): d is ToeicIslandEntry => d !== null));
+  }
+
+  async getToeicIslandEntry(id: string): Promise<ToeicIslandEntry | null> {
+    const snap = await this.toeicIsland().doc(id).get();
+    return snap.exists ? normalizeToeicIslandEntry(id, snap.data()) : null;
+  }
+
+  async createToeicIslandEntry(entry: ToeicIslandEntry, max?: number): Promise<{ record: ToeicIslandEntry; reused: boolean; full: boolean }> {
+    const ref = this.toeicIsland().doc(entry.id);
+    const record: ToeicIslandEntry = { id: entry.id, ...islandEntryData(entry) };
+    if (max !== undefined) {
+      // 상한 검사와 생성을 한 트랜잭션에(QA common_review_1 P3-E) — 문서 확인 → 개수(집계) → 없을 때만 create.
+      // 집계 읽기는 범위를 잠그지 않으므로 아주 좁은 경합은 남는다(가족 규모 — 리포트에 적었다). 같은 원본 키 멱등은 tx.create가 지킨다.
+      return getDb().runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        if (snap.exists) return { record: normalizeToeicIslandEntry(entry.id, snap.data()) ?? record, reused: true, full: false };
+        const count = (await tx.get(this.toeicIsland().count())).data().count;
+        if (count >= max) return { record, reused: false, full: true };
+        tx.create(ref, frameFirestoreData(islandEntryData(record)));
+        return { record, reused: false, full: false };
+      });
+    }
+    try {
+      await ref.create(frameFirestoreData(islandEntryData(record)));
+      return { record, reused: false, full: false };
+    } catch (err) {
+      if ((err as { code?: unknown } | null)?.code !== GRPC_ALREADY_EXISTS) throw err;
+      const snap = await ref.get();
+      const existing = snap.exists ? normalizeToeicIslandEntry(entry.id, snap.data()) : null;
+      return { record: existing ?? record, reused: true, full: false };
+    }
+  }
+
+  async updateToeicIslandEntry<R>(id: string, decide: (cur: ToeicIslandEntry) => { entry: ToeicIslandEntry | null; result: R }): Promise<R | null> {
+    const ref = this.toeicIsland().doc(id);
+    return getDb().runTransaction(async (tx): Promise<R | null> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      const cur = normalizeToeicIslandEntry(id, snap.data());
+      if (!cur) return null;
+      const { entry, result } = decide(cur);
+      if (entry) tx.set(ref, frameFirestoreData(islandEntryData(entry)));
+      return result;
+    });
+  }
+
+  async deleteToeicIslandEntry(id: string): Promise<boolean> {
+    assertDestructiveAllowed("deleteToeicIslandEntry");
+    const ref = this.toeicIsland().doc(id);
+    if (!(await ref.get()).exists) return false;
+    await ref.delete();
+    return true;
+  }
+
+  // ---- 📅 오늘의 복습 (SPEC §23) ----
+  // 결과 적용은 runTransaction — "지금 일정을 읽고 판정(같은 날이면 already_today)한 뒤 쓴다"라서다. 두 탭·연타가 같은 항목을 같은 날
+  // 두 번 전진시키지 못한다. 읽기는 area 하나만 where(정렬은 메모리 — 복합 인덱스 회피). 삭제 경로 없음(고아 일정은 큐가 무시한다).
+
+  async listReviewSchedules(area?: ReviewArea): Promise<ReviewScheduleRecord[]> {
+    const snap = area ? await this.reviewSchedules().where("area", "==", area).get() : await this.reviewSchedules().get();
+    return snap.docs.map((d) => normalizeReviewSchedule(d.data())).filter((r): r is ReviewScheduleRecord => r !== null);
+  }
+
+  async applyReviewOutcome(input: DecideReviewInput): Promise<DecideReviewResult> {
+    const ref = this.reviewSchedules().doc(reviewDocId(input.area, input.itemKey));
+    return getDb().runTransaction(async (tx): Promise<DecideReviewResult> => {
+      const snap = await tx.get(ref);
+      const prev = snap.exists ? normalizeReviewSchedule(snap.data()) : null;
+      const decision = decideReview(prev, input);
+      if (decision.kind === "applied") tx.set(ref, frameFirestoreData(reviewScheduleData(decision.record)));
+      return decision;
     });
   }
 }

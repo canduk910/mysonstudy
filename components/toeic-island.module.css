@@ -1,0 +1,264 @@
+/* 🏝️ 나만의 답변 섬 (docs/harness/toeic.md §21) — 디자인 토큰만(새 색 없음) */
+
+/* ── 담기 버튼(결과 화면에 끼우는 작은 덩어리) ── */
+.save {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.saveBtn {
+  min-height: 36px;
+  padding: 4px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  color: var(--ink-2);
+  font-size: 14px;
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+.saveBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.saveBtn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.saved {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.saveLink {
+  font-size: 13px;
+  color: var(--accent-ink);
+  text-decoration: underline;
+}
+.saveErr {
+  width: 100%;
+  margin: 0;
+  font-size: 13px;
+  color: var(--danger);
+}
+
+/* 담기 패널(소재 칩 + 한국어 메모) */
+.panel {
+  width: 100%;
+  margin-top: 6px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.panelLabel {
+  margin: 0;
+  font-size: 13px;
+  font-weight: var(--fw-medium);
+  color: var(--ink-2);
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  min-height: 36px;
+  padding: 4px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  color: var(--ink-2);
+  font-size: 14px;
+  cursor: pointer;
+  max-width: 100%;
+  white-space: normal;
+  text-align: left;
+}
+.chipOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: var(--fw-medium);
+}
+.panelRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.input {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 16px; /* iOS 확대 방지 */
+  font-family: inherit;
+  box-sizing: border-box;
+}
+textarea.input {
+  min-height: 88px;
+  resize: vertical;
+  line-height: 1.5;
+}
+.hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+/* ── 섬 화면 ── */
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.box {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.boxTitle {
+  margin: 0;
+  font-size: var(--fs-section-title);
+  font-weight: var(--fw-bold);
+  color: var(--ink);
+}
+.groupHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.count {
+  font-size: var(--fs-caption);
+  color: var(--ink-3);
+  flex: none;
+}
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.entry {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.enRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.en {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.55;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.frameMark {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  border-radius: 4px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  padding: 0 1px;
+}
+.speakBtn {
+  flex: none;
+  min-width: 40px;
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  font-size: 16px;
+  cursor: pointer;
+}
+.ko {
+  margin: 0;
+  font-size: 15px;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.meta {
+  margin: 0;
+  font-size: var(--fs-caption);
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+.spoken {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+.spoken summary {
+  cursor: pointer;
+}
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.toolBtn {
+  min-height: 36px;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  color: var(--ink-2);
+  font-size: 13px;
+  cursor: pointer;
+}
+.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.confirm {
+  padding: 10px 12px;
+  border-radius: var(--radius-box);
+  background: var(--danger-soft);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--ink);
+}
+.empty {
+  margin: 0;
+  font-size: 15px;
+  color: var(--ink-2);
+  line-height: var(--lh-body);
+}
+.error {
+  margin: 0;
+  font-size: 13px;
+  color: var(--danger);
+}

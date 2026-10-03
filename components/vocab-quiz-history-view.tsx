@@ -58,6 +58,7 @@ const MODE_BADGE_CLASS: Record<VocabQuizMode, string> = {
   "def-to-word": s.badgeDef,
   "wrong-review": s.badgeReview,
   relation: s.badgeRelation,
+  "picture-speak": s.badgePicture,
 };
 
 export default function VocabQuizHistoryView({ sessions, scope }: VocabQuizHistoryViewProps) {

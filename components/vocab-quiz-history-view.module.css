@@ -120,6 +120,13 @@
   color: var(--ink-2);
   border-color: var(--line-strong);
 }
+/* 그림 보고 말하기(2026-10-03) — 떠올려 말하기 축 */
+.badgePicture {
+  background: var(--surface-2);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+  border-style: dashed;
+}
 
 /* 화면 B: 어느 단어장인지 */
 .book {

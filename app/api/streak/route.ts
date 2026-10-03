@@ -6,6 +6,7 @@
  * 아빠·운동=러시안 파이터 루틴을 지킨 날(WorkoutCycleRecord — 운동·실패 기록일 + 계획된 휴식일 + 재측정 끝낸 날, §17-7) /
  * 아빠·영어=토익스피킹 표현 시험(ToeicQuizRecord, 답한 문항≥1) + 모의고사 응시(ToeicAttemptRecord, 녹음된 문항≥1) — toeic.md §0-2
  *   + 소재별 틀 말하기 한 판(toeicFrameDrills, 말한 문항≥1 — toeic.md §20-9, 못 읽으면 이 기록만 빼고 계산).
+ * 세 트랙(은우·일본어·영어)은 **오늘의 복습**(reviewSchedules — 복습 1개 이상 끝낸 날, SPEC §23-9)도 각자 센다(영역 = 트랙, 못 읽으면 복습만 빼고).
  * 일본어·운동·영어는 **각자의 트랙**이다(합치지 않는다). 수학·읽음·대화·생성·발화 포인트는 제외.
  * 새 레코드 없이 기존 기록에서 파생(§17-5) — 전체를 읽어 메모리에서 접는다(복합 인덱스 회피).
  * 캐시 없음(no-store). PIN 게이트는 proxy가 자동.
@@ -37,6 +38,7 @@ import {
   type ToeicQuizLabelNames,
 } from "@/lib/toeic-streak";
 import { workoutKeptDays, workoutStreakTodayLabel } from "@/lib/workout";
+import { reviewStreakSessions, reviewTodayLabel, type ReviewArea, type ReviewScheduleRecord } from "@/lib/review-schedule";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -69,7 +71,7 @@ export async function GET() {
   const store = getStore();
   const today = kstTodayString();
 
-  const [vocab, jaVocab, jaKanji, workoutCycles, toeicQuizzes, toeicAttempts, talkSessions, toeicFrameDrills] = await Promise.all([
+  const [vocab, jaVocab, jaKanji, workoutCycles, toeicQuizzes, toeicAttempts, talkSessions, toeicFrameDrills, reviewSchedules] = await Promise.all([
     store.listAllVocabQuizzes(),
     store.listAllJaQuizzes(),
     store.listJaKanjiQuizzes(),
@@ -97,12 +99,19 @@ export async function GET() {
       console.error("[streak] 틀 말하기 기록을 읽지 못했다 — 영어 트랙은 표현 시험·응시만으로 계산한다", err);
       return null;
     }),
+    // 📅 오늘의 복습(SPEC §23-9) — 복습 1개 이상 끝낸 날을 각 영역 트랙에 센다. 못 읽으면 복습만 빼고 계산한다
+    store.listReviewSchedules().catch((err: unknown): ReviewScheduleRecord[] | null => {
+      console.error("[streak] 복습 일정을 읽지 못했다 — 복습만 빼고 계산한다", err);
+      return null;
+    }),
   ]);
+  // 영역별로 가른다(트랙 분리 — 은우 영어 복습은 은우 트랙, 일본어 복습은 일본어 트랙, 토익 복습은 영어 트랙)
+  const reviewsOf = (area: ReviewArea) => (reviewSchedules ?? []).filter((r) => r.area === area);
 
   // ── 은우: 영어 단어 시험 + 자유대화(은우 발화 ≥ 1 = 답한 문항, 같은 연속 판정 코어 — §17-9) ──
   // 아빠 트랙(일본어·영어·운동) 기록은 여기 섞지 않는다. 대화를 못 읽었으면 talks = [](단어장 시험만).
   const talks = talkSessions ?? [];
-  const eunwoo: PersonStreak = { info: computeStreak([...vocab, ...talkStreakSessions(talks)], today), todayLabel: null };
+  const eunwoo: PersonStreak = { info: computeStreak([...vocab, ...talkStreakSessions(talks), ...reviewStreakSessions(reviewsOf("english"))], today), todayLabel: null };
   // todayLabel = 오늘 한 것 중 **가장 늦게 시작한 것**(같은 시각이면 단어장 시험)
   const eToday = todaysAnswered(vocab, today)[0];
   const tToday = talks
@@ -118,7 +127,7 @@ export async function GET() {
 
   // ── 아빠 · 일본어: 일본어 단어 시험 + 한자 시험(두 컬렉션을 한 스트릭으로 접는다) ──
   // 라벨은 짧게 — 헤드라인이 "🗾 일본어"를 앞에 붙인다(§17-7).
-  const appa: PersonStreak = { info: computeStreak([...jaVocab, ...jaKanji], today), todayLabel: null };
+  const appa: PersonStreak = { info: computeStreak([...jaVocab, ...jaKanji, ...reviewStreakSessions(reviewsOf("japanese"))], today), todayLabel: null };
   const aVocab = todaysAnswered(jaVocab, today)[0];
   const aKanji = todaysAnswered(jaKanji, today)[0];
   if (aVocab && (!aKanji || aVocab.startedAt >= aKanji.startedAt)) {
@@ -147,7 +156,7 @@ export async function GET() {
   if (toeicQuizzes && toeicAttempts) {
     try {
       const frameDrills = toeicFrameDrills ?? [];
-      appaEnglish = { info: computeStreak(toeicStreakSessions(toeicQuizzes, toeicAttempts, frameDrills), today), todayLabel: null };
+      appaEnglish = { info: computeStreak([...toeicStreakSessions(toeicQuizzes, toeicAttempts, frameDrills), ...reviewStreakSessions(reviewsOf("toeic"))], today), todayLabel: null };
       const tQuiz = todaysAnswered(toeicQuizzes, today)[0];
       const tAttempt = toeicAttempts
         .filter((a) => kstDateString(a.startedAt) === today && isCountedToeicAttempt(a))
@@ -172,6 +181,11 @@ export async function GET() {
       appaEnglish = NEUTRAL_STREAK;
     }
   }
+
+  // 오늘의 복습 라벨(§23-9) — 그 트랙에 오늘 다른 기록이 없을 때만 `오늘의 복습 · n개`(다른 기록이 있으면 그 라벨이 먼저)
+  if (eunwoo.todayLabel === null) eunwoo.todayLabel = reviewTodayLabel(reviewsOf("english"), today);
+  if (appa.todayLabel === null) appa.todayLabel = reviewTodayLabel(reviewsOf("japanese"), today);
+  if (appaEnglish !== NEUTRAL_STREAK && appaEnglish.todayLabel === null) appaEnglish.todayLabel = reviewTodayLabel(reviewsOf("toeic"), today);
 
   const body: StreakResponse = { ok: true, today, eunwoo, appa, appaWorkout, appaEnglish };
   return NextResponse.json(body, { headers: { "cache-control": "no-store" } });

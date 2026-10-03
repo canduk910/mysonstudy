@@ -23,6 +23,8 @@ import {
   type ToeicFrameDrillSupplyResponse,
 } from "@/lib/toeic-frame-drill-contract";
 import { formatKst } from "@/lib/kst";
+import ToeicIslandSave from "./toeic-island-save";
+import { islandDocId } from "@/lib/toeic-island";
 import s from "./toeic-frame-drill.module.css";
 
 const EN = "en-US";
@@ -36,11 +38,14 @@ export default function ToeicFrameDrillResult({
   topicNamesKo,
   backHref,
   retryHref,
+  islandSavedIds = [],
 }: {
   initial: ToeicFrameDrillSessionView;
   topicNamesKo: string[];
   backHref: string;
   retryHref: string;
+  /** 🏝️ 이미 섬에 담긴 문서 id(§21 — 원본 키) */
+  islandSavedIds?: string[];
 }) {
   const [session, setSession] = useState(initial);
   const [judge, setJudge] = useState<JudgeState>({ kind: "idle" });
@@ -231,6 +236,15 @@ export default function ToeicFrameDrillResult({
                     <span className={s.lineText}>{it.reasonKo}</span>
                   </p>
                 )}
+                {/* 🏝️ 내 섬에 담기(§21 — 고친 문장, 없으면 모범 영어 · 한 번 탭 · 같은 문항 두 번 = 한 개) */}
+                <div>
+                  <ToeicIslandSave
+                    origin={{ kind: "frame_drill", sessionId: session.id, index: i }}
+                    part={session.part}
+                    savedInitially={islandSavedIds.includes(islandDocId({ kind: "frame_drill", sessionId: session.id, index: i }) ?? "")}
+                    testId={`island-save-${i}`}
+                  />
+                </div>
               </li>
             );
           })}

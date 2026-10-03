@@ -1,0 +1,258 @@
+/* 오늘의 복습 러너 (SPEC §23-7) — 토큰만 쓴다(새 색조 없음). .kid는 은우용 큰 글씨. */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.topRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.counter {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+.progressTrack {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-2, var(--line));
+  overflow: hidden;
+}
+.progressFill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+/* 단서 카드 */
+.cue {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 22px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  text-align: center;
+}
+.cueLabel {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+}
+.cueEmoji {
+  font-size: 56px;
+  line-height: 1;
+}
+.cueMain {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--fs-vocab-meaning);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+.cueSub {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-question-ko);
+  overflow-wrap: anywhere;
+}
+.source {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-caption);
+}
+
+/* 떠올리기 막대 */
+.think {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.thinkText {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-question-ko);
+  text-align: center;
+}
+.thinkTrack {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+.thinkFill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  animation-name: fill;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+@keyframes fill {
+  from {
+    width: 0;
+  }
+  to {
+    width: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .thinkFill {
+    animation-duration: 0s !important;
+  }
+}
+
+/* 힌트 */
+.hints {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.hint {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-box);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.hintLabel {
+  flex: none;
+  font-size: var(--fs-meta-chip);
+  font-weight: var(--fw-bold);
+}
+.hintText {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 20px;
+  letter-spacing: 0.12em;
+  overflow-wrap: anywhere;
+}
+.hintNote {
+  margin-left: auto;
+  font-size: var(--fs-caption);
+  color: var(--ink-2);
+  flex: none;
+}
+
+/* 정답 */
+.answer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 18px;
+  border: 2px solid var(--accent);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+  text-align: center;
+}
+.answerMain {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--fs-vocab-word);
+  font-weight: var(--fw-bold);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+.answerSub {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-question-ko);
+  overflow-wrap: anywhere;
+}
+.speakBtn {
+  min-height: var(--tap-min);
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.actionRow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.actionRow > button {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+.error {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-question-ko);
+}
+
+/* 끝 요약 */
+.summary {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 12px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+.statNum {
+  font-size: var(--fs-stat-number);
+  font-weight: var(--fw-bold);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.statLabel {
+  font-size: var(--fs-meta-chip);
+  color: var(--ink-2);
+}
+.dist {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 은우 — 큰 글씨·큰 이모지 */
+.kid .cueEmoji {
+  font-size: 84px;
+}
+.kid .cueMain {
+  font-size: 24px;
+}
+.kid .cueSub {
+  font-size: 18px;
+}
+.kid .answerMain {
+  font-size: 36px;
+}
+.kid .hintText {
+  font-size: 28px;
+}
+.kid .thinkText {
+  font-size: 18px;
+}
+.kid .actionRow > button {
+  font-size: 18px;
+  min-height: 56px;
+}

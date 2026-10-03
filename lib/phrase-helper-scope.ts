@@ -57,6 +57,8 @@ export const PHRASE_HELPER_EXAM_PATHS: readonly { re: RegExp; labelKo: string }[
   { re: /^\/japanese\/vocab\/[^/]+\/quiz$/, labelKo: "일본어 단어 시험(방식 고르기·오답 다시 풀기 포함)" },
   { re: /^\/japanese\/kanji\/quiz$/, labelKo: "일본어 한자 시험" },
   { re: /^\/english\/vocab\/[^/]+\/quiz$/, labelKo: "은우 단어장 시험(오답 재시험·관계 문제 포함)" },
+  { re: /^\/english\/vocab\/[^/]+\/speak$/, labelKo: "은우 그림 보고 말하기(다시 말해 보기 포함, SPEC §15-5)" },
+  { re: /^\/(english|japanese|toeic)\/review$/, labelKo: "오늘의 복습 러너(은우 영어·일본어·토익 — 가린 채 떠올리기, SPEC §23)" },
 ];
 
 /** 경로만으로 시험 화면인가 */

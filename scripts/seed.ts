@@ -691,6 +691,10 @@ async function main() {
     // 소재별 틀 말하기(toeic.md §20)도 빈 배열 — 문제 은행은 교재 유래라 저장소에 넣지 않는다(앱의 "파일로 가져오기"로만).
     toeicFrameBank: [],
     toeicFrameDrills: [],
+    // 🏝️ 답변 섬(toeic.md §21)도 빈 배열 — 아빠가 앱에서 담는 개인 문장이다.
+    toeicIsland: [],
+    // 📅 오늘의 복습 일정(SPEC §23)도 빈 배열 — mergeById라 기존 일정은 그대로 남는다.
+    reviewSchedules: [],
   };
 
   await mergeDbForSeed(db);

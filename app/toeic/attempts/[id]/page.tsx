@@ -32,6 +32,9 @@ import { toeicTakeHref } from "@/lib/toeic-mock-contract";
 import { TOEIC_MOCK_PARTS, type ToeicMockPart } from "@/lib/toeic-mock";
 import { isRenderableToeicMock, isRenderableToeicTemplateBank } from "@/lib/toeic-record";
 import { TOEIC_COMPARE_ATTEMPTS_MAX, pickToeicCompareAttempts, toToeicCompareAttempt } from "@/lib/toeic-compare";
+import { frameDrillFramesForPart, frameDrillTopicsForPart } from "@/lib/toeic-frame-drill";
+import { islandDocId, islandPartOfMockPart, suggestIslandTopic, type ToeicIslandPart } from "@/lib/toeic-island";
+import type { ToeicAttemptIslandData } from "@/lib/toeic-island-contract";
 
 export const dynamic = "force-dynamic";
 
@@ -75,6 +78,36 @@ export default async function ToeicAttemptPage({ params }: AttemptPageProps) {
     }
   }
 
+  // ── 🏝️ 내 섬에 담기(§21-3 ②) — Q5–7·Q11 문항에 채점 결과가 있을 때만. 소재 칩 = 틀 말하기 은행 소재, 추천 = 문장에 쓰인 틀의 소재(AI 없음) ──
+  let island: ToeicAttemptIslandData | null = null;
+  const islandQs = questions.filter((v) => islandPartOfMockPart(v.part) !== null && attempt.answers.some((a) => a.q === v.q && a.feedback));
+  if (islandQs.length > 0) {
+    const [frameBank, entries, tplBank] = await Promise.all([
+      store.getToeicFrameDrillBank().catch(() => null),
+      store.listToeicIslandEntries().catch(() => []),
+      store.getToeicSet(TOEIC_TEMPLATE_BANK_ID).catch(() => null),
+    ]);
+    const tplItems = tplBank !== null && isRenderableToeicTemplateBank(tplBank) ? (tplBank.guide as { items: unknown[] }).items : [];
+    const topicsByPart: ToeicAttemptIslandData["topicsByPart"] = {};
+    const suggest: Record<string, string | null> = {};
+    for (const v of islandQs) {
+      const ip = islandPartOfMockPart(v.part) as ToeicIslandPart;
+      const frames = frameBank ? frameDrillFramesForPart(frameBank, ip) : [];
+      const tpls = tplItems.length > 0 ? guideTemplatesForPart(tplItems, ip).templates : [];
+      if (!topicsByPart[ip]) topicsByPart[ip] = frameBank ? frameDrillTopicsForPart(frameBank, ip).map((t) => ({ key: t.topic.key, nameKo: t.topic.nameKo })) : [];
+      const fb = attempt.answers.find((a) => a.q === v.q)?.feedback;
+      if (!fb) continue;
+      const imp = islandDocId({ kind: "attempt", attemptId: attempt.id, q: v.q, fixIndex: null });
+      if (imp) suggest[imp] = suggestIslandTopic(fb.improvedAnswer, frames, tpls);
+      fb.fixes.forEach((f, k) => {
+        const fid = islandDocId({ kind: "attempt", attemptId: attempt.id, q: v.q, fixIndex: k });
+        if (fid) suggest[fid] = suggestIslandTopic(f.better, frames, tpls) ?? (imp ? suggest[imp] : null);
+      });
+    }
+    const savedIds = entries.filter((e) => e.origin.kind === "attempt" && e.origin.attemptId === attempt.id).map((e) => e.id);
+    island = { topicsByPart, savedIds, suggest };
+  }
+
   // ── 🎧 비교 ③ 다시 풀기 기록(§13-9) — 같은 모의고사(연습은 같은 연습 문서)의 응시를 최신 20회까지, **줄인 자료**만 넘긴다(피드백 본문 없음) ──
   const sameMock = await store.listToeicAttemptsByMock(mock.id);
   const history = pickToeicCompareAttempts(sameMock, attempt.id, TOEIC_COMPARE_ATTEMPTS_MAX).map(toToeicCompareAttempt);
@@ -110,6 +143,7 @@ export default async function ToeicAttemptPage({ params }: AttemptPageProps) {
         checks={checks}
         answerFlows={mock.answerFlows}
         history={history}
+        island={island}
       />
     </main>
   );

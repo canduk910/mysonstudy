@@ -18,6 +18,7 @@ import { formatKst } from "@/lib/kst";
 import { TOEIC_FRAME_DRILL_COUNT_DEFAULT, TOEIC_FRAME_DRILL_COUNT_MAX, TOEIC_FRAME_DRILL_COUNT_MIN, clampFrameDrillCount } from "@/lib/toeic-frame-drill";
 import { toeicFrameDrillResultHref, toeicFrameDrillTakeHref } from "@/lib/toeic-frame-drill-contract";
 import { frameDrillTabScope, type ToeicFrameDrillTabData } from "@/lib/toeic-frame-drill-view";
+import { toeicIslandHref } from "@/lib/toeic-island-contract";
 import s from "./toeic-frame-drill.module.css";
 
 const PREF_KEY = (part: string) => `toeic-frame-drill-sel:${part}`;
@@ -111,6 +112,10 @@ export default function ToeicFrameDrillTab({ data }: { data: ToeicFrameDrillTabD
   // 버튼이 다시 마운트되지 않아 "추가 n" 알림이 남는다
   return (
     <div className={s.wrap}>
+      {/* 🏝️ 나만의 답변 섬(§21) — 결과에서 담은 내 문장을 소재별로 */}
+      <Link href={toeicIslandHref(data.part)} className="u-btn u-btn-secondary" data-testid="island-link">
+        🏝️ 나만의 답변 섬 보기
+      </Link>
       {!ready ? (
         <div className={s.empty}>
           <p className={s.emptyText}>

@@ -4582,3 +4582,68 @@ interface ToeicFrameDrillFile {
 13. **순수 층 경계값 수정**(`decideFrameDrillSupply`): 평균 오답률 비교에 1e-9 여유를 두었다. 0.2 여섯 개의 평균이 0.19999999999999998이 되어 "20%는 보충하지 않는다"가 새는 것을 앱 eval이 잡았다.
 14. 삭제 경로가 없다 — `DestructiveOp`를 추가하지 않았다. `migrate-to-firestore`·시드에도 넣지 않았다(시드는 빈 배열, `mergeDbForSeed`는 mergeById).
 15. **문항 일감 등록 시점**(QA frame-drill_1 P2-A): 녹음 멈춤 → 보낼지 판단 → 전사를 한 일감으로 묶어, `endItem`이 `rec.stop()`을 부르는 그 자리에서 동기로 등록한다. 끝·그만두기는 등록된 일감을 모두 기다린다. 그래서 iOS에서 onstop이 늦어도(최대 3초) 마지막 답을 잃지 않는다. 전사는 진행·마무리 단계에서만 보내고, 저장이 시작된 뒤에는 보내지 않는다. 키가 없어(501) 녹음 없이로 바뀌면 마이크를 놓는다(P3-B).
+
+## 21. 나만의 답변 섬 — Q5–7 · Q11 (2026-10-03)
+
+> "언어를 잊지 않는 법"(나와 연결된 의미 있는 문장을 섬처럼 쌓고, 가린 채 떠올린다)을 토익에 옮긴 것. 단골 소재마다 **내 경험으로 만든 답변 조각**을 모아 두면 시험장에서 남의 예문보다 먼저 떠오른다. **AI 호출 0**(새 호출·새 프롬프트 없음). 정의처 `lib/toeic-island.ts`(순수 — 클라이언트·eval 안전), 계약 `lib/toeic-island-contract.ts`. SPEC §20-18.
+
+### 21-0. 결정 (사용자 확정 2026-10-03 · 오케스트레이터 기본값)
+
+1. 담는 길 셋 — ① 🗣️ 틀 말하기 결과의 문항 ② 모의고사 결과(첨삭) Q5–7·Q11의 "개선 답변"·"고칠 문장 → 고친 문장" ③ 섬 화면에서 직접 쓰기.
+2. 같은 원본을 두 번 담아도 한 개(원본 키 멱등). 순서변경은 없다(최근에 담은 것이 위).
+3. 소재는 **틀 말하기 은행의 소재 목록**(§20 `topics`)을 쓴다. 은행이 없으면 "소재 없음"만 있다.
+4. 🔊는 탭할 때만(프리페치 없음). 문장에 쓰인 틀은 기존 틀 강조 규칙(`templateRunSpans`·`templateSpanSegments`)으로 칠한다.
+5. 한국어 단서 칸 `ko`를 둔다 — 나중 회차의 "오늘의 복습(한국어 메모 → 내 문장 떠올리기)" 연결 자리. **이번 회차는 복습 큐에 넘기지 않는다.**
+
+### 21-1. 저장 — 컬렉션 `toeicIsland` (문서 하나 = 섬 문장 하나)
+
+`ToeicIslandEntry = { id, part: "q5_7"|"q11", topicKey|null, topicNameKo|null(담을 때의 이름 사본), en(섬 문장), ko|null(한국어 단서), spokenEn|null(내가 말한 문장), question|null(모의고사 질문 사본), frameKey|null(틀 말하기 틀), origin, createdAt, updatedAt }`. 선택 칸은 전부 필수 nullable(Firestore `undefined` 거부 — `normalizeToeicIslandEntry`가 채운다, 렌더 가능 판정의 단일 정의처).
+
+**문서 id = 원본 키**(`islandDocId`):
+
+| 원본 `origin` | 문서 id |
+|---|---|
+| `{kind:"frame_drill", sessionId:"fd-…", index}` | `isl-fd-…-{index}` |
+| `{kind:"attempt", attemptId, q, fixIndex:null}` (개선 답변) | `isl-at-{attemptId}-q{q}-imp` |
+| `{kind:"attempt", attemptId, q, fixIndex:k}` (고친 문장) | `isl-at-{attemptId}-q{q}-fix{k}` |
+| `{kind:"manual", clientId}` (직접 쓰기 — 화면이 만든 키, 성공하면 새 키) | `isl-m-{clientId}` |
+
+형식이 틀린 원본(세션 접두어 없음·q 1~11 밖·`/` 등)은 null → 400. 담기는 파일 백엔드 `mutate` 안 확인+생성, Firestore `ref.create()`(ALREADY_EXISTS → 그 문서 `reused:true`). 편집은 `updateToeicIslandEntry(id, decide)` — 판정(`applyIslandPatch`)을 원자 단위(파일 `mutate` · Firestore `runTransaction`) 안에서 부른다. 삭제는 `deleteToeicIslandEntry` — **prod-guard `DestructiveOp` "deleteToeicIslandEntry"**(딸린 것 없음). 시드는 빈 배열, `mergeDbForSeed`는 mergeById.
+
+상한: 섬 문장 `TOEIC_ISLAND_EN_MAX` 1200자(Q11 개선 답변 하나가 통째로 들어간다 — **넘으면 담지 않는다**, 400 `too_long`), 한국어 단서 200자(넘으면 400), 내가 말한 문장 1500자·질문 600자(곁들이는 기록이라 **자른다**), 섬 전체 2000개(넘으면 409 `full`).
+
+### 21-2. 원본 → 담을 내용 (서버가 저장된 원본에서 만든다)
+
+클라이언트는 원본 키만 보낸다(직접 쓰기만 글자를 보낸다 — 그게 원본이다). 서버가 저장소에서 원본을 읽어 글자를 만든다:
+
+- **틀 말하기**(`buildIslandFromFrameDrill`) — 섬 문장 = 판정이 준 고친 문장 `fixedEn`, 없으면 모범 영어 `en` · 한국어 단서 = 한글 문장 `ko` · 내가 말한 문장 = 전사(`outcome:"spoken"`일 때만) · 틀 key · 소재 = 은행에서 그 틀의 `topicKey` → 없으면 판의 소재가 하나일 때 그것 → 없으면 null.
+- **모의고사**(`buildIslandFromAttempt`) — 응시 기록 + 모의고사(`buildToeicQuestionViews`로 문항 파트·질문). 유형은 `islandPartOfMockPart`(respond → Q5–7 · opinion → Q11, 그 밖은 422 `unsupported_part`). 개선 답변: 섬 문장 = `improvedAnswer`, 말한 문장 = 그 문항 전사. 고친 문장: 섬 문장 = `fixes[k].better`, 말한 문장 = `said`. 채점 전·없는 고칠 문장은 404 `source_not_found`. 한국어 단서는 사용자가 메모로 단다(없으면 null).
+- **소재 추천**(`suggestIslandTopic`, AI 없음) — 틀 말하기 틀(`frameEn`)과 공략 틀 은행 틀을 `templateRunSpans`(틀 강조와 같은 일치 규칙)로 찾는다. 공략 틀이 찾히면 `bankKey`로 이어진 틀 말하기 틀의 소재를 센다. 가장 많이 찾힌 소재, 같으면 문장에서 먼저 나온 소재. 요청이 `topicKey`를 안 보냈으면(undefined) 이 추천을 쓰고, null이면 "소재 없음"이다.
+
+### 21-3. 라우트 (AI·키 검사 없음 — 키가 없어도 담긴다)
+
+| 라우트 | 본문 | 응답 |
+|---|---|---|
+| `POST /api/toeic/island` | `{origin, topicKey?, ko?, part?, en?}` | 200 `{ok, entry, reused}` · 400 `invalid_input`·`too_long` · 404 `source_not_found` · 422 `unsupported_part` · 409 `full` · 500 `save_failed` |
+| `PATCH /api/toeic/island/[id]` | `{en?, ko?, topicKey?, part?}` (하나 이상) | 200 `{ok, entry}` · 400 `invalid_input`·`too_long` · 404 `not_found` · 500 `save_failed` |
+| `DELETE /api/toeic/island/[id]` | — | 200 `{ok}` · 400 `invalid_input`(id 형식) · 404 `not_found` · 403 `prod_guard` · 500 `delete_failed` |
+
+로그는 종류·유형·길이만(문장 없음). 응답 shape 정의처는 계약 파일이다.
+
+### 21-4. 화면
+
+- **틀 말하기 결과**(`/toeic/guides/[part]/frame-drill/[id]`) — 문항마다 "🏝️ 내 섬에 담기" 한 번 탭(소재·단서를 원본이 안다). 이미 담긴 문항은 "🏝️ 섬에 담았어요 ✓ · 섬 보기".
+- **모의고사 결과**(`/toeic/attempts/[id]`) — Q5–7·Q11 문항의 개선 답변 상자와 고칠 문장마다 버튼. 탭하면 패널: 소재 칩(추천 소재가 켜져 있고 "· 추천"이 붙는다 · "소재 없음") + 한 줄 한국어 메모 → [🏝️ 담기]. 칩·추천·이미 담긴 id는 서버 컴포넌트가 만들어 넘긴다(`ToeicAttemptIslandData`). 인쇄에서는 뺀다(`print-hide`).
+- **섬 화면**(`/toeic/island?part=q5_7|q11`) — 토익 홈 다섯째 카드 "🏝️ 나만의 답변 섬"과 틀 말하기 탭 머리 링크로 들어온다. 유형 탭 → 소재별 묶음(`groupIslandByTopic` — 은행 소재 순서, 은행에 없는 소재는 이름 사본으로 그 뒤, "소재 없음"은 끝, 묶음 안은 최근 순). 문장마다 틀 강조·🔊(탭할 때만)·💬 한국어 단서·내가 말한 문장(접힘)·질문(접힘)·어디서 담았나·✏️ 고치기(문장·메모·소재)·🗑 지우기(확인 한 번). 위에 ✍️ 직접 쓰기(영어 문장 + 한국어 메모 + 소재 칩). 표현 도우미는 막지 않는다(시험 화면이 아니다).
+
+### 21-5. eval (`scripts/eval-toeic-island.ts` — `eval-toeic.ts`가 `runToeicIslandChecks()`로 부른다, 오프라인 44항목)
+
+순수(원본 키 멱등·형식 거부·두 원본 → 담을 내용·유형 대응·자르기/거부 상한·소재 추천·강조 조각·정규화·소재 고르기·편집 판정·묶음 순서) · 파일 백엔드(자식 프로세스·임시 cwd — 같은 원본 동시 두 번 = 하나, 편집 원자 단위, 삭제, 키 없는 옛 db.json) · 배선(AI·키 검사 없음, 원본은 저장소에서, Firestore 삭제 prod-guard·담기 create·편집 runTransaction, 클라이언트 번들 경계, 🔊 프리페치 없음, lookbehind 없음). `eval:toeic` 1864 → 1908.
+
+### 21-6. 알려진 틈 · 다음 회차
+
+- 복습 큐 연결(`ko` → 내 문장 떠올리기)은 하지 않았다 — 공통 "오늘의 복습" 작업이 끝난 뒤 잇는다.
+- 모의고사 결과의 추천 소재는 서버가 화면을 그릴 때 계산한 값이다. 은행을 다시 가져온 뒤 화면을 새로 고치지 않고 담으면 옛 추천이 갈 수 있다(소재 칩은 사용자가 고친다).
+- 섬 문장 en을 고쳐도 `spokenEn`·`question`은 원본 사본 그대로다(편집 대상 아님).
+
+> 2026-10-03 — **오늘의 복습(간격 반복 + 힌트 사다리)**: 이 과목의 시험 본 항목(표현집 표현 `toeic-expr`·틀 은행 틀 `toeic-template`)이 1→3→7→14→30일 간격으로 다시 나온다. AI 호출이 없어 이 하네스의 호출·spec-sync와 무관하다 — 규칙·출처·저장·화면은 `docs/SPEC.md` §23(엔진 `lib/review-schedule.ts`, 어댑터 `lib/review-sources.ts`, eval `npm run eval:review`).

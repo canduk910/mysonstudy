@@ -1,0 +1,448 @@
+/*
+ * vocab-speak-quiz-runner.module.css — 그림 보고 말하기(은우 단어장) 레이아웃.
+ * 색·반경은 전부 globals 토큰(하드코딩 색 0) — 다크 모드는 토큰이 뒤집는다. 아이와 부모가 함께 보는 화면이라 큼직하게.
+ */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding-block: 0.5rem;
+}
+
+/* ── 시작 ─────────────────────────────────────────────── */
+.intro {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  padding: 2rem 1.25rem;
+}
+
+.introEmoji {
+  margin: 0;
+  font-size: 3rem;
+  line-height: 1;
+}
+
+.introActions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  width: 100%;
+  max-width: 22rem;
+  margin-top: 0.5rem;
+}
+
+.bigBtn {
+  min-height: 56px;
+  font-size: 1.125rem;
+}
+
+.footer {
+  display: flex;
+  justify-content: center;
+}
+
+/* ── 진행 ─────────────────────────────────────────────── */
+.topRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.counter {
+  flex: none;
+  font-weight: 700;
+  color: var(--accent-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.progressTrack {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+
+/* ── 그림 + 정의 ─────────────────────────────────────── */
+.card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.875rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  padding: 1.5rem 1.25rem;
+}
+
+.emoji {
+  margin: 0;
+  font-size: 6rem;
+  line-height: 1.05;
+}
+
+@media (min-width: 768px) {
+  .emoji {
+    font-size: 8rem;
+  }
+}
+
+.defRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  width: 100%;
+}
+
+.def {
+  flex: 1;
+  margin: 0;
+  font-size: 1.25rem;
+  line-height: 1.5;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.speaker {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  font-size: 1.25rem;
+  cursor: pointer;
+}
+
+.speaker:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ── 도움 ─────────────────────────────────────────────── */
+.hint {
+  width: 100%;
+  text-align: center;
+}
+
+.firstLetter {
+  margin: 0;
+  font-size: 1.25rem;
+  color: var(--ink-2);
+}
+
+.firstLetter b {
+  font-size: 2rem;
+  color: var(--accent-ink);
+}
+
+.cells {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.375rem;
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--accent-ink);
+}
+
+.cell {
+  min-width: 1.5em;
+  text-align: center;
+  border-bottom: 3px solid var(--accent);
+}
+
+.cellGap {
+  min-width: 0.6em;
+  text-align: center;
+}
+
+/* ── 정답 ─────────────────────────────────────────────── */
+.answer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-box);
+  background: var(--surface-2);
+}
+
+.answerGood {
+  background: var(--accent-soft);
+}
+
+.answerWord {
+  margin: 0;
+  font-size: 2.25rem;
+  font-weight: 800;
+  color: var(--accent-ink);
+  overflow-wrap: anywhere;
+}
+
+/* ── 안내 ─────────────────────────────────────────────── */
+.feedback {
+  margin: 0;
+  padding: 0.875rem 1.125rem;
+  border-radius: var(--radius-box);
+  border: 1px solid var(--line);
+  font-size: 1.125rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.feedbackGood {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.feedbackSoft {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.note {
+  margin: 0;
+  text-align: center;
+  font-size: 1.0625rem;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+/* ── 조작 ─────────────────────────────────────────────── */
+.controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.micBtn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  width: 100%;
+  max-width: 22rem;
+  min-height: 112px;
+  padding: 1rem;
+  border-radius: var(--radius-box);
+  border: 2px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 1.0625rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.micBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.micOn {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+  animation: kidSpeakPulse 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .micOn {
+    animation: none;
+  }
+}
+
+@keyframes kidSpeakPulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.03);
+  }
+}
+
+.micIcon {
+  font-size: 2.5rem;
+  line-height: 1;
+}
+
+.sideActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.smallBtn {
+  font-size: 0.875rem;
+}
+
+.selfJudge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.selfButtons {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 26rem;
+}
+
+.selfBtn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  min-height: 84px;
+  padding: 0.625rem 0.25rem;
+  border-radius: var(--radius-box);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 0.9375rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.selfBtn span {
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.actions > :global(.u-btn):first-child {
+  flex: 1;
+}
+
+/* ── 결과 ─────────────────────────────────────────────── */
+.results {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  padding: 1.75rem 1.25rem;
+}
+
+.scoreBig {
+  margin: 0;
+  font-size: 3rem;
+  font-weight: 800;
+  color: var(--accent-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.scoreSlash {
+  color: var(--ink-3);
+  font-weight: 400;
+}
+
+.resultList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.resultRow {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-chip);
+  border: 1px solid var(--line);
+  text-align: left;
+}
+
+.resultGood {
+  background: var(--accent-soft);
+}
+
+.resultMiss {
+  background: var(--surface-2);
+}
+
+.resultEmoji {
+  flex: none;
+  width: 2rem;
+  font-size: 1.5rem;
+  text-align: center;
+}
+
+.resultWord {
+  flex: 1;
+  min-width: 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.resultMark {
+  flex: none;
+  font-size: 0.875rem;
+  color: var(--ink-2);
+}
+
+.saveMsg {
+  margin: 0;
+  font-size: 0.9375rem;
+  color: var(--ink-2);
+}
+
+.saveMsgError {
+  color: var(--danger);
+}
+
+.retryBtn {
+  margin-left: 0.5rem;
+  border: none;
+  background: none;
+  color: var(--accent-ink);
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.resultActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}

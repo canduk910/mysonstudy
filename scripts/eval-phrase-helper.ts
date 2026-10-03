@@ -783,6 +783,7 @@ const RUNNER_COMPONENTS: readonly string[] = [
   "components/ja-quiz-runner.tsx",
   "components/ja-kanji-quiz-runner.tsx",
   "components/vocab-quiz-view.tsx",
+  "components/vocab-speak-quiz-runner.tsx",
   "components/talk-call-overlay.tsx",
 ];
 
@@ -849,6 +850,17 @@ async function runAppChecks(): Promise<CheckResult[]> {
     ["/japanese/kanji/quiz", true],
     ["/english/vocab/v1/quiz", true],
     ["/english/vocab/v1/quiz?mode=wrong", true],
+    ["/english/vocab/v1/speak", true],
+    ["/english/vocab/v1/speak?mode=wrong", true],
+    ["/english/vocab/v1/speaker", false],
+    // 📅 오늘의 복습 러너(SPEC §23 — 가린 채 떠올리기 중에는 도우미가 답을 알려 주면 안 된다)
+    ["/english/review", true],
+    ["/japanese/review", true],
+    ["/toeic/review", true],
+    ["/toeic/review/", true],
+    ["/english/review?x=1", true],
+    ["/english/reviews", false],
+    ["/toeic/review/x", false],
     ["/toeic/mocks/m1", false],
     ["/toeic/attempts/a1", false],
     ["/toeic/sets/s1", false],

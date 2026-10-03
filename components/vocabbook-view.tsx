@@ -319,6 +319,13 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz 
     </button>
   );
 
+  // 그림 보고 말하기(2026-10-03, SPEC §15-5) — 보기 5개가 필요 없어 영영 뜻이 하나라도 있으면 열린다.
+  const speakButton = hasAnyDefinition ? (
+    <Link href={`/english/vocab/${id}/speak`} className={`u-btn u-btn-secondary ${s.modeBtn}`}>
+      <span aria-hidden>🎤</span> 그림 보고 말하기
+    </Link>
+  ) : null;
+
   // 시험 기록 — 시험 보기 옆. **canQuiz 게이트와 무관하게 항상 활성**(기록 보기는 정의 유무와 무관하다).
   const historyButton = (
     <Link href={`/english/vocab/${id}/history`} className={`u-btn u-btn-secondary ${s.modeBtn}`}>
@@ -359,6 +366,7 @@ export default function VocabbookView({ id, entries, titleKo, dayLabel, canQuiz 
         <div className={s.toolbar}>
           {modeToggle}
           {quizButton}
+          {speakButton}
           {historyButton}
           {enrichButton}
           {/* 읽어주기 속도 — 전역 하나(lib/speech.ts). 단어·예문 낭독과 시험 자동낭독에 함께 적용된다. */}

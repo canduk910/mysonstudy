@@ -990,3 +990,5 @@ interface JaKanjiRecord {
 ## 14. 표현 도우미 — 한국어 → 가장 회화적인 일본어 표현 + 읽기 + 예문 (2026-10-03)
 
 아빠의 일본어 화면의 표현 도우미는 과목 공통 기능의 `japanese` 모드다 — 프롬프트·JSON Schema·zod·모델(`OPENAI_PHRASE_HELPER_MODEL`, 기본 `gpt-6-luna`)·eval(`npm run eval:phrase`)의 단일 정의처는 **`docs/harness/phrase-helper.md`**다(제품 흐름 SPEC §22). 읽기는 §5 후리가나 토큰이 아니라 **문자열 하나**(한자·숫자만 히라가나로, 가타카나는 그대로 — 근거는 phrase-helper.md §5-2 끝)라 이 과목의 토큰 규약·호출 A~D·spec-sync 대상은 바뀌지 않았다. 단어 시험·한자 시험 중에는 열 수 없다(phrase-helper.md §9).
+
+> 2026-10-03 — **오늘의 복습(간격 반복 + 힌트 사다리)**: 이 과목의 시험 본 항목(단어 `ja-word`·한자 `ja-kanji`)이 1→3→7→14→30일 간격으로 다시 나온다. AI 호출이 없어 이 하네스의 호출·spec-sync와 무관하다 — 규칙·출처·저장·화면은 `docs/SPEC.md` §23(엔진 `lib/review-schedule.ts`, 어댑터 `lib/review-sources.ts`, eval `npm run eval:review`).

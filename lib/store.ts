@@ -167,6 +167,11 @@ import {
   type FrameDrillSupplyStart,
   type ToeicFrameDrillSessionRecord,
 } from "./toeic-frame-drill-record";
+import { islandEntryData, normalizeToeicIslandEntry, sortIslandEntries, type ToeicIslandEntry } from "./toeic-island";
+import { decideReview, normalizeReviewSchedule, type DecideReviewInput, type DecideReviewResult, type ReviewArea, type ReviewScheduleRecord } from "./review-schedule";
+
+/** 오늘의 복습(SPEC §23) — 일정 레코드 타입의 단일 정의처는 순수 엔진 lib/review-schedule.ts(store → 엔진 한 방향) */
+export type { DecideReviewInput, DecideReviewResult, ReviewArea, ReviewScheduleRecord };
 
 export type { ClosedCycleStatus, FailedAt, WorkoutCycleRecord, WorkoutEvent, WorkoutRm };
 
@@ -1457,6 +1462,29 @@ export interface StudyStore {
   startToeicFrameDrillSupply(id: string, nowMs: number, nowIso: string): Promise<{ start: FrameDrillSupplyStart; bank: ToeicFrameDrillBank | null } | null>;
   /** 보충 끝 — **최신 은행 위에** 합치기 + 표시 added(실패면 out=null → failed). 원자 단위. 없는 id면 null */
   finishToeicFrameDrillSupply(id: string, out: readonly ToeicFrameDrillSupplyOut[] | null, failReason: string | null, nowIso: string): Promise<FrameDrillSupplyFinish | null>;
+
+  // ---- 🏝️ 나만의 답변 섬 — 컬렉션 `toeicIsland` (docs/harness/toeic.md §21) ----
+  // 문서 id = 원본 키(lib/toeic-island islandDocId). 정규화·판정은 lib/toeic-island의 순수 함수 — 두 백엔드가 같은 함수를 부른다.
+
+  /** 전체 — 최근에 담은 것이 위(sortIslandEntries). 깨진 문서는 뺀다 */
+  listToeicIslandEntries(): Promise<ToeicIslandEntry[]>;
+  getToeicIslandEntry(id: string): Promise<ToeicIslandEntry | null>;
+  /** 담기 — 이미 같은 id가 있으면 쓰지 않고 그 항목(reused:true). 확인과 생성이 한 원자 단위. 생성이라 prod-guard 무관 */
+  /** max를 주면 상한 검사도 같은 원자 단위 안에서(이미 있으면 reused — 상한과 무관, 새로 만들 자리가 없으면 full:true·저장 0) */
+  createToeicIslandEntry(entry: ToeicIslandEntry, max?: number): Promise<{ record: ToeicIslandEntry; reused: boolean; full: boolean }>;
+  /** 편집 — 지금 문서를 읽어 decide(있는 항목)를 원자 단위 안에서 부르고 결과를 쓴다. decide가 null을 주면 쓰지 않는다. 없는 id면 null */
+  updateToeicIslandEntry<R>(id: string, decide: (cur: ToeicIslandEntry) => { entry: ToeicIslandEntry | null; result: R }): Promise<R | null>;
+  /** 삭제 — 딸린 것 없음. **삭제라 prod-guard**(deleteToeicIslandEntry). 지웠으면 true, 없으면 false */
+  deleteToeicIslandEntry(id: string): Promise<boolean>;
+
+  // ---- 📅 오늘의 복습(간격 반복) — 컬렉션 `reviewSchedules` (SPEC §23, 과목 공통) ----
+  /** 일정 전체(area를 주면 그 영역만). 깨진 문서는 뺀다(정규화 — 고아 일정은 큐가 무시한다) */
+  listReviewSchedules(area?: ReviewArea): Promise<ReviewScheduleRecord[]>;
+  /**
+   * 복습 결과 하나를 적용한다 — 판정(decideReview)과 쓰기가 한 원자 단위(파일 mutate·Firestore 트랜잭션). 같은 날 같은 항목은
+   * `already_today`(아무것도 쓰지 않는다). 문서 id = reviewDocId(area, itemKey). 삭제가 아니라 prod-guard 대상이 아니다.
+   */
+  applyReviewOutcome(input: DecideReviewInput): Promise<DecideReviewResult>;
 }
 
 /** 가져오기 결과 — ok면 병합 결과(은행 포함), too_large면 아무것도 쓰지 않았다 */
@@ -1503,6 +1531,10 @@ export interface DbShape {
   toeicFrameBank: ToeicFrameBankDoc[];
   /** 소재별 틀 말하기 한 판 */
   toeicFrameDrills: ToeicFrameDrillSessionRecord[];
+  /** 🏝️ 나만의 답변 섬(toeic.md §21) — 이 키가 없던 db.json은 빈 배열 */
+  toeicIsland: ToeicIslandEntry[];
+  /** 📅 오늘의 복습 일정(SPEC §23) — 이 키가 없던 db.json은 빈 배열 */
+  reviewSchedules: ReviewScheduleRecord[];
 }
 
 /** 파일 백엔드의 은행·통계 문서(모양이 달라 원본으로 두고 id로 골라 정규화한다) */
@@ -1517,6 +1549,8 @@ function emptyDb(): DbShape {
     toeicSets: [], toeicQuizzes: [], toeicMocks: [], toeicImages: [], toeicAttempts: [],
     talkSessions: [], talkImages: [],
     toeicFrameBank: [], toeicFrameDrills: [],
+    toeicIsland: [],
+    reviewSchedules: [],
   };
 }
 
@@ -1605,6 +1639,12 @@ async function readDb(): Promise<DbShape> {
       toeicFrameDrills: (parsed.toeicFrameDrills ?? [])
         .map((d) => normalizeToeicFrameDrillSession(typeof (d as { id?: unknown })?.id === "string" ? (d as { id: string }).id : "", d))
         .filter((d): d is ToeicFrameDrillSessionRecord => d !== null && d.id !== ""),
+      // 🏝️ 답변 섬(§21) 이전 db.json엔 이 키가 없다 — 같은 하위호환. 깨진 항목은 정규화가 뺀다
+      toeicIsland: (parsed.toeicIsland ?? [])
+        .map((d) => normalizeToeicIslandEntry(typeof (d as { id?: unknown })?.id === "string" ? (d as { id: string }).id : "", d))
+        .filter((d): d is ToeicIslandEntry => d !== null),
+      // 📅 오늘의 복습(§23) 이전 db.json엔 이 키가 없다 — 같은 하위호환. 깨진 일정은 정규화가 뺀다(그 항목은 처음 들어오는 항목으로 다시 계산)
+      reviewSchedules: (parsed.reviewSchedules ?? []).map((d) => normalizeReviewSchedule(d)).filter((d): d is ReviewScheduleRecord => d !== null),
     };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyDb();
@@ -3208,6 +3248,70 @@ class JsonFileStore implements BookCardStore {
       return fin;
     });
   }
+
+  // ---- 🏝️ 나만의 답변 섬 (toeic.md §21) — 판정은 lib/toeic-island의 순수 함수, 쓰기는 mutate 안에서 ----
+
+  // ---- 📅 오늘의 복습 (SPEC §23) — 판정은 lib/review-schedule의 순수 함수, 쓰기는 mutate 안에서 ----
+
+  async listReviewSchedules(area?: ReviewArea): Promise<ReviewScheduleRecord[]> {
+    const db = await readDb();
+    return area ? db.reviewSchedules.filter((r) => r.area === area) : db.reviewSchedules.slice();
+  }
+
+  async applyReviewOutcome(input: DecideReviewInput): Promise<DecideReviewResult> {
+    // 판정과 쓰기가 한 mutate(큐 직렬화) — 두 탭·연타가 같은 항목을 같은 날 두 번 적용하지 못한다(뒤 요청은 already_today)
+    return this.mutate((db) => {
+      const i = db.reviewSchedules.findIndex((r) => r.itemKey === input.itemKey && r.area === input.area);
+      const decision = decideReview(i >= 0 ? db.reviewSchedules[i] : null, input);
+      if (decision.kind === "applied") {
+        if (i >= 0) db.reviewSchedules[i] = decision.record;
+        else db.reviewSchedules.push(decision.record);
+      }
+      return decision;
+    });
+  }
+
+  async listToeicIslandEntries(): Promise<ToeicIslandEntry[]> {
+    const db = await readDb();
+    return sortIslandEntries(db.toeicIsland);
+  }
+
+  async getToeicIslandEntry(id: string): Promise<ToeicIslandEntry | null> {
+    const db = await readDb();
+    return db.toeicIsland.find((d) => d.id === id) ?? null;
+  }
+
+  async createToeicIslandEntry(entry: ToeicIslandEntry, max?: number): Promise<{ record: ToeicIslandEntry; reused: boolean; full: boolean }> {
+    // 확인·상한·생성이 한 mutate(큐 직렬화) — 같은 원본 키로 두 번 와도 한 번만 생기고, 동시 담기가 상한을 넘지 못한다
+    return this.mutate((db) => {
+      const existing = db.toeicIsland.find((d) => d.id === entry.id);
+      if (existing) return { record: existing, reused: true, full: false };
+      const record: ToeicIslandEntry = { id: entry.id, ...islandEntryData(entry) };
+      if (max !== undefined && db.toeicIsland.length >= max) return { record, reused: false, full: true };
+      db.toeicIsland.push(record);
+      return { record, reused: false, full: false };
+    });
+  }
+
+  async updateToeicIslandEntry<R>(id: string, decide: (cur: ToeicIslandEntry) => { entry: ToeicIslandEntry | null; result: R }): Promise<R | null> {
+    return this.mutate((db) => {
+      const i = db.toeicIsland.findIndex((d) => d.id === id);
+      if (i < 0) return null;
+      const { entry, result } = decide(db.toeicIsland[i]);
+      if (entry) db.toeicIsland[i] = { id, ...islandEntryData(entry) };
+      return result;
+    });
+  }
+
+  async deleteToeicIslandEntry(id: string): Promise<boolean> {
+    // 파일 백엔드는 로컬 데이터라 prod-guard 무관(다른 삭제와 같은 규약 — 가드는 Firestore 쪽)
+    return this.mutate((db) => {
+      const i = db.toeicIsland.findIndex((d) => d.id === id);
+      if (i < 0) return false;
+      db.toeicIsland.splice(i, 1);
+      return true;
+    });
+  }
 }
 
 /** 파일 백엔드 — 은행·통계 문서 하나를 id로 바꿔 끼운다(없으면 더한다) */
@@ -3356,5 +3460,9 @@ export async function mergeDbForSeed(seed: DbShape): Promise<void> {
     // 소재별 틀 말하기 — 같은 이유로 반드시 mergeById(시드가 은행·통계·연습 기록을 지우지 않게). 교재 유래라 시드는 늘 빈 배열이다.
     toeicFrameBank: mergeById(cur.toeicFrameBank, seed.toeicFrameBank),
     toeicFrameDrills: mergeById(cur.toeicFrameDrills, seed.toeicFrameDrills),
+    // 🏝️ 답변 섬 — 같은 이유로 반드시 mergeById(시드가 아빠가 담은 문장을 지우지 않게). 시드는 늘 빈 배열이다.
+    toeicIsland: mergeById(cur.toeicIsland, seed.toeicIsland),
+    // 📅 오늘의 복습 일정 — 같은 이유로 반드시 mergeById(시드가 복습 간격을 지우지 않게). 시드는 빈 배열이다.
+    reviewSchedules: mergeById(cur.reviewSchedules, seed.reviewSchedules),
   });
 }
