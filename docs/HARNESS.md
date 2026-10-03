@@ -24,6 +24,9 @@
 | **수학 (수학코치)** | [`docs/harness/math.md`](./harness/math.md) | `lib/ai/math/` | `scripts/eval-math.ts` | `npm run eval:math` |
 | **일본어 (아빠의 일본어)** | [`docs/harness/japanese.md`](./harness/japanese.md) | `lib/ai/japanese/` | `scripts/eval-japanese.ts` | `npm run eval:japanese` |
 | **토익스피킹 (아빠의 영어)** | [`docs/harness/toeic.md`](./harness/toeic.md) | `lib/ai/toeic/` | `scripts/eval-toeic.ts` | `npm run eval:toeic` |
+| **표현 도우미 (과목 공통 — 아빠의 영어·아빠의 일본어·은우 영어)** | [`docs/harness/phrase-helper.md`](./harness/phrase-helper.md) | `lib/ai/phrase-helper/` | `scripts/eval-phrase-helper.ts` | `npm run eval:phrase` |
+
+표현 도우미(2026-10-03)는 과목이 아니라 세 영역이 **호출 하나를 모드 셋**(`toeic`·`japanese`·`english-kid`)으로 나눠 쓰는 공통 기능이라 스펙·코드·eval을 과목 중립 한 곳에 둡니다 — 진입 함수는 `lib/ai/phrase-helper/calls.ts`(토익처럼 과목 폴더, `lib/ai/client.ts`에 넣지 않는다), 모델은 전용 env `OPENAI_PHRASE_HELPER_MODEL`(빈 값이면 `gpt-6-luna`). 과목 문서에는 포인터 한 줄만 있습니다.
 
 앱 전체 명세는 [`docs/SPEC.md`](./SPEC.md), 디자인 원본은 `design/`에 있습니다.
 
@@ -31,6 +34,7 @@
 - **LLM을 쓰지 않는 기능** — **아빠의 운동**(러시안 파이터 루틴, SPEC §19)은 규칙이 전부 결정적이라 순수 함수 엔진(`lib/workout.ts`)이 하고, 회귀 가드는 오프라인 `npm run eval:workout`입니다. **학습 스트릭**(SPEC §17, `eval:streak`)도 AI가 없습니다. 토익스피킹 안에서도 표현 시험 출제·모의고사 형식표·Q1–2 지문 대조·추정 총점은 LLM이 아닌 순수 함수입니다(`docs/harness/toeic.md` §5-4·§5-5·§6). **유형별 공략**(2026-09-27, `toeic.md` §12)도 새 AI 호출이 없습니다 — 공략·틀 은행은 파일로 가져오고(AI 0), 따라 말하기 대본·틀 테스트의 받아쓰기 비교(전사문 ↔ 틀 고정 부분)·전사문 속 틀 찾기는 순수 함수(`lib/toeic-template.ts`)이며, 한 문제 연습은 호출 C를 입력만 바꿔 부르고 템플릿 테스트는 관문 T만 씁니다(기대 문장을 보내지 않는 규칙 그대로).
 - **AI를 쓰지만 Structured Outputs 하네스 밖인 호출** — **클라우드 발음**(SPEC §16·§16-5, `lib/tts.ts`)은 OpenAI 유료 호출이지만 스키마 없는 오디오 호출이라 `callWithSchema()`·zod·재요청·토큰 로그를 거치지 않고, 키 규약(`OPENAI_API_KEY`, 없으면 501 → 기기 음성)만 공유합니다. 대화 해설 **낭독**(SPEC §18)은 일본어 해설 화면의 기능이고, 그 연속 재생 엔진(`speakQueue`)은 과목 공용이며 `eval:speech`가 잠급니다. 운동 세션의 음성 안내도 이 발음 경로를 거칩니다.
   토익스피킹의 **관문 P**(모의고사 Q3–4 사진 생성, `lib/toeic-image.ts`)와 **관문 T**(답변 음성 전사, `lib/toeic-transcribe.ts`)도 같은 부류입니다 — 이미지·오디오 바이트를 주고받는 호출이라 `callWithSchema()`·zod·재요청을 거치지 않고, 각자 **독립 OpenAI 클라이언트**를 쥐고(`lib/ai/client.ts`에 과목 분기를 넣지 않는다) 키 규약만 공유합니다(키가 없으면 네트워크 호출 없이 `no_api_key` → 라우트 501). 모델은 `OPENAI_IMAGE_MODEL`·`OPENAI_IMAGE_QUALITY`·`OPENAI_TRANSCRIBE_MODEL`(빈 값이면 기본값 — SPEC §11). 로그에는 모델·크기·ms 같은 숫자만 남기고 프롬프트·사진·전사문·오디오는 남기지 않습니다. 전사에는 기대 문장을 `prompt`로 넣지 않습니다(`docs/harness/toeic.md` §5-0).
+  표현 도우미 마이크 모드의 **관문 K**(한국어 음성 전사, `lib/phrase-helper-transcribe.ts`, 2026-10-03 — SPEC §22-2, `docs/harness/phrase-helper.md` §13)도 같은 부류입니다. 관문 T는 손대지 않고 모양만 따라 새로 썼습니다 — 같은 모델 env `OPENAI_TRANSCRIBE_MODEL`(관문 T의 해석 함수를 그대로 부른다), `language: "ko"` 고정, `prompt` 인자 없음(자유 입력이라 유도할 기대 문장이 없다), 20초 상한·SDK 재시도 0(사람이 기다리는 호출 — 실패는 🎤를 다시 누른다), `req.signal`로 끊으면 상류도 멈춤(499). 녹음·전사문은 저장하지 않고, 화면은 돌려받은 글을 입력 칸에 **채우기만** 합니다(자동 전송 없음 — 사람이 고친 뒤 보낸다).
   **사진 생성 공용 코어**(`lib/image-gen.ts`, 2026-09-26): 관문 P의 모델 env 해석·키 규약·JPEG data URL 조립·크기 상한을 넘으면 다음 압축으로 1회 다시 만들기·로그 모양을 코어로 옮겼고, 토익 사진(`lib/toeic-image.ts` — medium·1536×1024·압축 70→50)과 은우 자유대화 주제 일러스트(`lib/talk-image.ts` — medium 고정·1024×1024·60→40)가 **자기 설정만 인자로 넘겨** 같은 코어를 씁니다. 코어는 과목을 모릅니다(`lib/ai/client.ts`에 과목 분기를 두지 않는 것과 같은 원칙). 토익 동작은 불변입니다(`eval:toeic`, QA가 HEAD 원본과 같은 스텁에서 요청·결과 동일을 확인).
   은우 자유대화의 **관문 R**(OpenAI Realtime — 음성 ↔ 음성 실시간 대화, `docs/harness/english.md` §12, SPEC §21)도 하네스 밖입니다. 브라우저가 OpenAI와 **WebRTC**로 직접 음성을 주고받고, 앱 서버는 연결(SDP 교환 — 통합 인터페이스 `POST /v1/realtime/calls`, `lib/talk-gateway.ts`)과 끊기(hangup)만 표준 키로 중계합니다 — 브라우저에는 키가 가지 않습니다. 모델 출력이 JSON이 아니라 음성·전사 이벤트라 `callWithSchema()`·zod·재요청·토큰 로그를 거치지 않고 **키 규약만 공유**합니다(키가 없으면 연결 라우트가 OpenAI를 부르지 않고 501). 대신 정확성 장치가 다른 자리에 있습니다: 선생님 지시문 원문은 spec-sync(`block-exact`)로, 세션 설정은 SDK GA 타입으로 tsc가, 이벤트 → 스크립트는 순수 리듀서(`lib/talk-transcript.ts`)가 잡습니다. 대화 중 화면 카드(도움·그림 카드)는 2026-09-27부터 음성 모델이 아니라 하네스 **안**의 호출 J(`callWithSchema` — 선생님 줄마다, `docs/harness/english.md` §12-7)가 만들고, 순수 후처리(`lib/talk-cards.ts` `sanitizeTalkScreenCards` — 모델 출력을 믿지 않고 잘못된 항목·선생님 말에 없는 그림 카드를 버린다)가 거릅니다. 그 전에는 선생님이 도구 호출로 카드를 보냈는데, 도구 응답 뒤 앱의 이어 말하기가 새 응답을 만들어 선생님이 두 명처럼 답해 세션에서 도구를 뺐습니다. 모델은 `OPENAI_REALTIME_MODEL`(기본 `gpt-realtime-2.1`)·`OPENAI_REALTIME_VOICE`(`marin`)·`OPENAI_REALTIME_TRANSCRIBE_MODEL`(`gpt-4o-mini-transcribe`), 빈 값이면 기본값(SPEC §11). 서버 로그에는 SDP·지시문·전사를 남기지 않고(상태·ms만), 은우 발화 전사는 언어를 영어로 고정하고(`language: "en"` — 자동 감지가 아이 영어를 다른 언어로 적었다, 2026-09-27) `prompt`·`keywords`는 주지 않습니다(관문 T와 같은 원칙 — 하지 않은 말이 맞게 적히는 위험). 대화가 끝난 뒤의 문장 설명(호출 I)과 대화 중 화면 카드(호출 J — 모델은 `OPENAI_TALK_CARDS_MODEL`, 빈 값이면 `gpt-6-luna`)는 하네스 **안**(`callWithSchema`)입니다.
 
@@ -53,7 +57,7 @@
 - **호출마다 `{ call, model, inputTokens, outputTokens, ms }`를 서버 로그로 남긴다** (비용 추적).
   성공·실패와 무관하게 남기고, 재요청이 발생하면 두 호출의 토큰을 합산해 기록한다.
 - **모델 ID는 env `OPENAI_MODEL`, 키는 env `OPENAI_API_KEY`. 하드코딩 금지.**
-  기본값(env가 비었을 때)은 코드 상수 한 곳 — 2026-10-02 사용자 결정으로 텍스트 호출은 **토익 출제·채점만 `gpt-6.1-sol`**(env `OPENAI_TOEIC_MODEL`, `lib/ai/toeic/model.ts` `resolveToeicModel`), **나머지는 모두 `gpt-6-luna`**(`OPENAI_MODEL` `DEFAULT_OPENAI_MODEL`, 화면 카드 `OPENAI_TALK_CARDS_MODEL`, 수학 검산 `OPENAI_MODEL_VERIFY`는 비면 메인)다. 호출별로 다른 모델은 `callWithSchema`의 `model` 인자로 호출부가 넘긴다(§2).
+  기본값(env가 비었을 때)은 코드 상수 한 곳 — 2026-10-02 사용자 결정으로 텍스트 호출은 **토익 출제·채점만 `gpt-6.1-sol`**(env `OPENAI_TOEIC_MODEL`, `lib/ai/toeic/model.ts` `resolveToeicModel`), **나머지는 모두 `gpt-6-luna`**(`OPENAI_MODEL` `DEFAULT_OPENAI_MODEL`, 화면 카드 `OPENAI_TALK_CARDS_MODEL`, 표현 도우미 `OPENAI_PHRASE_HELPER_MODEL` — 2026-10-03, 수학 검산 `OPENAI_MODEL_VERIFY`는 비면 메인)다. 호출별로 다른 모델은 `callWithSchema`의 `model` 인자로 호출부가 넘긴다(§2).
   temperature: 이름으로 추론 계열이라 알려진 모델(`gpt-5.6`+·`gpt-6.x`의 `-luna`·`-sol`·`-terra` — `isKnownTemperatureRejectingModel`)은 첫 요청부터 temperature를 싣지 않는다. 그 밖의 모델은 싣고, 400으로 거부되면 빼고 1회 재시도한 뒤 그 모델을 프로세스 안에서 기억한다. 그런 모델에는 이 문서와 과목 스펙의 temperature 다이얼이 적용되지 않는다.
 - **배열 개수 제약은 JSON Schema가 아니라 프롬프트 + zod에서 강제한다.**
   strict 모드의 `minItems`/`maxItems` 지원 여부가 모델·버전마다 달라서, 스키마에 넣으면
@@ -88,21 +92,27 @@ lib/ai/english/           # 영어 전용 프롬프트·스키마
 lib/ai/math/              # 수학 전용 프롬프트·스키마·검산 파이프라인
 lib/ai/japanese/          # 일본어 전용 프롬프트·스키마
 lib/ai/toeic/             # 토익스피킹 전용 프롬프트·스키마·후처리(호출 A~D) + 유형별 공략 가져오기 판정(guide-import.ts)
+lib/ai/phrase-helper/     # 표현 도우미(과목 공통 — 모드 셋) 프롬프트·스키마·모델·진입 함수(calls.ts, 서버 전용)
+lib/phrase-helper.ts      # 표현 도우미 입력 정리·로컬 판정·결과 타입(클라이언트 안전, 런타임 import 0)
 lib/image-gen.ts          # 사진 생성 공용 코어(관문 P·자유대화 일러스트 공유) — 하네스 밖(서버 전용)
 lib/toeic-image.ts        # 토익 관문 P(사진 생성) — 공용 코어에 토익 설정만 넘긴다(서버 전용)
 lib/talk-image.ts         # 자유대화 주제 일러스트 — 공용 코어에 대화 설정만 넘긴다(서버 전용)
 lib/toeic-transcribe.ts   # 토익 관문 T(음성 전사) — 하네스 밖(서버 전용)
+lib/phrase-helper-transcribe.ts # 표현 도우미 관문 K(한국어 음성 전사 — 마이크 모드) — 하네스 밖(서버 전용)
+lib/phrase-helper-scope.ts # 표현 도우미 경로→모드·시험 화면 판정·블록 카운터(클라이언트 안전, 런타임 import 0)
 lib/talk-session-config.ts # 자유대화 관문 R 세션 설정·지시문 조립(서버 전용, 네트워크 없음)
 lib/talk-gateway.ts       # 자유대화 관문 R 네트워크(연결·hangup) — 하네스 밖(서버 전용)
 scripts/eval-english.ts   # 영어 평가 하네스
 scripts/eval-math.ts      # 수학 평가 하네스
 scripts/eval-japanese.ts  # 일본어 평가 하네스
 scripts/eval-toeic.ts     # 토익스피킹 평가 하네스
+scripts/eval-phrase-helper.ts # 표현 도우미 평가 하네스(오프라인 + 게이트 EVAL_PHRASE=1)
 scripts/eval-toeic-guides*.ts # 토익 유형별 공략 eval 조각 넷(eval-toeic.ts가 불러 한 번에 돈다)
 docs/harness/english.md   # 영어 스펙 (단일 진실 원천)
 docs/harness/math.md      # 수학 스펙
 docs/harness/japanese.md  # 일본어 스펙
 docs/harness/toeic.md     # 토익스피킹 스펙
+docs/harness/phrase-helper.md # 표현 도우미 스펙(과목 공통)
 ```
 
 ## 4. 운영 규칙
@@ -117,6 +127,7 @@ docs/harness/toeic.md     # 토익스피킹 스펙
   **영어·수학 eval의 실호출 경로**는 실제 OpenAI 호출이 발생하므로 CI가 아니라 수동 실행이고, 비용 승인 없이 반복하지 않는다.
   오프라인 항목(`EVAL_OFFLINE_ONLY=1`)·일본어 eval(현재 오프라인 전용 — 실호출 게이트 `EVAL_JAPANESE`는 자리만)·
   `eval:speech`·`eval:workout`·`eval:streak`는 실호출이 없어 언제든 돌려도 된다.
+  **표현 도우미 eval(`eval:phrase`)도 기본이 오프라인**(무비용 — 입력 정리·로컬 판정·모드별 zod 반례·spec-sync 원문 4·JSON Schema 2 의미 동치)이고, 실호출은 `EVAL_PHRASE=1`일 때만 모드마다 지어낸 입력 1개(3회, `EVAL_PHRASE_MODE`로 하나만)다 — 동의 후 오케스트레이터가 실행한다.
   **토익스피킹 eval(`eval:toeic`)은 기본이 오프라인**(무비용 — zod 반례·후처리·시험 출제·형식표·Q1–2 대조·추정 총점·스트릭 트랙 분리·
   spec-sync 바이트 대조와 JSON Schema 8개 의미 동치)이라 언제든 돌려도 된다. 실호출은 **`EVAL_TOEIC=1`일 때만** 호출 A(사진 경로
   `EVAL_TOEIC_PHOTO`가 있을 때만)·B(표현 7개)·C(파트 하나, `EVAL_TOEIC_PART` 기본 opinion)·D(픽스처 전사문 하나)를 한 번씩 부르고,

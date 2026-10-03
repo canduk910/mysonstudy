@@ -51,6 +51,7 @@ import { planTalkSaveBody, talkSessionHref, type TalkSaveResponse, type TalkTopi
 import type { TalkCallController, TalkSnapshot } from "@/lib/talk-realtime";
 import { isVisibleTalkLine, toTalkTurns, type TalkLine } from "@/lib/talk-transcript";
 import { useToeicWakeLock } from "@/components/use-toeic-wake-lock";
+import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
 import s from "./talk.module.css";
 
 type SaveState =
@@ -137,6 +138,7 @@ function Bubble({ line, debug }: { line: TalkLine; debug: boolean }) {
 }
 
 export default function TalkCallOverlay({ controller, onClose }: { controller: TalkCallController; onClose: () => void }) {
+  usePhraseHelperBlock(); // 시험·응답 중에는 표현 도우미를 띄우지 않는다(SPEC §22-3)
   const snap = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const [now, setNow] = useState(() => Date.now());
   const [save, setSave] = useState<SaveState>({ phase: "idle" });

@@ -28,6 +28,7 @@ import {
   type JaVocabEntry,
 } from "@/lib/japanese-vocab-contract";
 import type { JaQuizSubmitResponse } from "@/lib/japanese-vocab-contract";
+import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
 import s from "./ja-quiz-runner.module.css";
 
 function speakJa(text: string) {
@@ -58,6 +59,7 @@ export default function JaQuizRunner({
   /** 오답복습 세션이면 문구를 "다시 풀기" 톤으로 */
   isReview: boolean;
 }) {
+  usePhraseHelperBlock(); // 시험·응답 중에는 표현 도우미를 띄우지 않는다(SPEC §22-3)
   const router = useRouter();
   const entryByWord = useRef(new Map(entries.map((e) => [e.word, e])));
   const [startedAt, setStartedAt] = useState("");

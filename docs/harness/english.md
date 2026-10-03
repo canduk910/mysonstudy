@@ -2215,3 +2215,7 @@ A bright, friendly children's picture-book illustration of {scene}. Simple shape
 - 비용: 선생님 줄마다 소형 텍스트 호출 1회(대화 1회 약 1센트 안팎). 대신 Realtime 세션의 도구 정의·호출 토큰이 사라진다.
 - eval(`eval:english`): spec-sync(`TALK_TURN_RULES`·`TALK_CARDS_SYSTEM_PROMPT`·`TALK_CARDS_USER_TEMPLATE` block, `talk_screen_cards` 의미 동치), 세션 설정에 도구 없음·지시문 = 교사 + 차례 규칙, 후처리 반례(근거 없는 그림 카드 null·이미 보인 카드 null·한글 섞인 대답 버림·s/es 허용), 출처 태깅(앱 response.create 뒤 created = 그 출처, 그 밖 reply), 철 지난 도움 버림, §12-6 이어 말하기 경로가 사라졌는지(정적 점검).
   구현(2026-09-27): 묶음은 "자유대화 호출J"(조립·zod·후처리·이모지 칸 목록·모델 env·신호·요청 옵션 조립)·"출처"·"카드 요청"(`buildTalkCardsRequest`)·"컨트롤러"(합성 전송·가상 시계 위의 진짜 컨트롤러 — 은우 한 번 대답에 앱 create 0, 선생님 줄마다 요청 1회, 은우 차례 가드, 마무리 은우 쪽 대기, 셈 = 보낸 요청)·"정적"(진입 함수 배선·컨트롤러에 도구 경로 없음·`response.create`는 한 곳에서 셋만)이다. 수치는 §12-5.
+
+## 13. 표현 도우미 — 한국어 → 쉬운 영어 + 예문 (은우, 2026-10-03)
+
+은우 영어 화면의 표현 도우미는 과목 공통 기능의 `english-kid` 모드다 — 프롬프트(1학년 눈높이·아이용 안전 규칙)·JSON Schema·zod·모델(`OPENAI_PHRASE_HELPER_MODEL`, 기본 `gpt-6-luna`)·eval(`npm run eval:phrase`)의 단일 정의처는 **`docs/harness/phrase-helper.md`**다(제품 흐름 SPEC §22). 이 과목의 호출 A~J·spec-sync 대상은 바뀌지 않았다. 단어장 시험 중에는 열 수 없다(phrase-helper.md §9).

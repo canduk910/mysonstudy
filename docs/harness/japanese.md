@@ -986,3 +986,7 @@ interface JaKanjiRecord {
 
 - 대본 생성 `buildCoachingScript`(`lib/ja-coaching-script.ts`, 순수 함수)가 §4-3 스키마의 필드를 섹션 순서대로 읽는다 — 스키마 필드가 바뀌면 이 함수와 `scripts/eval-speech.ts`를 함께 맞춘다.
 - 화면: §8 대화 상세·검토 화면의 해설 뷰(`components/ja-dialog-coaching-view.tsx`) 한 곳.
+
+## 14. 표현 도우미 — 한국어 → 가장 회화적인 일본어 표현 + 읽기 + 예문 (2026-10-03)
+
+아빠의 일본어 화면의 표현 도우미는 과목 공통 기능의 `japanese` 모드다 — 프롬프트·JSON Schema·zod·모델(`OPENAI_PHRASE_HELPER_MODEL`, 기본 `gpt-6-luna`)·eval(`npm run eval:phrase`)의 단일 정의처는 **`docs/harness/phrase-helper.md`**다(제품 흐름 SPEC §22). 읽기는 §5 후리가나 토큰이 아니라 **문자열 하나**(한자·숫자만 히라가나로, 가타카나는 그대로 — 근거는 phrase-helper.md §5-2 끝)라 이 과목의 토큰 규약·호출 A~D·spec-sync 대상은 바뀌지 않았다. 단어 시험·한자 시험 중에는 열 수 없다(phrase-helper.md §9).

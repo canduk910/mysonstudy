@@ -91,6 +91,7 @@ import {
   type ToeicTemplateTestStage,
   type ToeicTemplateVerdict,
 } from "@/lib/toeic-template-test-view";
+import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
 import s from "./toeic-template-test.module.css";
 
 /** 서버가 넘기는 문항 하나(필요한 칸만 — 다른 예문·다른 테스트 채움은 넘기지 않는다) */
@@ -150,6 +151,7 @@ export default function ToeicTemplateTest({
   retryHref: string;
   wrongRetryHref: string;
 }) {
+  usePhraseHelperBlock(); // 시험·응답 중에는 표현 도우미를 띄우지 않는다(SPEC §22-3)
   const total = questions.length;
   const keys = useMemo(() => questions.map((q) => q.key), [questions]);
 

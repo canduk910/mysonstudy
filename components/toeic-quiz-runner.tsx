@@ -35,6 +35,7 @@ import type {
   ToeicSpeakQuestion,
 } from "@/lib/toeic-quiz-contract";
 import { TOEIC_QUIZ_MODE_LABELS_KO, splitToeicItemsByMode, type ToeicAnsweredItem } from "@/lib/toeic-quiz";
+import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
 import s from "./toeic-quiz.module.css";
 
 /** 러너 피드백이 쓰는 표현 정보(서버가 entries에서 줄여 내린다) */
@@ -264,6 +265,7 @@ export function ToeicChoiceRunner({
   isReview: boolean;
   back: ToeicSetBackLink;
 }) {
+  usePhraseHelperBlock(); // 시험·응답 중에는 표현 도우미를 띄우지 않는다(SPEC §22-3)
   const [answers, setAnswers] = useState<(boolean | null)[]>(() => new Array(questions.length).fill(null));
   const [current, setCurrent] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
@@ -454,6 +456,7 @@ export function ToeicSpeakRunner({
   /** 교재 문항(source "quiz")의 출처 칩 — 표현집 "교재 QUIZ", 공략 "교재 문장" */
   quizSourceKo?: string;
 }) {
+  usePhraseHelperBlock(); // 시험·응답 중에는 표현 도우미를 띄우지 않는다(SPEC §22-3)
   const [answers, setAnswers] = useState<(boolean | null)[]>(() => new Array(questions.length).fill(null));
   const [current, setCurrent] = useState(0);
   const [revealed, setRevealed] = useState(false);

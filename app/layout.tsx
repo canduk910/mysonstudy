@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import PhraseHelperHost from "@/components/phrase-helper";
 import StreakHeadline from "@/components/streak-headline";
 import VersionWatch from "@/components/version-watch";
 import "./globals.css";
@@ -28,6 +29,9 @@ export default function RootLayout({
             VersionWatch는 여전히 **마지막 자식**이어야 하므로 그 앞에 두지 않는다. */}
         <StreakHeadline />
         {children}
+        {/* 표현 도우미(SPEC §22) — 경로가 정하는 영역(토익·일본어·은우 영어)에서만 버튼을 띄우고, 시험 화면에서는 아무것도 그리지 않는다.
+            fixed 요소라 흐름에 자리를 만들지 않는다 — VersionWatch(마지막 자식) 앞에 둔다. */}
+        <PhraseHelperHost />
         <VersionWatch />
       </body>
     </html>

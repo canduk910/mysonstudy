@@ -236,6 +236,7 @@ import { runToeicRecManageChecks } from "./eval-toeic-rec-manage";
 // 문항 단위 다시 풀기 + 마이크 유지 대책 F1~F3 + 고칠 문장 녹음 마이크 고정(docs/harness/toeic.md §15-14)
 import { runToeicRetakeChecks, runToeicRetakeLocalStoreChecks } from "./eval-toeic-retake";
 import { runToeicExamScreenChecks } from "./eval-toeic-exam-screen";
+import { runToeicFrameDrillChecks } from "./eval-toeic-frame-drill"; // 소재별 틀 말하기(§20 — 2026-10-03, 원문 6·JSON 2는 그 파일이 따로 대조)
 
 // .env.local / .env 로드 (없으면 무시). 이미 설정된 환경 변수가 우선한다(빈 값으로 미리 둔 키는 덮지 않는다).
 for (const envFile of [".env.local", ".env"]) {
@@ -2934,8 +2935,8 @@ function runTemplateFlowAiChecks(): CheckResult[] {
     // 모델(2026-10-02 사용자 결정): 출제·채점(C·D)만 resolveToeicModel(), 판독·발화 포인트(A·B)는 메인 resolveModel()
     const modelCalls = [...callsSrc.matchAll(/model: (resolve\w+)\(\)/g)].map((m) => m[1]);
     add(
-      "calls.ts 모델 배선: A extract·B points = resolveModel() · C mock·D feedback = resolveToeicModel()(OPENAI_TOEIC_MODEL)",
-      modelCalls.join(",") === "resolveModel,resolveModel,resolveToeicModel,resolveToeicModel" &&
+      "calls.ts 모델 배선: A extract·B points = resolveModel() · C mock·D feedback(+ §20 E frame_judge·F frame_supply) = resolveToeicModel()(OPENAI_TOEIC_MODEL)",
+      modelCalls.join(",") === "resolveModel,resolveModel,resolveToeicModel,resolveToeicModel,resolveToeicModel,resolveToeicModel" &&
         /export async function generateMockPart[\s\S]*?model: resolveToeicModel\(\)/.test(callsSrc) &&
         /export async function generateFeedback[\s\S]*?model: resolveToeicModel\(\)/.test(callsSrc) &&
         /export async function extractToeicPage[\s\S]*?model: resolveModel\(\)[\s\S]*?export async function generatePointsChunk[\s\S]*?model: resolveModel\(\)[\s\S]*?export async function generateMockPart/.test(callsSrc),
@@ -3112,7 +3113,7 @@ function runJsonSchemaSyncChecks(): CheckResult[] {
     const ok = deepEqual(specSchema, t.value);
     return { book, check: `${t.constName} ↔ ${t.label} 의미 동치`, pass: ok, detail: ok ? "의미 일치" : `스펙 ${t.label}과 코드 상수가 다름` };
   });
-  out.push({ book, check: "스펙의 JSON Schema 블록 수 = 8", pass: [...parsedByName.keys()].filter((k) => k.startsWith("toeic_")).length === 8, detail: [...parsedByName.keys()].join(",") });
+  out.push({ book, check: "스펙의 JSON Schema 블록 수 = 8", pass: [...parsedByName.keys()].filter((k) => k.startsWith("toeic_") && !k.startsWith("toeic_frame_")).length === 8, detail: [...parsedByName.keys()].join(",") });
   return out;
 }
 
@@ -3183,6 +3184,8 @@ async function runLiveChecks(): Promise<CheckResult[]> {
   } catch (e) {
     add("D 피드백(Q11 픽스처)", false, e instanceof Error ? e.message : String(e));
   }
+  // 소재별 틀 말하기 E 1 + F 1(§20-12) — EVAL_TOEIC_FRAME=1일 때만
+  if (process.env.EVAL_TOEIC_FRAME === "1") results.push(...(await (await import("./eval-toeic-frame-drill")).runFrameDrillLiveChecks()));
   return results;
 }
 
@@ -3298,6 +3301,7 @@ async function main(): Promise<void> {
   all.push(...(await runToeicRetakeLocalStoreChecks()));
   all.push(...runToeicExamScreenChecks());
   all.push(...(await import("./eval-toeic-print")).runToeicPrintChecks()); // 결과 화면 인쇄할 항목(§16-10)
+  all.push(...runToeicFrameDrillChecks());
   all.push(...runSpecSyncChecks());
   all.push(...runJsonSchemaSyncChecks());
 

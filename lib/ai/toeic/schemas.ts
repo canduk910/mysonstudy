@@ -1188,8 +1188,8 @@ export const TOEIC_MOCK_JSON_SCHEMAS: Record<ToeicMockPart, StrictJsonSchema> = 
 // zod 공통 판정 — 메시지에 값을 넣지 않는다(교재 원문이 로그·재요청에 새지 않게, 경로가 위치를 알려 준다)
 // ---------------------------------------------------------------------------
 
-type Path = (string | number)[];
-interface IssueSink {
+export type Path = (string | number)[];
+export interface IssueSink {
   addIssue: (issue: { code: "custom"; path: Path; message: string }) => void;
 }
 
@@ -1198,11 +1198,11 @@ interface IssueSink {
  * 제자리에서 고쳐(앞에 붙여) 쓴다. 같은 배열을 두 issue에 넘기면 접두어가 두 번 붙어 경로가 깨진다(`guides.0.0.…` — 2026-09-27 발견,
  * 한 칸에 규칙 둘이 걸리는 모든 호출 A~D·가져오기 zod에 해당). 사본이면 issue마다 경로가 따로다.
  */
-function issue(ctx: IssueSink, path: Path, message: string): void {
+export function issue(ctx: IssueSink, path: Path, message: string): void {
   ctx.addIssue({ code: "custom", path: [...path], message });
 }
 
-function checkChars(ctx: IssueSink, path: Path, s: string, min: number, max: number, label: string): void {
+export function checkChars(ctx: IssueSink, path: Path, s: string, min: number, max: number, label: string): void {
   const n = s.trim().length;
   if (n < min || n > max) issue(ctx, path, `${label}는 ${min}~${max}자여야 합니다`);
 }
@@ -1212,7 +1212,7 @@ function checkWords(ctx: IssueSink, path: Path, s: string, band: readonly [numbe
   if (n < band[0] || n > band[1]) issue(ctx, path, `${label}는 ${band[0]}~${band[1]}단어여야 합니다 (지금 ${n}단어)`);
 }
 
-function checkCount(ctx: IssueSink, path: Path, arr: readonly unknown[], min: number, max: number, label: string): void {
+export function checkCount(ctx: IssueSink, path: Path, arr: readonly unknown[], min: number, max: number, label: string): void {
   if (arr.length < min || arr.length > max) {
     issue(ctx, path, min === max ? `${label}는 정확히 ${min}개여야 합니다` : `${label}는 ${min}~${max}개여야 합니다`);
   }
@@ -2064,7 +2064,7 @@ function hasBrace(s: string): boolean {
 }
 
 /** 한국어 칸 — 1~max자 + 한글 포함 */
-function checkKoText(ctx: IssueSink, path: Path, s: string, max: number, label: string): void {
+export function checkKoText(ctx: IssueSink, path: Path, s: string, max: number, label: string): void {
   checkChars(ctx, path, s, 1, max, label);
   checkKorean(ctx, path, s, label);
 }
@@ -2179,7 +2179,7 @@ function checkGuideBlock(ctx: IssueSink, path: Path, b: ToeicGuideBlock): void {
   }
 }
 
-function checkPresetKey(ctx: IssueSink, path: Path, key: string): void {
+export function checkPresetKey(ctx: IssueSink, path: Path, key: string): void {
   if (key.length > TOEIC_PRESET_KEY_MAX || !TOEIC_PRESET_KEY_RE.test(key)) {
     issue(ctx, path, `presetKey는 소문자·숫자·하이픈 조각(최대 ${TOEIC_PRESET_KEY_MAX}자)이어야 합니다`);
   }
@@ -2310,7 +2310,7 @@ const OPEN_QUOTES = "\"'“‘";
 const SLOT_FOLLOWERS = ".,?!;:";
 
 /** 채움(예문·테스트 전용) — 1~80자, 라틴 또는 숫자 포함(가격·시각·연도 — 검토 B1), 한글·{ } ~ / [ ] 거부, 앞뒤 공백 없음 */
-function checkFill(ctx: IssueSink, path: Path, f: string): void {
+export function checkFill(ctx: IssueSink, path: Path, f: string): void {
   if (f.length < 1 || f.length > TOEIC_TEMPLATE_FILL_MAX) issue(ctx, path, `채움은 1~${TOEIC_TEMPLATE_FILL_MAX}자예요`);
   if (!(hasLatin(f) || /\d/.test(f))) issue(ctx, path, "채움에는 영어(라틴 문자)나 숫자가 있어야 해요");
   if (hasHangul(f)) issue(ctx, path, "채움에 한글을 쓸 수 없어요");
@@ -2338,6 +2338,55 @@ const templateRefShape = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("lead"), part: guidePartEnum, leadEn: z.string() }),
 ]);
 
+/**
+ * 틀 글자 규칙(§12-2-7 — frameEn·frameKo) — 틀 은행 zod와 소재별 틀 말하기 가져오기 zod(§20 — lib/ai/toeic/frame-drill-schemas.ts)가
+ * **이 함수 하나**를 부른다(틀 문법이 두 벌이면 어긋난다). issue 경로는 ["frameEn"]·["frameKo"](부르는 객체 기준).
+ */
+export function checkTemplateFrameTexts(ctx: IssueSink, frameEn: string, frameKo: string): { frameOk: boolean; slotCount: number } {
+  // 영어 틀
+  checkChars(ctx, ["frameEn"], frameEn, 1, TOEIC_TEMPLATE_FRAME_MAX, "frameEn");
+  if (!hasLatin(frameEn)) issue(ctx, ["frameEn"], "frameEn에는 영어(라틴 문자)가 있어야 합니다");
+  const slotsOk = checkSlotSyntax(ctx, ["frameEn"], frameEn, "frameEn");
+  if (hasHangul(textOutsideSlots(frameEn))) issue(ctx, ["frameEn"], "frameEn: 한글은 자리 {…} 안에서만 쓸 수 있어요");
+  const { slots } = scanSlots(frameEn);
+  const names = slots.map((x) => x.name);
+  if (names.length < TOEIC_TEMPLATE_SLOTS_MIN || names.length > TOEIC_TEMPLATE_SLOTS_MAX) {
+    issue(ctx, ["frameEn"], `틀의 자리는 ${TOEIC_TEMPLATE_SLOTS_MIN}~${TOEIC_TEMPLATE_SLOTS_MAX}개예요`);
+  }
+  if (new Set(names).size !== names.length) issue(ctx, ["frameEn"], "틀 안 자리 이름 중복 금지");
+  for (const sl of slots) {
+    const before = sl.start === 0 ? "" : frameEn[sl.start - 1];
+    const after = sl.end >= frameEn.length ? "" : frameEn[sl.end];
+    const okBefore = before === "" || /\s/.test(before) || OPEN_QUOTES.includes(before);
+    const okAfter = after === "" || /\s/.test(after) || SLOT_FOLLOWERS.includes(after);
+    if (!okBefore || !okAfter) {
+      issue(ctx, ["frameEn"], "자리는 낱말 하나처럼 서야 해요 — 자리 앞뒤에 글자를 붙여 쓸 수 없어요(-ing·'s 등은 자리 안에)");
+      break;
+    }
+  }
+  const outside = textOutsideSlots(frameEn);
+  if (TILDES.test(outside) || /[/[\]]/.test(outside)) issue(ctx, ["frameEn"], "틀의 자리 밖에는 ~ / [ ]를 쓸 수 없어요 — 자리는 { }, 대안은 틀을 나눠요");
+  const fixedWords = parseFrame(frameEn)
+    .filter((p) => p.kind === "fixed")
+    .flatMap((p) => (p.kind === "fixed" ? normalizeTemplateWords(p.text) : []));
+  if (fixedWords.length === 0) issue(ctx, ["frameEn"], "틀에는 고정 부분 낱말이 1개 이상 있어야 해요");
+  const frameOk = slotsOk && isFrameSyntaxOk(frameEn);
+  const slotCount = names.length;
+
+  // 한국어 틀 — 같은 슬롯 규칙, 자리 이름의 모임이 영어와 같다, ~ 금지
+  checkChars(ctx, ["frameKo"], frameKo, 1, TOEIC_TEMPLATE_FRAME_MAX, "frameKo");
+  // 한글 포함 — 자리 이름 밖에서 센다(자리 이름만 한글인 "So {결론}."은 한국어 틀이 아니다)
+  if (!hasHangul(textOutsideSlots(frameKo))) issue(ctx, ["frameKo"], "frameKo에는 자리 밖에 한글이 있어야 합니다");
+  const koOk = checkSlotSyntax(ctx, ["frameKo"], frameKo, "frameKo");
+  if (TILDES.test(frameKo)) issue(ctx, ["frameKo"], "한국어 틀도 이름 있는 자리 {…}로 적어요(~ 금지)");
+  if (frameOk && koOk) {
+    const ko = new Set(frameSlotNames(frameKo));
+    const en = new Set(names);
+    if (ko.size !== en.size || [...en].some((n) => !ko.has(n))) issue(ctx, ["frameKo"], "한국어 틀의 자리 이름 모임이 영어 틀과 같아야 해요");
+  }
+  return { frameOk, slotCount };
+}
+
 const templateSchema = z
   .object({
     key: z.string(),
@@ -2358,47 +2407,7 @@ const templateSchema = z
     checkCount(ctx, ["parts"], t.parts, 1, TOEIC_GUIDE_PARTS.length, "parts");
     if (new Set(t.parts).size !== t.parts.length) issue(ctx, ["parts"], "parts 중복 금지");
 
-    // 영어 틀
-    checkChars(ctx, ["frameEn"], t.frameEn, 1, TOEIC_TEMPLATE_FRAME_MAX, "frameEn");
-    if (!hasLatin(t.frameEn)) issue(ctx, ["frameEn"], "frameEn에는 영어(라틴 문자)가 있어야 합니다");
-    const slotsOk = checkSlotSyntax(ctx, ["frameEn"], t.frameEn, "frameEn");
-    if (hasHangul(textOutsideSlots(t.frameEn))) issue(ctx, ["frameEn"], "frameEn: 한글은 자리 {…} 안에서만 쓸 수 있어요");
-    const { slots } = scanSlots(t.frameEn);
-    const names = slots.map((x) => x.name);
-    if (names.length < TOEIC_TEMPLATE_SLOTS_MIN || names.length > TOEIC_TEMPLATE_SLOTS_MAX) {
-      issue(ctx, ["frameEn"], `틀의 자리는 ${TOEIC_TEMPLATE_SLOTS_MIN}~${TOEIC_TEMPLATE_SLOTS_MAX}개예요`);
-    }
-    if (new Set(names).size !== names.length) issue(ctx, ["frameEn"], "틀 안 자리 이름 중복 금지");
-    for (const sl of slots) {
-      const before = sl.start === 0 ? "" : t.frameEn[sl.start - 1];
-      const after = sl.end >= t.frameEn.length ? "" : t.frameEn[sl.end];
-      const okBefore = before === "" || /\s/.test(before) || OPEN_QUOTES.includes(before);
-      const okAfter = after === "" || /\s/.test(after) || SLOT_FOLLOWERS.includes(after);
-      if (!okBefore || !okAfter) {
-        issue(ctx, ["frameEn"], "자리는 낱말 하나처럼 서야 해요 — 자리 앞뒤에 글자를 붙여 쓸 수 없어요(-ing·'s 등은 자리 안에)");
-        break;
-      }
-    }
-    const outside = textOutsideSlots(t.frameEn);
-    if (TILDES.test(outside) || /[/[\]]/.test(outside)) issue(ctx, ["frameEn"], "틀의 자리 밖에는 ~ / [ ]를 쓸 수 없어요 — 자리는 { }, 대안은 틀을 나눠요");
-    const fixedWords = parseFrame(t.frameEn)
-      .filter((p) => p.kind === "fixed")
-      .flatMap((p) => (p.kind === "fixed" ? normalizeTemplateWords(p.text) : []));
-    if (fixedWords.length === 0) issue(ctx, ["frameEn"], "틀에는 고정 부분 낱말이 1개 이상 있어야 해요");
-    const frameOk = slotsOk && isFrameSyntaxOk(t.frameEn);
-    const slotCount = names.length;
-
-    // 한국어 틀 — 같은 슬롯 규칙, 자리 이름의 모임이 영어와 같다, ~ 금지
-    checkChars(ctx, ["frameKo"], t.frameKo, 1, TOEIC_TEMPLATE_FRAME_MAX, "frameKo");
-    // 한글 포함 — 자리 이름 밖에서 센다(자리 이름만 한글인 "So {결론}."은 한국어 틀이 아니다)
-    if (!hasHangul(textOutsideSlots(t.frameKo))) issue(ctx, ["frameKo"], "frameKo에는 자리 밖에 한글이 있어야 합니다");
-    const koOk = checkSlotSyntax(ctx, ["frameKo"], t.frameKo, "frameKo");
-    if (TILDES.test(t.frameKo)) issue(ctx, ["frameKo"], "한국어 틀도 이름 있는 자리 {…}로 적어요(~ 금지)");
-    if (frameOk && koOk) {
-      const ko = new Set(frameSlotNames(t.frameKo));
-      const en = new Set(names);
-      if (ko.size !== en.size || [...en].some((n) => !ko.has(n))) issue(ctx, ["frameKo"], "한국어 틀의 자리 이름 모임이 영어 틀과 같아야 해요");
-    }
+    const { frameOk, slotCount } = checkTemplateFrameTexts(ctx, t.frameEn, t.frameKo);
 
     // 예문
     checkCount(ctx, ["examples"], t.examples, TOEIC_TEMPLATE_EXAMPLES_MIN, TOEIC_TEMPLATE_EXAMPLES_MAX, "examples");

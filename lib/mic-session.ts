@@ -61,6 +61,40 @@ let activeCaptures = 0;
 /** 마지막으로 건 세션 타입(진단용) */
 let lastSessionType: AudioSessionType | null = null;
 
+// ---------------------------------------------------------------------------
+// 지금 누가 녹음하는가 — 녹음기(MediaRecorder) 단위 공유 신호 (2026-10-03, 표현 도우미 🎤 ↔ 토익 "고칠 문장 다시 녹음" 겹침 방지)
+// activeCaptures는 마이크 유지(keep) 정책이 녹음 사이에도 1을 쥐므로 "지금 녹음 중"을 뜻하지 않는다. 그래서 녹음기가 실제로
+// 돌기 시작한 순간 +1, 그 녹음이 끝나거나 버려질 때 -1을 따로 센다(recordOn 한 곳 — startRecording·keeper 두 경로 모두).
+// 녹음을 시작하는 쪽은 `owner`(StartRecordingOptions)로 이름을 붙일 수 있다 — 구독자는 남이 시작한 녹음을 알아보고 자기 녹음을 끝낸다.
+// ---------------------------------------------------------------------------
+
+/** 지금 돌고 있는 녹음기 수와 각 이름(owner 없음 = null) */
+const liveRecordings: (string | null)[] = [];
+const recordingListeners = new Set<(ev: { type: "start" | "end"; owner: string | null }) => void>();
+
+function emitRecording(type: "start" | "end", owner: string | null): void {
+  for (const fn of [...recordingListeners]) {
+    try {
+      fn({ type, owner });
+    } catch {
+      /* 구독자 예외는 녹음을 깨지 않는다 */
+    }
+  }
+}
+
+/** 지금 돌고 있는 녹음기의 이름 목록(owner를 안 준 녹음은 null) — 시작 전에 "다른 녹음이 진행 중인가"를 본다 */
+export function getLiveRecordingOwners(): (string | null)[] {
+  return [...liveRecordings];
+}
+
+/** 녹음 시작·끝 알림 구독(해제 함수 반환). 알림은 녹음기 시작 직후·놓은 직후 동기로 온다 */
+export function subscribeMicRecording(fn: (ev: { type: "start" | "end"; owner: string | null }) => void): () => void {
+  recordingListeners.add(fn);
+  return () => {
+    recordingListeners.delete(fn);
+  };
+}
+
 function setSessionType(t: AudioSessionType): boolean {
   const s = audioSession();
   if (!s) return false;
@@ -271,6 +305,8 @@ export interface StartRecordingOptions {
   gumTimeoutMs?: number;
   /** start 이벤트를 기다리는 상한(ms). 기본 MIC_START_TIMEOUT_MS */
   startTimeoutMs?: number;
+  /** 이 녹음을 시작한 쪽의 이름(공유 신호 getLiveRecordingOwners·subscribeMicRecording에 실린다). 없으면 null */
+  owner?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -390,9 +426,17 @@ export async function startRecording(opts: StartRecordingOptions = {}): Promise<
 function recordOn(stream: MediaStream, opts: StartRecordingOptions, releaseStream: () => void, remuted = 0): MicRecording {
   let released = false;
   let source: MediaStreamAudioSourceNode | null = null;
+  const owner = opts.owner ?? null;
+  let counted = false; // 공유 신호에 올렸는가(녹음기가 실제로 start된 뒤에만)
   const release = () => {
     if (released) return;
     released = true;
+    if (counted) {
+      counted = false;
+      const i = liveRecordings.indexOf(owner);
+      if (i >= 0) liveRecordings.splice(i, 1);
+      emitRecording("end", owner);
+    }
     try {
       source?.disconnect();
     } catch {
@@ -482,6 +526,11 @@ function recordOn(stream: MediaStream, opts: StartRecordingOptions, releaseStrea
     throw err;
   }
   noteDiag({ requestedMimeType: requested, mimeType: recorder.mimeType || requested, durationMs: null, size: null, error: null });
+  if (!released) {
+    counted = true;
+    liveRecordings.push(owner);
+    emitRecording("start", owner);
+  }
 
   const actualType = () => recorder.mimeType || chunks[0]?.type || requested || "";
 

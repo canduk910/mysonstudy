@@ -1,0 +1,377 @@
+/*
+ * phrase-helper.module.css — 표현 도우미(SPEC §22) 떠 있는 버튼 · 오른쪽 패널(lg↑) · 아래 시트(lg 미만).
+ *
+ * ── z-index 사다리(english-nav.module.css와 같은 사다리에 끼운다) ─────────────────
+ * 콘텐츠(0) < 영어 사이드바·상단바(10) < **떠 있는 버튼·도킹 패널(12)** < 스트릭 헤드라인(15) < 영어 드로어(16·17)
+ * < **폰 시트 백드롭(18)·시트(19)** < 몰입 오버레이(20 — 단어장 카드·응시·자유대화 통화).
+ * - 도킹 패널은 헤드라인 아래(top: --streak-h)에 붙어 헤드라인을 가리지 않는다. 본문은 globals.css가 패널 폭만큼 민다.
+ * - 폰 시트는 모달이라 헤드라인을 덮는다(드로어와 같은 규약). 몰입 오버레이(20)는 시트도 덮는다 — 시험·통화 화면에서는 애초에 도우미가 없다.
+ *
+ * 색·반경·글자 크기는 globals.css 토큰만 쓴다. 스크림만 ink 기반 반투명(english-nav와 같은 관용구).
+ */
+
+/* ── 떠 있는 버튼 ─────────────────────────────────────────────────────────── */
+.fab {
+  position: fixed;
+  right: 16px;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--tap-min);
+  padding: 10px 16px;
+  border-radius: var(--radius-chip);
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-family: inherit;
+  font-size: var(--fs-question-ko);
+  font-weight: var(--fw-medium);
+  line-height: 1.2;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18);
+  cursor: pointer;
+}
+.fab:hover {
+  background: var(--accent-strong);
+}
+.fabKid {
+  font-size: var(--fs-section-title);
+  padding: 12px 18px;
+}
+/*
+ * 폰·좁은 화면(lg 미만) — 내용을 덮지 않게(QA P3-B): 글자 없는 44px 동그라미를 **오른쪽 위**(스트릭 헤드라인 바로 아래 —
+ * 영어 셸 상단바의 빈 오른쪽 자리)에 둔다. 아래로 스크롤하는 동안은 숨기고(.fabHidden), 위로 스크롤하거나 맨 위 근처면 다시 보인다.
+ * 실측: 폰 390·360에서 영역 화면 18곳의 맨 위·맨 아래 정지 위치 겹침 0(오른쪽 아래 알약은 단어장 🔊·단어장 고르기·서재 첫 책·
+ * /toeic 맨 아래 카드를 덮었다).
+ */
+@media (max-width: 1023px) {
+  .fab,
+  .fabKid {
+    top: calc(var(--streak-h, 0px) + 8px);
+    bottom: auto;
+    right: 12px;
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+    justify-content: center;
+    font-size: 20px;
+    transition:
+      opacity 0.15s ease,
+      transform 0.15s ease;
+  }
+  .fabLabel {
+    display: none;
+  }
+  .fabHidden {
+    opacity: 0;
+    transform: translateY(-8px);
+    pointer-events: none;
+  }
+}
+
+/* ── 패널(공통) ───────────────────────────────────────────────────────────── */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 18;
+  background: rgba(15, 23, 42, 0.32);
+}
+.panel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 19;
+  display: flex;
+  flex-direction: column;
+  max-height: 85dvh;
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+  box-shadow: 0 -6px 24px rgba(15, 23, 42, 0.16);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+@media (min-width: 1024px) {
+  .backdrop {
+    display: none;
+  }
+  .panel {
+    left: auto;
+    top: var(--streak-h, 0);
+    width: var(--phrase-helper-w, 340px);
+    max-height: none;
+    z-index: 12;
+    border-top: none;
+    border-left: 1px solid var(--line);
+    border-radius: 0;
+    box-shadow: none;
+    padding-bottom: 0;
+  }
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 8px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-section-title);
+  font-weight: var(--fw-bold);
+  color: var(--ink);
+}
+.close {
+  min-height: 40px;
+  min-width: 40px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: var(--fs-question-ko);
+  cursor: pointer;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.lead {
+  margin: 0;
+  font-size: var(--fs-caption);
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+.row input {
+  flex: 1;
+  min-width: 0;
+}
+.mic {
+  flex: none;
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+  font-family: inherit;
+  font-size: 20px;
+  cursor: pointer;
+}
+.mic:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.micOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.send {
+  flex: 1;
+}
+.count {
+  font-size: var(--fs-caption);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.countOver {
+  color: var(--danger);
+}
+.status {
+  margin: 0;
+  font-size: var(--fs-caption);
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.statusRec {
+  color: var(--accent-ink);
+  font-weight: var(--fw-medium);
+}
+.errorBox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+/* ── 결과 ─────────────────────────────────────────────────────────────────── */
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.empty {
+  margin: 0;
+  font-size: var(--fs-caption);
+  color: var(--ink-3);
+}
+.entry {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.asked {
+  margin: 0;
+  font-size: var(--fs-caption);
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+.mainRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.mainExpr {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-section-title);
+  font-weight: var(--fw-bold);
+  color: var(--ink);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.reading {
+  margin: 0;
+  font-size: var(--fs-vocab-pron);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.usage {
+  margin: 0;
+  font-size: var(--fs-vocab-meaning);
+  font-weight: var(--fw-light);
+  color: var(--ink);
+  line-height: 1.55;
+}
+.note {
+  margin: 0;
+  font-size: var(--fs-caption);
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+.subhead {
+  margin: 4px 0 0;
+  font-size: var(--fs-meta-chip);
+  font-weight: var(--fw-medium);
+  color: var(--ink-3);
+}
+.item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.itemBody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.alt {
+  margin: 0;
+  font-size: var(--fs-vocab-example);
+  font-weight: var(--fw-medium);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.ex {
+  margin: 0;
+  font-size: var(--fs-vocab-example);
+  color: var(--ink);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.exKo {
+  margin: 0;
+  font-size: var(--fs-caption);
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+.speak {
+  flex: none;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+  font-size: 18px;
+  cursor: pointer;
+}
+.notice {
+  margin: 0;
+  font-size: var(--fs-vocab-meaning);
+  color: var(--ink-2);
+  line-height: 1.55;
+}
+
+/* ── 은우(english-kid) — 글씨 크게 ─────────────────────────────────────────── */
+.kid .title {
+  font-size: 20px;
+}
+.kid .lead,
+.kid .status {
+  font-size: var(--fs-question-ko);
+}
+.kid .row input {
+  font-size: 20px;
+}
+.kid .mainExpr {
+  font-size: var(--fs-vocab-word);
+}
+.kid .usage,
+.kid .notice {
+  font-size: 18px;
+}
+.kid .ex {
+  font-size: var(--fs-question-en);
+}
+.kid .exKo,
+.kid .asked,
+.kid .note {
+  font-size: var(--fs-question-ko);
+}
+.kid .alt {
+  font-size: 19px;
+}
+.kid .speak {
+  min-width: 48px;
+  min-height: 48px;
+  font-size: 22px;
+}

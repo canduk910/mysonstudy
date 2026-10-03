@@ -40,6 +40,7 @@ import { prefetchSpeech, speak, stopSpeaking } from "@/lib/speech";
 import { STREAK_REFRESH_EVENT } from "@/lib/streak";
 import type { VocabQuizItem } from "@/lib/store";
 import type { VocabQuizSubmitRequest, VocabQuizSubmitResponse } from "@/lib/vocab-quiz-contract";
+import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
 import s from "./vocab-quiz-view.module.css";
 
 interface VocabQuizViewProps {
@@ -113,6 +114,7 @@ export default function VocabQuizView({
   reviewQuestions,
   relationSource,
 }: VocabQuizViewProps) {
+  usePhraseHelperBlock(); // 시험·응답 중에는 표현 도우미를 띄우지 않는다(SPEC §22-3)
   const isReview = mode === "wrong-review"; // 오답복습이면 문구를 "다시 풀기" 톤으로 바꾼다
   // 문제는 마운트 후 1회만 조립한다(hydration mismatch 회피). null = 아직 준비 중.
   // 세션은 def→word 문항(QuizQuestion)과 관계 문항(RelationQuizQuestion)의 합집합(SessionQuizQuestion)이다.

@@ -124,6 +124,7 @@ import { drainToeicRecUploads } from "@/lib/toeic-rec-upload";
 import { useToeicRecUploadStates } from "@/components/use-toeic-rec-uploads";
 import { TTS_TEXT_MAX_CHARS } from "@/lib/tts-shared";
 import { splitForTts } from "@/lib/tts-split";
+import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
 import s from "./toeic-take-view.module.css";
 
 /**
@@ -303,6 +304,7 @@ export default function ToeicTakeView({
   /** 문항 단위 다시 풀기(§15-3) — 원래 응시 id와 (409 retake_in_progress 뒤 사용자가 고른) 닫을 진행 중 다시 풀기 id. null이면 새 응시 */
   retake?: { attemptId: string; replaceOpen: string | null } | null;
 }) {
+  usePhraseHelperBlock(); // 시험·응답 중에는 표현 도우미를 띄우지 않는다(SPEC §22-3)
   const qs = useMemo(() => questions.map((v) => v.q), [questions]);
   const viewByQ = useMemo(() => new Map(questions.map((v) => [v.q, v] as const)), [questions]);
   /** 파트 → 그 파트 지시문(응시하는 문항 수로 — 사진 1장 연습이면 한 장짜리 문장). 읽기·프리페치·화면 글이 이것 하나를 본다. */

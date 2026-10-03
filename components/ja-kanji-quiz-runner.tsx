@@ -18,6 +18,7 @@ import {
   type JaKanjiQuizQuestion,
   type JaKanjiQuizSubmitResponse,
 } from "@/lib/japanese-kanji-contract";
+import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
 import s from "./ja-quiz-runner.module.css";
 
 /** 피드백에 보여줄 한자 정보(조회용). */
@@ -44,6 +45,7 @@ export default function JaKanjiQuizRunner({
   cards: JaKanjiFeedback[];
   retryHref: string;
 }) {
+  usePhraseHelperBlock(); // 시험·응답 중에는 표현 도우미를 띄우지 않는다(SPEC §22-3)
   const router = useRouter();
   const cardByKanji = useRef(new Map(cards.map((c) => [c.kanji, c])));
   const [startedAt, setStartedAt] = useState("");

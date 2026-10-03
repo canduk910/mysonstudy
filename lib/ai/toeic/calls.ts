@@ -1,5 +1,5 @@
 /**
- * lib/ai/toeic/calls.ts — 토익 호출 A·B·C·D 진입 함수 (**서버 전용**) (docs/harness/toeic.md §2~§5)
+ * lib/ai/toeic/calls.ts — 토익 호출 A·B·C·D(+ 소재별 틀 말하기 E·F — §20) 진입 함수 (**서버 전용**) (docs/harness/toeic.md §2~§5)
  *
  * 공유 래퍼 `callWithSchema`(lib/ai/client.ts)를 **그대로** 부른다 — client.ts에 과목 분기·진입 함수를 넣지 않는다(docs/HARNESS.md §2).
  * 프롬프트·스키마·옵션은 prompts.ts·schemas.ts에서 가져온다. 모델(2026-10-02 사용자 결정): 출제·채점(C·D)은 resolveToeicModel()
@@ -54,6 +54,24 @@ import {
 import { postprocessFeedback, toMockRecordPart, type ToeicFeedbackInput } from "./mock";
 import { toeicMaxScore } from "../../toeic-mock";
 import { answerFlowExpressions } from "../../toeic-template";
+import {
+  TOEIC_FRAME_JUDGE_CALL_OPTIONS,
+  TOEIC_FRAME_JUDGE_SYSTEM_PROMPT,
+  TOEIC_FRAME_SUPPLY_CALL_OPTIONS,
+  TOEIC_FRAME_SUPPLY_SYSTEM_PROMPT,
+  buildFrameJudgeUserMessage,
+  buildFrameSupplyUserMessage,
+  type ToeicFrameJudgeInput,
+} from "./frame-drill-prompts";
+import {
+  TOEIC_FRAME_JUDGE_JSON_SCHEMA,
+  TOEIC_FRAME_SUPPLY_JSON_SCHEMA,
+  buildFrameJudgeZod,
+  buildFrameSupplyZod,
+  type ToeicFrameJudgeOutput,
+  type ToeicFrameSupplyOutput,
+} from "./frame-drill-schemas";
+import type { ToeicFrameDrillSupplyPlan } from "../../toeic-frame-drill";
 
 /**
  * 호출 A — 표현집 한 페이지 판독(vision). 사진 1장 = 호출 1회. 이미지 파트를 텍스트보다 먼저 넣는다(§2-2).
@@ -136,4 +154,46 @@ export async function generateFeedback(input: ToeicFeedbackInput): Promise<Toeic
   });
   // 허용 목록 = 흐름 틀(앞) + 활용할 표현 — 흐름은 input.expressions에 섞지 않는다(D `활용할 표현:` 줄에 찍히지 않게, 검토 S4)
   return postprocessFeedback(raw, [...answerFlowExpressions(input.answerFlow), ...input.expressions]);
+}
+
+// ===========================================================================
+// 소재별 틀 말하기 (§20 — 2026-10-03) — 호출 E(판정·총평)·F(보충 출제). 모델은 토익 출제·채점(resolveToeicModel)
+// ===========================================================================
+
+/**
+ * 호출 E — 한 판의 판정·총평(§20-5). 입력은 말한 문항(spoken)만 — `frameDrillJudgeTargets`(lib/toeic-frame-drill.ts)가 고른다.
+ * 무응답·전사 실패는 보내지 않는다(무응답은 AI 없이 wrong — mergeFrameDrillVerdicts). 입력이 비면 throw(호출측이 no_ai로 먼저 가른다).
+ * zod는 보낸 문항 번호·틀 key를 알고 만든다(buildFrameJudgeZod). 반환은 zod를 통과한 원본 — 합치기는 mergeFrameDrillVerdicts.
+ */
+export async function judgeFrameDrill(input: ToeicFrameJudgeInput): Promise<ToeicFrameJudgeOutput> {
+  if (input.items.length === 0) throw new Error("[ai:toeic_frame_judge] 보낼 문항이 없습니다(모두 무응답이면 호출하지 않는다).");
+  return callWithSchema({
+    call: TOEIC_FRAME_JUDGE_CALL_OPTIONS.call,
+    system: TOEIC_FRAME_JUDGE_SYSTEM_PROMPT,
+    user: [textPart(buildFrameJudgeUserMessage(input))],
+    jsonSchema: TOEIC_FRAME_JUDGE_JSON_SCHEMA,
+    zodSchema: buildFrameJudgeZod(input),
+    temperature: TOEIC_FRAME_JUDGE_CALL_OPTIONS.temperature,
+    maxOutputTokens: TOEIC_FRAME_JUDGE_CALL_OPTIONS.maxOutputTokens,
+    model: resolveToeicModel(),
+  });
+}
+
+/**
+ * 호출 F — 보충 출제(§20-6). 계획은 planFrameDrillSupply(lib/toeic-frame-drill.ts)가 만든다(개수 0이면 throw — 호출측이 먼저 가른다).
+ * zod는 계획을 알고 만든다(buildFrameSupplyZod — 틀·개수·자리 수·채움 규칙). 반환은 zod를 통과한 출력이고, 영어 문장은 아직 없다 —
+ * acceptFrameDrillSupply가 fillFrame으로 만들고 은행과 겹치는 것을 버린 뒤 새 문항(source "ai")으로 만든다.
+ */
+export async function supplyFrameDrillItems(plan: ToeicFrameDrillSupplyPlan): Promise<ToeicFrameSupplyOutput> {
+  if (plan.count <= 0 || plan.frames.length === 0) throw new Error("[ai:toeic_frame_supply] 만들 문항이 없습니다.");
+  return callWithSchema({
+    call: TOEIC_FRAME_SUPPLY_CALL_OPTIONS.call,
+    system: TOEIC_FRAME_SUPPLY_SYSTEM_PROMPT,
+    user: [textPart(buildFrameSupplyUserMessage(plan))],
+    jsonSchema: TOEIC_FRAME_SUPPLY_JSON_SCHEMA,
+    zodSchema: buildFrameSupplyZod(plan),
+    temperature: TOEIC_FRAME_SUPPLY_CALL_OPTIONS.temperature,
+    maxOutputTokens: TOEIC_FRAME_SUPPLY_CALL_OPTIONS.maxOutputTokens,
+    model: resolveToeicModel(),
+  });
 }

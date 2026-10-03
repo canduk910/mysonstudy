@@ -32,6 +32,7 @@ import { newTemplateSessionId, templateTestLeaveSave } from "@/lib/toeic-templat
 import { TTS_TEXT_MAX_CHARS } from "@/lib/tts-shared";
 import { splitForTts } from "@/lib/tts-split";
 import { TOEIC_TEMPLATE_CHOICE_MODE_SHORT_KO } from "./toeic-template-quiz-tab";
+import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
 import q from "./toeic-quiz.module.css";
 import s from "./toeic-template-quiz.module.css";
 
@@ -85,6 +86,7 @@ export default function ToeicTemplateQuiz({
   backHref: string;
   retryHref: string;
 }) {
+  usePhraseHelperBlock(); // 시험·응답 중에는 표현 도우미를 띄우지 않는다(SPEC §22-3)
   const total = questions.length;
   const [index, setIndex] = useState(0);
   const [picked, setPicked] = useState<(string | null)[]>(() => new Array(questions.length).fill(null));

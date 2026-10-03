@@ -3969,3 +3969,564 @@ C1 파트별 답변 멘트·상수 · C2 단계 → 멘트(준비·표 읽기 �
   - 반례: 멘트 합성 실패(전부) → 일시정지 없이 끝까지·녹음 11/11 · 멘트 무응답 → 상한(0.41초 × 배율) 뒤 준비 시계·녹음 3/3 · 멘트 중 그만두기 → 그 뒤 소리·시계·비프 0 · Q10 둘째 질문 실패 → 일시정지 → 다시 듣기 → listen again 2번, 동시에 열린 소리 1 이하.
   - 회귀(run.cjs): Chromium 1280×800·390×844, WebKit 1180×820 — 녹음 11/11·서버 보관 11·결과 이동·오류 0. 시작 안내 맞춤 6뷰포트 통과.
 - 남은 것: 실기기에서 멘트 소리 크기·간격(iPhone·iPad — 클라우드 en-US 목소리), 화면 숨김 중 멘트(헤드리스 미검증).
+
+## 19. 표현 도우미 — 한국어 → 가장 회화적인 영어 표현 + 예문 (2026-10-03)
+
+아빠의 영어 화면 옆에 띄우는 간이 챗봇(사용자 요청 "시험이다 보니 사이드에 간이챗봇")은 과목 공통 기능 **표현 도우미**의 `toeic` 모드다 — 프롬프트·JSON Schema·zod·모델(`OPENAI_PHRASE_HELPER_MODEL`, 기본 `gpt-6-luna` — 이 문서의 `OPENAI_TOEIC_MODEL`과 따로)·eval(`npm run eval:phrase`)의 단일 정의처는 **`docs/harness/phrase-helper.md`**다(제품 흐름 SPEC §22). 이 과목의 호출 A~D·spec-sync 대상·JSON Schema 8은 바뀌지 않았다. 모의고사 응시·표현 시험·틀 테스트·틀 시험 중에는 열 수 없다(phrase-helper.md §9 — 막을 화면은 app-builder가 정한다).
+
+## 20. 소재별 틀 말하기 — Q5–7 · Q11 (2026-10-03)
+
+> 제품 수준 흐름·실기기 확인은 SPEC §20-17. 이 절은 데이터 모양·가져오기 형식·출제·통계·보충 규칙과 **새 호출 둘(E 판정·총평, F 보충 출제)**의 원문·JSON Schema·zod·모델·비용·실패 처리의 단일 정의처다. 구현(ai-engineer 몫 — 2026-10-03): 순수 층 `lib/toeic-frame-drill.ts`, 프롬프트 `lib/ai/toeic/frame-drill-prompts.ts`, 스키마·zod `lib/ai/toeic/frame-drill-schemas.ts`, 진입 함수 `judgeFrameDrill`·`supplyFrameDrillItems`(`lib/ai/toeic/calls.ts`), 스트릭 입력 `lib/toeic-streak.ts`, eval `scripts/eval-toeic-frame-drill.ts`(`eval-toeic.ts`가 부른다). 라우트·화면·저장은 app-builder 몫이다(§20-10 계약).
+
+### 20-0. 결정 (사용자 확정 2026-10-03 · 오케스트레이터 기본값)
+
+사용자 요청 원문: "토익스피킹 유형별 공략에 새로운 기능을 추가하자. Q5-7 듣고답하기와 Q11 / 의견말하기에 집중하는 소재별 틀 연습기야. 특정 소재별 틀을 지정해서 넣으면 가능한 조합을 말하게 하도록 하는 연습이야. 문제 개수는 연습기 시작전에 입력하고, 시작하고나면 한글문장만 나오고 영어로 말하기 하는거야. 은우 자유연습처럼 내 말을 듣고 있다가 내 말이 끝나면 올바른 영어문장을 짧게 보여주고 다음 한글문장으로 넘어가는 식이야. 처음 입력했던 문제 개수만큼 영어말하기가 끝나고 나면 총평을 하고 개선점을 도출해줘."
+
+| 항목 | 결정 | 출처 |
+|---|---|---|
+| 위치 | Q5–7 폴더와 Q11 폴더에 새 탭 "🗣️ 틀 말하기". **두 폴더가 같은 은행**을 쓰고 틀의 `parts`로 거른다 | 기본값 |
+| 틀 고르기 | 소재를 고르면 그 소재(이 폴더) 틀이 다 켜지고, 빼고 싶은 틀만 체크 해제 | 사용자 |
+| 문항 수 | 시작 전에 입력 — 1~20, 기본 10(`TOEIC_FRAME_DRILL_COUNT_*`). 상한 20은 판정 호출 E 한 번이 요청 하나(60초) 안에 끝나게 하려는 것이다 | 사용자 + 기본값 |
+| 문제 | **문제 은행**을 미리 만들어 두고(가져오기), 문항별 오답 통계를 **은행과 따로** 둔다. 결과를 볼 때 범위의 평균 오답률이 너무 내려갔으면(20% 미만) 범위의 10%를 새로 출제해 은행에 더한다 | 사용자 + 기본값(임계·비율) |
+| 진행 | 한국어 문장만 보인다 → 영어로 말한다 → 말이 끝나면 **모범 영어 문장 크게 + 내 문장(전사) 작게**, 약 4초 뒤 자동 다음, 탭하면 바로 다음 | 사용자 |
+| 말 끝 판정 | 앱 쪽 로컬 무음 감지(레벨 미터 — 응시 화면 F1과 같은 척도) + 관문 T 전사(기대 문장 prompt 없음 — §5-0 전사 무유도) | 기본값 |
+| 판정·총평 | 끝난 뒤 **호출 E 한 번**(말한 문항만). 무응답은 AI 없이 wrong. **오답 = verdict ≠ correct** | 기본값 |
+| 보충 출제 | **호출 F 한 번**(결과를 볼 때, 한 판에 한 번) — 통과분만 은행에 `source:"ai"` | 사용자 + 기본값 |
+| 모델 | E·F 모두 토익 출제·채점 모델 `resolveToeicModel()`(env `OPENAI_TOEIC_MODEL`, 기본 `gpt-6.1-sol` — §1-1) | 사용자 결정(2026-10-02 "토익스피킹 출제/채점만 6.1-sol") |
+| 스트릭 | 말한 문항이 1개 이상인 판은 🎙️ 영어 트랙에 센다(§20-9) | 기본값 |
+| 표현 도우미 | 이 연습 진행 중에는 열 수 없다(`docs/harness/phrase-helper.md` §9의 막는 신호 — 앱 단계 몫) | 기본값 |
+
+- **새 AI 호출이 둘 생긴다** — 토익 과목의 호출은 A·B·C·D에 **E**(`toeic_frame_judge`)·**F**(`toeic_frame_supply`)가 더해져 여섯이다. 호출 A~D의 원문·JSON Schema 8·호출 옵션은 바뀌지 않는다. spec-sync 원문은 15 → 21(이 절의 원문 6), JSON Schema 의미 동치는 8 → 10(이 절의 2) — 새 대상은 `scripts/eval-toeic-frame-drill.ts`가 따로 대조한다(기존 개수 단언 15·8은 그대로 — §20-12).
+- **새 컬렉션이 생긴다**(제안 — app-builder가 확정): 은행·통계 문서 둘 + 연습 한 판 문서. 기존 `toeicSets`·`toeicQuizzes`에 섞지 않는다 — 문항 모양(한국어→영어 한 문장)·통계(문항 id 키, 은행과 따로)·판정(호출 E)이 표현 시험·틀 테스트와 다르고, 섞으면 `isToeicQuizModeSession`·틀 통계·오답 탭이 새 모양을 걸러야 한다(§12-3 "모드 타입 넓히기"가 이미 한 번 치른 비용).
+
+### 20-1. 한 판의 흐름
+
+1. **고르기**(AI 0): 폴더(Q5–7 / Q11) → 소재 칩(여러 개) → 그 소재의 이 폴더 틀이 모두 체크된 목록 → 뺄 틀 체크 해제 → 문항 수 입력 → 시작. 질문 유형 칩(`frameDrillQuestionTypesForPart` — 이 폴더 틀에 붙은 것만)을 고르면 그중 하나라도 붙은 틀로 **좁힌다**(소재 AND 질문 유형 — 기본은 안 좁힘). 범위 = `frameDrillScopeFrameKeys(bank, part, topicKeys, excludedFrameKeys, questionTypeKeys)`(모르는 key는 조용히 무시).
+2. **출제**(AI 0): `buildFrameDrillOrder(범위 문항, 통계, 문항 수, rng)` — 범위 문항이 요청보다 적으면 가능한 만큼(`shortBy` → "범위에 문항이 n개뿐이라 n문항으로 시작해요"). 범위 문항 0이면 시작 버튼을 막는다.
+3. **문항마다**(관문 T만):
+   1. 한국어 문장을 크게 보인다(영어·틀은 보이지 않는다 — 소리도 내지 않는다: 스피커 소리가 마이크로 들어가 말 끝 판정과 전사를 흐리지 않게).
+   2. 녹음을 시작하고 레벨 표본으로 `stepFrameDrillVoice`를 돌린다(§20-7). 말이 끝나면(무음 1.5초) 또는 상한(20초)이면 녹음을 멈추고, 10초 안에 말을 시작하지 않으면 무응답이다.
+   3. 바로 **모범 영어 문장을 크게, 내 문장을 작게** 보인다. 내 문장은 전사가 오면 채운다(그동안 "듣는 중…"). 전사 요청은 틀 테스트와 같은 라우트 `POST /api/toeic/guides/templates/transcribe`(§12-5-4 — 정답·틀을 받지 않고 prompt 없음, 1 MiB·20초 녹음 상한이 이 연습과 같다)를 쓴다. 무응답이면 전사를 보내지 않는다(비용 0).
+   4. 약 4초(`TOEIC_FRAME_DRILL_REVEAL_MS`) 뒤 자동으로 다음 문항, 화면을 탭하면 바로 다음. 전사는 기다리지 않는다 — 늦게 온 전사는 그 문항 기록에 붙는다.
+   5. 문항 결과는 `frameDrillOutcomeOf(전사, 실패)` — `spoken`(전사 단어 ≥ 2 — `TOEIC_MIN_TRANSCRIPT_WORDS`, §5-0 무응답 기준과 같다) · `no_speech`(말 시작 없음 또는 전사 단어 < 2) · `transcribe_failed`(전사 실패 — 판정·통계 밖, "인식 실패"로 보인다).
+4. **끝**: 문항 수만큼 말하면(또는 "그만두기" — 답한 문항까지만 남긴다) 남은 전사를 기다린다(문항당 화면 상한 — 틀 테스트와 같은 `TOEIC_TEMPLATE_TRANSCRIBE_CLIENT_TIMEOUT_MS` 45초, 넘으면 `transcribe_failed`). 한 판 기록을 저장하고(§20-10 ①) 결과 화면으로 간다.
+5. **결과 화면**: 판정을 요청한다(§20-10 ② — 호출 E 한 번, 말한 문항이 0이면 AI 없이 `frameDrillNoAiReview`). 판정이 저장되면 통계를 **한 번만** 더하고(같은 원자 단위), 화면은 총평·개선점·문항별 판정(✓ 맞음 / △ 아깝다 / ✕ 다시)·고친 문장·잘 쓴/약한 틀을 보인다. 그다음 보충을 요청한다(§20-10 ③ — best-effort, 실패해도 결과 화면은 그대로).
+
+### 20-2. 데이터 모양 (`lib/toeic-frame-drill.ts` — 타입·순수 함수의 단일 정의처)
+
+```ts
+interface ToeicFrameDrillTopic { key: string; nameKo: string }         // 소재 — 어느 폴더에 보이는지는 틀의 parts에서 나온다
+interface ToeicFrameDrillQuestionType { key: string; nameKo: string }  // 질문 유형(주로 Q5–7 의문사 — 누구와·어디서·언제 …) — 소재와 별개
+interface ToeicFrameDrillFillOption { slot: string; en: string; ko: string }  // 자리 채움 후보(확장 표현) — 그 자리에 바꿔 끼울 영어 + 한국어 뜻
+interface ToeicFrameDrillFrame {
+  key: string;                       // 틀 key(틀 은행 key 문법 ^[a-z0-9][a-z0-9-]{0,39}$)
+  topicKey: string;                  // 소재 하나
+  frameEn: string;                   // 고정 부분 + {자리 이름} — 틀 은행 frameEn과 같은 문법(§12-2-7)
+  frameKo: string;                   // 같은 자리 이름을 한국어 어순대로
+  useKo: string | null;
+  parts: ("q5_7" | "q11")[];         // 1~2
+  bankKey: string | null;            // 틀 은행(guide-templates)의 같은 틀 key — 있으면 ② 카드로 잇는다
+  sources: string[];                 // 출처 태그 1~4 — bank · drill · new · audio:{파일 이름}(예 audio:PB03). 표시·감사용(판정에 쓰지 않는다)
+  questionTypes: string[];           // 질문 유형 key 0~4
+  fillOptions: ToeicFrameDrillFillOption[];  // 0~40 — 시드 문항(데이터 단계)과 보충 출제(호출 F)가 조합을 늘린다
+}
+interface ToeicFrameDrillItem {      // 문제 은행의 문항
+  id: string;                        // 시드 ^[a-z0-9][a-z0-9-]{0,59}$ · AI "ai-" + 8자리
+  frameKey: string;
+  ko: string;                        // 보이는 한국어 문장
+  fills: string[];                   // 자리 순서의 채움
+  en: string;                        // 모범 영어 = fillFrame(frameEn, fills) 글자까지
+  source: "seed" | "ai";
+  createdAt: string;
+}
+interface ToeicFrameDrillBank  { presetKey: string; topics; questionTypes; frames; items: ToeicFrameDrillItem[]; updatedAt: string }  // 문서 id frame-drill-bank
+interface ToeicFrameDrillStat  { attempts: number; wrong: number; lastAt: string }
+interface ToeicFrameDrillStatsDoc { items: Record<string /* 문항 id */, ToeicFrameDrillStat>; updatedAt: string }      // 문서 id frame-drill-stats
+```
+
+- **문항에 소재 칸을 두지 않는다**(오케스트레이터 안의 `topicKey`를 뺐다) — 소재는 틀에서 읽는다. 다시 가져오기로 틀이 다른 소재로 옮겨도 문항 쪽 사본이 어긋나지 않게(같은 사실은 한 곳에).
+- **통계는 은행과 다른 문서다.** 키는 문항 id다. 다시 가져오기는 은행 문서만 쓰고 통계 문서를 건드리지 않는다 — 은행에서 빠진 문항의 통계 줄도 지우지 않는다(다시 들어오면 이어진다. 크기는 문항당 약 70바이트).
+- 연습 한 판 문서(id `fd-{clientSessionId}` — 화면이 만든 id라 저장이 멱등):
+
+```ts
+interface ToeicFrameDrillSession {
+  part: "q5_7" | "q11";
+  topicKeys: string[]; questionTypeKeys: string[]; excludedFrameKeys: string[];  // questionTypeKeys — 질문 유형으로 좁혔으면(안 좁혔으면 [])
+  requested: number;                 // 시작 전에 입력한 수
+  startedAt: string; finishedAt: string;
+  ended: "done" | "quit";
+  items: {                           // 출제 때의 글자 그대로(은행이 나중에 바뀌어도 결과가 같다)
+    itemId: string; frameKey: string; ko: string; en: string;
+    frame: string;                   // frameToExpression(frameEn) — 호출 E에 보낸 "~" 글자
+    outcome: "spoken" | "no_speech" | "transcribe_failed";
+    transcript: string | null;
+    verdict: "correct" | "close" | "wrong" | null;
+    reasonKo: string | null; fixedEn: string | null;
+  }[];
+  review: { summaryKo: string; improvements: string[]; strongFrameKeys: string[]; weakFrameKeys: string[]; model: string | null; at: string } | null;
+  statsAppliedAt: string | null;     // 통계를 더한 시각 — 한 판에 한 번
+  supply: { status: "running" | "added" | "skipped" | "failed"; reason: string | null; added: number; at: string } | null;
+}
+```
+
+- 전부 필수 nullable(선택 키 없음 — Firestore가 `undefined`를 거부한다). 배열 속 배열 없음(§12-3 Firestore 코덱 불필요 — `fills`는 문항 객체 안의 1차 배열이다).
+
+### 20-3. 가져오기 파일 — `toeic-frame-drill/v1` (git 밖, 앱 "📂 파일로 가져오기"로만)
+
+틀 은행 가져오기(`toeic-guides/v2`)에 섞지 않고 **파일을 따로** 둔다. 까닭: ① 공략 파일 zod는 정렬 빠짐 0 같은 교재 대조 규칙이 커서 문항 수백 개를 더하면 400 원인을 찾기 어렵다 ② 은행은 AI 문항이 계속 늘고 통계가 따로 사는 다른 수명이다 ③ 공략 파일을 다시 가져올 때마다 문항 은행까지 지문(contentHash)이 흔들리지 않게.
+
+```ts
+interface ToeicFrameDrillFile {
+  format: "toeic-frame-drill/v1";
+  presetKey: string;                  // 멱등 키 — 공략 키 문법(TOEIC_PRESET_KEY_RE)
+  topics: { key: string; nameKo: string }[];                                     // 1~40
+  questionTypes: { key: string; nameKo: string }[];                              // 0~20 — 소재와 별개 분류
+  frames: ToeicFrameDrillFrame[];     // 1~400 (§20-2 모양 그대로)
+  items: { id: string; frameKey: string; ko: string; fills: string[]; en: string }[];   // 1~1500 — 시드 문항
+}
+```
+
+예시(지어낸 것 — 모양만):
+
+```json
+{
+  "format": "toeic-frame-drill/v1",
+  "presetKey": "vendor-frame-drill",
+  "topics": [
+    { "key": "tech", "nameKo": "기술 소재" },
+    { "key": "work", "nameKo": "직장 소재" }
+  ],
+  "questionTypes": [
+    { "key": "why", "nameKo": "왜" }
+  ],
+  "frames": [
+    {
+      "key": "saves-me-from",
+      "topicKey": "tech",
+      "frameEn": "{도구} saves me from {수고}.",
+      "frameKo": "{도구} 덕분에 저는 {수고}을 안 해도 돼요.",
+      "useKo": "기술의 장점을 한 문장으로 말할 때",
+      "parts": ["q5_7", "q11"],
+      "bankKey": null,
+      "sources": ["new"],
+      "questionTypes": ["why"],
+      "fillOptions": [
+        { "slot": "도구", "en": "A smart speaker", "ko": "스마트 스피커" },
+        { "slot": "수고", "en": "typing long messages", "ko": "긴 메시지 입력" }
+      ]
+    }
+  ],
+  "items": [
+    {
+      "id": "saves-me-from-s1",
+      "frameKey": "saves-me-from",
+      "ko": "음성 비서 덕분에 저는 알람을 일일이 맞추지 않아도 돼요.",
+      "fills": ["A voice assistant", "setting every alarm by hand"],
+      "en": "A voice assistant saves me from setting every alarm by hand."
+    }
+  ]
+}
+```
+
+**zod `toeicFrameDrillFileSchema`**(`lib/ai/toeic/frame-drill-schemas.ts`) — 메시지에 값을 넣지 않는다(400 본문 `toeicFrameDrillImportInvalidBody` — 경로·규칙만, 최대 20줄):
+
+- `format` 글자 그대로(다르면 그 문구가 머리 메시지). `presetKey` 공략 키 문법.
+- `topics` 1~40, `key` 틀 key 문법·유일, `nameKo` 1~30자·한글 포함. **틀이 하나도 없는 소재는 거부**.
+- `questionTypes` 0~20, `key` 틀 key 문법·유일, `nameKo` 1~30자·한글 포함(어느 틀에도 안 붙은 유형은 거부하지 않는다 — 화면이 폴더 틀에 붙은 것만 보인다).
+- `frames` 1~400, `key` 유일, `topicKey` ∈ topics. **틀 글자 규칙은 틀 은행과 같은 함수** `checkTemplateFrameTexts(ctx, frameEn, frameKo)`(`lib/ai/toeic/schemas.ts` — 자리 1~4·낱말처럼 서는 자리·자리 밖 `~ / [ ]` 거부·고정 낱말 ≥1·한국어 틀 자리 이름 모임 같음 등 §12-2-7 그대로). `useKo` null 또는 1~120자·한글. `parts` 1~2·`q5_7`·`q11`만·중복 금지. `bankKey` null 또는 틀 key 문법. `sources` 1~4개·각 `^(bank|drill|new|audio:[A-Za-z0-9][A-Za-z0-9_-]{0,19})$`·중복 금지. `questionTypes` 0~4개·파일 `questionTypes`의 key·중복 금지. `fillOptions` 0~40개 — `slot`은 이 틀의 자리 이름, `en`은 틀 은행 채움 규칙 `checkFill`, `ko`는 1~80자·한글·`{ } ~` 금지, 같은 자리의 같은 영어(대소문자·공백 무시) 두 번 금지. `matchKey(frameToExpression(frameEn))`가 파일 안에서 유일. **문항이 하나도 없는 틀은 거부**.
+- `items` 1~1500, `id` 문법·유일·**`ai-`로 시작 금지**(AI 문항 자리), `frameKey` ∈ frames. `fills` 길이 = 자리 수, 채움마다 틀 은행 채움 규칙 `checkFill`(1~80자·라틴 또는 숫자 포함·한글·`{ } ~ / [ ]` 금지·앞뒤 공백 없음). **`en === fillFrame(frameEn, fills)` 글자까지**. `en` 1~300자(`TTS_TEXT_MAX_CHARS`)·채우지 않은 자리 없음·첫 라틴 글자 대문자. `ko` 1~200자·한글·`{ } ~` 금지. 파일 안에서 영어 키(`frameDrillEnKey` — 대소문자·공백·끝 문장부호 무시)·한국어 키(`frameDrillKoKey` — 공백·문장부호 무시) 중복 금지.
+- 크기: 은행 문서로 옮긴 모양의 UTF-8 바이트 ≤ 900,000(`TOEIC_FRAME_DRILL_MAX_BYTES` — 틀 은행과 같은 값).
+
+**병합 `mergeFrameDrillImport(기존 은행 | null, 파일, at)`**(순수 — 통계를 건드리지 않는다):
+
+- 소재·틀·시드 문항은 파일이 정한다(파일 순서). 시드 문항은 **id가 정체성** — 같은 id면 `createdAt`을 이어받고(글자가 바뀌면 `updated` — 교정, 통계는 이어진다), 새 id는 `created`, 파일에서 빠진 id는 `removed`.
+- AI 문항은 파일이 건드리지 않는다. 그 틀이 파일에서 빠졌거나 시드와 영어·한국어 키가 겹치면 버린다(`aiDropped` — 시드가 이긴다). 합친 수가 1500을 넘으면 뒤(AI)부터 자른다.
+- 같은 파일을 다시 가져오면 `unchanged`(은행 글자·`updatedAt` 그대로 — 쓰기 0).
+
+**id 안정성 규칙**(변환 몫 — 데이터 단계가 지킨다): 문항 id는 한 번 정하면 바꾸지 않는다. 변환은 직전 가져오기 파일을 읽어 같은 (틀 key, 영어 키)의 id를 이어 쓰고, 새 문항에만 `{틀 key}-s{n}`(그 틀에서 아직 쓰지 않은 가장 작은 n — 지운 번호를 다시 쓰지 않는다)을 준다. 문장을 고쳐도 같은 문제면 id를 그대로 둔다(통계가 이어진다), 다른 문제가 되면 새 id다.
+
+**만드는 법**(데이터 단계 — 파일은 `data/private/toeic-strategy/`에, git 밖):
+
+- 원본(모두 git 밖 — 이 문서에는 출처와 구조만 적고 문장은 옮기지 않는다):
+  1. 틀 은행 원본 `core/templates.json`(`toeic-core-raw/v3` — 템플릿 암기장·핵심틀 PDF의 원본 데이터)의 Q5–7·Q11 소재 묶음(`flows[].banksKo`) 틀 → `sources` `bank`.
+  2. `design/toeicspeaking/drill.md`(강의 자막)에서 자주 쓰는 소재·틀 → `drill`.
+  3. 강의 음성 전사 `data/private/toeic-strategy/raw/template-audio/PB0{3,4,6}.txt`(사용자 요청 2026-10-03 "아래 경로의 Mp3파일을 소재별 틀 말하기 연습기에 적극적으로 활용해줘. design/toeicspeaking/template" — 원본 MP3는 `design/toeicspeaking/template/`, 전사는 오케스트레이터가 사용자 동의로 만들었다) → `audio:PB03` 같은 태그. 구조: PB04는 번호 붙은 이유 문장 목록, PB03은 Q5–7 의문사별 질문·답·한국어 해석과 자리에 바꿔 끼울 확장 표현(영·한 쌍) 목록, PB06은 비슷한 연습 구성. 의문사 분류는 `questionTypes`로, 확장 표현은 그 틀의 `fillOptions`로 담는다.
+  4. 위에 없는 기능만 새 틀 → `new`.
+- 한 틀이 여러 원료에서 오면 `sources`에 모두 적는다(예 `["bank", "audio:PB04"]`).
+- 소재 = 두 유형 흐름의 소재 묶음(`banksKo`) 합집합(같은 이름은 하나)을 기본으로, drill.md에서 보강한 소재를 더한다. 단계 묶음(답변 순서의 틀)은 소재가 아니다 — 넣으려면 "답변 단계 틀" 같은 소재 하나로 묶는다(데이터 단계 판단).
+- 틀 은행에 있는 틀은 `frameEn`·`frameKo`·`useKo`를 **글자 그대로** 옮기고 `bankKey` = 그 key, `origin "bank"`, `parts`는 `q5_7`·`q11`만 남긴다. drill.md에만 있는 기능은 틀 은행 정렬 규칙 4(§12-2-7 — 강의 자료는 방법만 빌리고 문장은 새로 쓴다)를 따른다(`origin "drill"`). 같은 기능의 틀 은행 틀이 있으면 그 틀을 쓴다(같은 틀이 두 글자로 생기지 않게).
+- 시드 문항: 틀 은행 틀이면 그 틀의 `examples`(Claude가 새로 쓴 예문 — §12-2-7 규칙 8·10)를 문항으로 옮길 수 있다(`ko`·`fills`·`en` 그대로). 그 밖의 문항은 **`fillOptions`의 후보를 조합해** 새로 만든다(후보 조합이 "가능한 조합을 말하게"의 바탕이다) — 교재 예문·모범답변·강의 문장을 통째로 옮기지 않는다. 틀마다 3개 이상을 권한다(최소 1 — zod). 문장 길이는 20단어 안팎, IM3~IH 눈높이.
+- 자리 채움 후보(`fillOptions`)는 확장 표현처럼 짧은 낱말 묶음(채움 규칙 1~80자)이다 — 질문·답 전체 문장은 후보로 넣지 않는다.
+- 변환은 파일을 쓰기 전에 `toeicFrameDrillFileSchema`를 오프라인으로 돌리고, 통과한 것만 둔다.
+
+### 20-4. 출제 · 통계 · 보충 규칙 (순수 — `lib/toeic-frame-drill.ts`)
+
+**출제** `buildFrameDrillOrder(scopeItems, stats, count, rng)`:
+
+- 가중치 `frameDrillWeight(stat)` = `1 + 3 × 오답률 + 2 ÷ (1 + 시도 수)`(`TOEIC_FRAME_DRILL_WEIGHT`). 처음 보는 문항 3, 한 번 틀린 문항 5, 다섯 번 다 맞힌 문항 약 1.33 — 오답률 높은 것·덜 연습한 것이 앞에 오기 쉽고, 다 맞힌 것도 0이 아니라 가끔 나온다.
+- 가중 무작위 비복원 추출(열쇠 `ln(u) ÷ w`가 큰 순 — Efraimidis–Spirakis) → 같은 판에 같은 문항은 한 번만 → 같은 틀이 연달아 나오지 않게 앞에서부터 재배치(다른 틀이 남아 있으면 당겨 온다). `rng`를 주입한다 — eval은 `seededRng(seed)`로 결정성을 잠근다.
+
+**통계** `applyFrameDrillStats(stats, items, at)`:
+
+- 문항마다 `attempts + 1`, 오답이면 `wrong + 1`, `lastAt = at`. **오답 = verdict ≠ correct**(close도 오답 — 틀대로 다시 말해 볼 문항으로 되돌아오게). 무응답(`no_speech`)은 wrong. 전사 실패·판정 없음은 건너뛴다(`frameDrillItemIsWrong` → null).
+- 한 판에 한 번: `decideFrameDrillStatsApply(session)` — `review`가 있고 `statsAppliedAt`이 null일 때만 `apply`. 판정 저장·통계 더하기·`statsAppliedAt` 표시를 **한 원자 단위**로 한다(§20-10 ②).
+- 오답률 `frameDrillWrongRate(stat)` = wrong ÷ attempts(시도 0이면 null).
+
+**보충 판정** `decideFrameDrillSupply({ bankItemCount, scopeItems, stats, alreadySupplied })` — 결과를 볼 때, 통계를 더한 **뒤의** 통계로:
+
+| 순서 | 조건 | 결과 |
+|---|---|---|
+| 1 | 이 판에 보충이 이미 끝났다(`added`·`skipped`) | skip `already` |
+| 2 | 범위 문항(이 판 범위 틀의 은행 문항) 0 | skip `no_scope` |
+| 3 | 표본(범위 문항 중 시도 ≥ 1) < min(10, 범위 문항 수) | skip `sample` |
+| 4 | 평균 오답률(표본 문항 오답률의 평균) ≥ 20% | skip `rate` — **20%는 보충하지 않는다(미만일 때만)** |
+| 5 | 개수 = clamp(⌈범위 문항 수 × 10%⌉, 1, 10)을 은행 남은 자리(1500 − 은행 문항 수)로 자른 값이 0 | skip `full` |
+| 6 | 그 밖 | supply(개수) |
+
+- 개수 `frameDrillSupplyCount(n)`: 1~10개 → 1, 11~20개 → 2, 95개 → 10, 101개 이상 → 10(상한). 부동소수 오차로 한 개 더 올리지 않는다(30 × 0.1).
+- 상수: `TOEIC_FRAME_DRILL_SUPPLY_RATE_BELOW` 0.2 · `_RATIO` 0.1 · `_MIN` 1 · `_MAX` 10 · `_MIN_SAMPLE` 10.
+
+**보충 계획** `planFrameDrillSupply(bank, scopeFrameKeys, count)`: 개수를 범위 틀에 나눈다 — 은행 문항이 적은 틀부터 하나씩 돌아가며(같으면 범위 순서). 계획에 든 틀(`want ≥ 1`)만 호출 F에 간다. "이미 있는 한국어 문장" = 범위 문항의 `ko`(은행 뒤쪽 = 최근 것부터, 상한 200).
+
+**보충 합치기** `acceptFrameDrillSupply(bank, out, at)`: 영어 문장은 **코드가 만든다** — `en = fillFrame(frameEn, fills)`(틀 글자는 모델이 아니라 코드가 쓴다 — "틀 글자 그대로 + 자리만 채움"이 구조로 보장된다). 은행의 영어 키·한국어 키와 겹치면 버린다(`dropped` — 재요청하지 않는다). id = `frameDrillAiItemId(틀 key, en, 쓰인 id)` — `ai-` + FNV-1a 8자리(같은 출력이면 같은 id — 합치기가 멱등), 부딪치면 `-2`·`-3`. 은행 상한을 넘기지 않는다.
+
+**보충 표시 잡기** `decideFrameDrillSupplyClaim(mark, now)`: 없음·`failed` → claim, `added`·`skipped` → already, `running`이 2분(`TOEIC_FRAME_DRILL_SUPPLY_STALE_MS`) 안이면 running(다른 탭이 하는 중), 오래됐으면 claim. 두 탭이 같은 판의 결과를 열어도 호출 F는 한 번이다(잡기를 원자 단위로).
+
+### 20-5. 호출 E — 판정·총평 (`judgeFrameDrill`)
+
+- 입력은 **말한 문항(`spoken`)만** — `frameDrillJudgeTargets(items)`(번호 `no`는 한 판 안 1부터의 순번, 기록 순서). 무응답·전사 실패는 보내지 않는다. 보낼 문항이 0이면 호출하지 않는다(`decideFrameDrillJudge` → `no_ai`, 총평은 `frameDrillNoAiReview` — AI 0).
+- 합치기 `mergeFrameDrillVerdicts(items, judged)`: spoken은 같은 `no`의 판정(correct면 `fixedEn` null), `no_speech`는 AI 없이 **wrong**("답이 들리지 않았어요" + 고친 문장 = 모범 영어), `transcribe_failed`는 판정 null.
+- **판정 기준 — 틀을 안 쓴 것만으로 wrong이 아니다.** correct = 뜻 전부 + 틀의 `~` 밖 글자 그대로 + 문법 오류 없음. close = 뜻은 대부분 전했지만 틀 글자를 바꿔 말함 / 실수 한두 개 / 작은 정보 하나 빠짐. wrong = 뜻이 다르거나 절반 이상 빠짐·끝내지 못함·영어 아님. 호출 D(§5-1 "틀을 쓰지 않았다는 이유로 감점하지 않는다")와 정합 — D는 점수(추정 등급)라 틀 사용을 재지 않고, 이 연습은 **틀로 말하기 자체가 과제**라 틀을 안 쓰면 correct가 아니라 close다(wrong은 아니다). close도 통계에서는 오답이라 그 문항이 다시 나온다.
+- 전사는 인식 결과다 — 발음은 평가하지 않고, 인식 오류로 보이는 단어·문장부호·대소문자·축약형 차이는 틀린 것으로 보지 않는다(D와 같은 관용구). 모범 영어는 참고용이다 — `~` 자리를 다른 말로 채워도 한국어 뜻을 전하면 맞다.
+- 호출 옵션: temperature 0.2, maxOutputTokens 5000, call 라벨 `toeic_frame_judge`. 모델 `resolveToeicModel()`(기본 `gpt-6.1-sol` — 추론 계열이라 공유 래퍼가 온도를 싣지 않는다, §1-1).
+
+**시스템 프롬프트 (원문 그대로 사용 — `TOEIC_FRAME_JUDGE_SYSTEM_PROMPT`)**
+
+```
+너는 TOEIC Speaking을 준비하는 한국인 성인 수험자의 "틀 말하기" 연습을 채점하는 코치다. 수험자는 한국어 문장을 보고, 미리 외운 영어 틀(~ 자리에 내용을 채우는 문장 뼈대)로 그 뜻을 영어로 말했다. 문항마다 판정하고 짧게 고쳐 준 뒤, 한 판 전체의 총평과 개선점을 한국어로 준다.
+
+[입력]
+- 문항마다 번호, 한국어 문장, 틀 key와 틀(~는 바꿔 끼울 자리), 모범 영어 문장, 그리고 음성 인식으로 얻은 수험자의 답(전사문)을 받는다.
+- 전사문은 음성 인식 결과라 발음과 억양을 알 수 없고 인식 오류가 섞여 있을 수 있다. 발음은 평가하지 않는다. 인식 오류로 보이는 단어, 문장부호와 대소문자 차이, 축약형 차이(I'm / I am)는 틀린 것으로 보지 않는다.
+- 모범 영어 문장은 참고용이다. ~ 자리를 모범 문장과 다른 말로 채웠어도 한국어 문장의 뜻을 전하면 맞다.
+
+[판정 — verdict]
+- correct: 한국어 문장의 뜻을 빠짐없이 전했고, 틀의 ~ 밖 글자를 그대로 썼고, 문법 오류가 없다.
+- close: 뜻은 대부분 전했지만 다음 중 하나 이상이다 — 틀의 ~ 밖 글자를 바꾸거나 빼고 다른 말로 말했다, 문법·어휘 실수가 한두 개 있다, 작은 정보 하나가 빠졌다. 틀을 쓰지 않았어도 뜻과 문법이 맞으면 wrong이 아니라 close다.
+- wrong: 뜻이 다르거나 절반 이상 빠졌다, 문장을 끝내지 못했다, 영어가 아니다, 다른 문장을 말했다.
+
+[문항별 고침 — items]
+- 받은 문항 번호마다 정확히 하나씩 쓴다(no는 받은 번호 그대로).
+- correct면 fixedEn은 null이고, reasonKo는 null이거나 잘한 점 한 줄(한국어)이다.
+- close·wrong이면 reasonKo에 무엇이 틀렸는지 한 줄(한국어)을, fixedEn에 고친 영어 문장을 쓴다. fixedEn은 수험자가 말한 내용을 살려 틀의 ~ 밖 글자를 그대로 쓰고 ~ 자리만 채운 올바른 문장이다. 살릴 내용이 없으면 모범 영어 문장을 쓴다. ~를 채우지 않은 채 남기지 않는다.
+
+[총평]
+- summaryKo: 한 판 전체의 총평 2~3문장(한국어). 얼마나 맞혔는지와 되풀이된 실수의 경향을 말한다.
+- improvements: 다음 연습에서 고칠 점 2~4개(한국어, 한 줄씩). 어떤 틀이나 어떤 문법을 어떻게 고칠지 구체적으로 쓴다.
+- strongFrames: 잘 쓴 틀의 key 0~3개. weakFrames: 약한 틀의 key 0~3개. 받은 틀 key를 그대로 쓰고, 한 key를 두 목록에 함께 넣지 않는다.
+
+[금지]
+- 전사문에 없는 말을 수험자가 했다고 쓰지 않는다.
+- 지정된 JSON 스키마 외의 텍스트를 내지 않는다.
+```
+
+**사용자 메시지 (원문 그대로 사용 — `TOEIC_FRAME_JUDGE_USER_TEMPLATE`)**
+
+```
+문항 수: {count}
+문항:
+{items}
+```
+
+**문항 한 개의 형식 (원문 그대로 사용 — `TOEIC_FRAME_JUDGE_ITEM_TEMPLATE`)** — 문항끼리는 빈 줄 하나(`\n\n`)로 잇는다. 값의 연속 공백은 접는다(`buildFrameJudgeUserMessage`). `{frame}`은 `frameToExpression(frameEn)`(`~` 자리 — §12-5-7), `{transcript}`는 관문 T 전사문 그대로.
+
+```
+[{no}]
+한국어: {ko}
+틀({frameKey}): {frame}
+모범 영어: {en}
+수험자 답: {transcript}
+```
+
+지어낸 예(모양만):
+
+```text
+문항 수: 2
+문항:
+[1]
+한국어: 음성 비서 덕분에 저는 알람을 일일이 맞추지 않아도 돼요.
+틀(saves-me-from): ~ saves me from ~
+모범 영어: A voice assistant saves me from setting every alarm by hand.
+수험자 답: a voice assistant saves me from setting all alarms by hand
+
+[3]
+한국어: 회의가 짧아지면 저는 일에 더 집중할 수 있어요.
+틀(lets-me-focus): When ~, I can focus more on ~
+모범 영어: When meetings are shorter, I can focus more on my work.
+수험자 답: if the meeting is short I concentrate my work more
+```
+
+**JSON Schema (strict)**
+
+```json
+{
+  "name": "toeic_frame_judge",
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "items",
+      "summaryKo",
+      "improvements",
+      "strongFrames",
+      "weakFrames"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "no",
+            "verdict",
+            "reasonKo",
+            "fixedEn"
+          ],
+          "properties": {
+            "no": {
+              "type": "integer"
+            },
+            "verdict": {
+              "type": "string",
+              "enum": [
+                "correct",
+                "close",
+                "wrong"
+              ]
+            },
+            "reasonKo": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "fixedEn": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      },
+      "summaryKo": {
+        "type": "string"
+      },
+      "improvements": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "strongFrames": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "weakFrames": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "strict": true
+}
+```
+
+**zod `buildFrameJudgeZod(input)`**(입력을 알고 만든다 — 위반이면 기존 1회 재요청):
+
+- `items`: 보낸 문항 번호마다 정확히 하나(개수 = 보낸 수, 모르는 번호·중복 거부). correct ⇒ `fixedEn` null, `reasonKo`는 null 또는 1~120자 한글. close·wrong ⇒ `reasonKo`(1~120자·한글)·`fixedEn` 필수 — `fixedEn`은 1~300자·라틴 포함·한글 금지·**채우지 않은 틀 자리(`~`·`{`·`}`) 금지**(`hasUnfilledSlot` — §4-9와 같은 함수).
+- `summaryKo` 1~400자·한글. `improvements` 2~4개, 각 1~120자·한글, 중복 금지(`TOEIC_FRAME_JUDGE_LIMITS`).
+- `strongFrames`·`weakFrames` 각 0~3개, **보낸 틀 key만**, 중복 금지, 한 key가 두 목록에 함께 있으면 거부.
+- 틀 조립(고친 문장이 틀 글자를 그대로 썼는가)은 거부하지 않는다 — §12-12 25와 같은 까닭(재요청 비용·판정이 근사). 리뷰의 `strongFrames`·`weakFrames`는 저장할 때 `strongFrameKeys`·`weakFrameKeys`로 옮긴다.
+
+### 20-6. 호출 F — 보충 출제 (`supplyFrameDrillItems`)
+
+- 입력은 보충 계획(§20-4) — 틀마다 key·소재 이름·질문 유형 이름·`frameEn`(이름 있는 자리 `{…}` 그대로 — 모델이 자리 순서를 안다)·`frameKo`·자리 이름·**채움 후보**(`{자리}=영어(한국어)`를 ` / `로 — `formatFrameFillOptions`, 없으면 `없음`)·만들 개수, 그리고 이미 있는 한국어 문장. 출력은 `{frameKey, ko, fills}`뿐이다 — **영어 문장은 코드가 `fillFrame`으로 만든다**.
+- 채움 후보가 있으면 후보를 먼저 조합하라고 시킨다(외운 틀 + 외운 확장 표현의 새 조합). 후보만 쓰라고 강제하지 않는다 — 후보 조합이 바닥나면 새 채움을 쓴다(zod도 후보 사용을 보지 않는다).
+- 호출 옵션: temperature 0.8, maxOutputTokens 3000, call 라벨 `toeic_frame_supply`. 모델 `resolveToeicModel()`.
+
+**시스템 프롬프트 (원문 그대로 사용 — `TOEIC_FRAME_SUPPLY_SYSTEM_PROMPT`)**
+
+```
+너는 TOEIC Speaking을 준비하는 한국인 성인 수험자의 "틀 말하기" 연습 문항을 새로 만드는 출제자다. 문항 하나는 한국어 문장 하나와, 그 뜻을 미리 외운 영어 틀로 말한 모범 영어 문장 하나다. 모범 영어 문장은 앱이 틀의 {자리}에 네가 쓴 채움(fills)을 넣어 만든다.
+
+[만들기]
+- 받은 틀 목록의 틀마다 적힌 개수만큼 만든다. 전체 개수는 '만들 문항 수'와 같다. frameKey에는 그 틀의 key를 그대로 쓴다.
+- fills: 틀의 {자리}에 넣을 영어를 자리 순서대로, 자리 수와 같은 개수로 쓴다. 틀의 {자리} 밖 글자는 앱이 그대로 쓰므로 fills에 넣지 않는다.
+- 틀에 '채움 후보'(자리=영어(한국어 뜻))가 있으면 그 자리에는 후보의 영어를 글자 그대로 먼저 골라 쓰고, 이미 있는 문장과 다른 조합이 되게 고른다. 후보로 자연스러운 문장이 되지 않거나 겹치면 새 채움을 쓴다. 후보를 쓴 자리의 한국어는 후보의 한국어 뜻을 살린다.
+- 틀에 '질문 유형'이 있으면 그 유형의 질문에 대한 답으로 쓸 수 있는 문장으로 만든다.
+- 자리가 문장 맨 앞이면 그 채움은 대문자로 시작한다. 채운 문장 전체가 문법에 맞고 자연스러워야 한다.
+- 채운 영어 문장은 TOEIC Speaking Q5–7(듣고 답하기)·Q11(의견 말하기) 답변에서 그대로 쓸 만한 문장으로, 20단어를 넘지 않게 쓴다. 수준은 IM3~IH 수험자가 말할 수 있는 쉬운 낱말이다.
+- 내용은 그 틀의 소재를 따르고, 직장·기술·경제·건강·환경·교육·생활처럼 성인이 경험으로 말할 수 있는 것으로 쓴다.
+- ko: 수험자가 보고 그 영어 문장으로 말할 한국어 문장이다. 영어 문장의 뜻을 빠짐없이 담은 자연스러운 한국어로 쓰고, 영어 낱말을 섞지 않는다.
+- '이미 있는 한국어 문장'과 같은 문장이나 낱말만 살짝 바꾼 문장을 만들지 않는다. 새로 만드는 문항끼리도 겹치지 않게 내용을 다양하게 한다.
+
+[금지]
+- 실제 기출 문항, 교재 예문, 실존 기업·유명인 이름을 쓰지 않는다.
+- 지정된 JSON 스키마 외의 텍스트를 내지 않는다.
+```
+
+**사용자 메시지 (원문 그대로 사용 — `TOEIC_FRAME_SUPPLY_USER_TEMPLATE`)**
+
+```
+만들 문항 수: {count}
+틀 목록:
+{frames}
+이미 있는 한국어 문장:
+{existing}
+```
+
+**틀 한 줄의 형식 (원문 그대로 사용 — `TOEIC_FRAME_SUPPLY_FRAME_TEMPLATE`)** — 계획의 틀마다 한 줄(`\n`). `{questionTypes}`는 질문 유형 이름을 `, `로(없으면 `없음`), `{fillOptions}`는 위 채움 후보 글, `{slots}`는 자리 이름을 `, `로, 이미 있는 한국어 문장은 줄마다 `- {ko}`, 없으면 `없음`(`buildFrameSupplyUserMessage`).
+
+```
+- {frameKey} | 소재: {topic} | 질문 유형: {questionTypes} | 틀: {frameEn} | 뜻: {frameKo} | 자리: {slots} | 채움 후보: {fillOptions} | {want}개
+```
+
+지어낸 예(모양만):
+
+```text
+만들 문항 수: 2
+틀 목록:
+- saves-me-from | 소재: 기술 소재 | 질문 유형: 왜 | 틀: {도구} saves me from {수고}. | 뜻: {도구} 덕분에 저는 {수고}을 안 해도 돼요. | 자리: 도구, 수고 | 채움 후보: 도구=A smart speaker(스마트 스피커) / 수고=typing long messages(긴 메시지 입력) | 1개
+- lets-me-focus | 소재: 직장 소재 | 질문 유형: 없음 | 틀: When {조건}, I can focus more on {일}. | 뜻: {조건} 저는 {일}에 더 집중할 수 있어요. | 자리: 조건, 일 | 채움 후보: 없음 | 1개
+이미 있는 한국어 문장:
+- 음성 비서 덕분에 저는 알람을 일일이 맞추지 않아도 돼요.
+```
+
+**JSON Schema (strict)**
+
+```json
+{
+  "name": "toeic_frame_supply",
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "items"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "frameKey",
+            "ko",
+            "fills"
+          ],
+          "properties": {
+            "frameKey": {
+              "type": "string"
+            },
+            "ko": {
+              "type": "string"
+            },
+            "fills": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "strict": true
+}
+```
+
+**zod `buildFrameSupplyZod(plan)`**(계획을 알고 만든다 — 위반이면 기존 1회 재요청):
+
+- `items` 개수 = 계획 개수, `frameKey` ∈ 계획 틀, **틀마다 개수 = 만들 개수**.
+- `fills` 개수 = 그 틀 자리 수, 채움마다 `checkFill`(틀 은행 채움 규칙 그대로). 채운 문장(`fillFrame`): 1~300자·라틴·한글 금지·채우지 않은 자리 없음·**25단어 이하**(프롬프트 20단어 — zod는 넓게)·**첫 라틴 글자 대문자**(문장 첫 자리 채움).
+- `ko` 1~200자·한글·`{ } ~` 금지·**영어 낱말 금지**(대문자 약어 2~5자는 허용 — 보고 번역할 문장에 답이 섞이지 않게).
+- 출력끼리 영어 키·한국어 키 중복 금지. **은행과의 겹침은 거부하지 않는다** — 은행 영어 문장 전체를 입력에 싣지 않으므로 재요청으로 고칠 수 없다. 합치기(`acceptFrameDrillSupply`)가 버린다(통과분만 은행에).
+
+### 20-7. 말 끝 판정 — 레벨 상태 기계 (`stepFrameDrillVoice` — 순수)
+
+| 상수 | 값 | 뜻 |
+|---|---|---|
+| `TOEIC_FRAME_DRILL_VOICE_ON_LEVEL` | 0.35 (`TOEIC_MIC_CHECK_OK_LEVEL`, 약 -39dB) | 말소리 문턱 — 이 위가 300ms 이어지면 말 시작 |
+| `TOEIC_FRAME_DRILL_VOICE_OFF_LEVEL` | (0.35 + 0.117) ÷ 2 ≈ 0.23 | 무음 문턱 — 시작 문턱보다 낮다(문턱 근처 떨림으로 끊기지 않게) |
+| `TOEIC_FRAME_DRILL_VOICE_MIN_MS` | 300 | 기침·딸깍 한 번을 말로 보지 않는다 |
+| `TOEIC_FRAME_DRILL_SILENCE_END_MS` | 1500 | 말 시작 뒤 무음이 이만큼이면 끝(`silence`) |
+| `TOEIC_FRAME_DRILL_MAX_ANSWER_MS` | 20000 | 듣기 시작부터 상한(`max`, 말이 없었으면 `no_speech`) — 틀 테스트 녹음 상한과 같다 |
+| `TOEIC_FRAME_DRILL_START_WAIT_MS` | 10000 | 말 시작 없이 이만큼이면 무응답(`no_speech`) |
+| `TOEIC_FRAME_DRILL_REVEAL_MS` | 4000 | 모범 영어를 보여 주는 시간(탭하면 바로 다음) |
+
+- 레벨 척도는 `lib/mic-session` `level()`·응시 화면 F1(§15-10)과 같다(-60dB → 0, 0dB → 1). 문턱은 `lib/toeic-mic-health.ts`에서 **import**한다(두 벌이면 어긋난다).
+- `reliable`이 false인 표본(분석기 없음·오디오 컨텍스트 멈춤)은 소리 판정을 바꾸지 않고 시간 상한만 본다 — 멈춘 분석기의 0을 무음으로 보면 말하는 중에 끊긴다(F1과 같은 관용구).
+- 끝난 상태에 표본을 더 넣어도 바뀌지 않는다. 화면은 90ms 안팎 간격으로 표본을 넣는다(앱 단계 — 응시 화면 레벨 미터 관례).
+- 스피커 소리를 내지 않는다(§20-1 3-1) — 은우 자유대화처럼 상대 목소리가 없는 한쪽 말하기라 에코 제거에 기대지 않는다.
+
+### 20-8. 비용 — 한 판
+
+| 행동 | 호출 |
+|---|---|
+| 고르기·출제·말 끝 판정·결과 보기·통계 | AI 0 |
+| 문항마다 | 관문 T 1회(말한 문항만 — 무응답 0). 20문항이면 최대 20 |
+| 판정·총평 | 호출 E 1회(재요청 시 2). 말한 문항 0이면 0 |
+| 보충 | 대부분 0. 평균 오답률 < 20%이고 표본이 찼을 때만 호출 F 1회(재요청 시 2) — 한 판에 한 번 |
+| 가져오기 | AI 0 |
+
+- 모범 영어는 보여 주기만 한다(TTS 0). 결과 화면의 문장 🔊는 탭할 때만 합성(기존 발음 엔진 — 앱 단계가 정한다).
+
+### 20-9. 스트릭
+
+- 🎙️ 영어 트랙: `toeicStreakSessions(quizzes, attempts, frameDrills)`의 세 번째 인자(기본 `[]` — 옛 호출 그대로)로 한 판을 센다 — 말한 문항(`spoken`) = answered, 나머지 null. 말한 문항 0인 판은 "답한 문항 0 세션 제외" 규칙으로 빠진다(`lib/toeic-streak.ts`).
+- 오늘 라벨: `toeicFrameDrillStreakLabel(drill, 유형 이름)` → `틀 말하기 · Q5–7 듣고 답하기`(유형 이름은 호출측이 단일 정의처에서 넘긴다), 모르는 유형이면 `틀 말하기`. `/api/streak` 배선은 앱 단계 몫(SPEC §17-8).
+
+### 20-10. 라우트 계약 (제안 — app-builder가 확정해 머리 주석·계약 파일에 적는다)
+
+| 라우트 | 하는 일 | AI | 상태코드 |
+|---|---|---|---|
+| `POST /api/toeic/frame-drill/import` | 파일 → `toeicFrameDrillFileSchema` → `mergeFrameDrillImport`(은행 문서만 쓴다 — 통계 문서 손대지 않음). `unchanged`면 쓰기 0 | 없음 | 200 `{created, updated, removed, aiKept, aiDropped, unchanged}` · 400 `toeicFrameDrillImportInvalidBody` · 500 |
+| ① `POST /api/toeic/frame-drill/sessions` | 끝난 한 판 저장(`clientSessionId` 멱등 — 문서 id `fd-{id}`, 이미 있으면 `reused`). 문항 ≥ 1, `items[].itemId`는 은행에 없어도 받는다(출제 뒤 은행이 바뀔 수 있다 — 기록은 글자 사본) | 없음 | 200 `{id, reused}` · 400 · 500 |
+| ② `POST /api/toeic/frame-drill/sessions/[id]/judge` | `decideFrameDrillJudge` → already(AI 0 — 저장된 결과) / no_ai(AI 0) / call(키 검사 501 → 호출 E) → **한 원자 단위**: 판정 합치기·`review`·통계 더하기(`decideFrameDrillStatsApply`)·`statsAppliedAt` | E | 200 `{session}` · 404 · 501(call일 때만, AI 호출 직전) · 500 `ai_failed`(retriable — 아무것도 저장하지 않는다)·`save_failed` |
+| ③ `POST /api/toeic/frame-drill/sessions/[id]/supply` | `review` 없으면 409 `not_judged` → 원자 단위로 잡기(`decideFrameDrillSupplyClaim`) → `decideFrameDrillSupply` skip이면 표시 `skipped`(AI 0) → 키 검사 501 → `planFrameDrillSupply` → 호출 F → **원자 단위**: 최신 은행 위에 `acceptFrameDrillSupply` + 표시 `added` | F | 200 `{status, added, dropped, reason}` · 404 · 409 `not_judged`·`running` · 501 · 500 `ai_failed`(표시 `failed` — 다시 누르면 다시 잡는다)·`save_failed` |
+
+- 저장소 제안: 컬렉션 `toeicFrameBank`(문서 둘 — `frame-drill-bank`·`frame-drill-stats`) + `toeicFrameDrills`(한 판). 새 컬렉션 체크리스트(`ai-harness-impl/references/app-patterns.md` §4)를 밟는다. migrate-to-firestore·seed에 넣지 않는다(교재 유래 데이터 — §7-6).
+- 요청 하나에 AI 한 번(60초 상한 — §1-1). 판정과 보충을 한 요청에 묶지 않는다(sol 모델이면 둘을 합쳐 상한을 넘길 수 있다).
+- 화면 쪽 값: 서버 페이지가 은행·통계를 읽어 소재·틀·문항을 props로 내린다(교재 유래 글은 그 페이지에만). 화면은 `lib/toeic-frame-drill.ts`(클라이언트 안전)만 import한다 — `lib/ai/toeic/frame-drill-*`는 서버 전용.
+- **표현 도우미 막기**: 연습 진행 화면(고르기 뒤 ~ 결과 화면 전)은 표현 도우미를 열 수 없다(`docs/harness/phrase-helper.md` §9의 막는 신호를 쓴다).
+- 로그: 개수·ms·판정 분포만(문장·전사문을 찍지 않는다 — 교재 유래 글).
+
+### 20-11. 저작권 · 공개 저장소
+
+- 문제 은행 파일·틀 원본·drill.md는 git 밖(`data/private/`·`design/toeicspeaking/` — gitignore)이고 앱의 "📂 파일로 가져오기"로만 들어간다. `public/`에 두지 않는다(PIN 게이트 우회).
+- 프롬프트 상수에 틀·문장을 박지 않는다 — 호출 E·F로 나가는 글은 런타임에 은행에서 읽은 틀·문항·전사문뿐이다. 이 절·eval·픽스처의 예시 문장과 틀은 전부 지어낸 것이다.
+- 호출 F는 교재 예문·기출·실존 이름을 쓰지 말라고 시킨다. AI 문항은 은행에만 저장된다(저장소에 들어오지 않는다).
+
+### 20-12. eval (`scripts/eval-toeic-frame-drill.ts` — `eval-toeic.ts`가 `runToeicFrameDrillChecks()`로 부른다, 오프라인, 실호출 0)
+
+- spec-sync: 이 절의 원문 6(E 시스템·사용자·문항 줄, F 시스템·사용자·틀 줄)을 바이트 대조(`block-exact` — 조립하지 않는 블록). JSON Schema 의미 동치 2(`toeic_frame_judge`·`toeic_frame_supply`) + 스펙의 `toeic_frame_*` 블록 수 = 2. 호출 옵션 두 문장(위 "temperature X, maxOutputTokens Y, call 라벨" 모양) ↔ 상수. JSON Schema enum ↔ `TOEIC_FRAME_DRILL_VERDICTS`. `eval-toeic.ts`의 기존 단언(원문 15·JSON 8)은 그대로 두고, 기존 JSON 블록 수 단언은 `toeic_frame_` 접두어를 세지 않는다.
+- 사용자 메시지: 템플릿 치환(단일 패스 — 값 안의 `{ko}` 모양이 다시 치환되지 않음), 문항 사이 빈 줄, `없음`, 공백 접기.
+- zod 반례: E — 문항 빠짐·중복·모르는 번호, correct + fixedEn, close + reasonKo null, fixedEn 한글·`~`, improvements 1·5개, 모르는 틀 key, strong∩weak. F — 개수 다름, 틀마다 개수 다름, 모르는 frameKey, fills 개수·한글·공백, 소문자 시작, 26단어, ko 영어 낱말(약어는 통과), 출력끼리 중복. 가져오기 — 형식, 소재·틀·문항 연결, `ai-` id, en ≠ fillFrame, 빈 소재·빈 틀, 틀 문법(틀 은행 함수 재사용), 출처 태그(`audio:` 통과·모르는 태그·0개·중복), 질문 유형(모르는 key·중복·이름), 채움 후보(모르는 자리·한글 영어·영어 뜻·같은 자리 중복), 400 본문에 값 0.
+- 순수 함수: 가중치 표(처음 3·한 번 틀림 5), 출제 결정성(같은 시드 = 같은 순서, 다른 시드 = 다른 순서), 같은 판 중복 0, 같은 틀 연속 회피, shortBy, 문항 수 정리(0·21·소수), 통계 갱신(close·무응답 = 오답, 전사 실패 = 건너뜀, 불변), 한 번만 판정, 보충 경계(19.9% supply · 20% skip · 표본 부족 · 범위 0 · 이미 함 · 은행 가득), 개수(1·10·11·30·95·101·200), 계획 분배(적은 틀부터)·질문 유형 이름, 질문 유형 좁히기(소재 AND 유형·모르는 유형), 합치기(겹침 버림·id 결정성·부딪침 -2·상한), 잡기(running 2분·오래된 running·failed 다시), 가져오기 병합(id 안정성 — 다시 가져오기 unchanged·교정 updated·빠짐 removed·AI 유지·시드와 겹친 AI 버림·통계 문서 무관), 말 끝 상태 기계(무음 1.5초·상한·시작 대기·짧은 소리 무시·reliable false·끝난 뒤 불변), 판정 합치기(무응답 wrong·전사 실패 null·correct면 fixedEn null), AI 0 총평, 스트릭 세 번째 인자·라벨.
+- 번들 경계: `lib/toeic-frame-drill.ts`는 `/ai/`·`/store`·`openai`·`zod` 값 import 0·lookbehind 0. `calls.ts` 소스에 두 진입 함수가 `resolveToeicModel()`을 쓴다.
+- **실호출 게이트**(자리만 — 오케스트레이터가 사용자 동의 뒤): `EVAL_TOEIC=1 EVAL_TOEIC_FRAME=1`이면 기존 게이트 뒤에 E 1회(지어낸 3문항 — 맞음·틀 바꿈·무관한 답) + F 1회(지어낸 틀 2개·2문항). 결과는 개수·판정 분포만 찍는다.
+
+### 20-13. 열린 결정 — 스펙에는 기본값을 썼다
+
+1. close를 통계에서 오답으로 센다(오케스트레이터 정의 "오답 = verdict ≠ correct"). 틀을 안 썼지만 뜻·문법이 맞은 답도 다시 나온다 — 너무 자주 나오면 close를 0.5로 세는 안이 있다.
+2. 보충 임계 20%·비율 10%·상한 10·표본 10 — 실사용 뒤 조정.
+3. 문항 수 상한 20 — 호출 E 지연 실측 뒤 넓힐 수 있다.
+4. 시드 문항 수(틀마다 최소 1, 권장 3) — 데이터 단계 실측 뒤.
+5. AI 문항을 사람이 지우는 화면은 없다(은행 상한 1500에 닿으면 보충이 멈춘다 — `full`).

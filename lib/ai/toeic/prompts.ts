@@ -269,7 +269,7 @@ export function formatAnswerFlow(flow: ToeicAnswerFlow | null): string {
  * 템플릿의 플레이스홀더를 **한 번에** 치환한다. 값 안에 다른 플레이스홀더 모양의 글자가 있어도 다시 치환하지 않고,
  * `$` 같은 String.replace 특수 치환도 타지 않는다. 템플릿에 없는 키를 넘기면 throw(형식 드리프트를 조용히 넘기지 않는다).
  */
-function fillTemplate(template: string, values: Record<string, string>): string {
+export function fillTemplate(template: string, values: Record<string, string>): string {
   const keys = Object.keys(values);
   for (const k of keys) {
     if (!template.includes(k)) throw new Error(`[toeic-prompts] 템플릿에 플레이스홀더가 없습니다: ${k}`);

@@ -1,8 +1,8 @@
 /**
  * lib/toeic-streak.ts — 아빠 · 🎙️ 영어 트랙(토익스피킹)의 스트릭 입력을 만드는 **순수 함수** (docs/harness/toeic.md §0-2, SPEC §17-7)
  *
- * 영어 트랙이 세는 것은 두 가지다 — ① 표현 시험 세션(`toeicQuizzes`) 중 **답한 문항이 1개 이상**, ② 모의고사 응시
- * (`toeicAttempts`) 중 **끝까지 녹음된 문항이 1개 이상**. 둘을 같은 연속 판정 코어(computeStreak)에 넣기 위해 응시를
+ * 영어 트랙이 세는 것은 — ① 표현 시험 세션(`toeicQuizzes`) 중 **답한 문항이 1개 이상**, ② 모의고사 응시
+ * (`toeicAttempts`) 중 **끝까지 녹음된 문항이 1개 이상**, ③ 소재별 틀 말하기 한 판 중 **말한 문항이 1개 이상**(2026-10-03 — §20-9, 세 번째 인자). 이것들을 같은 연속 판정 코어(computeStreak)에 넣기 위해 응시를
  * StreakSession 모양으로 옮긴다(녹음된 문항 = answered:true, 녹음 안 된 문항 = null — "답한 문항 0 세션 제외" 규칙이 그대로
  * "녹음 0 응시 제외"가 된다).
  *
@@ -35,8 +35,11 @@ export interface ToeicAttemptStreakLike {
 export function toeicStreakSessions(
   quizzes: readonly ToeicQuizStreakLike[],
   attempts: readonly ToeicAttemptStreakLike[],
+  frameDrills: readonly ToeicFrameDrillStreakLike[] = [],
 ): StreakSession[] {
   return [
+    // 소재별 틀 말하기(§20-9 — 2026-10-03) — 말한 문항(spoken) = answered. 말한 문항 0인 판은 "답한 문항 0 세션 제외"로 빠진다
+    ...frameDrills.map((d) => ({ startedAt: d.startedAt, items: d.items.map((it) => ({ answered: it.outcome === "spoken" ? true : null })) })),
     ...quizzes.map((q) => ({ startedAt: q.startedAt, items: q.items.map((it) => ({ answered: it.answered })) })),
     ...attempts.map((a) => ({
       startedAt: a.startedAt,
@@ -49,6 +52,21 @@ export function toeicStreakSessions(
         .map((r) => ({ startedAt: r.startedAt, items: r.merged.map(() => ({ answered: true as boolean | null })) })),
     ),
   ];
+}
+
+/** 소재별 틀 말하기 한 판 최소 모양(ToeicFrameDrillSession이 만족 — §20-9) */
+export interface ToeicFrameDrillStreakLike {
+  startedAt: string;
+  items: readonly { outcome: string }[];
+}
+
+/**
+ * 오늘 라벨 — 소재별 틀 말하기 한 판(§20-9, SPEC §17-8) → `틀 말하기 · {유형 이름}`(유형 이름은 호출측이 단일 정의처에서 넘긴다 —
+ * "Q5–7 듣고 답하기"·"Q11 의견 말하기"). 모르는 유형이면 `틀 말하기`.
+ */
+export function toeicFrameDrillStreakLabel(drill: { part: string }, guidePartKo: (part: string) => string | null): string {
+  const name = guidePartKo(drill.part);
+  return name !== null ? `틀 말하기 · ${name}` : "틀 말하기";
 }
 
 /** 녹음된 문항이 1개 이상인 응시인가(영어 트랙에 세는 응시) */
