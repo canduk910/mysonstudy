@@ -564,7 +564,9 @@ function runS3SourceChecks(): GuideCheckResult[] {
   const finish = codeOnly(read("app/api/toeic/attempts/[id]/finish/route.ts"));
   add(
     "끝내기 라우트: 범위 = attempt.questions(Q4가 오면 \"이 응시 범위에 없는 문항\" 400 — 기존 관용구) · completeFinishAnswers(qs, …)",
-    /const qs = attempt\.questions;/.test(finish) && /if \(!allowed\.has\(a\.q\)\) issues\.push\(\{ path: `answers\.\$\{i\}\.q`, message: "이 응시 범위에 없는 문항이에요" \}\)/.test(finish) &&
+    // 2026-10-03(§15-5): 범위·중복·길이 검사는 끝내기·다시 풀기 끝이 함께 쓰는 한 벌(lib/toeic-finish-body finishAnswerIssues) — 범위 인자는 여전히 attempt.questions
+    /const qs = attempt\.questions;/.test(finish) && /finishAnswerIssues\(qs, parsed\.data\.answers\)/.test(finish) &&
+      /if \(!allowed\.has\(a\.q\)\) issues\.push\(\{ path: `answers\.\$\{i\}\.q`, message: "이 응시 범위에 없는 문항이에요" \}\)/.test(codeOnly(read("lib/toeic-finish-body.ts"))) &&
       /completeFinishAnswers\(qs, parsed\.data\.answers\)/.test(finish) && !/toeicAttemptQuestions\(/.test(finish),
   );
   const score = codeOnly(read("app/api/toeic/attempts/[id]/score/route.ts"));

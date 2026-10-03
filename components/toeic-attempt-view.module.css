@@ -775,3 +775,72 @@
   cursor: pointer;
   text-align: left;
 }
+
+/* 녹음 관리 · 고칠 문장 다시 녹음(§14) — 새 토큰 없음. 버튼 줄은 줄바꿈(폰 폭 가로 스크롤 없음) */
+.recTools,
+.fixTools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+}
+.delBtn {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  color: var(--danger);
+  font-size: 14px;
+  cursor: pointer;
+}
+.delBtn:disabled,
+.recBtn:disabled,
+.play:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.recBtn {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  color: var(--accent-ink);
+  font-size: 14px;
+  font-weight: var(--fw-bold);
+  cursor: pointer;
+}
+.recOn {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--bg);
+}
+.recLive {
+  margin: 6px 0 0;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+/* 문항 단위 다시 풀기(§15-7) — 오류 문항 상자 · 문항 카드의 "이 문항 다시 풀기" 줄 */
+.retakeBox {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface-2, transparent);
+}
+.retakeRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 0;
+  font-size: 14px;
+}

@@ -384,6 +384,7 @@
 }
 .answerRow {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
@@ -395,4 +396,22 @@
   min-width: 0;
   color: var(--ink-2);
   font-size: 14px;
+}
+
+/* F2 문항별 진단 한 줄(끝 화면 행 — §15-11). 행 아래 줄로 내려 폰 폭을 넘지 않게 */
+.rowDiag {
+  flex: 1 0 100%;
+  min-width: 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+/* F1 녹음 중 무음 알림(§15-10) */
+.silence {
+  margin: 6px 0 0;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: var(--fw-medium);
+  word-break: keep-all;
 }

@@ -7,8 +7,10 @@
  *   - 파일: env `TOEIC_REC_DIR`(빈 값이면 `data/recordings` — git·배포 업로드 밖). eval은 스크래치 디렉터리로 돌린다.
  * - 객체 키는 lib/toeic-rec-rules `toeicRecObjectKey`가 만든 것만 받는다(`TOEIC_REC_OBJECT_KEY_RE`) — 파일 백엔드에서 경로 밖으로
  *   나가는 키(`..`·`/`)를 막는다. 한 녹음 = 한 객체, 객체는 바꾸지 않는다(같은 키 = 같은 바이트라 다시 써도 멱등).
- * - **지우기는 응시 접두사 단위 하나뿐**(`deleteAttemptRecordings`) — 모의고사 삭제 연쇄(스토어 deleteToeicMock)만 부른다. 업로드 경로에는
- *   지우는 동작이 없다(대체된 옛 객체는 모의고사를 지울 때 접두사째 사라진다). GCS 지우기는 스스로 prod-guard
+ * - **지우기**: 응시 접두사(`deleteAttemptRecordings` — 모의고사 삭제 연쇄)와, 2026-10-03(§14) 녹음 관리의 **자리 접두사**
+ *   (`deleteRecordingPrefixes` — 답변 한 문항 `attempts/{id}/{q}/`·고칠 문장 하나 `attempts/{id}/fixes/{q}/{i}/`·응시 통째 `attempts/{id}/`)와
+ *   고칠 문장 다시 녹음이 바꿔 낀 **옛 객체 하나**(`deleteRecordingObject` — 메타 커밋 **뒤**). 답변 녹음 업로드 경로에는 여전히 지우는 동작이
+ *   없다(대체된 옛 답변 객체는 그 문항·응시·모의고사를 지울 때 접두사째 사라진다). GCS 지우기는 모두 스스로 prod-guard
  *   (`deleteToeicRecordings`)를 지난다 — 개발 환경에서 프로덕션 버킷을 지우면 던진다. 파일 백엔드는 가드가 없다(스토어 규칙과 같다).
  * - 개발 환경인데 GCS(=프로덕션 버킷)를 잡으면 `getStore()`와 같은 경고를 찍는다. 쓰기는 막지 않는다(스토어와 같다).
  *
@@ -22,7 +24,7 @@ import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
 import { getStorage } from "firebase-admin/storage";
 import { assertDestructiveAllowed } from "./prod-guard";
 import { resolveStoreBackend } from "./store-backend";
-import { TOEIC_REC_OBJECT_KEY_RE, toeicRecObjectPrefix } from "./toeic-rec-rules";
+import { TOEIC_REC_PREFIX_RE, isToeicRecObjectKey, toeicRecObjectPrefix } from "./toeic-rec-rules";
 
 /** 버킷 기본 이름(§13-1) — env `TOEIC_REC_BUCKET`이 비면 이것 */
 export const TOEIC_REC_BUCKET_DEFAULT = "eunwoo-bookcard-toeic-rec";
@@ -35,10 +37,18 @@ export interface ToeicRecBlobStore {
   get(key: string): Promise<Uint8Array | null>;
   /** 응시 하나의 녹음 전부(대체된 옛 객체까지) 지우기 — 지운 수. 실패하면 던진다 */
   deleteAttempt(attemptId: string): Promise<number>;
+  /** 자리 접두사(TOEIC_REC_PREFIX_RE) 아래 객체 전부 지우기(§14-4) — 지운 수. 이미 없으면 0(멱등). 실패하면 던진다 */
+  deletePrefix(prefix: string): Promise<number>;
+  /** 객체 하나 지우기(§14-5 — 고칠 문장 다시 녹음이 바꿔 낀 옛 객체) — 지웠으면 true, 이미 없으면 false. 실패하면 던진다 */
+  deleteKey(key: string): Promise<boolean>;
 }
 
 function assertKey(key: string): void {
-  if (!TOEIC_REC_OBJECT_KEY_RE.test(key)) throw new Error("toeic-rec-blob: 객체 키 모양이 아니에요");
+  if (!isToeicRecObjectKey(key)) throw new Error("toeic-rec-blob: 객체 키 모양이 아니에요");
+}
+
+function assertPrefix(prefix: string): void {
+  if (!TOEIC_REC_PREFIX_RE.test(prefix)) throw new Error("toeic-rec-blob: 지우기 접두사 모양이 아니에요");
 }
 
 // ---------------------------------------------------------------------------
@@ -82,7 +92,22 @@ class FileRecBlobStore implements ToeicRecBlobStore {
   }
 
   async deleteAttempt(attemptId: string): Promise<number> {
-    const prefix = toeicRecObjectPrefix(attemptId); // 모양 검사(던진다)
+    return this.deletePrefix(toeicRecObjectPrefix(attemptId)); // 모양 검사(던진다)
+  }
+
+  async deleteKey(key: string): Promise<boolean> {
+    assertKey(key);
+    try {
+      await fs.unlink(filePathOf(this.dir, key));
+      return true;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw e;
+    }
+  }
+
+  async deletePrefix(prefix: string): Promise<number> {
+    assertPrefix(prefix);
     const target = filePathOf(this.dir, prefix.replace(/\/$/, ""));
     let count = 0;
     const walk = async (d: string): Promise<void> => {
@@ -159,6 +184,35 @@ class GcsRecBlobStore implements ToeicRecBlobStore {
     );
     return files.length;
   }
+
+  async deletePrefix(prefix: string): Promise<number> {
+    // 녹음 관리(§14-4) — 같은 가드를 먼저. 하나라도 실패하면 던진다(라우트가 메타를 지우지 않는다). 이미 없는 객체(404)는 지운 것으로 본다
+    assertDestructiveAllowed("deleteToeicRecordings");
+    assertPrefix(prefix);
+    const [files] = await this.bucket().getFiles({ prefix });
+    await Promise.all(
+      files.map((f) =>
+        f.delete().catch((e: unknown) => {
+          if ((e as { code?: unknown }).code === 404) return;
+          throw e;
+        }),
+      ),
+    );
+    return files.length;
+  }
+
+  async deleteKey(key: string): Promise<boolean> {
+    // 고칠 문장 다시 녹음이 바꿔 낀 옛 객체(§14-5) — 같은 가드를 먼저
+    assertDestructiveAllowed("deleteToeicRecordings");
+    assertKey(key);
+    try {
+      await this.bucket().file(key).delete();
+      return true;
+    } catch (e) {
+      if ((e as { code?: unknown }).code === 404) return false;
+      throw e;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -188,4 +242,17 @@ export function getToeicRecBlobStore(): ToeicRecBlobStore {
 /** 응시 하나의 녹음 지우기(§13-7) — 스토어의 deleteToeicMock이 문서보다 **먼저** 부른다. 실패하면 던진다. */
 export async function deleteAttemptRecordings(attemptId: string): Promise<number> {
   return getToeicRecBlobStore().deleteAttempt(attemptId);
+}
+
+/** 녹음 관리(§14-4) — 자리 접두사들을 **차례로** 지운다. 하나라도 실패하면 던진다(호출자가 메타를 지우지 않는다 — 서버 먼저 → 메타 정리). */
+export async function deleteRecordingPrefixes(prefixes: readonly string[]): Promise<number> {
+  const blob = getToeicRecBlobStore();
+  let n = 0;
+  for (const p of prefixes) n += await blob.deletePrefix(p);
+  return n;
+}
+
+/** 객체 하나 지우기(§14-5 — 고칠 문장 옛 객체·자리를 얻지 못한 방금 쓴 객체). 실패하면 던진다 — 호출자는 best-effort로 받는다. */
+export async function deleteRecordingObject(key: string): Promise<boolean> {
+  return getToeicRecBlobStore().deleteKey(key);
 }

@@ -18,6 +18,11 @@
  * - **조용한 실패**: IndexedDB를 못 쓰는 환경(프라이빗 모드 등)이면 메모리에만 두고(이 탭의 마지막 응시분) 정상 동작한다.
  *   응시 → 결과 화면은 같은 탭 안 이동이라 메모리만으로도 다시 듣기·채점·업로드가 된다(올리기 전에 탭을 닫으면 사라진다).
  *
+ * - **지우기**(2026-10-03, §14-4): 녹음 관리(결과 화면 "녹음 지우기"·"내 녹음" 목록)가 서버에서 지운 **뒤에** `deleteToeicRecordingsLocal`로
+ *   이 기기 사본을 지운다 — 바이트·메타가 함께 사라지므로 **대기열(pending)에 있던 것은 업로드도 취소**된다(비우기는 매 차례 대기열을
+ *   새로 읽는다). 다른 기기에서 지운 녹음은 그 기기의 결과 화면·목록이 지운 자리를 보고, 대기열은 409 recording_deleted를 받고 지운다.
+ *   고칠 문장 다시 녹음(§14-5)은 이 보관소에 넣지 않는다(결과 화면이 메모리에 두고 바로 올린다).
+ *
  * 순수 함수(pickAttemptsToEvict)는 브라우저 전역 없이 돌아 eval이 잠근다. ⚠️ 모듈 최상위에서 indexedDB를 읽지 않는다.
  */
 
@@ -57,6 +62,11 @@ export interface ToeicRecordingMeta {
   upload: ToeicRecUploadState;
   /** 서버가 받은 시각(epoch ms). pending·gone이면 null */
   uploadedAt: number | null;
+  /**
+   * 그 녹음을 만든 다시 풀기 id(2026-10-03, docs/harness/toeic.md §15-3·§15-4 — 업로드가 `retakeId`로 싣는다). 처음 응시의 녹음·옛 메타는 null.
+   * 결과 화면은 이 값이 지금 답의 세대와 같을 때만 "지금 녹음"으로 쓴다(§15-6).
+   */
+  retakeId: string | null;
 }
 
 /** 저장할 때 넘기는 녹음 — 대기열 필드는 저장이 "pending"으로 채운다 */
@@ -166,7 +176,14 @@ async function listAllMeta(db: IDBDatabase): Promise<ToeicRecordingMeta[]> {
   // 옛 메타(upload 없음)는 "pending"(§13-6 이행), uploadedAt 없음은 null
   return (all as unknown[])
     .filter(isMeta)
-    .map((m) => ({ ...m, pool: toeicRecPoolOf(m), upload: toeicRecUploadStateOf(m), uploadedAt: typeof m.uploadedAt === "number" ? m.uploadedAt : null }));
+    .map((m) => ({
+      ...m,
+      pool: toeicRecPoolOf(m),
+      upload: toeicRecUploadStateOf(m),
+      uploadedAt: typeof m.uploadedAt === "number" ? m.uploadedAt : null,
+      // 다시 풀기 세대(§15-4) — 옛 메타(필드 없음)는 처음 응시의 녹음
+      retakeId: typeof (m as { retakeId?: unknown }).retakeId === "string" && (m as { retakeId: string }).retakeId !== "" ? (m as { retakeId: string }).retakeId : null,
+    }));
 }
 
 /**
@@ -191,6 +208,7 @@ export async function saveToeicRecording(input: NewToeicRecording): Promise<"idb
       createdAt: rec.createdAt,
       upload: "pending",
       uploadedAt: null,
+      retakeId: typeof rec.retakeId === "string" && rec.retakeId !== "" ? rec.retakeId : null,
     };
     const tx = db.transaction([STORE_REC, STORE_META], "readwrite");
     tx.objectStore(STORE_REC).put(rec.blob, key);
@@ -311,6 +329,72 @@ export async function setToeicRecUploadState(
     await txDone(tx);
   } catch {
     // 조용한 실패 — 다음 비우기에서 서버가 reused로 답한다(멱등)
+  } finally {
+    db?.close();
+  }
+}
+
+// ───────────────────────── 녹음 관리(§14-4) — 목록·지우기 ─────────────────────────
+
+/** 이 기기의 녹음 메타 전부(바이트 없이 — "내 녹음" 목록). 오래된 순. IndexedDB가 안 되면 메모리분. 던지지 않는다. */
+export async function listAllToeicRecordingMetas(): Promise<ToeicRecordingMeta[]> {
+  const fromMemory = (): ToeicRecordingMeta[] => [...memory.values()].map(({ blob: _b, ...m }) => m);
+  if (!hasIdb()) return fromMemory().sort((a, b) => a.createdAt - b.createdAt);
+  let db: IDBDatabase | null = null;
+  try {
+    db = await openDb();
+    const metas = await listAllMeta(db);
+    for (const m of fromMemory()) if (!metas.some((x) => x.attemptId === m.attemptId && x.q === m.q)) metas.push(m);
+    return metas.sort((a, b) => a.createdAt - b.createdAt);
+  } catch {
+    return fromMemory().sort((a, b) => a.createdAt - b.createdAt);
+  } finally {
+    db?.close();
+  }
+}
+
+/**
+ * 이 기기 사본 지우기 — 그 응시의 문항들(`"all"`이면 그 응시 전부). 바이트·메타를 함께 지운다(대기열에서도 빠진다 — 업로드 취소).
+ * 서버에서 지운 **뒤에** 부른다(서버 먼저). 지운 수를 돌려준다. 던지지 않는다(실패하면 -1 — 다음에 화면이 지운 자리를 보고 다시 지운다).
+ */
+export async function deleteToeicRecordingsLocal(
+  attemptId: string,
+  qs: readonly number[] | "all",
+  opts: { keepGeneration?: string | null; onlyGeneration?: string | null } = {},
+): Promise<number> {
+  // keepGeneration(§15-8): 예전 답 녹음을 지울 때 지금 답 세대의 사본은 남긴다(같은 키 `{attemptId}:{q}`에 세대가 하나만 산다)
+  const keep = Object.prototype.hasOwnProperty.call(opts, "keepGeneration");
+  // onlyGeneration(§15-5): 그 세대의 사본만 지운다 — 합쳐지지 않은 다시 풀기 녹음을 지울 때 다른 세대 사본(예: 기기 저장이 메모리로 떨어져
+  // IndexedDB에 남은 예전 답 사본)은 건드리지 않는다(QA rec-retake P2-2)
+  const only = Object.prototype.hasOwnProperty.call(opts, "onlyGeneration");
+  const hit = (m: { attemptId: string; q: number; retakeId?: string | null }) =>
+    m.attemptId === attemptId &&
+    (qs === "all" || qs.includes(m.q)) &&
+    !(keep && (m.retakeId ?? null) === (opts.keepGeneration ?? null)) &&
+    !(only && (m.retakeId ?? null) !== (opts.onlyGeneration ?? null));
+  let n = 0;
+  for (const [k, v] of memory) {
+    if (hit(v)) {
+      memory.delete(k);
+      n += 1;
+    }
+  }
+  if (!hasIdb()) return n;
+  let db: IDBDatabase | null = null;
+  try {
+    db = await openDb();
+    const metas = (await listAllMeta(db)).filter(hit);
+    if (metas.length === 0) return n;
+    const tx = db.transaction([STORE_REC, STORE_META], "readwrite");
+    for (const m of metas) {
+      const key = toeicRecKey(m.attemptId, m.q);
+      tx.objectStore(STORE_REC).delete(key);
+      tx.objectStore(STORE_META).delete(key);
+    }
+    await txDone(tx);
+    return Math.max(n, metas.length);
+  } catch {
+    return -1;
   } finally {
     db?.close();
   }

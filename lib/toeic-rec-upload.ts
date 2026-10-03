@@ -5,6 +5,7 @@
  * - **한 번에 하나만** 돈다 — 모듈 안 진행 중 약속 하나(중복 호출은 합류). 동시 업로드 1개(응시 중 질문 음성·녹음과 대역폭을 다투지 않게).
  *   비우는 동안 새 녹음이 대기열에 들어오면 같은 비우기가 이어서 집는다(매 차례 대기열을 새로 읽는다).
  * - 응답 해석은 순수 함수 하나(lib/toeic-rec-rules nextToeicRecUploadAction): done → 기기 메타 "done" · gone → "gone"(캐시로만) ·
+ *   purge(409 recording_deleted — 지운 녹음, §14-4) → 이 기기 사본도 지운다 ·
  *   retry → 한 번의 비우기 안에서 2초·10초·30초 뒤 최대 3번, 그래도 안 되면 그 항목을 남긴 채 멈춘다(다음 계기에 다시).
  * - **keepalive를 쓰지 않는다** — 오디오 본문은 keepalive 한도(진행 중 합 64KiB)를 넘는다. 화면이 내려가면 남은 항목은 기기에 남아
  *   다음 계기에 간다(계기: 응시 화면의 녹음 저장 직후 · 결과/학습 보기/연습 폴더 화면이 열릴 때와 열려 있는 동안 online·보임 —
@@ -18,11 +19,12 @@ import {
   TOEIC_REC_FIELD_AUDIO,
   TOEIC_REC_FIELD_DURATION_MS,
   TOEIC_REC_FIELD_RECORDED_AT,
+  TOEIC_REC_FIELD_RETAKE_ID,
   toeicAudioBaseType,
   toeicRecordingHref,
   type ToeicRecordingPutResponse,
 } from "./toeic-attempt-contract";
-import { getToeicRecordingBlob, listPendingToeicRecordings, setToeicRecUploadState, type ToeicRecordingMeta } from "./toeic-rec-store";
+import { deleteToeicRecordingsLocal, getToeicRecordingBlob, listPendingToeicRecordings, setToeicRecUploadState, type ToeicRecordingMeta } from "./toeic-rec-store";
 import { nextToeicRecUploadAction, toeicRecFamilyOfType, type ToeicStoredRecording } from "./toeic-rec-rules";
 
 /** 진행 이벤트 이름(window CustomEvent) */
@@ -39,6 +41,11 @@ export interface ToeicRecUploadEventDetail {
   state: ToeicRecUploadLiveState;
   /** done이면 서버가 돌려준 메타 */
   recording: ToeicStoredRecording | null;
+  /**
+   * done이면 서버가 그 녹음을 둔 자리(§15-4 — 지금 답 current · 다시 풀기 대기 staged · 예전 답 history). **null = 서버가 저장하지 않았다**
+   * (200 retaken — 다시 풀기로 자리가 없어졌다) 또는 done이 아니다. 응시 화면의 "서버 ✓"는 null이 아닐 때만 센다(QA rec-retake P2-2).
+   */
+  slot: "current" | "staged" | "history" | null;
 }
 
 /** 한 번의 비우기 안에서 다시 시도하는 간격(ms) — 2초·10초·30초 */
@@ -72,7 +79,11 @@ const sleep = (ms: number) =>
     wake = done;
   });
 
-type OneResult = { action: "done"; recording: ToeicStoredRecording | null } | { action: "gone" } | { action: "retry" };
+type OneResult =
+  | { action: "done"; recording: ToeicStoredRecording | null; slot: ToeicRecUploadEventDetail["slot"] }
+  | { action: "gone" }
+  | { action: "retry" }
+  | { action: "purge" };
 
 async function putOnce(meta: ToeicRecordingMeta, blob: Blob): Promise<OneResult> {
   const declared = toeicAudioBaseType(blob.type) || toeicAudioBaseType(meta.mimeType);
@@ -81,6 +92,8 @@ async function putOnce(meta: ToeicRecordingMeta, blob: Blob): Promise<OneResult>
   fd.append(TOEIC_REC_FIELD_AUDIO, blob.type ? blob : new Blob([blob], { type: declared || family }), FILE_NAME[family] ?? "answer.webm");
   fd.append(TOEIC_REC_FIELD_DURATION_MS, String(Math.max(1, Math.round(meta.durationMs))));
   fd.append(TOEIC_REC_FIELD_RECORDED_AT, String(Math.round(meta.createdAt)));
+  // 다시 풀기 녹음이면 그 세대(§15-4) — 서버가 대기 자리·지금 자리·이력 줄을 가른다. 처음 응시 녹음·옛 메타는 싣지 않는다(옛 계약 그대로)
+  if (meta.retakeId) fd.append(TOEIC_REC_FIELD_RETAKE_ID, meta.retakeId);
   let res: Response;
   try {
     res = await fetch(toeicRecordingHref(meta.attemptId, meta.q), { method: "PUT", body: fd });
@@ -89,7 +102,8 @@ async function putOnce(meta: ToeicRecordingMeta, blob: Blob): Promise<OneResult>
   }
   const body = (await res.json().catch(() => null)) as ToeicRecordingPutResponse | null;
   const action = nextToeicRecUploadAction({ kind: "response", status: res.status, body });
-  if (action === "done") return { action, recording: body && body.ok ? body.recording : null };
+  // 결과 화면은 이벤트의 recording을 "지금 녹음" 메타로 합친다 — 지금 자리(slot current)일 때만 싣는다(대기 자리·이력 줄·retaken은 null)
+  if (action === "done") return { action, recording: body && body.ok && body.slot === "current" ? body.recording : null, slot: body && body.ok ? body.slot : null };
   return { action };
 }
 
@@ -111,23 +125,28 @@ async function drainOnce(): Promise<{ uploaded: number; remaining: number }> {
       continue;
     }
     const base = { attemptId: meta.attemptId, q: meta.q, createdAt: meta.createdAt };
-    emit({ ...base, state: "uploading", recording: null });
+    emit({ ...base, state: "uploading", recording: null, slot: null });
     let result = await putOnce(meta, blob);
     for (let i = 0; result.action === "retry" && i < TOEIC_REC_UPLOAD_RETRY_DELAYS_MS.length; i++) {
       await sleep(TOEIC_REC_UPLOAD_RETRY_DELAYS_MS[i]);
       result = await putOnce(meta, blob);
     }
     if (result.action === "retry") {
-      emit({ ...base, state: "pending", recording: null });
+      emit({ ...base, state: "pending", recording: null, slot: null });
       return { uploaded, remaining: pending.length };
     }
     if (result.action === "done") {
       await setToeicRecUploadState(meta.attemptId, meta.q, meta.createdAt, "done", Date.now());
       uploaded += 1;
-      emit({ ...base, state: "done", recording: result.recording });
+      emit({ ...base, state: "done", recording: result.recording, slot: result.slot });
+    } else if (result.action === "purge") {
+      // 다른 곳(다른 기기·목록)에서 지운 녹음이다(§14-4) — 이 기기 사본도 지운다(같은 녹음일 때만 — 지운 뒤 새로 녹음한 것은 남긴다)
+      const still = await getToeicRecordingBlob(meta.attemptId, meta.q, meta.createdAt);
+      if (still) await deleteToeicRecordingsLocal(meta.attemptId, [meta.q]);
+      emit({ ...base, state: "gone", recording: null, slot: null });
     } else {
       await setToeicRecUploadState(meta.attemptId, meta.q, meta.createdAt, "gone", null);
-      emit({ ...base, state: "gone", recording: null });
+      emit({ ...base, state: "gone", recording: null, slot: null });
     }
   }
 }

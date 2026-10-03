@@ -28,6 +28,15 @@
  *   drillTemplateCheck). 2026-10-02(§12-13-3)부터 **실전 모의고사에도** 붙는다 — 서버가 파트마다 점검 자료(`checks`)를 넘긴다. 연습은 문항마다
  *   펼쳐서, 실전 모의고사는 문항마다 **닫힌 접기** "🧩 틀 점검 · 쓴 틀 n(· 빠진 단계 m)"(채점 전은 "🧩 모범답변의 틀 n · 채점 뒤 내 틀") — 11문항
  *   결과 화면이 길어지지 않게. 실전 모의고사는 결과 머리에 한 줄 "🧩 틀을 쓴 문항 n/m · 빠진 단계 k"(toeicTemplateCheckSummary).
+ * - **녹음 관리 · 고칠 문장 다시 녹음**(2026-10-03, docs/harness/toeic.md §14 — AI 0): 문항마다 "🗑 녹음 지우기"(확인 창 — 서버 먼저 → 이 기기
+ *   사본·대기열, 점수·전사·피드백은 남고 그 문항은 다시 채점할 수 없다). 피드백 "고칠 문장"마다 🔊 고친 문장 · 🎤 다시 말하기(결과 화면 세션
+ *   동안 마이크 하나 — components/use-toeic-fix-recorder) · ▶ 내 목소리 · ⇄ 내 목소리 → 고친 문장(공용 플레이어 이어 듣기) · 🗑. 다시 한 녹음은
+ *   곧바로 서버에 올라가 고칠 문장마다 최신 하나로 바뀌고 다른 기기에서도 들린다. 지운 자리(recordingDeletions)가 덮는 이 기기 사본은 열 때 지운다.
+ * - **문항 단위 다시 풀기**(2026-10-03, docs/harness/toeic.md §15-7): 닫힌 응시면 문항 카드마다 "↻ 이 문항 다시 풀기", 오류 문항(녹음 없음·실패·중단·
+ *   소리 없음(무음)·채점 실패·녹음 지움)이 있으면 위에 "↻ 오류 문항 n개 다시 풀기"(lib/toeic-retake toeicErrorQuestions). 다시 푼 답은 원래 결과에
+ *   합쳐지고 예전 답은 ③ "다시 풀기 전" 행으로 남는다(▶는 이 기기 사본(그 세대) → 서버 `…/history/[rid]`). 이 기기 사본은 세대(retakeId)가 지금 답과
+ *   같을 때만 "지금 녹음"으로 쓴다(toeicLocalCopyRole — 다른 기기에서 다시 푼 뒤 예전 사본으로 새 답을 채점하지 않게). 문항 카드에 F2 진단 줄.
+ *   머리에 "다시 풀기 전 추정 → 지금"(toeicRetakeEstimates).
  * - 모범답변 접기에 **모범답변 점검 줄**("🧩 모범답변의 틀 n개 · 단계 a/b" — 문서에 저장된 흐름으로 잰다, 옛 문서는 줄 없음)과 크게 덜 따랐으면
  *   미달 경고(→ ② 템플릿 훈련). 모범답변 속 강조는 틀 글자에서 온 구간을 🧩 색으로 따로 보인다(흐름 글자 집합에 드는가로 가른다).
  */
@@ -36,10 +45,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ToeicInfoTableView from "@/components/toeic-info-table";
+import ToeicMicKeepToggle from "@/components/toeic-mic-keep-toggle";
 import TtsEngineControl from "@/components/tts-engine-control";
 import TtsSpeedControl from "@/components/tts-speed-control";
 import { toWav16kMono } from "@/lib/mic-session";
 import { prefetchSpeech, speakQueue, unlockSpeechPlayback } from "@/lib/speech";
+import { fixSlotKey, useToeicFixRecorder } from "@/components/use-toeic-fix-recorder";
 import {
   TOEIC_SCORE_AUDIO_MAX_BYTES,
   TOEIC_SCORE_CONCURRENCY,
@@ -48,15 +59,33 @@ import {
   isAcceptedToeicAudioType,
   toeicAudioBaseType,
   toeicAudioFileName,
+  toeicRecordingHistoryHref,
   toeicRecordingHref,
   type ToeicAnswer,
   type ToeicAttemptFinishResponse,
   type ToeicAttemptRecord,
   type ToeicQuestionView,
+  type ToeicRecordingDeleteResponse,
+  type ToeicRecordingDeletion,
   type ToeicRecordingGetErrorResponse,
   type ToeicScoreResponse,
+  type ToeicStoredFixRecording,
   type ToeicStoredRecording,
 } from "@/lib/toeic-attempt-contract";
+import { isToeicRecordingTombstoned } from "@/lib/toeic-rec-rules";
+import {
+  TOEIC_ERROR_REASON_KO,
+  toeicAnswerRecordingDeleted,
+  toeicAnswerSourceOf,
+  toeicDeletedHistoryLocalCopies,
+  toeicOtherAttemptLocalCopies,
+  toeicErrorQuestions,
+  toeicLocalCopyRole,
+  toeicOpenRetake,
+  toeicRetakeEstimates,
+  toeicRetakeHref,
+} from "@/lib/toeic-retake";
+import { toeicAnswerDiagLineKo } from "@/lib/toeic-mic-health";
 import { isScorableToeicAnswer } from "@/lib/toeic-attempt-rules";
 import { FrameLine } from "@/components/toeic-template-lines";
 import {
@@ -77,7 +106,7 @@ import type { ToeicMockPart } from "@/lib/toeic-mock";
 import { answerFlowExpressions, frameSlotNames, templateRunSpans, templateSpanSegments } from "@/lib/toeic-template";
 import { expressionKey } from "@/lib/toeic-text";
 import { markReadAloud } from "@/lib/toeic-read-marks";
-import { listToeicRecordings, type ToeicRecording } from "@/lib/toeic-rec-store";
+import { deleteToeicRecordingsLocal, listToeicRecordings, type ToeicRecording } from "@/lib/toeic-rec-store";
 import { drainToeicRecUploads } from "@/lib/toeic-rec-upload";
 import { useToeicRecUploadDrain, useToeicRecUploadStates } from "@/components/use-toeic-rec-uploads";
 import {
@@ -131,7 +160,8 @@ type Clip =
   | { status: "ready"; url: string; blob: Blob; source: "local" | "server"; mimeType: string; size: number }
   | { status: "error"; message: string };
 
-const clipKey = (attemptId: string, q: number) => `${attemptId}:${q}`;
+const clipKey = (attemptId: string, q: number, fixIndex?: number, historyOf?: string) =>
+  historyOf !== undefined ? `${attemptId}:${q}:h${historyOf}` : fixIndex === undefined ? `${attemptId}:${q}` : `${attemptId}:${q}:f${fixIndex}`;
 
 /** 서버 사본 미리 받기 동시 수(§13-8) */
 const SERVER_PREFETCH_CONCURRENCY = 2;
@@ -245,21 +275,54 @@ export default function ToeicAttemptView({
     setAnswers(toMap(attempt.answers));
   }, [attempt]);
 
+  // ── 서버 녹음 메타(§13-5·§14) — 페이지 값에서 시작해 이 화면의 지우기·고칠 문장 업로드 응답으로 바꾼다 ──
+  type ServerRecState = { recordings: ToeicStoredRecording[]; fixRecordings: ToeicStoredFixRecording[]; recordingDeletions: ToeicRecordingDeletion[] };
+  const fromAttempt = (a: ToeicAttemptRecord): ServerRecState => ({ recordings: a.recordings, fixRecordings: a.fixRecordings, recordingDeletions: a.recordingDeletions });
+  const [srv, setSrv] = useState<ServerRecState>(() => fromAttempt(attempt));
+  useEffect(() => {
+    setSrv(fromAttempt(attempt));
+  }, [attempt]);
+  const deletionsRef = useRef(srv.recordingDeletions);
+  useEffect(() => {
+    deletionsRef.current = srv.recordingDeletions;
+  }, [srv.recordingDeletions]);
+
   // ── 이 기기의 녹음 ──
   const [recs, setRecs] = useState<Map<number, LocalRec>>(new Map());
+  /** 이 응시의 예전 답(다시 풀기 전 세대) 이 기기 사본 — 키 `${q}:${replacedBy}`(§15-7 ③) */
+  const [histLocal, setHistLocal] = useState<Map<string, LocalRec>>(new Map());
+  const historyRef0 = useRef<{ answerHistory: ToeicAttemptRecord["answerHistory"] }>({ answerHistory: attempt.answerHistory });
+  useEffect(() => {
+    historyRef0.current = { answerHistory: attempt.answerHistory };
+  }, [attempt.answerHistory]);
   const [recsLoaded, setRecsLoaded] = useState(false);
   useEffect(() => {
     let alive = true;
     const urls: string[] = [];
-    void listToeicRecordings(id).then((list) => {
+    void listToeicRecordings(id).then((all) => {
       if (!alive) return;
+      // 다른 기기·목록에서 지운 녹음(지운 자리가 이 사본의 녹음 시각을 덮는다)은 이 기기 사본도 지운다(§14-4)
+      const gone = all.filter((r) => isToeicRecordingTombstoned(deletionsRef.current, r.q, null, r.createdAt));
+      if (gone.length > 0) void deleteToeicRecordingsLocal(id, gone.map((r) => r.q));
+      // 다른 기기·목록에서 지운 예전 답(이력 줄 recordingDeletedAt — 지운 자리를 남기지 않는다)의 이 기기 사본도 지운다.
+      // 지금 답 세대 사본은 keepGeneration으로 남긴다(§15-8, QA rec-retake P2-4)
+      const histGone = toeicDeletedHistoryLocalCopies(historyRef0.current, all.filter((r) => !gone.includes(r)));
+      for (const p of histGone) void deleteToeicRecordingsLocal(id, [p.q], { keepGeneration: p.keepGeneration });
+      const histGoneQ = new Set(histGone.map((p) => p.q));
+      const list = all.filter((r) => !gone.includes(r) && !histGoneQ.has(r.q)); // 문항마다 사본은 하나(키 `{attemptId}:{q}`)
+      // 세대(§15-6) — 지금 답 세대의 사본만 "지금 녹음", 예전 세대의 사본은 그 이력 줄(③)에, 어느 쪽도 아니면 쓰지 않는다
       const m = new Map<number, LocalRec>();
+      const hm = new Map<string, LocalRec>();
       for (const r of list) {
+        const role = toeicLocalCopyRole(historyRef0.current, r.q, r.retakeId);
+        if (role.role === "stale") continue;
         const url = URL.createObjectURL(r.blob);
         urls.push(url);
-        m.set(r.q, { url, rec: r });
+        if (role.role === "current") m.set(r.q, { url, rec: r });
+        else hm.set(`${r.q}:${role.replacedBy}`, { url, rec: r });
       }
       setRecs(m);
+      setHistLocal(hm);
       setRecsLoaded(true);
     });
     return () => {
@@ -272,10 +335,15 @@ export default function ToeicAttemptView({
   useToeicRecUploadDrain();
   const live = useToeicRecUploadStates(id);
   const serverRecs = useMemo(() => {
-    const m = new Map<number, ToeicStoredRecording>(attempt.recordings.map((r) => [r.q, r] as const));
-    for (const [q, st] of Object.entries(live)) if (st.state === "done" && st.recording) m.set(Number(q), st.recording);
+    const m = new Map<number, ToeicStoredRecording>(srv.recordings.map((r) => [r.q, r] as const));
+    for (const [q, st] of Object.entries(live)) {
+      if (st.state !== "done" || !st.recording) continue;
+      // 이 화면에서 지운 뒤 늦게 끝난 업로드 이벤트가 지운 녹음을 되살리지 않게
+      if (isToeicRecordingTombstoned(srv.recordingDeletions, Number(q), null, Date.parse(st.recording.recordedAt))) continue;
+      m.set(Number(q), st.recording);
+    }
     return m;
-  }, [attempt.recordings, live]);
+  }, [srv.recordings, srv.recordingDeletions, live]);
   /** 이 기기에 아직 못 올린(pending) 이 응시 녹음 수 — "지금 올리기" */
   const pendingHere = [...recs.values()].filter((r) => {
     const st = live[r.rec.q];
@@ -295,6 +363,15 @@ export default function ToeicAttemptView({
   // ── 다른 응시(다시 풀기 기록)의 이 기기 사본 — 비교 ③ 이어 듣기가 서버 사본보다 먼저 쓴다 ──
   const [otherLocal, setOtherLocal] = useState<Map<string, Map<number, LocalRec>>>(new Map());
   const historyIdsKey = history.map((h) => h.id).filter((x) => x !== id).join(",");
+  // 그 응시들의 세대·지운 예전 답이 바뀌면(새로고침으로 다른 기기의 다시 풀기·지우기가 들어오면) 다시 가른다(P2-5)
+  const historyGenKey = history
+    .filter((h) => h.id !== id)
+    .map((h) => `${h.id}=${(h.answerHistory ?? []).map((e) => `${e.q}:${e.replacedBy}:${e.recordingDeletedAt ?? ""}`).join(";")}|${(h.recordingDeletions ?? []).length}`)
+    .join(",");
+  const historyRef = useRef(history);
+  useEffect(() => {
+    historyRef.current = history;
+  }, [history]);
   useEffect(() => {
     let alive = true;
     const urls: string[] = [];
@@ -302,7 +379,17 @@ export default function ToeicAttemptView({
     void Promise.all(ids.map(async (aid) => [aid, await listToeicRecordings(aid)] as const)).then((pairs) => {
       if (!alive) return;
       const out = new Map<string, Map<number, LocalRec>>();
-      for (const [aid, list] of pairs) {
+      for (const [aid, all] of pairs) {
+        // 그 응시에서 지운 녹음은 이 기기 사본도 지운다(§14-4 — 다시 풀기 기록이 지운 목소리를 틀지 않게)
+        const other = historyRef.current.find((h) => h.id === aid);
+        const dels = other?.recordingDeletions ?? [];
+        const gone = all.filter((r) => isToeicRecordingTombstoned(dels, r.q, null, r.createdAt));
+        if (gone.length > 0) void deleteToeicRecordingsLocal(aid, gone.map((r) => r.q));
+        // 세대(§15-6, QA rec-retake 2 P2-5) — 그 응시의 지금 답 세대 사본만 "그 응시의 지금 답" 행에. 다른 기기에서 다시 풀어 합쳤으면
+        // 이 기기의 예전 세대 사본은 쓰지 않고(서버 사본을 받는다), 그 응시에서 지운 예전 답 사본은 지운다(지금 세대 사본은 keepGeneration으로 남긴다)
+        const split = toeicOtherAttemptLocalCopies({ answerHistory: other?.answerHistory ?? [] }, all.filter((r) => !gone.includes(r)));
+        for (const p of split.purge) void deleteToeicRecordingsLocal(aid, [p.q], { keepGeneration: p.keepGeneration });
+        const list = split.current;
         if (list.length === 0) continue;
         const m = new Map<number, LocalRec>();
         for (const r of list) {
@@ -318,7 +405,7 @@ export default function ToeicAttemptView({
       alive = false;
       for (const u of urls) URL.revokeObjectURL(u);
     };
-  }, [historyIdsKey]);
+  }, [historyIdsKey, historyGenKey]);
 
   // ── 서버 사본 미리 받기(§13-8) — fetch → Blob → objectURL. `<audio src>`에 API 주소를 넣지 않는다(iOS 탭 규칙·Range) ──
   const [clips, setClips] = useState<Record<string, Clip>>({});
@@ -335,8 +422,8 @@ export default function ToeicAttemptView({
     },
     [],
   );
-  const ensureServerClip = useCallback((attemptId: string, q: number): Promise<Clip> => {
-    const key = clipKey(attemptId, q);
+  const ensureServerClip = useCallback((attemptId: string, q: number, fixIndex?: number, historyOf?: string): Promise<Clip> => {
+    const key = clipKey(attemptId, q, fixIndex, historyOf);
     const cur = clipsRef.current[key];
     if (cur && cur.status === "ready") return Promise.resolve(cur);
     const running = inflightRef.current.get(key);
@@ -344,7 +431,11 @@ export default function ToeicAttemptView({
     setClips((prev) => ({ ...prev, [key]: { status: "loading" } }));
     const p = (async (): Promise<Clip> => {
       try {
-        const res = await fetch(toeicRecordingHref(attemptId, q), { cache: "no-store" });
+        // fixIndex가 있으면 고칠 문장 녹음(§14-5), historyOf가 있으면 다시 풀기 전 예전 답 녹음(§15-8)
+        const res =
+          historyOf !== undefined
+            ? await fetch(toeicRecordingHistoryHref(attemptId, q, historyOf), { cache: "no-store" })
+            : await fetch(toeicRecordingHref(attemptId, q, fixIndex), { cache: "no-store" });
         if (!res.ok) {
           const body = (await res.json().catch(() => null)) as ToeicRecordingGetErrorResponse | null;
           return { status: "error", message: body?.messageKo ?? `서버 사본을 받지 못했어요(${res.status}).` };
@@ -389,9 +480,95 @@ export default function ToeicAttemptView({
     void Promise.all(Array.from({ length: Math.min(SERVER_PREFETCH_CONCURRENCY, queue.length) }, () => worker()));
   }, [serverOnlyKey, id, ensureServerClip]);
   const [formatErrors, setFormatErrors] = useState<Record<string, string>>({});
-  const markFormatError = useCallback((attemptId: string, q: number, mimeType: string) => {
-    setFormatErrors((prev) => ({ ...prev, [clipKey(attemptId, q)]: formatErrorKo(mimeType) }));
+  const markFormatError = useCallback((attemptId: string, q: number, mimeType: string, fixIndex?: number) => {
+    setFormatErrors((prev) => ({ ...prev, [clipKey(attemptId, q, fixIndex)]: formatErrorKo(mimeType) }));
   }, []);
+
+  // ── 고칠 문장 다시 말하기(§14-5) — 결과 화면 세션 동안 마이크 하나, 끝나면 메모리 → 바로 서버. AI 0 ──
+  const onFixStored = useCallback((rec: ToeicStoredFixRecording) => {
+    setSrv((prev) => ({
+      ...prev,
+      fixRecordings: [...prev.fixRecordings.filter((r) => !(r.q === rec.q && r.fixIndex === rec.fixIndex)), rec].sort((a, b) => a.q - b.q || a.fixIndex - b.fixIndex),
+    }));
+  }, []);
+  const answerSourceOf = useCallback((q: number) => toeicAnswerSourceOf(attempt, q), [attempt]);
+  const fixRec = useToeicFixRecorder(id, onFixStored, answerSourceOf);
+  const fixMeta = (q: number, i: number) => srv.fixRecordings.find((r) => r.q === q && r.fixIndex === i) ?? null;
+  /** 고칠 문장 녹음 소리 — 이 화면에서 방금 한 녹음(메모리) → 서버 사본 */
+  const fixClipFor = (q: number, i: number): Clip | null => {
+    const take = fixRec.takes[fixSlotKey(q, i)];
+    if (take) return { status: "ready", url: take.url, blob: take.blob, source: "local", mimeType: take.mimeType, size: take.size };
+    return fixMeta(q, i) ? (clips[clipKey(id, q, i)] ?? null) : null;
+  };
+  // 서버 사본 미리 받기(§13-8 규칙 그대로 — iOS 탭 안 await 금지) — 이 화면에서 녹음하지 않은 고칠 문장 녹음만, 동시 2개
+  const fixServerKey = srv.fixRecordings
+    .filter((r) => !fixRec.takes[fixSlotKey(r.q, r.fixIndex)])
+    .map((r) => `${r.q}:${r.fixIndex}:${r.sha256.slice(0, 8)}`)
+    .join(",");
+  useEffect(() => {
+    if (!fixServerKey) return;
+    const queue = fixServerKey.split(",").map((x) => x.split(":").map(Number) as [number, number]);
+    const worker = async () => {
+      while (queue.length > 0) {
+        const [q, i] = queue.shift()!;
+        await ensureServerClip(id, q, i);
+      }
+    };
+    void Promise.all(Array.from({ length: Math.min(SERVER_PREFETCH_CONCURRENCY, queue.length) }, () => worker()));
+  }, [fixServerKey, id, ensureServerClip]);
+
+  // ── 녹음 지우기(§14-4) — 확인 창 → 서버 먼저(보관소 → 메타·지운 자리) → 이 기기 사본·대기열 → 화면 ──
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<{ key: string; message: string } | null>(null);
+  /** 받아 둔 서버 사본을 버린다(다시 받지 않게 — 메타가 사라졌다) */
+  const dropClip = (key: string) => {
+    const c = clipsRef.current[key];
+    if (c && c.status === "ready") URL.revokeObjectURL(c.url);
+    setClips((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      clipsRef.current = next;
+      return next;
+    });
+  };
+  async function deleteRecording(target: { kind: "answer"; q: number } | { kind: "fix"; q: number; fixIndex: number }) {
+    const key = target.kind === "answer" ? `a:${target.q}` : `f:${target.q}:${target.fixIndex}`;
+    const what = target.kind === "answer" ? `Q${target.q} 내 답변 녹음` : `Q${target.q} 고칠 문장 ${target.fixIndex + 1}의 다시 말한 녹음`;
+    const tail = target.kind === "answer" ? " 점수·전사·피드백은 남지만 이 문항은 다시 채점할 수 없어요." : "";
+    if (!window.confirm(`${what}을 지울까요?\n서버와 이 기기에서 모두 지워지고 되돌릴 수 없어요.${tail}`)) return;
+    stopAllPlayback();
+    setDeleting(key);
+    setDeleteError(null);
+    try {
+      const res = await fetch(target.kind === "answer" ? toeicRecordingHref(id, target.q) : toeicRecordingHref(id, target.q, target.fixIndex), { method: "DELETE" });
+      const data = (await res.json().catch(() => null)) as ToeicRecordingDeleteResponse | null;
+      if (!data?.ok) {
+        setDeleteError({ key, message: data && !data.ok ? data.messageKo : `지우지 못했어요(${res.status}). 다시 눌러 주세요.` });
+        return;
+      }
+      // 서버가 지웠다 → 이 기기 사본(대기열 포함 — 업로드도 취소)·메모리·받아 둔 사본
+      if (target.kind === "answer") {
+        await deleteToeicRecordingsLocal(id, [target.q]);
+        setRecs((prev) => {
+          const r = prev.get(target.q);
+          if (!r) return prev;
+          URL.revokeObjectURL(r.url);
+          const next = new Map(prev);
+          next.delete(target.q);
+          return next;
+        });
+        dropClip(clipKey(id, target.q));
+      } else {
+        fixRec.forget([fixSlotKey(target.q, target.fixIndex)]);
+        dropClip(clipKey(id, target.q, target.fixIndex));
+      }
+      setSrv({ recordings: data.recordings, fixRecordings: data.fixRecordings, recordingDeletions: data.recordingDeletions });
+    } catch {
+      setDeleteError({ key, message: "네트워크 문제로 지우지 못했어요. 다시 눌러 주세요." });
+    } finally {
+      setDeleting(null);
+    }
+  }
 
   // ── AI 채점 ──
   const [jobs, setJobs] = useState<Record<number, ScoreJob>>({});
@@ -502,6 +679,8 @@ export default function ToeicAttemptView({
           stopAllRef.current = true;
           setKeyMessage(data.messageKo);
         }
+        // 채점하는 사이 그 문항을 다시 풀어 답이 바뀌었다(§15-6) — 서버 값으로 다시 읽는다
+        if (data.error === "answer_changed") router.refresh();
         setJob(q, { phase: "failed", message: data.messageKo, retriable: data.retriable === true || data.error === "client_closed" });
         patchDiag(q, { transcribe: "failed", error: `${status} ${data.error}` });
         return;
@@ -509,7 +688,7 @@ export default function ToeicAttemptView({
       setJob(q, { phase: "failed", message: `채점 응답을 받지 못했어요(${status || "연결 끊김"}). 다시 시도해 주세요.`, retriable: true });
       patchDiag(q, { transcribe: "failed", error: `${status} 본문 없음` });
     },
-    [id, patchDiag, setJob, ensureServerClip],
+    [id, patchDiag, setJob, ensureServerClip, router],
   );
 
   const runScoring = useCallback(
@@ -548,16 +727,46 @@ export default function ToeicAttemptView({
   const qs = questions.map((v) => v.q);
   /** 소리가 있는 문항(이 기기 사본 또는 서버 사본 — §13-8 "AI 채점 받기" 대상이 넓어진다) */
   const hasSound = (q: number) => recs.has(q) || serverRecs.has(q);
+  /**
+   * 이 문항 **지금 답**의 녹음을 지웠는가(§14-4 — 지운 자리) — 소리가 없으면 "녹음을 지웠어요 · 다시 채점할 수 없어요".
+   * 지운 시각이 지금 답 세대의 시작보다 늦을 때만(지운 뒤 다시 풀어 합친 새 답은 "아직 서버에 올라가지 않았어요" — QA rec-retake P2-1)
+   */
+  const deletionView = { startedAt: attempt.startedAt, retakes: attempt.retakes, answerHistory: attempt.answerHistory, recordingDeletions: srv.recordingDeletions };
+  const answerDeleted = (q: number) => !hasSound(q) && toeicAnswerRecordingDeleted(deletionView, q);
   const scorable = qs.filter((q) => {
     const a = answers[q];
     return a && isScorableToeicAnswer(a) && hasSound(q);
   });
   const recordedHere = qs.filter((q) => answers[q]?.recorded && hasSound(q)).length;
   const recordedAll = qs.filter((q) => answers[q]?.recorded).length;
-  const recordedElsewhere = recordedAll - recordedHere;
+  const deletedCount = qs.filter((q) => answers[q]?.recorded && answerDeleted(q)).length;
+  const recordedElsewhere = recordedAll - recordedHere - deletedCount;
   /** 🗄️ 녹음 서버 보관 n/m — m = 녹음된 문항, n = 그중 서버 메타가 있는 문항 */
   const storedOnServer = qs.filter((q) => answers[q]?.recorded && serverRecs.has(q)).length;
   const estimate = estimateToeicTotal(Object.values(answers));
+  // ── 문항 단위 다시 풀기(§15-7) — 오류 문항·다시 풀기 전 추정·진행 중 기록 ──
+  const diagOf = (q: number) => attempt.answerDiags.find((d) => d.q === q) ?? null;
+  const errorQs = closed
+    ? toeicErrorQuestions(
+        qs.map((q) => {
+          const a = answers[q];
+          const d = diagOf(q);
+          return {
+            q,
+            recorded: a?.recorded === true,
+            score: a?.score ?? null,
+            transcript: a?.transcript ?? null,
+            diagStatus: d?.status ?? null,
+            silent: d?.silent === true,
+            deleted: a?.recorded === true && answerDeleted(q),
+            scoreFailed: jobs[q]?.phase === "failed",
+          };
+        }),
+      )
+    : [];
+  const retakeEst = toeicRetakeEstimates(Object.values(answers), attempt.answerHistory);
+  const openRetake = toeicOpenRetake(attempt.retakes);
+  const retakenUnscored = qs.filter((q) => toeicAnswerSourceOf(attempt, q) !== null && answers[q]?.recorded && answers[q]?.score === null);
 
   // ── 🧩 틀 점검(AI 0) — 문항마다 한 번 계산해 머리 요약·문항 접기가 같이 쓴다 ──
   const checkResults = useMemo(() => {
@@ -595,7 +804,18 @@ export default function ToeicAttemptView({
     },
     [],
   );
+  /** 지금 재생을 모두 멈춘다 — 🔊 큐 · 이어 듣기 · 화면의 모든 <audio>(녹음·지우기 전에 — 재생과 캡처를 겹치지 않는다) */
+  function stopAllPlayback() {
+    runRef.current++;
+    const stop = stopRef.current;
+    stopRef.current = null;
+    stop?.();
+    setPlayingKey(null);
+    stopChain();
+    for (const el of Array.from(document.querySelectorAll("audio"))) el.pause();
+  }
   function togglePlay(key: string, text: string) {
+    if (fixRec.active) void fixRec.stop(); // 녹음 중이면 먼저 멈춘다(재생과 캡처를 겹치지 않는다)
     if (playingKey === key) {
       runRef.current++;
       const stop = stopRef.current;
@@ -668,11 +888,12 @@ export default function ToeicAttemptView({
     [],
   );
   /** 탭 핸들러 안에서 **동기로** 부른다 — clips는 이미 받아 둔 Blob URL이어야 한다(탭 안 await 금지) */
-  function playChain(key: string, clipsToPlay: { url: string; attemptId: string; q: number; mimeType: string }[], thenText: string | null) {
+  function playChain(key: string, clipsToPlay: { url: string; attemptId: string; q: number; mimeType: string; fixIndex?: number }[], thenText: string | null) {
     if (chainKey === key) {
       stopChain();
       return;
     }
+    if (fixRec.active) void fixRec.stop(); // 녹음 중이면 먼저 멈춘다
     // 지금 재생을 모두 멈춘다 — 🔊 큐, 이어 듣기, 문항 카드의 내 녹음 플레이어
     runRef.current++;
     stopRef.current?.();
@@ -697,7 +918,7 @@ export default function ToeicAttemptView({
         p.onended = next;
         p.onerror = () => {
           if (chainRunRef.current !== run) return;
-          markFormatError(c.attemptId, c.q, c.mimeType);
+          markFormatError(c.attemptId, c.q, c.mimeType, c.fixIndex);
           finish();
         };
         p.src = c.url;
@@ -740,6 +961,7 @@ export default function ToeicAttemptView({
 
   // 다시 풀기 기록(§13-9 ③) — 이번 응시는 이 화면의 최신 답·서버 메타로 바꿔 끼운다
   const compareAttempts = useMemo((): ToeicCompareAttempt[] => {
+    const curH = history.find((h) => h.id === id);
     const cur: ToeicCompareAttempt = {
       id,
       startedAt: attempt.startedAt,
@@ -747,6 +969,9 @@ export default function ToeicAttemptView({
       scope: attempt.scope,
       answers: Object.values(answers).map((a) => ({ q: a.q, recorded: a.recorded === true, score: a.score, transcript: a.transcript })),
       recordings: [...serverRecs.values()],
+      // 다시 풀기 전 예전 답(§15-7) — 페이지가 줄여 넘긴 이 응시의 이력 줄·지금 답 세대 시작 시각
+      answerHistory: curH?.answerHistory ?? [],
+      answerSince: curH?.answerSince ?? [],
     };
     const others = history.filter((h) => h.id !== id);
     return [...others, cur].sort((a, b) => (a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : 0));
@@ -760,15 +985,31 @@ export default function ToeicAttemptView({
       const localCopies = new Set<string>();
       if (recs.has(q)) localCopies.add(id);
       for (const [aid, m] of otherLocal) if (m.has(q)) localCopies.add(aid);
-      return toeicQuestionHistory(compareAttempts, id, q, { localCopies });
+      const historyLocalCopies = new Set<string>();
+      for (const k of histLocal.keys()) if (k.startsWith(`${q}:`)) historyLocalCopies.add(`${id}:${k.slice(String(q).length + 1)}`);
+      return toeicQuestionHistory(compareAttempts, id, q, { localCopies, historyLocalCopies });
     },
-    [compareAttempts, id, recs, otherLocal],
+    [compareAttempts, id, recs, otherLocal, histLocal],
   );
+  /** ③ 행의 소리 — 지금 답 행은 clipFor, 예전 답 행은 이 기기 사본(그 세대) → 받아 둔 서버 사본(§15-7) */
+  const rowClip = (row: { attemptId: string; historyOf: string | null }, q: number): Clip | null => {
+    if (row.historyOf === null) return clipFor(row.attemptId, q);
+    const local = row.attemptId === id ? histLocal.get(`${q}:${row.historyOf}`) : undefined;
+    if (local) return { status: "ready", url: local.url, blob: local.rec.blob, source: "local", mimeType: local.rec.mimeType, size: local.rec.size };
+    return clips[clipKey(row.attemptId, q, undefined, row.historyOf)] ?? null;
+  };
   const [openTranscripts, setOpenTranscripts] = useState<Record<string, boolean>>({});
   /** 접기를 여는 탭에서 기록 행들의 서버 사본을 미리 받는다(이 기기 사본이 있으면 그것) */
   function prefetchHistoryClips(q: number) {
     for (const row of historyOf(q)) {
       if (!row.hasRecording) continue;
+      if (row.historyOf !== null) {
+        // 예전 답(§15-7) — 이 기기 사본(그 세대)이 없고 서버 메타가 있으면 받아 둔다
+        if (row.attemptId === id && histLocal.has(`${q}:${row.historyOf}`)) continue;
+        const hasServerH = compareAttempts.find((a) => a.id === row.attemptId)?.answerHistory?.some((h) => h.q === q && h.replacedBy === row.historyOf && h.hasRecording);
+        if (hasServerH) void ensureServerClip(row.attemptId, q, undefined, row.historyOf);
+        continue;
+      }
       const local = row.attemptId === id ? recs.get(q) : otherLocal.get(row.attemptId)?.get(q);
       if (local) continue;
       const hasServer = compareAttempts.find((a) => a.id === row.attemptId)?.recordings.some((r) => r.q === q);
@@ -784,6 +1025,7 @@ export default function ToeicAttemptView({
       if (v.passage) texts.push(v.passage); // 🎧 비교 ① Q1–2 — 내 읽기 → 지문 낭독(§13-9)
       const fb = answers[v.q]?.feedback;
       if (fb?.improvedAnswer) texts.push(fb.improvedAnswer);
+      for (const f of fb?.fixes ?? []) if (f.better) texts.push(f.better); // 🔊 고친 문장 · ⇄ 이어 듣기(§14-5)
     }
     return texts
       .flatMap((t) => splitForTts(t, TTS_TEXT_MAX_CHARS))
@@ -857,11 +1099,31 @@ export default function ToeicAttemptView({
                 {draining ? "올리는 중…" : `⬆️ 지금 올리기 (${pendingHere})`}
               </button>
             )}
+            <Link href="/toeic/recordings" className={s.tplLink}>
+              🎙️ 내 녹음 모아보기 →
+            </Link>
           </p>
         )}
         {attemptDelta && (
           <p className={s.tplSummary} data-testid="attempt-delta">
             📈 {toeicAttemptDeltaLabelKo(attemptDelta)}
+          </p>
+        )}
+        {retakeEst && retakeEst.before.complete && retakeEst.now.complete && (
+          <p className={s.tplSummary} data-testid="retake-estimate">
+            ↻ 다시 풀기 전 추정 {retakeEst.before.scaled} → 지금 {retakeEst.now.scaled} ({retakeEst.now.scaled - retakeEst.before.scaled >= 0 ? "+" : ""}
+            {retakeEst.now.scaled - retakeEst.before.scaled}) · 추정(참고용)
+          </p>
+        )}
+        {retakenUnscored.length > 0 && (
+          <p className={s.tplSummary} data-testid="retake-unscored">
+            ↻ 다시 푼 {retakenUnscored.map((q) => `Q${q}`).join("·")}를 채점하면 추정 등급을 다시 계산해요
+            {retakeEst && retakeEst.before.complete ? ` (다시 풀기 전 추정 ${retakeEst.before.scaled} · ${retakeEst.before.band})` : ""}.
+          </p>
+        )}
+        {openRetake && (
+          <p className={s.caption} data-testid="retake-open">
+            ↻ 다시 풀기 진행 중({openRetake.questions.map((q) => `Q${q}`).join("·")}) — 다른 탭·기기에서 열었다면 그쪽을 끝내 주세요.
           </p>
         )}
       </div>
@@ -905,6 +1167,18 @@ export default function ToeicAttemptView({
         </div>
       )}
 
+      {/* 오류 문항 다시 풀기(§15-7) — 녹음 없음·실패·중단·소리 없음(무음)·채점 실패·녹음 지움 */}
+      {errorQs.length > 0 && (
+        <section className={s.retakeBox} aria-label="오류 문항 다시 풀기" data-testid="retake-errors">
+          <Link href={toeicRetakeHref(id, errorQs.map((e) => e.q))} className="u-btn u-btn-primary" data-testid="retake-errors-link">
+            ↻ 오류 문항 {errorQs.length}개 다시 풀기
+          </Link>
+          <p className={s.caption}>
+            {errorQs.map((e) => `Q${e.q} ${TOEIC_ERROR_REASON_KO[e.reason]}`).join(" · ")} — 실전과 같은 시간으로 그 문항만 다시 풀고, 녹음되면 이 결과에 합쳐요.
+          </p>
+        </section>
+      )}
+
       {/* AI 채점 받기 */}
       {closed && (
         <section className={s.scoreBox} aria-label="AI 채점">
@@ -920,9 +1194,11 @@ export default function ToeicAttemptView({
                   ? "녹음된 문항이 없어 채점할 것이 없어요."
                   : !recsLoaded
                     ? "이 기기의 녹음을 찾는 중…"
-                    : recordedHere === 0
+                    : recordedHere === 0 && recordedElsewhere > 0
                       ? "이 녹음은 아직 서버에 올라가지 않았어요 — 응시한 기기에서 결과 화면을 열면 올라가요."
-                      : "채점할 문항이 남지 않았어요."}
+                      : deletedCount > 0 && recordedHere === 0
+                        ? "녹음을 지워 채점할 문항이 없어요(점수·전사·피드백은 남아 있어요)."
+                        : "채점할 문항이 남지 않았어요."}
           </p>
           {recordedElsewhere > 0 && recsLoaded && recordedHere > 0 && (
             <p className={s.caption}>녹음 {recordedElsewhere}문항은 아직 서버에 올라가지 않았어요 — 응시한 기기에서 결과 화면을 열면 올라가요.</p>
@@ -937,6 +1213,11 @@ export default function ToeicAttemptView({
             <div className={s.settingsBody}>
               <TtsSpeedControl />
               <TtsEngineControl lang="en-US" />
+              {/* 응시·다시 풀기 화면용 기기 설정(§15-13) — 이 화면의 고칠 문장 녹음은 설정과 상관없이 마이크를 화면 동안 하나로 유지한다(놓지 않는다) */}
+              <ToeicMicKeepToggle
+                onChange={() => {}}
+                note="응시·다시 풀기 화면에만 적용돼요 — 이 화면의 고칠 문장 녹음은 마이크를 화면 동안 하나로 유지해요(첫 🎤에서만 권한을 물어요)."
+              />
             </div>
           </details>
         </section>
@@ -955,6 +1236,8 @@ export default function ToeicAttemptView({
         const myClip = clipFor(id, v.q);
         const server = serverRecs.get(v.q) ?? null;
         const fmtErr = formatErrors[clipKey(id, v.q)];
+        const qDiag = diagOf(v.q);
+        const source = toeicAnswerSourceOf(attempt, v.q);
         return (
           <article key={v.q} className={s.item} aria-label={`Q${v.q} 결과`}>
             <div className={s.itemHead}>
@@ -965,10 +1248,23 @@ export default function ToeicAttemptView({
                   {toeicScoreDeltaLabelKo(delta)}
                 </span>
               )}
+              {qDiag?.silent && (
+                <span className={s.deltaChip} data-testid={`silent-chip-${v.q}`}>
+                  소리 없음(무음)
+                </span>
+              )}
               <span className={`${s.scoreChip} ${a?.score !== null && a?.score !== undefined ? s.scoreOn : ""}`}>
                 {a?.score !== null && a?.score !== undefined ? `${a.score} / ${v.maxScore}` : !a?.recorded ? "녹음 없음" : "채점 전"}
               </span>
             </div>
+            {closed && (
+              <p className={s.retakeRow}>
+                <Link href={toeicRetakeHref(id, [v.q])} className={s.tplLink} data-testid={`retake-one-${v.q}`}>
+                  ↻ 이 문항 다시 풀기
+                </Link>
+                {source !== null && <span className={s.caption}>다시 푼 답이에요(예전 답은 🎧 비교 ③)</span>}
+              </p>
+            )}
 
             {/* 자료 요약 */}
             {v.picture &&
@@ -1006,7 +1302,10 @@ export default function ToeicAttemptView({
                     controls
                     preload="metadata"
                     src={myClip.url}
-                    onPlay={() => stopChain()}
+                    onPlay={() => {
+                      stopChain();
+                      if (fixRec.active) void fixRec.stop();
+                    }}
                     onError={() => markFormatError(id, v.q, myClip.mimeType)}
                   >
                     <track kind="captions" />
@@ -1022,6 +1321,10 @@ export default function ToeicAttemptView({
                 <p className={s.caption}>서버 사본을 불러오는 중…</p>
               ) : myClip?.status === "error" ? (
                 <p className={s.error}>{myClip.message}</p>
+              ) : answerDeleted(v.q) && recsLoaded ? (
+                <p className={s.caption} data-testid={`rec-deleted-${v.q}`}>
+                  🗑 녹음을 지웠어요 — 점수·전사·피드백은 남아 있어요. 이 문항은 다시 채점할 수 없어요.
+                </p>
               ) : a?.recorded || local || server ? (
                 <p className={s.caption}>
                   {!recsLoaded ? "녹음을 찾는 중…" : server ? "서버 사본을 불러오는 중…" : "이 녹음은 아직 서버에 올라가지 않았어요 — 응시한 기기에서 결과 화면을 열면 올라가요."}
@@ -1029,9 +1332,29 @@ export default function ToeicAttemptView({
               ) : (
                 <p className={s.caption}>녹음 없음(시간 안에 녹음되지 않았어요).</p>
               )}
-              {(a?.recorded || server) && (
+              {(a?.recorded || server) && !answerDeleted(v.q) && (
                 <p className={s.diagLine} data-testid={`rec-server-${v.q}`}>
                   {server ? `서버 ✓ ${kb(server.size)} · ${server.mimeType}` : live[v.q]?.state === "uploading" ? "서버 올리는 중…" : "서버 없음"}
+                </p>
+              )}
+              {(local || server) && (
+                <div className={s.recTools}>
+                  <button
+                    type="button"
+                    className={s.delBtn}
+                    data-testid={`rec-delete-${v.q}`}
+                    disabled={deleting !== null}
+                    onClick={() => void deleteRecording({ kind: "answer", q: v.q })}
+                  >
+                    {deleting === `a:${v.q}` ? "지우는 중…" : "🗑 녹음 지우기"}
+                  </button>
+                </div>
+              )}
+              {deleteError?.key === `a:${v.q}` && <p className={s.error}>{deleteError.message}</p>}
+              {/* F2 문항별 진단(§15-11) — 응시 화면이 남긴 정책·열기 횟수·오류·최고 레벨·크기 */}
+              {qDiag && (
+                <p className={s.diagLine} data-testid={`answer-diag-${v.q}`}>
+                  녹음 진단 · {toeicAnswerDiagLineKo(qDiag)}
                 </p>
               )}
             </div>
@@ -1130,17 +1453,105 @@ export default function ToeicAttemptView({
                   <>
                     <p className={s.label}>✏️ 고칠 문장</p>
                     <ul className={s.fixes}>
-                      {a.feedback.fixes.map((f, k) => (
-                        <li key={k} className={s.fix}>
-                          <p className={s.said} lang="en">
-                            <span className={s.fixTag}>말한 것</span> {f.said}
-                          </p>
-                          <p className={s.better} lang="en">
-                            <span className={s.fixTag}>이렇게</span> {f.better}
-                          </p>
-                          <p className={s.why}>{f.whyKo}</p>
-                        </li>
-                      ))}
+                      {a.feedback.fixes.map((f, k) => {
+                        // 고칠 문장 다시 말하기(§14-5): 🔊 고친 문장 · 🎤 내가 다시 말하기 · ▶ 내 목소리 · ⇄ 내 목소리 → 고친 문장 · 🗑
+                        const slot = fixSlotKey(v.q, k);
+                        const take = fixRec.takes[slot];
+                        const meta = fixMeta(v.q, k);
+                        const clip = fixClipFor(v.q, k);
+                        const act = fixRec.active?.key === slot ? fixRec.active : null;
+                        const busyOther = fixRec.active !== null && !act;
+                        const mineKey = `fix-mine-${v.q}-${k}`;
+                        const chainFix = `fix-chain-${v.q}-${k}`;
+                        const delKey = `f:${v.q}:${k}`;
+                        const fmt = formatErrors[clipKey(id, v.q, k)];
+                        return (
+                          <li key={k} className={s.fix} data-testid={`fix-${v.q}-${k}`}>
+                            <p className={s.said} lang="en">
+                              <span className={s.fixTag}>말한 것</span> {f.said}
+                            </p>
+                            <p className={s.better} lang="en">
+                              <span className={s.fixTag}>이렇게</span> {f.better}
+                            </p>
+                            <p className={s.why}>{f.whyKo}</p>
+                            <div className={s.fixTools}>
+                              {playBtn(`fix-better-${v.q}-${k}`, f.better, `Q${v.q} 고친 문장`)}
+                              <button
+                                type="button"
+                                className={`${s.recBtn} ${act ? s.recOn : ""}`}
+                                data-testid={`fix-rec-${v.q}-${k}`}
+                                aria-pressed={act !== null}
+                                disabled={busyOther || deleting !== null}
+                                onClick={() => fixRec.toggle(v.q, k, stopAllPlayback)}
+                              >
+                                {act?.phase === "recording" ? "■ 그만" : act?.phase === "arming" ? "마이크 여는 중…" : clip ? "🎤 다시 말하기" : "🎤 내가 말하기"}
+                              </button>
+                              {clip?.status === "ready" ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className={`${s.play} ${chainKey === mineKey ? s.playOn : ""}`}
+                                    data-testid={`fix-play-${v.q}-${k}`}
+                                    disabled={act !== null}
+                                    onClick={() => playChain(mineKey, [{ url: clip.url, attemptId: id, q: v.q, mimeType: clip.mimeType, fixIndex: k }], null)}
+                                  >
+                                    {chainKey === mineKey ? "■ 멈추기" : "▶ 내 목소리"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={`${s.play} ${chainKey === chainFix ? s.playOn : ""}`}
+                                    data-testid={`fix-chain-${v.q}-${k}`}
+                                    disabled={act !== null}
+                                    onClick={() => playChain(chainFix, [{ url: clip.url, attemptId: id, q: v.q, mimeType: clip.mimeType, fixIndex: k }], f.better)}
+                                  >
+                                    {chainKey === chainFix ? "■ 멈추기" : "⇄ 내 목소리 → 고친 문장"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={s.delBtn}
+                                    data-testid={`fix-delete-${v.q}-${k}`}
+                                    disabled={act !== null || deleting !== null}
+                                    onClick={() => void deleteRecording({ kind: "fix", q: v.q, fixIndex: k })}
+                                  >
+                                    {deleting === delKey ? "지우는 중…" : "🗑"}
+                                  </button>
+                                </>
+                              ) : clip?.status === "loading" ? (
+                                <span className={s.caption}>불러오는 중…</span>
+                              ) : clip?.status === "error" ? (
+                                <span className={s.caption}>{clip.message}</span>
+                              ) : null}
+                            </div>
+                            {act?.phase === "recording" && (
+                              <p className={s.recLive} role="status">
+                                🔴 듣는 중 — 고친 문장을 소리 내어 말하고 ■ 그만을 눌러요(30초면 저절로 멈춰요).
+                              </p>
+                            )}
+                            {(take || meta) && (
+                              <p className={s.diagLine} data-testid={`fix-server-${v.q}-${k}`}>
+                                {take && take.upload === "uploading"
+                                  ? `서버에 올리는 중… · ${secs(take.durationMs)}`
+                                  : take && take.upload === "failed"
+                                    ? "서버에 올리지 못했어요"
+                                    : meta
+                                      ? `서버 ✓ ${secs(meta.durationMs)} · ${kb(meta.size)}`
+                                      : ""}
+                              </p>
+                            )}
+                            {take?.upload === "failed" && (
+                              <p className={s.error}>
+                                {take.message}{" "}
+                                <button type="button" className={`${s.tplLink} ${s.linkBtn}`} onClick={() => fixRec.retryUpload(v.q, k)}>
+                                  ⬆️ 다시 올리기
+                                </button>
+                              </p>
+                            )}
+                            {fixRec.error?.key === slot && <p className={s.error}>{fixRec.error.message}</p>}
+                            {fmt && <p className={s.error}>{fmt}</p>}
+                            {deleteError?.key === delKey && <p className={s.error}>{deleteError.message}</p>}
+                          </li>
+                        );
+                      })}
                     </ul>
                   </>
                 )}
@@ -1405,14 +1816,21 @@ export default function ToeicAttemptView({
                       ) : (
                         <ul className={s.histList} data-testid={`history-${v.q}`}>
                           {hist.map((row) => {
-                            const c = clipFor(row.attemptId, v.q);
-                            const rowKey = `row-${row.attemptId}-${v.q}`;
-                            const thenNow = `then-${row.attemptId}-${v.q}`;
-                            const tKey = `${row.attemptId}:${v.q}`;
+                            const c = rowClip(row, v.q);
+                            const rowKey = `row-${row.key}-${v.q}`;
+                            const thenNow = `then-${row.key}-${v.q}`;
+                            const tKey = `${row.key}:${v.q}`;
+                            const label = row.isCurrent
+                              ? source !== null
+                                ? "이번(다시 푼 답)"
+                                : "이번"
+                              : row.historyOf !== null
+                                ? `다시 풀기 전 · ${formatKst(row.startedAt)}`
+                                : formatKst(row.startedAt);
                             return (
-                              <li key={row.attemptId} className={s.histRow}>
+                              <li key={row.key} className={s.histRow} data-testid={row.historyOf !== null ? `history-row-before-${v.q}` : undefined}>
                                 <div className={s.histHead}>
-                                  <span className={row.isCurrent ? s.histNow : undefined}>{row.isCurrent ? "이번" : formatKst(row.startedAt)}</span>
+                                  <span className={row.isCurrent ? s.histNow : undefined}>{label}</span>
                                   <span>· {row.score !== null ? `${row.score} / ${row.maxScore}` : "채점 전"}</span>
                                   {c?.status === "ready" ? (
                                     <button

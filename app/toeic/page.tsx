@@ -8,6 +8,7 @@
  *   - **모의고사**(`/toeic/mocks`) — AI가 새로 만든 11문항(T3 만들기·학습 보기, 응시·채점은 T4·T5).
  *   - **토익스피킹 유형별 공략**(`/toeic/guides`, §12) — 유형 폴더 4개(공략 읽기·템플릿 훈련·틀 시험·한 문제 연습 — 2026-10-02 틀 하나를 중심으로). 카드가 셋이라
  *     격자가 어긋나지 않게 세 번째 카드는 `sm:col-span-2`(홈의 운동 카드 관용구, §12-8).
+ *   - **내 녹음**(`/toeic/recordings`, §14-6 — 2026-10-03) — 응시 녹음·고칠 문장 녹음을 응시별로 모아 듣고 지운다. 넷째 카드도 `sm:col-span-2`.
  * 한쪽이 비어 있어도 다른 쪽은 온전히 동작한다. 기능은 하나도 갖지 않는다 — 고르기만 한다.
  *
  * 잠금: proxy.ts가 허용목록 밖을 전부 막으므로 자동으로 PIN 게이트 안이다. 셸은 일본어 방식(공통 레이아웃 없이 u-navbtn
@@ -68,6 +69,16 @@ export default function ToeicHubPage() {
           <span className="u-entry-title">토익스피킹 유형별 공략</span>
           <span className="u-entry-desc">
             사진 묘사·듣고 답하기·정보 활용·의견 말하기 — 유형마다 외울 틀을 중심으로 공략을 읽고, 따라 말하고, 틀 시험을 보고, 새 문제에 그 틀로 답해 봐요.
+          </span>
+        </Link>
+
+        <Link href="/toeic/recordings" className="u-entry u-entry-secondary sm:col-span-2">
+          <span className="u-entry-icon" aria-hidden>
+            🎙️
+          </span>
+          <span className="u-entry-title">내 녹음</span>
+          <span className="u-entry-desc">
+            모의고사·연습에서 녹음한 내 답과 고칠 문장 다시 말하기를 응시별로 모아 듣고, 필요 없는 것은 지워요(점수·피드백은 남아요).
           </span>
         </Link>
       </div>

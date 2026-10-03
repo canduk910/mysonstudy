@@ -84,6 +84,10 @@ import {
   applyAttemptAnswer,
   applyAttemptFinish,
   decideToeicQuizWithId,
+  toeicRecordingUploadOutcome,
+  ToeicAnswerChangedError,
+  type StartToeicRetakeResult,
+  type FinishToeicRetakeResult,
   type AddToeicQuizWithIdResult,
   type DeleteToeicResult,
   type FinishToeicAttemptInput,
@@ -101,6 +105,8 @@ import {
   type ToeicAnswerScorePatch,
   type ToeicAttemptRecord,
   type SetToeicAttemptRecordingResult,
+  type SetToeicAttemptFixRecordingResult,
+  type DeleteToeicAttemptRecordingMetaResult,
   type ToeicImageRecord,
   type ToeicMockRecord,
   type ToeicQuizRecord,
@@ -164,7 +170,26 @@ import {
 } from "./ai/english/schemas";
 // store.ts는 이 파일을 값으로 import하므로(FirestoreStore), 가드는 별도 모듈에 둔다 — 순환 방지
 import { assertDestructiveAllowed } from "./prod-guard";
-import { applyToeicAttemptRecording, decideToeicRecordingUpload, isToeicRecAttemptId, type ToeicStoredRecording } from "./toeic-rec-rules";
+import {
+  applyToeicFixRecording,
+  decideToeicFixRecordingUpload,
+  isToeicRecAttemptId,
+  type ToeicStoredFixRecording,
+  type ToeicStoredRecording,
+} from "./toeic-rec-rules";
+// 문항 단위 다시 풀기(§15) — 파일 백엔드와 같은 순수 함수(lib/toeic-retake.ts), 트랜잭션 **안에서** 판정
+import {
+  applyToeicAnswerUpload,
+  applyToeicRecordingDeletionAll,
+  applyToeicRetakeFinish,
+  applyToeicRetakeStart,
+  decideToeicAnswerUpload,
+  decideToeicRetakeStart,
+  newToeicRetakeSession,
+  toeicAnswerSourceOf,
+  type ToeicRecDeleteTargetAll,
+  type ToeicRetakeFinishInput,
+} from "./toeic-retake";
 import { deleteAttemptRecordings } from "./toeic-rec-blob";
 import { isFirestoreDocId } from "./reorder-contract";
 
@@ -1695,35 +1720,125 @@ export class FirestoreStore implements StudyStore {
       const current = toToeicAttempt(snap.id, snap.data()!);
       if (decideAttemptFinish(current) === "already_closed") return { outcome: "already_closed", record: current };
       const next = applyAttemptFinish(current, input);
-      tx.update(ref, { finishedAt: next.finishedAt, answers: next.answers });
+      tx.update(ref, { finishedAt: next.finishedAt, answers: next.answers, answerDiags: next.answerDiags });
       return { outcome: "finished", record: next };
     });
   }
 
-  async updateToeicAttemptAnswer(id: string, q: number, patch: ToeicAnswerScorePatch): Promise<ToeicAttemptRecord | null> {
+  async updateToeicAttemptAnswer(id: string, q: number, patch: ToeicAnswerScorePatch, expectSource?: string | null): Promise<ToeicAttemptRecord | null> {
     const ref = this.toeicAttempts().doc(id);
     return getDb().runTransaction(async (tx): Promise<ToeicAttemptRecord | null> => {
       const snap = await tx.get(ref);
       if (!snap.exists) return null;
-      const next = applyAttemptAnswer(toToeicAttempt(snap.id, snap.data()!), q, patch);
+      const cur = toToeicAttempt(snap.id, snap.data()!);
+      // §15-6 — 읽을 때의 답 세대와 다르면(그 사이 다시 풀기가 합쳐졌다) 쓰지 않는다
+      if (expectSource !== undefined && toeicAnswerSourceOf(cur, q) !== expectSource) throw new ToeicAnswerChangedError(q);
+      const next = applyAttemptAnswer(cur, q, patch);
       tx.update(ref, { answers: next.answers });
       return next;
     });
   }
 
-  async setToeicAttemptRecording(id: string, recording: ToeicStoredRecording): Promise<SetToeicAttemptRecordingResult | null> {
+  async setToeicAttemptRecording(id: string, recording: ToeicStoredRecording, gen: string | null = null): Promise<SetToeicAttemptRecordingResult | null> {
     const ref = this.toeicAttempts().doc(id);
-    // 판정(decideToeicRecordingUpload)과 쓰기를 한 트랜잭션에 — 같은 문항 두 업로드가 겹쳐도 메타를 쓰는 쪽이 하나다.
-    // recordings 필드만 바꾼다(answers·finishedAt 그대로 — 닫힘 판정 불변).
+    // 판정(decideToeicAnswerUpload — 세대 §15-4)과 쓰기를 한 트랜잭션에 — 같은 문항 두 업로드가 겹쳐도 메타를 쓰는 쪽이 하나다.
+    // recordings·retakes(대기 자리)·answerHistory(이력 줄)만 바꾼다(answers·finishedAt 그대로 — 닫힘 판정 불변).
     return getDb().runTransaction(async (tx): Promise<SetToeicAttemptRecordingResult | null> => {
       const snap = await tx.get(ref);
       if (!snap.exists) return null;
       const current = toToeicAttempt(snap.id, snap.data()!);
-      const decision = decideToeicRecordingUpload(current, recording.q, { sha256: recording.sha256, recordedAtMs: Date.parse(recording.recordedAt) });
-      if (decision !== "store") return { outcome: decision, record: current };
-      const next = normalizeToeicAttemptRecord(applyToeicAttemptRecording(current, recording));
-      tx.update(ref, { recordings: next.recordings });
-      return { outcome: "stored", record: next };
+      const decision = decideToeicAnswerUpload(current, recording.q, gen, { sha256: recording.sha256, recordedAtMs: Date.parse(recording.recordedAt) });
+      const res = toeicRecordingUploadOutcome(decision);
+      if (!res.write) return { outcome: res.outcome, slot: res.slot, record: current };
+      const next = normalizeToeicAttemptRecord(applyToeicAnswerUpload(current, gen, decision, recording));
+      tx.update(ref, { recordings: next.recordings, retakes: next.retakes, answerHistory: next.answerHistory });
+      return { outcome: "stored", slot: res.slot, record: next };
+    });
+  }
+
+  async setToeicAttemptFixRecording(id: string, recording: ToeicStoredFixRecording, expectSource?: string | null): Promise<SetToeicAttemptFixRecordingResult | null> {
+    const ref = this.toeicAttempts().doc(id);
+    // 판정(decideToeicFixRecordingUpload)과 쓰기를 한 트랜잭션에 — fixRecordings 필드만 바꾼다(answers·finishedAt 그대로).
+    return getDb().runTransaction(async (tx): Promise<SetToeicAttemptFixRecordingResult | null> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      const current = toToeicAttempt(snap.id, snap.data()!);
+      const replaced = current.fixRecordings.find((r) => r.q === recording.q && r.fixIndex === recording.fixIndex) ?? null;
+      // §15-6 — 화면이 본 답의 세대와 다르면(그 사이 다시 풀기가 합쳐졌다) 예전 피드백 자리의 녹음을 새 피드백에 붙이지 않는다
+      if (expectSource !== undefined && toeicAnswerSourceOf(current, recording.q) !== expectSource) return { outcome: "answer_changed", record: current, replaced: null };
+      const decision = decideToeicFixRecordingUpload(current, recording.q, recording.fixIndex, { sha256: recording.sha256, recordedAtMs: Date.parse(recording.recordedAt) });
+      if (decision !== "store") return { outcome: decision, record: current, replaced: null };
+      const next = normalizeToeicAttemptRecord(applyToeicFixRecording(current, recording));
+      tx.update(ref, { fixRecordings: next.fixRecordings });
+      return { outcome: "stored", record: next, replaced };
+    });
+  }
+
+  async deleteToeicAttemptRecordingMeta(id: string, target: ToeicRecDeleteTargetAll, deletedAt: string): Promise<DeleteToeicAttemptRecordingMetaResult | null> {
+    // 개발 환경에서 프로덕션 응시 기록의 녹음 메타를 지우려 하면 던진다(보관소 객체 지우기도 같은 가드를 먼저 지났다)
+    assertDestructiveAllowed("deleteToeicRecordings");
+    const ref = this.toeicAttempts().doc(id);
+    // 메타 빼기 + 지운 자리 남기기를 한 트랜잭션에 — recordings·fixRecordings·recordingDeletions만 바꾼다(answers·finishedAt 그대로)
+    return getDb().runTransaction(async (tx): Promise<DeleteToeicAttemptRecordingMetaResult | null> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      const current = toToeicAttempt(snap.id, snap.data()!);
+      const applied = applyToeicRecordingDeletionAll(current, target, deletedAt);
+      const next = normalizeToeicAttemptRecord(applied.next);
+      tx.update(ref, {
+        recordings: next.recordings,
+        fixRecordings: next.fixRecordings,
+        recordingDeletions: next.recordingDeletions,
+        answerHistory: next.answerHistory,
+        retakes: next.retakes,
+      });
+      return { record: next, removedAnswers: applied.removedAnswers, removedFixes: applied.removedFixes };
+    });
+  }
+
+  async startToeicRetake(id: string, input: { questions: number[]; replaceOpen: string | null; newId: string; nowIso: string }): Promise<StartToeicRetakeResult | null> {
+    const ref = this.toeicAttempts().doc(id);
+    // 판정(decideToeicRetakeStart)과 쓰기를 한 트랜잭션에 — 동시 두 시작이 겹쳐도 진행 중 기록은 하나다(생성·수정이라 prod-guard 무관).
+    return getDb().runTransaction(async (tx): Promise<StartToeicRetakeResult | null> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      const current = toToeicAttempt(snap.id, snap.data()!);
+      const decision = decideToeicRetakeStart(current, input.questions, Date.parse(input.nowIso), input.replaceOpen);
+      if (decision.kind !== "start") return { outcome: decision.kind, record: current, decision };
+      const session = newToeicRetakeSession(input.newId, input.questions, input.nowIso);
+      const next = normalizeToeicAttemptRecord(applyToeicRetakeStart(current, decision.close, session, input.nowIso));
+      tx.update(ref, {
+        retakes: next.retakes,
+        answers: next.answers,
+        recordings: next.recordings,
+        fixRecordings: next.fixRecordings,
+        answerHistory: next.answerHistory,
+        answerDiags: next.answerDiags,
+      });
+      return { outcome: "started", record: next, session };
+    });
+  }
+
+  async finishToeicRetake(id: string, retakeId: string, input: ToeicRetakeFinishInput & { nowIso: string }): Promise<FinishToeicRetakeResult | null> {
+    const ref = this.toeicAttempts().doc(id);
+    // 한 번만(already_closed면 쓰지 않는다)·합치기를 한 트랜잭션에 — 비콘·재시도·다른 탭이 겹쳐도 먼저 온 끝 하나만 합친다.
+    // 그 문항 자리만 바꿔 끼운다 — answers 길이·finishedAt 그대로(닫힘 판정 불변).
+    return getDb().runTransaction(async (tx): Promise<FinishToeicRetakeResult | null> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      const current = toToeicAttempt(snap.id, snap.data()!);
+      const r = applyToeicRetakeFinish(current, retakeId, input, input.nowIso);
+      if (r.outcome !== "finished") return { outcome: r.outcome, record: current, merged: r.merged };
+      const next = normalizeToeicAttemptRecord(r.next);
+      tx.update(ref, {
+        retakes: next.retakes,
+        answers: next.answers,
+        recordings: next.recordings,
+        fixRecordings: next.fixRecordings,
+        answerHistory: next.answerHistory,
+        answerDiags: next.answerDiags,
+      });
+      return { outcome: "finished", record: next, merged: r.merged };
     });
   }
 

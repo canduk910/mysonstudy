@@ -13,6 +13,9 @@
  * decideAttemptFinish). 네트워크 재시도·연타·다른 탭의 늦은 요청이 "끝까지"를 "중단"으로 바꾸거나 채점된 문항의 recorded를
  * 뒤집지 못하게 하려는 것이다. 화면은 409 already_finished를 **성공으로** 본다(첫 요청이 이미 저장됐다 — recordedCount 동봉).
  *
+ * 문항별 진단(2026-10-03, docs/harness/toeic.md §15-11): `answers[].diag`(선택 — 옛 화면·비콘은 없다)를 받아 응시 기록의 `answerDiags`에 둔다.
+ * 표시·오류 문항 사유용이라 범위만 본다(본문 zod·검사는 lib/toeic-finish-body 한 벌 — 다시 풀기 끝 라우트와 같다).
+ *
  * AI를 부르지 않는다(키 검사 없음).
  *
  * 응답 shape (단일 정의처 `lib/toeic-attempt-contract.ts` ToeicAttemptFinishResponse):
@@ -24,32 +27,16 @@
  */
 
 import { NextResponse } from "next/server";
-import { z } from "zod";
+import type { z } from "zod";
 import { getStore } from "@/lib/store";
 import type { ToeicAttemptFinishRequest, ToeicAttemptFinishResponse } from "@/lib/toeic-attempt-contract";
-import {
-  completeFinishAnswers,
-  decideAttemptFinish,
-  maxToeicRecordingMs,
-  recordedToeicCount,
-} from "@/lib/toeic-attempt-rules";
-import { TOEIC_QUESTION_COUNT } from "@/lib/toeic-mock";
+import { completeFinishAnswers, decideAttemptFinish, recordedToeicCount } from "@/lib/toeic-attempt-rules";
+import { finishAnswerIssues, finishBodyDiags, toeicFinishBodySchema } from "@/lib/toeic-finish-body";
 import { toToeicIssues, toeicZodErrorKo } from "@/lib/toeic-zod-ko";
 
 export const runtime = "nodejs";
 
-const bodySchema = z.object({
-  finishedAt: z.string().datetime({ message: "finishedAt이 올바른 시각이 아니에요" }).nullable(),
-  answers: z
-    .array(
-      z.object({
-        q: z.number().int().min(1).max(TOEIC_QUESTION_COUNT),
-        recorded: z.boolean(),
-        durationMs: z.number().int().min(0).nullable(),
-      }),
-    )
-    .max(TOEIC_QUESTION_COUNT),
-});
+const bodySchema = toeicFinishBodySchema;
 
 type BodyInput = z.input<typeof bodySchema>;
 const requestMatchesSchema: [ToeicAttemptFinishRequest, BodyInput] extends [BodyInput, ToeicAttemptFinishRequest] ? true : never = true;
@@ -91,27 +78,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // 응시 범위·중복·길이 검사(범위는 레코드의 questions에서 — 시작 라우트가 decideAttemptScope로 적었다. 연습의 사진 묘사는 [3]이라
   // Q4가 오면 "이 응시 범위에 없는 문항" 400 — §12-7-4, 상태코드·오류 이름은 기존 계약 그대로)
   const qs = attempt.questions;
-  const allowed = new Set(qs);
-  const seen = new Set<number>();
-  const issues: { path: string; message: string }[] = [];
-  parsed.data.answers.forEach((a, i) => {
-    if (!allowed.has(a.q)) issues.push({ path: `answers.${i}.q`, message: "이 응시 범위에 없는 문항이에요" });
-    else if (seen.has(a.q)) issues.push({ path: `answers.${i}.q`, message: "같은 문항이 두 번 있어요" });
-    seen.add(a.q);
-    if (allowed.has(a.q) && a.durationMs !== null && a.durationMs > maxToeicRecordingMs(a.q)) {
-      issues.push({ path: `answers.${i}.durationMs`, message: "녹음 길이가 답변 시간보다 너무 길어요" });
-    }
-    if (a.recorded && (a.durationMs === null || a.durationMs <= 0)) {
-      issues.push({ path: `answers.${i}.durationMs`, message: "녹음된 문항은 길이가 있어야 해요" });
-    }
-  });
+  const issues = finishAnswerIssues(qs, parsed.data.answers);
   if (issues.length > 0) {
-    return json({ ok: false, error: "invalid_input", messageKo: "응시 결과에 맞지 않는 문항이 있어요.", issues: issues.slice(0, 10) }, 400);
+    return json({ ok: false, error: "invalid_input", messageKo: "응시 결과에 맞지 않는 문항이 있어요.", issues }, 400);
   }
 
   try {
     const answers = completeFinishAnswers(qs, parsed.data.answers);
-    const result = await store.finishToeicAttempt(id, { finishedAt: parsed.data.finishedAt, answers });
+    const result = await store.finishToeicAttempt(id, { finishedAt: parsed.data.finishedAt, answers, diags: finishBodyDiags(parsed.data.answers) });
     if (!result) return json({ ok: false, error: "attempt_not_found", messageKo: "응시 기록을 찾을 수 없어요." }, 404);
     if (result.outcome === "already_closed") {
       return json(

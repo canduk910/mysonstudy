@@ -1,0 +1,143 @@
+/* 🎙️ 내 녹음 목록(§14-6) — 새 토큰 없음. 폰 390px에서 가로 스크롤 없게 모든 줄은 줄바꿈 */
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.summary {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 14px;
+  font-weight: var(--fw-medium);
+}
+.notice {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 14px;
+}
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  min-width: 0;
+}
+.groupHead {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.date {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 13px;
+}
+.title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: var(--fw-bold);
+  overflow-wrap: anywhere;
+}
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 13px;
+}
+.groupTools,
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+}
+.link {
+  color: var(--accent-ink);
+  font-size: 14px;
+  font-weight: var(--fw-medium);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.item {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+  min-width: 0;
+}
+.itemHead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+}
+.q {
+  color: var(--accent-ink);
+  font-weight: var(--fw-bold);
+}
+.part {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: var(--fw-medium);
+}
+.dim {
+  color: var(--ink-3);
+  font-size: 13px;
+}
+.better {
+  margin: 6px 0 0;
+  color: var(--ink-2);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.audio {
+  width: 100%;
+  max-width: 360px;
+  height: 40px;
+}
+.play,
+.del {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  background: var(--bg);
+  color: var(--ink-2);
+  font-size: 14px;
+  cursor: pointer;
+}
+.del {
+  color: var(--danger);
+}
+.play:disabled,
+.del:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.error {
+  margin: 6px 0 0;
+  color: var(--danger);
+  font-size: 13px;
+}

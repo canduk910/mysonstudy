@@ -7,14 +7,18 @@
  * - 점수 변화 `toeicScoreDelta` — 이번 − 이번보다 **앞선** 가장 가까운 채점 행. 뒤 응시(옛 결과를 다시 연 경우)는 쓰지 않는다.
  * - 응시 전체 변화 `toeicAttemptDelta` — 실전끼리 둘 다 추정 총점이면 총점 차, 아니면 둘 다 채점된 같은 문항들의 합.
  *
- * ⚠️ 클라이언트 번들 안전: 런타임 import는 순수 모듈(lib/toeic-attempt-rules·lib/toeic-mock·lib/toeic-score)뿐. lib/ai·lib/store는 타입만.
+ * - **문항 단위 다시 풀기(2026-10-03, docs/harness/toeic.md §15-7)**: 응시 기록 안 예전 답(answerHistory)도 ③의 행이 된다("다시 풀기 전" — 그 답 세대의
+ *   시작 시각으로 시간순에 섞인다). 지금 답 행의 시각은 그 답 세대의 시작(다시 풀기면 그 시작). 점수 변화는 같은 규칙(앞선 가장 가까운 채점 행).
+ *
+ * ⚠️ 클라이언트 번들 안전: 런타임 import는 순수 모듈(lib/toeic-attempt-rules·lib/toeic-mock·lib/toeic-score·lib/toeic-retake)뿐. lib/ai·lib/store는 타입만.
  */
 
 import type { ToeicAttemptScope } from "./ai/toeic/schemas";
 import { isToeicAttemptClosed } from "./toeic-attempt-rules";
 import { TOEIC_QUESTION_COUNT, toeicMaxScore } from "./toeic-mock";
-import type { ToeicStoredRecording } from "./toeic-rec-rules";
+import type { ToeicRecordingDeletion, ToeicStoredRecording } from "./toeic-rec-rules";
 import { estimateToeicTotal } from "./toeic-score";
+import { toToeicCompareHistory, type ToeicAnswerHistoryEntry, type ToeicCompareHistoryEntry } from "./toeic-retake";
 
 /** 결과 페이지가 읽는 같은 모의고사 응시 수 상한(최신부터) */
 export const TOEIC_COMPARE_ATTEMPTS_MAX = 20;
@@ -77,6 +81,12 @@ export interface ToeicCompareAttempt {
   scope: ToeicAttemptScope;
   answers: { q: number; recorded: boolean; score: number | null; transcript: string | null }[];
   recordings: ToeicStoredRecording[];
+  /** 지운 자리(§14-3) — 결과 화면이 이 기기에 남은 다른 응시 사본 중 지운 녹음을 거른다. 없으면 지운 적 없음 */
+  recordingDeletions?: ToeicRecordingDeletion[];
+  /** 다시 풀기로 밀려난 예전 답(§15-7 — 줄인 자료). 없으면 다시 푼 적 없음 */
+  answerHistory?: ToeicCompareHistoryEntry[];
+  /** 다시 푼 문항의 지금 답 세대 시작 시각(§15-7) — 없는 문항은 응시 시작 */
+  answerSince?: { q: number; startedAt: string }[];
 }
 
 /** 응시 레코드 → 줄인 자료 */
@@ -87,7 +97,11 @@ export function toToeicCompareAttempt(a: {
   scope: ToeicAttemptScope;
   answers: readonly { q: number; recorded: boolean; score: number | null; transcript: string | null }[];
   recordings: readonly ToeicStoredRecording[];
+  recordingDeletions?: readonly ToeicRecordingDeletion[];
+  retakes?: readonly { id: string; startedAt: string }[];
+  answerHistory?: readonly ToeicAnswerHistoryEntry[];
 }): ToeicCompareAttempt {
+  const hist = toToeicCompareHistory({ startedAt: a.startedAt, retakes: a.retakes ?? [], answerHistory: a.answerHistory ?? [] });
   return {
     id: a.id,
     startedAt: a.startedAt,
@@ -95,6 +109,9 @@ export function toToeicCompareAttempt(a: {
     scope: a.scope,
     answers: a.answers.map((x) => ({ q: x.q, recorded: x.recorded === true, score: x.score, transcript: x.transcript })),
     recordings: a.recordings.map((r) => ({ ...r })),
+    recordingDeletions: (a.recordingDeletions ?? []).map((d) => ({ ...d })),
+    answerHistory: hist.answerHistory,
+    answerSince: hist.answerSince,
   };
 }
 
@@ -119,6 +136,10 @@ function byStartedAsc(a: { id: string; startedAt: string }, b: { id: string; sta
 
 export interface ToeicHistoryRow {
   attemptId: string;
+  /** 예전 답 행이면 그 줄의 replacedBy(§15-7), 그 응시의 지금 답이면 null */
+  historyOf: string | null;
+  /** 행 키(응시 id + 예전 답이면 replacedBy) */
+  key: string;
   startedAt: string;
   isCurrent: boolean;
   score: number | null;
@@ -136,29 +157,48 @@ export function toeicQuestionHistory(
   attempts: readonly ToeicCompareAttempt[],
   currentId: string,
   q: number,
-  opts: { max?: number; localCopies?: ReadonlySet<string> } = {},
+  opts: { max?: number; localCopies?: ReadonlySet<string>; historyLocalCopies?: ReadonlySet<string> } = {},
 ): ToeicHistoryRow[] {
   const max = Math.max(1, opts.max ?? TOEIC_COMPARE_HISTORY_MAX);
   const maxScore = Number.isInteger(q) && q >= 1 && q <= TOEIC_QUESTION_COUNT ? toeicMaxScore(q) : 0;
   const rows: ToeicHistoryRow[] = [];
   for (const a of [...attempts].sort(byStartedAsc)) {
-    const isCurrent = a.id === currentId;
+    const isThis = a.id === currentId;
+    // 예전 답(§15-7) — 이 응시는 늘(녹음 없음도 "처음엔 실패"로 보인다), 다른 응시는 녹음된 것만
+    for (const h of a.answerHistory ?? []) {
+      if (h.q !== q || (!isThis && h.recorded !== true)) continue;
+      if (!isThis && !isToeicAttemptClosed(a)) continue;
+      rows.push({
+        attemptId: a.id,
+        historyOf: h.replacedBy,
+        key: `${a.id}:${h.replacedBy}`,
+        startedAt: h.startedAt,
+        isCurrent: false,
+        score: h.score,
+        maxScore,
+        transcript: h.transcript,
+        hasRecording: h.hasRecording || (opts.historyLocalCopies?.has(`${a.id}:${h.replacedBy}`) ?? false),
+      });
+    }
     const ans = a.answers.find((x) => x.q === q);
-    if (!isCurrent && (!isToeicAttemptClosed(a) || !ans || ans.recorded !== true)) continue;
+    if (!isThis && (!isToeicAttemptClosed(a) || !ans || ans.recorded !== true)) continue;
     rows.push({
       attemptId: a.id,
-      startedAt: a.startedAt,
-      isCurrent,
+      historyOf: null,
+      key: `${a.id}:cur`,
+      startedAt: a.answerSince?.find((x) => x.q === q)?.startedAt ?? a.startedAt,
+      isCurrent: isThis,
       score: ans?.score ?? null,
       maxScore,
       transcript: ans?.transcript ?? null,
       hasRecording: a.recordings.some((r) => r.q === q) || (opts.localCopies?.has(a.id) ?? false),
     });
   }
+  rows.sort((x, y) => byStartedAsc({ id: x.key, startedAt: x.startedAt }, { id: y.key, startedAt: y.startedAt }));
   const ci = rows.findIndex((r) => r.isCurrent);
   if (rows.length <= max) return rows;
   if (ci < 0 || ci >= rows.length - max) return rows.slice(-max);
-  return [...rows.filter((r) => !r.isCurrent).slice(-(max - 1)), rows[ci]].sort((a, b) => byStartedAsc({ id: a.attemptId, startedAt: a.startedAt }, { id: b.attemptId, startedAt: b.startedAt }));
+  return [...rows.filter((r) => !r.isCurrent).slice(-(max - 1)), rows[ci]].sort((a, b) => byStartedAsc({ id: a.key, startedAt: a.startedAt }, { id: b.key, startedAt: b.startedAt }));
 }
 
 /** 점수 변화 — 이번 점수 − 이번보다 앞선 가장 가까운 채점 행. 어느 쪽이든 없으면 null. */

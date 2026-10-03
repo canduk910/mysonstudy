@@ -104,6 +104,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       finishedAt: null,
       answers: [],
       recordings: [], // 내 녹음 서버 보관 메타(§13-5) — 문항 녹음 업로드가 채운다(answers 밖)
+      fixRecordings: [], // 고칠 문장 다시 녹음 메타(§14-2) — 결과 화면이 채운다
+      recordingDeletions: [], // 지운 자리(§14-3)
+      retakes: [], // 문항 단위 다시 풀기 기록(§15-1)
+      answerHistory: [], // 다시 풀기로 밀려난 예전 답(§15-1)
+      answerDiags: [], // 문항별 진단(§15-11) — 끝내기가 채운다
     });
     return json({
       ok: true,

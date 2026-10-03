@@ -24,6 +24,11 @@ export interface ToeicQuizStreakLike {
 export interface ToeicAttemptStreakLike {
   startedAt: string;
   answers: readonly { recorded: boolean }[];
+  /**
+   * 문항 단위 다시 풀기 기록(2026-10-03, docs/harness/toeic.md §15-9) — 닫혔고 합친 문항이 1개 이상이면 **그 시작 시각의 세션**으로 센다
+   * (처음 응시가 어제고 오늘 다시 풀었으면 오늘도 공부한 날). 없으면(옛 문서·픽스처) 다시 푼 적 없음.
+   */
+  retakes?: readonly { startedAt: string; closedAt: string | null; merged: readonly number[] }[];
 }
 
 /** 표현 시험 + 모의고사 응시 → 영어 트랙 스트릭 세션(computeStreak 입력). */
@@ -37,6 +42,12 @@ export function toeicStreakSessions(
       startedAt: a.startedAt,
       items: a.answers.map((x) => ({ answered: x.recorded === true ? true : null })),
     })),
+    // 다시 풀기(§15-9) — 합친 문항 = answered. 진행 중·합친 문항 0은 "답한 문항 0 세션 제외" 규칙대로 빠진다
+    ...attempts.flatMap((a) =>
+      (a.retakes ?? [])
+        .filter((r) => r.closedAt !== null)
+        .map((r) => ({ startedAt: r.startedAt, items: r.merged.map(() => ({ answered: true as boolean | null })) })),
+    ),
   ];
 }
 

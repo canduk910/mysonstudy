@@ -232,6 +232,9 @@ import { runToeicTemplateCentricChecks } from "./eval-toeic-template-centric";
 // 내 녹음 서버 보관 + 비교(§13-10) — 업로드 계약·바이트 판정·객체 키·경로 게이트·교체 판정·레코드·파일 백엔드 왕복·삭제 연쇄·대기열·비교·틀 범위·소스 대조.
 // 네트워크·GCS 0(파일 백엔드는 자식 프로세스의 임시 폴더). 픽스처는 전부 지어낸 것.
 import { runToeicRecordingChecks } from "./eval-toeic-recordings";
+import { runToeicRecManageChecks } from "./eval-toeic-rec-manage";
+// 문항 단위 다시 풀기 + 마이크 유지 대책 F1~F3 + 고칠 문장 녹음 마이크 고정(docs/harness/toeic.md §15-14)
+import { runToeicRetakeChecks, runToeicRetakeLocalStoreChecks } from "./eval-toeic-retake";
 
 // .env.local / .env 로드 (없으면 무시). 이미 설정된 환경 변수가 우선한다(빈 값으로 미리 둔 키는 덮지 않는다).
 for (const envFile of [".env.local", ".env"]) {
@@ -1756,6 +1759,11 @@ async function runAttemptChecks(): Promise<CheckResult[]> {
     finishedAt: null,
     answers: [],
     recordings: [],
+    fixRecordings: [],
+    recordingDeletions: [],
+    retakes: [],
+    answerHistory: [],
+    answerDiags: [],
   };
   const quit = applyAttemptFinish(attemptBase, { finishedAt: null, answers: filled });
   add(
@@ -2233,6 +2241,8 @@ async function runMicKeepChecks(): Promise<CheckResult[]> {
   let gumMode: GumMode = { kind: "ok", delayMs: 1 };
   let gumCalls = 0;
   let trackSeq = 0;
+  /** 다음에 만드는 트랙을 muted로(켠 뒤에도 muted — K25) */
+  let nextMuted = 0;
   const session = {
     _t: "auto",
     get type(): string {
@@ -2246,8 +2256,11 @@ async function runMicKeepChecks(): Promise<CheckResult[]> {
   class FakeTrack {
     stopped = false;
     readyState: "live" | "ended" = "live";
+    /** iOS가 중단 뒤 캡처를 mute로 두는 흉내(§15-10 — K25) */
+    muted = false;
     private _enabled = true;
     private listeners: (() => void)[] = [];
+    private unmuteListeners: (() => void)[] = [];
     constructor(readonly id: string) {}
     get enabled(): boolean {
       return this._enabled;
@@ -2264,6 +2277,16 @@ async function runMicKeepChecks(): Promise<CheckResult[]> {
     }
     addEventListener(type: string, fn: () => void): void {
       if (type === "ended") this.listeners.push(fn);
+      if (type === "unmute") this.unmuteListeners.push(fn);
+    }
+    removeEventListener(type: string, fn: () => void): void {
+      if (type === "unmute") this.unmuteListeners = this.unmuteListeners.filter((x) => x !== fn);
+    }
+    /** mute가 풀렸다(unmute 이벤트) */
+    unmuteNow(): void {
+      this.muted = false;
+      log.push(`track.unmute:${this.id}`);
+      for (const fn of [...this.unmuteListeners]) fn();
     }
     /** 장치 분리·권한 철회 흉내 — stop()과 달리 ended 이벤트가 온다 */
     endExternally(): void {
@@ -2283,6 +2306,10 @@ async function runMicKeepChecks(): Promise<CheckResult[]> {
       return new Promise((resolve) =>
         setTimeout(() => {
           const t = new FakeTrack(`k${++trackSeq}`);
+          if (nextMuted > 0) {
+            nextMuted -= 1;
+            t.muted = true;
+          }
           tracks.set(t.id, t);
           log.push(`gUM.resolve:${t.id}`);
           resolve({ getTracks: () => [t] });
@@ -2352,6 +2379,7 @@ async function runMicKeepChecks(): Promise<CheckResult[]> {
   const reset = () => {
     log.length = 0;
     gumCalls = 0;
+    nextMuted = 0;
     gumMode = { kind: "ok", delayMs: 1 };
   };
 
@@ -2523,6 +2551,110 @@ async function runMicKeepChecks(): Promise<CheckResult[]> {
       add("K17 진단: getMicDiag().keep = { policy: keep, acquisitions: 1 }(녹음 2회 뒤)", d.keep?.policy === "keep" && d.keep.acquisitions === 1, JSON.stringify(d.keep));
       k.release();
     }
+    // K23 동시 호출(QA mic-keep P3-1) — 획득을 기다리는 사이 두 번 부르면 앞 호출은 superseded, 녹음기는 뒤 호출 하나 · 뒤 녹음이 끝날 때까지 입력 켜짐
+    {
+      reset();
+      gumMode = { kind: "ok", delayMs: 20 };
+      const k = createMicKeeper({ policy: "keep" });
+      const p1 = k.startRecording();
+      const p2 = k.startRecording();
+      const e1 = await catchErr(p1);
+      const r2 = await p2;
+      await r2.started;
+      const id = log.find((l) => l.startsWith("gUM.resolve:"))?.split(":")[1] ?? "";
+      const t = tracks.get(id);
+      const starts = log.filter((l) => l.startsWith("rec.start")).length;
+      const enabledWhile = t?.enabled === true;
+      const res2 = await r2.stop();
+      add(
+        "K23 keep 동시 호출: 획득 대기 중 두 번 → 앞 호출 MicError(superseded) · 녹음기 1 · gUM 1 · 뒤 녹음 도는 동안 입력 켜짐 · 결과 있음",
+        e1 instanceof MicError && /superseded/.test(e1.message) && starts === 1 && gumCalls === 1 && enabledWhile && !!res2 && t?.enabled === false,
+        `e1=${String(e1)} starts=${starts} gUM=${gumCalls} log=${log.join(",")}`,
+      );
+      k.release();
+    }
+    // K24 per-answer 동시 호출 — 앞 녹음은 버려지고(트랙 stop) 뒤 하나만 남는다
+    {
+      reset();
+      gumMode = { kind: "ok", delayMs: 20 };
+      const k = createMicKeeper({ policy: "per-answer" });
+      const p1 = k.startRecording();
+      const p2 = k.startRecording();
+      const e1 = await catchErr(p1);
+      const r2 = await p2;
+      await r2.started;
+      const res2 = await r2.stop();
+      const ids = log.filter((l) => l.startsWith("gUM.resolve:")).map((l) => l.split(":")[1]);
+      add(
+        "K24 per-answer 동시 호출: 앞 호출 superseded(그 트랙 stop) · 뒤 녹음 결과 있음 · 끝나면 트랙 전부 stop",
+        e1 instanceof MicError && /superseded/.test(e1.message) && !!res2 && ids.length === 2 && ids.every((x) => tracks.get(x)?.stopped === true),
+        `e1=${String(e1)} log=${log.join(",")}`,
+      );
+      k.release();
+    }
+    // K25 F1(§15-10) keep: 입력을 켠 뒤에도 트랙이 muted(iOS 중단 뒤 mute — QA q34-norec 갈래 A) → 300ms 기다려도 그대로면 버리고 한 번 다시 얻는다
+    {
+      reset();
+      nextMuted = 1;
+      const k = createMicKeeper({ policy: "keep" });
+      const rec = await k.startRecording();
+      await rec.started;
+      const res = await rec.stop();
+      const ids = log.filter((l) => l.startsWith("gUM.resolve:")).map((l) => l.split(":")[1]);
+      const starts = log.filter((l) => l.startsWith("rec.start"));
+      add(
+        "K25 keep: 켠 뒤 muted → 기다린 뒤 그대로면 옛 트랙 stop · getUserMedia 2회째 · 새 트랙에 녹음기 1(켜진 채) · rec.remuted = 1 · 결과 있음",
+        gumCalls === 2 && ids.length === 2 && tracks.get(ids[0])?.stopped === true && tracks.get(ids[1])?.stopped === false && starts.length === 1 && starts[0] === "rec.start(enabled=true)" && rec.remuted === 1 && !!res && k.holding(),
+        `gUM=${gumCalls} remuted=${rec.remuted} log=${log.join(",")}`,
+      );
+      k.release();
+    }
+    // K25b 기다리는 사이 unmute가 오면 다시 열지 않는다(remuted 0, gUM 1) — 꺼 둔 동안의 muted는 근거가 아니다(켠 뒤에만 본다)
+    {
+      reset();
+      nextMuted = 1;
+      const k = createMicKeeper({ policy: "keep" });
+      const p = k.startRecording();
+      await sleepMs(30);
+      const id = log.find((l) => l.startsWith("gUM.resolve:"))?.split(":")[1] ?? "";
+      tracks.get(id)?.unmuteNow();
+      const rec = await p;
+      await rec.started;
+      const res = await rec.stop();
+      add("K25b keep: 켠 뒤 muted → 기다리는 사이 unmute → 같은 트랙으로 녹음(gUM 1 · remuted 0)", gumCalls === 1 && rec.remuted === 0 && !!res, `gUM=${gumCalls} log=${log.join(",")}`);
+      // 녹음 사이(입력 끔)에 muted로 보여도 다음 녹음의 판정은 켠 뒤에만 — unmute된 트랙은 그대로 쓴다
+      const again = await recordOnce(k);
+      add("K25c keep: 같은 트랙 다음 녹음(켠 뒤 muted 아님) → 다시 열지 않음(gUM 1)", gumCalls === 1 && !!again);
+      k.release();
+    }
+    // K26 per-answer: 기다리는 사이 놓으면 도착한 녹음을 버린다(QA mic-keep P3-5) · 열기 횟수는 실제 getUserMedia만(P3-6)
+    {
+      reset();
+      gumMode = { kind: "ok", delayMs: 20 };
+      const k = createMicKeeper({ policy: "per-answer" });
+      const p = k.startRecording();
+      await sleepMs(5);
+      k.release();
+      const err = await catchErr(p);
+      await sleepMs(40);
+      const ids = log.filter((l) => l.startsWith("gUM.resolve:")).map((l) => l.split(":")[1]);
+      add(
+        "K26 per-answer: 획득 대기 중 놓기 → MicError(released) · 그 트랙 stop · acquisitions = 실제 gUM 수(1)",
+        err instanceof MicError && /released/.test(err.message) && ids.every((x) => tracks.get(x)?.stopped === true) && k.acquisitions() === 1 && gumCalls === 1,
+        `err=${String(err)} acq=${k.acquisitions()} gUM=${gumCalls}`,
+      );
+    }
+    // K27 keep opening(): 획득 대기 중 true → 끝나면 false(F3 게이트가 "놓였다"로 오판하지 않게)
+    {
+      reset();
+      gumMode = { kind: "ok", delayMs: 20 };
+      const k = createMicKeeper({ policy: "keep" });
+      const primed = k.prime();
+      const during = k.opening() && !k.holding();
+      await primed;
+      add("K27 keep: prime 대기 중 opening()=true·holding()=false → 끝나면 opening()=false·holding()=true · per-answer는 늘 false", during && !k.opening() && k.holding() && !createMicKeeper({ policy: "per-answer" }).opening());
+      k.release();
+    }
   } finally {
     if (navDesc) Object.defineProperty(globalThis, "navigator", navDesc);
     else delete g.navigator;
@@ -2572,13 +2704,22 @@ async function runMicKeepChecks(): Promise<CheckResult[]> {
       /recRef\.current = null;\s*keeperRef\.current\?\.release\(\);/.test(tpl),
   );
   const mic = code("../lib/mic-session.ts");
-  const keepStart = fn(mic, "async startRecording(o: StartRecordingOptions = {})");
+  const keepStart = (() => {
+    const at = mic.indexOf("async startRecording(o: StartRecordingOptions = {})");
+    return at < 0 ? "" : mic.slice(at, mic.indexOf("async prime(", at));
+  })();
+  // 2026-10-03(§15-10): muted는 입력을 **켠 뒤에만** 본다(tracksMutedAfterEnable — 켠 뒤 muted면 잠깐 기다렸다 한 번 다시 연다). 꺼 둔 동안의 muted는 여전히 근거가 아니다
+  const mutedUses = mic.match(/\.muted\b/g) ?? [];
+  const mutedFn = /function tracksMutedAfterEnable\([^)]*\)[^{]*\{[^}]*\.muted === true/.test(mic);
   add(
-    "K22 mic-session: keep 녹음은 입력 켜기 → recordOn(녹음기) 순 · 끝나면 입력 끄기만(트랙 stop 없음) · 재획득 근거에 muted를 쓰지 않는다",
+    "K22 mic-session: keep 녹음은 입력 켜기 → recordOn(녹음기) 순 · 끝나면 입력 끄기만(트랙 stop 없음) · muted는 켠 뒤에만 본다(꺼 둔 동안·streamLive는 보지 않는다)",
     keepStart.indexOf("setTracksEnabled(s, true)") > 0 &&
-      keepStart.indexOf("setTracksEnabled(s, true)") < keepStart.indexOf("recordOn(s, o,") &&
-      /if \(recSeq === mySeq\) setTracksEnabled\(s, false\);/.test(keepStart) &&
-      !/\.muted\b/.test(mic),
+      keepStart.indexOf("setTracksEnabled(s, true)") < keepStart.indexOf("tracksMutedAfterEnable(s)") &&
+      keepStart.lastIndexOf("setTracksEnabled(s, true)") < keepStart.indexOf("recordOn(") &&
+      /if \(recSeq === mySeq\) setTracksEnabled\(live, false\);/.test(keepStart) &&
+      mutedUses.length === 1 &&
+      mutedFn &&
+      !/\.muted/.test(/function streamLive\([\s\S]*?\n\}/.exec(mic)?.[0] ?? ".muted"),
   );
   return results;
 }
@@ -3151,6 +3292,9 @@ async function main(): Promise<void> {
   all.push(...runToeicGuideS3Checks());
   all.push(...runToeicTemplateCentricChecks());
   all.push(...runToeicRecordingChecks());
+  all.push(...runToeicRecManageChecks());
+  all.push(...runToeicRetakeChecks());
+  all.push(...(await runToeicRetakeLocalStoreChecks()));
   all.push(...runSpecSyncChecks());
   all.push(...runJsonSchemaSyncChecks());
 

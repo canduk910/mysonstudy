@@ -11,7 +11,14 @@ import { useEffect, useState } from "react";
 import { detectMicKeepEnv, micKeepPolicyFor, writeMicPerAnswerPref } from "@/lib/mic-session";
 import s from "./toeic-mic-keep-toggle.module.css";
 
-export default function ToeicMicKeepToggle({ onChange }: { onChange: (perAnswer: boolean) => void }) {
+export default function ToeicMicKeepToggle({
+  onChange,
+  note,
+}: {
+  onChange: (perAnswer: boolean) => void;
+  /** 설명을 바꿀 때(결과 화면 — "응시·다시 풀기 화면에만 적용돼요", docs/harness/toeic.md §15-13). 없으면 기본 설명 */
+  note?: string;
+}) {
   // 렌더 중 navigator·localStorage를 읽지 않는다(hydration) — 마운트 뒤에 본다
   const [state, setState] = useState<{ canKeep: boolean; perAnswer: boolean } | null>(null);
   useEffect(() => {
@@ -34,7 +41,7 @@ export default function ToeicMicKeepToggle({ onChange }: { onChange: (perAnswer:
       />
       <span>
         문항마다 마이크 다시 열기
-        <span className={s.sub}>질문 소리가 작거나 수화기로 날 때만 켜요 — 이 기기에 기억하고, 녹음할 때마다 권한을 다시 물을 수 있어요.</span>
+        <span className={s.sub}>{note ?? "질문 소리가 작거나 수화기로 날 때만 켜요 — 이 기기에 기억하고, 녹음할 때마다 권한을 다시 물을 수 있어요."}</span>
       </span>
     </label>
   );

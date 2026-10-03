@@ -249,6 +249,13 @@ export interface MicRecording {
   /** 입력 레벨 0..1(레벨 미터용, 컨텍스트가 없으면 0) */
   level(): number;
   /**
+   * 지금 읽은 level()을 무음 판정에 써도 되는가 — 분석기가 있고 오디오 컨텍스트가 running일 때만(멈춘 컨텍스트의 분석기는 0을 낸다 —
+   * 무음 오탐, docs/harness/toeic.md §15-10)
+   */
+  levelReliable(): boolean;
+  /** keep 정책에서 입력을 켠 뒤 트랙이 muted라 마이크를 다시 연 횟수(§15-10 — 진단). per-answer·전략 A는 0 */
+  readonly remuted: number;
+  /**
    * 녹음을 끝낸다 — recorder.stop() → 트랙 stop → **그다음에** 세션 playback. 소리가 하나도 안 담겼거나 시작 전이면 null.
    * 여러 번 불러도 같은 약속을 돌려준다.
    */
@@ -380,7 +387,7 @@ export async function startRecording(opts: StartRecordingOptions = {}): Promise<
  * 이미 얻은 스트림에 녹음기 하나를 건다(전략 A·B 공용). `releaseStream`은 녹음이 끝나거나 버려질 때 **한 번** 불린다 —
  * 전략 A는 트랙 stop·세션 복귀, 전략 B는 입력 끄기(enabled=false)만. 녹음기 생성·start가 실패하면 놓은 뒤 MicError로 throw.
  */
-function recordOn(stream: MediaStream, opts: StartRecordingOptions, releaseStream: () => void): MicRecording {
+function recordOn(stream: MediaStream, opts: StartRecordingOptions, releaseStream: () => void, remuted = 0): MicRecording {
   let released = false;
   let source: MediaStreamAudioSourceNode | null = null;
   const release = () => {
@@ -482,6 +489,10 @@ function recordOn(stream: MediaStream, opts: StartRecordingOptions, releaseStrea
     requestedMimeType: requested,
     started,
     mimeType: actualType,
+    remuted,
+    levelReliable() {
+      return analyser !== null && ctx !== null && ctx.state === "running";
+    },
     level() {
       if (!analyser || !buf) return 0;
       try {
@@ -546,6 +557,12 @@ export type MicKeepPolicy = "keep" | "per-answer";
 /** 기기 설정 "문항마다 마이크 다시 열기" — 켜면 이 기기는 per-answer(질문 소리가 작거나 수화기로 날 때의 탈출구) */
 export const MIC_PER_ANSWER_PREF_KEY = "toeic-mic-per-answer";
 
+/**
+ * keep 녹음에서 입력을 켠 뒤 트랙이 muted면 unmute를 기다리는 상한(ms) — 넘으면 쥔 스트림을 버리고 한 번 다시 얻는다
+ * (docs/harness/toeic.md §15-10, QA q34-norec 갈래 A — iOS가 중단·우선순위 오류 때 캡처를 끝내지 않고 mute한다)
+ */
+export const MIC_UNMUTE_WAIT_MS = 300;
+
 export interface MicKeepEnv {
   /** iOS·iPadOS·데스크톱 Safari(isAppleWebKit) */
   appleWebKit: boolean;
@@ -562,6 +579,15 @@ export interface MicKeepEnv {
  */
 export function micKeepPolicyFor(env: MicKeepEnv): MicKeepPolicy {
   if (env.perAnswerPref) return "per-answer";
+  return env.appleWebKit && env.audioSession ? "keep" : "per-answer";
+}
+
+/**
+ * 결과 화면 **고칠 문장 녹음**의 마이크 정책(순수 — docs/harness/toeic.md §15-13) — 기기 설정 "문항마다 마이크 다시 열기"와 **상관없이**
+ * Apple WebKit + 오디오 세션 API면 keep, 그 밖 per-answer. 그 화면의 녹음은 모두 사용자의 🎤 탭으로 시작하고 끝나면 바로 들을 수 있어
+ * 무음을 사람이 곧 알아챈다 — 타이머가 탭 없이 이어 가는 응시 화면과 달리 권한을 한 번만 묻는 이득이 위험보다 크다.
+ */
+export function toeicFixRecMicPolicy(env: MicKeepEnv): MicKeepPolicy {
   return env.appleWebKit && env.audioSession ? "keep" : "per-answer";
 }
 
@@ -599,6 +625,8 @@ export interface MicKeeper {
   acquisitions(): number;
   /** keep 정책에서 살아 있는 스트림을 쥐고 있는가(per-answer는 늘 false) */
   holding(): boolean;
+  /** keep 정책에서 스트림을 얻는 중인가(진행 중인 getUserMedia — 탭 안 재획득 게이트가 "놓였다"로 오판하지 않게) */
+  opening(): boolean;
   /**
    * 녹음을 연다 — keep: 쥔 스트림을 재사용(없거나 ended면 다시 얻는다 — 그때만 권한 창) → 입력 켜기 → 새 MediaRecorder,
    * 끝나면 입력만 끈다(트랙 stop 없음). per-answer: startRecording 그대로. 앞선 녹음이 아직 돌면 먼저 버린다(한 번에 하나).
@@ -618,10 +646,47 @@ function trackList(stream: MediaStream): MediaStreamTrack[] {
   }
 }
 
-/** 트랙이 하나라도 있고 모두 ended가 아니다(muted는 근거로 쓰지 않는다 — 입력을 꺼 둔 트랙이 muted로 보일 수 있다) */
+/** 트랙이 하나라도 있고 모두 ended가 아니다(꺼 둔 동안의 muted는 근거로 쓰지 않는다 — 입력을 꺼 둔 트랙이 muted로 보일 수 있다) */
 function streamLive(stream: MediaStream): boolean {
   const ts = trackList(stream);
   return ts.length > 0 && ts.every((t) => t.readyState !== "ended");
+}
+
+/** 입력을 **켠 뒤에** 트랙이 muted인가(§15-10) — 꺼 둔 동안에는 부르지 않는다 */
+function tracksMutedAfterEnable(stream: MediaStream): boolean {
+  return trackList(stream).some((t) => t.readyState !== "ended" && t.muted === true);
+}
+
+/** muted 트랙이 unmute될 때까지 기다린다(상한 ms) — unmute 이벤트 또는 상한 */
+function waitUnmute(stream: MediaStream, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const ts = trackList(stream);
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      for (const t of ts) {
+        try {
+          t.removeEventListener("unmute", onUnmute);
+        } catch {
+          /* noop */
+        }
+      }
+      resolve();
+    };
+    const onUnmute = () => {
+      if (!tracksMutedAfterEnable(stream)) finish();
+    };
+    const timer = setTimeout(finish, ms);
+    for (const t of ts) {
+      try {
+        t.addEventListener("unmute", onUnmute);
+      } catch {
+        /* noop */
+      }
+    }
+  });
 }
 
 function setTracksEnabled(stream: MediaStream, on: boolean): void {
@@ -648,10 +713,21 @@ export function createMicKeeper(opts: { policy?: MicKeepPolicy } = {}): MicKeepe
   let current: MicRecording | null = null;
   /** keep 녹음 순번 — 입력 끄기는 마지막 녹음만 */
   let recSeq = 0;
+  /**
+   * startRecording 호출 순번(QA mic-keep P3-1) — 획득을 기다리는 사이 다시 불리면 앞 호출은 녹음기를 만들지 않고 "superseded"로 끝난다.
+   * 같은 스트림에 녹음기가 둘 달려 뒤 녹음이 끝날 때 앞 녹음의 입력이 꺼지는(무음으로 계속 도는) 경합을 막는다. 한 번에 하나.
+   */
+  let callSeq = 0;
   const note = () => {
     lastKeep = { policy, acquisitions: gumCount };
   };
   note();
+  /** 돌던 녹음을 버린다(한 번에 하나) */
+  const abortCurrent = () => {
+    const c = current;
+    current = null;
+    c?.abort();
+  };
 
   /** 쥔 스트림을 놓는다(트랙 stop → activeCaptures-- → playback). 쥔 것이 없으면 아무것도 하지 않는다. */
   const drop = () => {
@@ -725,13 +801,29 @@ export function createMicKeeper(opts: { policy?: MicKeepPolicy } = {}): MicKeepe
     policy,
     acquisitions: () => gumCount,
     holding: () => policy === "keep" && stream !== null && streamLive(stream),
+    opening: () => policy === "keep" && pending !== null,
     async startRecording(o: StartRecordingOptions = {}): Promise<MicRecording> {
-      current?.abort();
-      current = null;
+      const myCall = ++callSeq;
+      abortCurrent();
       if (policy === "per-answer") {
-        gumCount += 1;
-        note();
+        // 열기 횟수는 실제로 getUserMedia를 부를 때만 센다(QA mic-keep P3-6 — 미지원 브라우저에서 부풀지 않게)
+        if (detectMicSupport().ok) {
+          gumCount += 1;
+          note();
+        }
+        const myGen = gen;
         const rec = await startRecording(o);
+        if (myGen !== gen) {
+          // 기다리는 사이 놓였다(숨김·끝) — keep과 같이 버린다(QA mic-keep P3-5)
+          rec.abort();
+          throw new MicError("failed", "released");
+        }
+        if (myCall !== callSeq) {
+          // 기다리는 사이 뒤 호출이 왔다 — 이 녹음은 버린다(뒤 호출이 하나만 남는다)
+          rec.abort();
+          throw new MicError("failed", "superseded");
+        }
+        abortCurrent();
         current = rec;
         return rec;
       }
@@ -742,14 +834,39 @@ export function createMicKeeper(opts: { policy?: MicKeepPolicy } = {}): MicKeepe
         throw err;
       }
       const myGen = gen;
-      const s = await acquire(o.gumTimeoutMs ?? MIC_GUM_TIMEOUT_MS);
+      const gumMs = o.gumTimeoutMs ?? MIC_GUM_TIMEOUT_MS;
+      let s = await acquire(gumMs);
       if (myGen !== gen || stream !== s) throw new MicError("failed", "released"); // 기다리는 사이 놓였다
+      if (myCall !== callSeq) throw new MicError("failed", "superseded"); // 기다리는 사이 다시 불렸다 — 뒤 호출이 녹음기를 단다
+      abortCurrent(); // 녹음기를 만들기 **직전에** 한 번 더 — 같은 스트림에 녹음기가 둘 달리지 않게
       setTracksEnabled(s, true); // 녹음기 **전에** 입력을 켠다
+      // 켠 **뒤에도** muted면(iOS가 중단·우선순위 오류 뒤 캡처를 mute로 둔다 — QA q34-norec 갈래 A) 잠깐 기다리고, 그래도면 한 번 다시 연다(§15-10)
+      let remuted = 0;
+      if (tracksMutedAfterEnable(s)) {
+        await waitUnmute(s, MIC_UNMUTE_WAIT_MS);
+        if (myGen !== gen || stream !== s) throw new MicError("failed", "released");
+        if (myCall !== callSeq) throw new MicError("failed", "superseded");
+        if (tracksMutedAfterEnable(s)) {
+          remuted = 1;
+          drop(); // 트랙 stop → activeCaptures-- → playback(순서 그대로) — 다음 acquire가 다시 play-and-record
+          s = await acquire(gumMs);
+          if (myGen !== gen || stream !== s) throw new MicError("failed", "released");
+          if (myCall !== callSeq) throw new MicError("failed", "superseded");
+          abortCurrent();
+          setTracksEnabled(s, true); // 다시 얻은 트랙도 muted면 그대로 녹음한다 — 무음 판정(F1)이 잡는다
+        }
+      }
+      const live = s;
       const mySeq = ++recSeq;
       // 끝나면 입력만 끈다(트랙 stop 없음 — 권한 창을 다시 띄우지 않게). 늦게 끝난 앞 녹음이 뒤 녹음의 입력을 끄지 않게 순번을 본다.
-      const rec = recordOn(s, o, () => {
-        if (recSeq === mySeq) setTracksEnabled(s, false);
-      });
+      const rec = recordOn(
+        live,
+        o,
+        () => {
+          if (recSeq === mySeq) setTracksEnabled(live, false);
+        },
+        remuted,
+      );
       current = rec;
       return rec;
     },

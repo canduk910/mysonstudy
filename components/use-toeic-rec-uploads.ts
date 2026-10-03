@@ -38,6 +38,8 @@ export interface ToeicRecLive {
   state: ToeicRecUploadLiveState;
   createdAt: number;
   recording: ToeicStoredRecording | null;
+  /** done이면 서버가 둔 자리 — null이면 저장하지 않았다(200 retaken) 또는 done이 아니다 */
+  slot: ToeicRecUploadEventDetail["slot"];
 }
 
 /** 그 응시의 문항별 업로드 진행 상태(q → 마지막 이벤트). attemptId가 null이면 빈 표. */
@@ -53,7 +55,7 @@ export function useToeicRecUploadStates(attemptId: string | null): Record<number
         const cur = prev[d.q];
         // 더 이른 녹음의 늦은 이벤트가 새 녹음 상태를 덮지 않게
         if (cur && cur.createdAt > d.createdAt) return prev;
-        return { ...prev, [d.q]: { state: d.state, createdAt: d.createdAt, recording: d.recording } };
+        return { ...prev, [d.q]: { state: d.state, createdAt: d.createdAt, recording: d.recording, slot: d.slot ?? null } };
       });
     };
     window.addEventListener(TOEIC_REC_UPLOAD_EVENT, onEvent);

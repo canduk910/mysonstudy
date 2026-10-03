@@ -99,12 +99,31 @@ import { applyFillPart, applyPictureImage, decideFillPart, decidePictureImage } 
 import { decideAttemptFinish } from "./toeic-attempt-rules";
 // 내 녹음 서버 보관(§13) — 판정은 순수 모듈 한 곳, 녹음 지우기는 보관소(스토어와 같은 백엔드 판정)
 import {
-  applyToeicAttemptRecording,
-  decideToeicRecordingUpload,
+  applyToeicFixRecording,
+  decideToeicFixRecordingUpload,
   isToeicRecAttemptId,
+  type ToeicRecordingDeletion,
+  type ToeicStoredFixRecording,
   type ToeicStoredRecording,
 } from "./toeic-rec-rules";
 import { deleteAttemptRecordings } from "./toeic-rec-blob";
+// 문항 단위 다시 풀기(§15) — 시작·합치기·업로드 세대·지우기 판정은 순수 모듈 한 곳(lib/toeic-retake), 두 백엔드가 원자 단위 **안에서** 부른다
+import {
+  applyToeicAnswerUpload,
+  applyToeicRecordingDeletionAll,
+  applyToeicRetakeFinish,
+  applyToeicRetakeStart,
+  decideToeicAnswerUpload,
+  decideToeicRetakeStart,
+  newToeicRetakeSession,
+  toeicAnswerSourceOf,
+  type ToeicAnswerHistoryEntry,
+  type ToeicRecDeleteTargetAll,
+  type ToeicRetakeFinishInput,
+  type ToeicRetakeSession,
+  type ToeicRetakeStartDecision,
+} from "./toeic-retake";
+import { normalizeToeicAnswerDiags, type ToeicAnswerDiag } from "./toeic-mic-health";
 // 유형별 공략 가져오기(§12-2-5) — 다시 가져오기 판정은 두 백엔드가 같은 순수 함수로(원자 단위 **안에서**, 모두 읽은 뒤)
 import { decideGuideUpsert, type ToeicGuideImportItem, type ToeicGuideUpsertDecision } from "./ai/toeic/guide-import";
 import {
@@ -670,12 +689,68 @@ export interface ToeicAttemptRecord {
    * 끝내기(applyAttemptFinish)·채점(applyAttemptAnswer)은 이 필드를 건드리지 않는다. 쓰는 곳은 setToeicAttemptRecording 하나.
    */
   recordings: ToeicStoredRecording[];
+  /**
+   * 고칠 문장 다시 녹음 메타(2026-10-03, §14-2) — (q, fixIndex) 오름차순, 고칠 문장마다 하나(최신). 옛 문서 = [].
+   * 쓰는 곳은 setToeicAttemptFixRecording·deleteToeicAttemptRecordingMeta 둘. answers 밖(닫힘 판정 불변).
+   */
+  fixRecordings: ToeicStoredFixRecording[];
+  /**
+   * 지운 자리(2026-10-03, §14-3) — 녹음을 지우면 메타를 빼고 여기에 자리·시각을 남긴다. 지운 뒤 늦게 온 업로드(다른 기기 대기열)가
+   * 그 녹음을 되살리지 않게 판정(decideToeic*RecordingUpload)이 본다. 같은 자리는 늦은 시각 하나. 옛 문서 = [].
+   */
+  recordingDeletions: ToeicRecordingDeletion[];
+  /**
+   * 문항 단위 다시 풀기 기록(2026-10-03, §15-1) — startedAt 오름차순, 진행 중은 하나. 옛 문서 = []. answers 밖(닫힘 판정·끝내기 409 불변).
+   * 쓰는 곳은 startToeicRetake·finishToeicRetake·setToeicAttemptRecording(대기 자리)·deleteToeicAttemptRecordingMeta(통째) 넷.
+   */
+  retakes: ToeicRetakeSession[];
+  /** 다시 풀기로 밀려난 예전 답(§15-1) — q 오름차순 · 같은 q는 replacedAt 오름차순. 옛 문서 = []. 같은 q 10줄이 상한 */
+  answerHistory: ToeicAnswerHistoryEntry[];
+  /** 지금 답의 문항별 진단(§15-11 — 응시 화면이 보낸 값, 표시·오류 문항 사유용) — q마다 하나. 옛 문서 = [] */
+  answerDiags: ToeicAnswerDiag[];
 }
 
-/** 녹음 메타 저장 결과(§13-4) — 판정은 lib/toeic-rec-rules decideToeicRecordingUpload(원자 단위 **안에서** 다시). 없는 응시면 스토어가 null. */
+/**
+ * 녹음 메타 저장 결과(§13-4·§15-4) — 판정은 lib/toeic-retake decideToeicAnswerUpload(원자 단위 **안에서** 다시 — 이력이 없고 세대가 null이면
+ * §13-4 표 decideToeicRecordingUpload와 같다). slot = 저장·재사용한 자리(지금 자리·다시 풀기 대기 자리·이력 줄). 없는 응시면 스토어가 null.
+ */
 export type SetToeicAttemptRecordingResult = {
-  outcome: "stored" | "reused" | "superseded" | "locked" | "question_not_found";
+  outcome: "stored" | "reused" | "superseded" | "locked" | "question_not_found" | "deleted" | "retaken" | "retake_not_found";
+  slot: "current" | "staged" | "history" | null;
   record: ToeicAttemptRecord;
+};
+
+/** 다시 풀기 시작 결과(§15-2) — 판정은 decideToeicRetakeStart(원자 단위 안에서). started면 session이 새 기록 */
+export type StartToeicRetakeResult =
+  | { outcome: "started"; record: ToeicAttemptRecord; session: ToeicRetakeSession }
+  | { outcome: Exclude<ToeicRetakeStartDecision["kind"], "start">; record: ToeicAttemptRecord; decision: Exclude<ToeicRetakeStartDecision, { kind: "start" }> };
+
+/** 다시 풀기 끝 결과(§15-5) — 한 번만(already_closed면 쓰지 않았다) */
+export type FinishToeicRetakeResult = { outcome: "finished" | "already_closed" | "retake_not_found"; record: ToeicAttemptRecord; merged: number[] };
+
+/**
+ * 채점 저장 경합(§15-6) — 채점 라우트가 읽을 때의 답 세대와 저장 때의 세대가 다르다(그 사이 다시 풀기가 합쳐졌다). 스토어는 쓰지 않고 던지고,
+ * 라우트는 409 answer_changed로 바꾼다.
+ */
+export class ToeicAnswerChangedError extends Error {
+  constructor(readonly q: number) {
+    super(`Q${q} 답이 다시 풀기로 바뀌었어요`);
+    this.name = "ToeicAnswerChangedError";
+  }
+}
+
+/** 고칠 문장 녹음 메타 저장 결과(§14-5) — 판정은 decideToeicFixRecordingUpload(원자 단위 **안에서** 다시). replaced = 바뀌기 전 그 자리 메타 */
+export type SetToeicAttemptFixRecordingResult = {
+  outcome: "stored" | "reused" | "superseded" | "deleted" | "question_not_found" | "fix_not_found" | "answer_changed";
+  record: ToeicAttemptRecord;
+  replaced: ToeicStoredFixRecording | null;
+};
+
+/** 녹음 메타 지우기 결과(§14-4) — 객체는 라우트가 **먼저** 지웠다. removed* = 이번에 뺀 메타(없으면 빈 배열 — 이미 지웠다) */
+export type DeleteToeicAttemptRecordingMetaResult = {
+  record: ToeicAttemptRecord;
+  removedAnswers: ToeicStoredRecording[];
+  removedFixes: ToeicStoredFixRecording[];
 };
 
 /** 표현집·모의고사 삭제 결과 — deleteVocabBook과 같은 규약 */
@@ -703,6 +778,8 @@ export interface MergeToeicSetPointsResult {
 export interface FinishToeicAttemptInput {
   finishedAt: string | null;
   answers: { q: number; recorded: boolean; durationMs: number | null }[];
+  /** 문항별 진단(§15-11 — 응시 화면이 보냈을 때만). 옛 화면·비콘에는 없다 */
+  diags?: ToeicAnswerDiag[];
 }
 
 /**
@@ -1264,13 +1341,31 @@ export interface StudyStore {
    * 문항 하나의 채점 결과 저장 — **그 문항만** 바꾼다(파일: mutate, Firestore: runTransaction). 같은 응시의 두 문항이
    * 동시에 채점돼도(동시 2개, §5-0) 서로 덮지 않는다. 그 q가 answers에 없으면 덧붙인다. 없는 id면 null.
    */
-  updateToeicAttemptAnswer(id: string, q: number, patch: ToeicAnswerScorePatch): Promise<ToeicAttemptRecord | null>;
+  updateToeicAttemptAnswer(id: string, q: number, patch: ToeicAnswerScorePatch, expectSource?: string | null): Promise<ToeicAttemptRecord | null>;
   /**
    * 녹음 메타 한 줄 저장(§13-4) — **판정과 쓰기가 한 원자 단위**(파일: mutate, Firestore: runTransaction). 안에서
    * decideToeicRecordingUpload를 다시 불러 store일 때만 recordings의 그 q를 바꾼다(answers·finishedAt은 건드리지 않는다).
    * 객체는 라우트가 **먼저** 썼다. 없는 id면 null.
    */
-  setToeicAttemptRecording(id: string, recording: ToeicStoredRecording): Promise<SetToeicAttemptRecordingResult | null>;
+  setToeicAttemptRecording(id: string, recording: ToeicStoredRecording, gen?: string | null): Promise<SetToeicAttemptRecordingResult | null>;
+  /**
+   * 고칠 문장 녹음 메타 한 줄 저장(§14-5) — 판정(decideToeicFixRecordingUpload)과 쓰기가 한 원자 단위. store일 때만 그 자리를 바꾸고
+   * 바뀌기 전 메타를 replaced로 돌려준다(라우트가 커밋 **뒤에** 옛 객체를 지운다). 객체는 라우트가 먼저 썼다. 없는 id면 null.
+   */
+  setToeicAttemptFixRecording(id: string, recording: ToeicStoredFixRecording, expectSource?: string | null): Promise<SetToeicAttemptFixRecordingResult | null>;
+  /**
+   * 녹음 메타 지우기(§14-4) — 대상(답변 한 문항·고칠 문장 하나·응시 통째)의 메타를 빼고 지운 자리를 남긴다(한 원자 단위).
+   * answers(점수·전사·피드백)는 그대로. 보관소 객체는 라우트가 **먼저** 지웠다(서버 먼저 → 메타 정리). **prod-guard**(`deleteToeicRecordings`,
+   * Firestore). 없는 id면 null. 이미 지운 대상이면 removed*가 빈 배열(지운 자리만 새 시각으로) — 다시 눌러도 멱등.
+   */
+  deleteToeicAttemptRecordingMeta(id: string, target: ToeicRecDeleteTargetAll, deletedAt: string): Promise<DeleteToeicAttemptRecordingMetaResult | null>;
+  /**
+   * 문항 단위 다시 풀기 시작(§15-2) — 판정(decideToeicRetakeStart)과 쓰기가 한 원자 단위(파일 mutate, Firestore runTransaction). 진행 중 기록은
+   * 하나(동시 두 시작 중 하나만 통과), 오래됐거나 replaceOpen으로 고른 진행 중 기록은 먼저 닫는다. 없는 id면 null.
+   */
+  startToeicRetake(id: string, input: { questions: number[]; replaceOpen: string | null; newId: string; nowIso: string }): Promise<StartToeicRetakeResult | null>;
+  /** 다시 풀기 끝 — 녹음된 문항만 원래 결과에 합친다(applyToeicRetakeFinish, 한 번만, 원자 단위). answers 길이·finishedAt 불변. 없는 id면 null. */
+  finishToeicRetake(id: string, retakeId: string, input: ToeicRetakeFinishInput & { nowIso: string }): Promise<FinishToeicRetakeResult | null>;
 
   // ---- talkSessions — 은우 자유대화 (docs/harness/english.md §12-4, SPEC §21) ----
   // 은우 단어장 컬렉션과 섞지 않는다. 삭제는 Firestore에서 prod-guard(`deleteTalkSession`).
@@ -2766,28 +2861,91 @@ class JsonFileStore implements BookCardStore {
     });
   }
 
-  async updateToeicAttemptAnswer(id: string, q: number, patch: ToeicAnswerScorePatch): Promise<ToeicAttemptRecord | null> {
+  async updateToeicAttemptAnswer(id: string, q: number, patch: ToeicAnswerScorePatch, expectSource?: string | null): Promise<ToeicAttemptRecord | null> {
     // 읽기·그 문항만 바꾸기·쓰기가 한 mutate — 같은 응시의 두 문항을 동시에 채점해도 서로 덮지 않는다(큐 직렬화).
+    // expectSource(§15-6): 라우트가 읽을 때의 답 세대 — 그 사이 다시 풀기가 합쳐졌으면 쓰지 않고 던진다(예전 녹음 점수가 새 답에 붙지 않게)
     return this.mutate((db) => {
       const i = db.toeicAttempts.findIndex((x) => x.id === id);
       if (i < 0) return null;
-      const next = applyAttemptAnswer(db.toeicAttempts[i], q, patch);
+      const cur = normalizeToeicAttemptRecord(db.toeicAttempts[i]);
+      if (expectSource !== undefined && toeicAnswerSourceOf(cur, q) !== expectSource) throw new ToeicAnswerChangedError(q);
+      const next = applyAttemptAnswer(cur, q, patch);
       db.toeicAttempts[i] = next;
       return next;
     });
   }
 
-  async setToeicAttemptRecording(id: string, recording: ToeicStoredRecording): Promise<SetToeicAttemptRecordingResult | null> {
-    // 판정과 쓰기가 한 mutate — 같은 문항 두 업로드가 겹쳐도(큐 직렬화) 메타를 쓰는 쪽이 하나다.
+  async setToeicAttemptRecording(id: string, recording: ToeicStoredRecording, gen: string | null = null): Promise<SetToeicAttemptRecordingResult | null> {
+    // 판정과 쓰기가 한 mutate — 같은 문항 두 업로드가 겹쳐도(큐 직렬화) 메타를 쓰는 쪽이 하나다. 세대(§15-4)로 지금 자리·대기 자리·이력 줄을 가른다.
     return this.mutate((db): SetToeicAttemptRecordingResult | null => {
       const i = db.toeicAttempts.findIndex((x) => x.id === id);
       if (i < 0) return null;
       const current = normalizeToeicAttemptRecord(db.toeicAttempts[i]);
-      const decision = decideToeicRecordingUpload(current, recording.q, { sha256: recording.sha256, recordedAtMs: Date.parse(recording.recordedAt) });
-      if (decision !== "store") return { outcome: decision, record: current };
-      const next = normalizeToeicAttemptRecord(applyToeicAttemptRecording(current, recording));
+      const decision = decideToeicAnswerUpload(current, recording.q, gen, { sha256: recording.sha256, recordedAtMs: Date.parse(recording.recordedAt) });
+      const res = toeicRecordingUploadOutcome(decision);
+      if (!res.write) return { outcome: res.outcome, slot: res.slot, record: current };
+      const next = normalizeToeicAttemptRecord(applyToeicAnswerUpload(current, gen, decision, recording));
       db.toeicAttempts[i] = next;
-      return { outcome: "stored", record: next };
+      return { outcome: "stored", slot: res.slot, record: next };
+    });
+  }
+
+  async setToeicAttemptFixRecording(id: string, recording: ToeicStoredFixRecording, expectSource?: string | null): Promise<SetToeicAttemptFixRecordingResult | null> {
+    // 판정과 쓰기가 한 mutate — 같은 고칠 문장 두 업로드가 겹쳐도(큐 직렬화) 메타를 쓰는 쪽이 하나다.
+    return this.mutate((db): SetToeicAttemptFixRecordingResult | null => {
+      const i = db.toeicAttempts.findIndex((x) => x.id === id);
+      if (i < 0) return null;
+      const current = normalizeToeicAttemptRecord(db.toeicAttempts[i]);
+      const replaced = current.fixRecordings.find((r) => r.q === recording.q && r.fixIndex === recording.fixIndex) ?? null;
+      // §15-6 — 화면이 본 답의 세대와 다르면(그 사이 다시 풀기가 합쳐졌다) 예전 피드백 자리의 녹음을 새 피드백에 붙이지 않는다
+      if (expectSource !== undefined && toeicAnswerSourceOf(current, recording.q) !== expectSource) return { outcome: "answer_changed", record: current, replaced: null };
+      const decision = decideToeicFixRecordingUpload(current, recording.q, recording.fixIndex, { sha256: recording.sha256, recordedAtMs: Date.parse(recording.recordedAt) });
+      if (decision !== "store") return { outcome: decision, record: current, replaced: null };
+      const next = normalizeToeicAttemptRecord(applyToeicFixRecording(current, recording));
+      db.toeicAttempts[i] = next;
+      return { outcome: "stored", record: next, replaced };
+    });
+  }
+
+  async deleteToeicAttemptRecordingMeta(id: string, target: ToeicRecDeleteTargetAll, deletedAt: string): Promise<DeleteToeicAttemptRecordingMetaResult | null> {
+    // 파일 백엔드는 가드가 없다(지금 규칙과 같다). 메타 빼기 + 지운 자리 남기기를 한 mutate로(예전 답은 그 줄의 녹음 메타만 — §15-8).
+    return this.mutate((db): DeleteToeicAttemptRecordingMetaResult | null => {
+      const i = db.toeicAttempts.findIndex((x) => x.id === id);
+      if (i < 0) return null;
+      const current = normalizeToeicAttemptRecord(db.toeicAttempts[i]);
+      const applied = applyToeicRecordingDeletionAll(current, target, deletedAt);
+      const next = normalizeToeicAttemptRecord(applied.next);
+      db.toeicAttempts[i] = next;
+      return { record: next, removedAnswers: applied.removedAnswers, removedFixes: applied.removedFixes };
+    });
+  }
+
+  async startToeicRetake(id: string, input: { questions: number[]; replaceOpen: string | null; newId: string; nowIso: string }): Promise<StartToeicRetakeResult | null> {
+    // 판정과 쓰기가 한 mutate — 동시 두 시작(다른 탭·기기)이 겹쳐도 진행 중 기록은 하나만 생긴다(큐 직렬화).
+    return this.mutate((db): StartToeicRetakeResult | null => {
+      const i = db.toeicAttempts.findIndex((x) => x.id === id);
+      if (i < 0) return null;
+      const current = normalizeToeicAttemptRecord(db.toeicAttempts[i]);
+      const decision = decideToeicRetakeStart(current, input.questions, Date.parse(input.nowIso), input.replaceOpen);
+      if (decision.kind !== "start") return { outcome: decision.kind, record: current, decision };
+      const session = newToeicRetakeSession(input.newId, input.questions, input.nowIso);
+      const next = normalizeToeicAttemptRecord(applyToeicRetakeStart(current, decision.close, session, input.nowIso));
+      db.toeicAttempts[i] = next;
+      return { outcome: "started", record: next, session };
+    });
+  }
+
+  async finishToeicRetake(id: string, retakeId: string, input: ToeicRetakeFinishInput & { nowIso: string }): Promise<FinishToeicRetakeResult | null> {
+    // 판정(한 번만)과 합치기가 한 mutate — 비콘·재시도·다른 탭이 겹쳐도 먼저 온 끝 하나만 합친다.
+    return this.mutate((db): FinishToeicRetakeResult | null => {
+      const i = db.toeicAttempts.findIndex((x) => x.id === id);
+      if (i < 0) return null;
+      const current = normalizeToeicAttemptRecord(db.toeicAttempts[i]);
+      const r = applyToeicRetakeFinish(current, retakeId, input, input.nowIso);
+      if (r.outcome !== "finished") return { outcome: r.outcome, record: current, merged: r.merged };
+      const next = normalizeToeicAttemptRecord(r.next);
+      db.toeicAttempts[i] = next;
+      return { outcome: "finished", record: next, merged: r.merged };
     });
   }
 
@@ -2914,11 +3072,37 @@ export function applyAttemptFinish(current: ToeicAttemptRecord, input: FinishToe
     const prev = byQ.get(f.q) ?? normalizeToeicAnswer({ q: f.q });
     byQ.set(f.q, { ...prev, recorded: f.recorded, durationMs: f.durationMs });
   }
+  // 문항별 진단(§15-11) — 보냈을 때만 그 문항 진단을 바꾼다(응시 범위 안). 옛 화면·비콘은 그대로
+  const qs = new Set(current.questions);
+  const given = normalizeToeicAnswerDiags(input.diags ?? []).filter((d) => qs.has(d.q));
+  const answerDiags = given.length === 0 ? current.answerDiags : [...current.answerDiags.filter((d) => !given.some((g) => g.q === d.q)), ...given].sort((a, b) => a.q - b.q);
   return normalizeToeicAttemptRecord({
     ...current,
     finishedAt: input.finishedAt,
     answers: [...byQ.values()].sort((a, b) => a.q - b.q),
+    answerDiags,
   });
+}
+
+/**
+ * 업로드 세대 판정 → 스토어 결과(순수 — 두 백엔드가 같은 표로 바꾼다). write면 applyToeicAnswerUpload로 쓴다.
+ */
+export function toeicRecordingUploadOutcome(d: ReturnType<typeof decideToeicAnswerUpload>): {
+  write: boolean;
+  outcome: SetToeicAttemptRecordingResult["outcome"];
+  slot: SetToeicAttemptRecordingResult["slot"];
+} {
+  switch (d.kind) {
+    case "store":
+    case "store_staged":
+    case "store_history":
+      return { write: true, outcome: "stored", slot: d.slot };
+    case "reused":
+    case "superseded":
+      return { write: false, outcome: d.kind, slot: d.slot };
+    default:
+      return { write: false, outcome: d.kind, slot: null };
+  }
 }
 
 /** 문항 하나의 채점 결과 반영(순수) — 그 q만 바꾼다(없으면 덧붙인다). recorded·durationMs는 보존한다. */

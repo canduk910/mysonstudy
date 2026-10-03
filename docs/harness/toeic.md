@@ -977,7 +977,7 @@ zod(`buildFeedbackZod({maxScore, transcript})`): `score` 정수 0~만점(Q11=5, 
 - **마이크 유지(전략 B, 2026-10-03 — SPEC §20-4)**: 응시·틀 테스트 화면은 세션마다 `createMicKeeper()`(`lib/mic-session.ts`) 하나를 쥐고 녹음을 `keeper.startRecording()`으로 연다. 정책은 순수 함수 `micKeepPolicyFor({ appleWebKit, audioSession, perAnswerPref })` 하나가 정한다.
   - `"keep"`(Apple WebKit **이고** `navigator.audioSession`이 있을 때 — iOS·iPadOS·Mac Safari 16.4+, 그리고 기기 설정 "문항마다 마이크 다시 열기"(localStorage `toeic-mic-per-answer`)가 꺼져 있을 때): 첫 녹음(마이크 점검 또는 그 화면의 첫 🎤)에서 `play-and-record` → `getUserMedia` **한 번** → 스트림을 세션 끝까지 쥔다. 녹음마다 트랙 `enabled = true` → 새 `MediaRecorder` → 끝나면 `recorder.stop()` → 트랙 `enabled = false`(stop하지 않는다). 쥔 동안 `activeCaptures`가 1이라 `setAudioSessionPlayback()`은 아무것도 하지 않고 세션은 `play-and-record`에 머문다 — `playback`으로 바꾸면 W3C Audio Session 규칙대로 마이크 트랙이 끝나기 때문이다. WebKit(`AudioSessionIOS.mm`)은 PlayAndRecord에 `DefaultToSpeaker`(수화기 선호가 아니면)·모드 VideoChat을 걸므로 재생은 큰 스피커가 기대값이고, 음량 저하(WebKit 218012)는 실기기 확인 항목이다(SPEC §20-8 1).
   - `"per-answer"`(그 밖 — 구형 iOS·Chrome·Firefox·Android, 또는 기기 설정): 바로 위 녹음 규칙 그대로(녹음마다 획득·해제 — 전략 A). 구형 iOS는 세션 API가 없어 쥔 채 재생 경로를 고를 수 없으므로 소리를 지키고 권한 재요청을 감수한다.
-  - **놓는 때**(`keeper.release()` — 멱등, 트랙 stop → `activeCaptures--` → **그다음** `playback`): 세션 끝·그만두기·언마운트·`pagehide`·`visibilitychange` hidden. 놓은 뒤의 녹음은 다시 얻는다(그때만 권한 창). 탭으로 여는 길("시작"·"이 문항 다시")은 `keeper.prime()`으로 탭 안에서 먼저 연다. 트랙이 `ended`(권한 철회·장치 분리·세션 전환)되면 쥔 스트림을 버리고 다음 녹음이 다시 얻는다. `muted`는 재획득 근거로 쓰지 않는다(입력을 꺼 둔 트랙을 WebKit이 muted로 보일 수 있어 문항마다 다시 묻게 된다).
+  - **놓는 때**(`keeper.release()` — 멱등, 트랙 stop → `activeCaptures--` → **그다음** `playback`): 세션 끝·그만두기·언마운트·`pagehide`·`visibilitychange` hidden. 놓은 뒤의 녹음은 다시 얻는다(그때만 권한 창). 탭으로 여는 길("시작"·"이 문항 다시")은 `keeper.prime()`으로 탭 안에서 먼저 연다. 트랙이 `ended`(권한 철회·장치 분리·세션 전환)되면 쥔 스트림을 버리고 다음 녹음이 다시 얻는다. `muted`는 재획득 근거로 쓰지 않는다(입력을 꺼 둔 트랙을 WebKit이 muted로 보일 수 있어 문항마다 다시 묻게 된다). (2026-10-03 §15-10에서 바뀜 — 입력을 **켠 뒤**에도 muted면 한 번 다시 연다.)
   - 대기 상한(gUM 8초·점검 15초·start 5초·stop 3초)·늦은 스트림 즉시 stop·`started` 거부 시 스스로 버림은 두 정책이 같다. 진행 중인 획득에 다음 녹음이 합류한다(두 번 열지 않는다). 녹음 중 숨김은 지금처럼 그 녹음을 버리고 "중단됨"이다.
   - 진단 줄에 `마이크 유지 · 열기 n회` / `마이크 문항마다 · 열기 n회`(`getMicDiag().keep`). e2e는 `getUserMedia` 호출 수로 잠근다 — keep이면 응시 전체 1회, per-answer면 점검 1 + 녹음 문항 수.
 - 녹음은 먼저 기기(IndexedDB `eunwoo-toeic-rec`, 키 `{attemptId}:{q}`)에 두고 문항마다 백그라운드로 서버에 올린다(§13-3). 기기 사본은 풀마다 **최근 응시 5회분**만 남기되 아직 못 올린(pending) 녹음이 있는 응시는 지우지 않는다. 다른 기기·브라우저는 서버 사본으로 듣고 채점한다(§13-8). 서버에도 없으면 "이 녹음은 아직 서버에 올라가지 않았어요 — 응시한 기기에서 결과 화면을 열면 올라가요".
@@ -1138,7 +1138,7 @@ interface ToeicAttemptRecord {
 ```
 
 - 응시 시작에 레코드를 만들고(녹음 IndexedDB 키로 id가 필요하다), 끝나거나 그만둘 때 `answers`의 `recorded`·`durationMs`를 채운다. 채점은 문항별로 그 문항만 갱신한다(파일: `mutate`, Firestore: 문서 읽기 → 그 문항만 바꿔 쓰기 — 같은 응시의 두 문항이 동시에 채점돼도 서로 덮지 않게 `runTransaction`).
-- 시작할 때 `answers`는 빈 배열이고, 끝/그만두기가 **응시 범위의 모든 문항**을 채운다(녹음 안 된 문항은 `recorded:false`). 그래서 "닫힌 응시" = `finishedAt !== null || answers.length > 0`이다(`lib/toeic-attempt-rules.ts`). 끝/그만두기는 **한 번만** 받는다 — 이미 닫힌 응시에 다시 오면 409(`already_finished`)로 거절하고 쓰지 않는다(판정은 원자 단위 안). 재시도·다른 탭의 늦은 요청이 "끝까지"를 "중단"으로 바꾸거나 채점된 문항의 `recorded`를 뒤집지 못하게 하려는 것이고, 화면은 409를 성공으로 본다. 채점은 닫힌 응시의 녹음된 문항에만 한다(아니면 409).
+- 시작할 때 `answers`는 빈 배열이고, 끝/그만두기가 **응시 범위의 모든 문항**을 채운다(녹음 안 된 문항은 `recorded:false`). 그래서 "닫힌 응시" = `finishedAt !== null || answers.length > 0`이다(`lib/toeic-attempt-rules.ts`). 끝/그만두기는 **한 번만** 받는다 — 이미 닫힌 응시에 다시 오면 409(`already_finished`)로 거절하고 쓰지 않는다(판정은 원자 단위 안). 재시도·다른 탭의 늦은 요청이 "끝까지"를 "중단"으로 바꾸거나 채점된 문항의 `recorded`를 뒤집지 못하게 하려는 것이고, 화면은 409를 성공으로 본다. 채점은 닫힌 응시의 녹음된 문항에만 한다(아니면 409). (2026-10-03 §15: 문항 단위 다시 풀기는 이 끝내기를 다시 쓰지 않고 자기 끝 라우트로 그 문항 자리만 바꿔 끼운다 — answers 길이·닫힘 판정 불변.)
 - 모의고사를 지우면 응시 기록도 지운다.
 - **2026-10-03(§13-5)**: 응시 기록에 `recordings: ToeicStoredRecording[]`(서버에 보관한 녹음의 메타 — q마다 하나)를 더한다. `answers`가 아니라 따로 두는 것은 응시 중 업로드가 "닫힌 응시" 판정(`answers.length > 0`)을 뒤집지 않게 하려는 것이다. 모의고사를 지우면 녹음 객체도 먼저 지운다(§13-7).
 
@@ -1201,7 +1201,7 @@ interface ToeicAttemptRecord {
 - **오프라인(기본, 무비용)**: zod 반례(exampleSpan이 예문 밖·index 누락/중복·useIn part 중복·frames에 `___` 없음·chunks 불일치·stressWords가 지문에 없음·feedback `said`가 전사문 밖·순서 바꿈·사이 단어 뺌·단어 조각(쉼표 하나 빠진 인용은 통과)·점수 범위·잘린 항목의 빈 뜻은 판독만 통과·세트 안 표현 중복은 가져오기에서 거부), 후처리(keyExpressions 정리·DAY 묶기·번호 병합·usedExpressions 정리·빈 자리만 채우기), 시험 출제(모드별 조건·보기 5개 상이·정답 포함·뜻이 같은 표현과 대소문자만 다른 보기 제외·보기 2개 미만이면 출제 불가·`cloze` 가림·`speak` 항목 키), **모드별 숙련도 분리**(반례로 잠금), 형식표·단계 전이(Q10 2회 재생·Q8 앞 표 읽기 45초·파트 첫 문항만 지시문), Q1–2 대조(숫자 표기 통일·약어 마침표 p.m. = PM·빠짐/치환 계산), 추정 총점(raw 0~35 전 구간 리터럴 표·정수 아닌 문항 번호 방어)·등급 구간, 스트릭 트랙 분리(은우·일본어·운동·영어가 서로 섞이지 않음), **가져오기 파일 검증**(`data/private/toeic-preset-hackers-core.json`이 있으면 zod 통과·10세트·140표현·20 QUIZ, 없으면 SKIP — 공개 저장소에 없으므로 CI 기준은 SKIP).
 - **spec-sync**: 호출 A·B·C(머리말 + 파트 5)·D의 시스템 프롬프트·사용자 메시지 형식·사진 프롬프트 접미사를 이 문서와 **바이트 대조**, JSON Schema 8개는 **의미 동치**(JSON.parse → deepEqual, 일본어 관용구). 2026-10-02: 원문 대상이 14 → 15(새 `TOEIC_MOCK_FLOW_RULES` — 라벨 "§4-1 호출 C 흐름 규칙")이고 JSON 8은 그대로, 값 셋(§4-7·§5-1·§5-2)이 바뀌었다(§4-1 머리말은 검토 반영으로 옛 글자 그대로). 스펙이 먼저 바뀐 동안 그 셋이 FAIL이었고, 같은 날 T15 구현이 `prompts.ts`를 같은 문자열로 맞춰 **15/15 PASS**다 — 스펙과 코드는 한 커밋으로 묶는다(문서만 먼저 나가면 main의 eval이 붉다). 템플릿 중심 재정렬의 새 항목은 §12-13-5.
 - **실호출 점검(게이트)**: `EVAL_TOEIC=1`일 때만 — 호출 A(사진 1장)·B(7개)·C(파트 1개)·D(픽스처 전사문 1개). 비용이 드는 검증은 **사용자 동의 후 오케스트레이터가 실행**한다.
-- **유형별 공략(§12-10)** 항목은 `scripts/eval-toeic-guides.ts`(순수 층 — `runToeicGuideChecks`)·`eval-toeic-guides-app.ts`(S1 앱 층)·`eval-toeic-guides-s2.ts`(틀 테스트·표현 시험)·`eval-toeic-guides-s3.ts`(한 문제 연습)에 있고 `eval-toeic.ts`가 불러 한 번에 돈다. 2026-09-28 기준 오프라인 **985항목**(표현집·모의고사 357 + 유형별 공략 628)이었고, 2026-10-02 템플릿 중심 재정렬 뒤 **1167항목**이다(새 eval 조각 `scripts/eval-toeic-template-centric.ts`와 `eval-toeic.ts`의 "템플릿 중심 — 호출 C·D 흐름" — §12-13-5·§12-13-7) — 두 가져오기 파일(`data/private/toeic-preset-hackers-core.json`·`data/private/toeic-strategy/toeic-guides.json`)이 있는 로컬 기준이고, 없으면 각 묶음이 SKIP 1건으로 바뀐다(공개 저장소·CI 기준). 게이트는 새로 두지 않았다(§12-10 끝). 2026-10-03 내 녹음 서버 보관 + 비교(§13-10 — `scripts/eval-toeic-recordings.ts` 12묶음, GCS 0) 뒤 **1308항목**이다. 같은 날 마이크 유지(§6-4 전략 B — `eval-toeic.ts` "마이크 유지" K1~K22: 정책 표·획득 1회/녹음 n회·녹음 사이 입력 끔·놓기에서만 stop·ended 재획득·per-answer·거부/무응답/놓는 사이 도착·화면 배선 소스 대조) 뒤 **1332항목**이다.
+- **유형별 공략(§12-10)** 항목은 `scripts/eval-toeic-guides.ts`(순수 층 — `runToeicGuideChecks`)·`eval-toeic-guides-app.ts`(S1 앱 층)·`eval-toeic-guides-s2.ts`(틀 테스트·표현 시험)·`eval-toeic-guides-s3.ts`(한 문제 연습)에 있고 `eval-toeic.ts`가 불러 한 번에 돈다. 2026-09-28 기준 오프라인 **985항목**(표현집·모의고사 357 + 유형별 공략 628)이었고, 2026-10-02 템플릿 중심 재정렬 뒤 **1167항목**이다(새 eval 조각 `scripts/eval-toeic-template-centric.ts`와 `eval-toeic.ts`의 "템플릿 중심 — 호출 C·D 흐름" — §12-13-5·§12-13-7) — 두 가져오기 파일(`data/private/toeic-preset-hackers-core.json`·`data/private/toeic-strategy/toeic-guides.json`)이 있는 로컬 기준이고, 없으면 각 묶음이 SKIP 1건으로 바뀐다(공개 저장소·CI 기준). 게이트는 새로 두지 않았다(§12-10 끝). 2026-10-03 내 녹음 서버 보관 + 비교(§13-10 — `scripts/eval-toeic-recordings.ts` 12묶음, GCS 0) 뒤 **1308항목**이다. 같은 날 마이크 유지(§6-4 전략 B — `eval-toeic.ts` "마이크 유지" K1~K22: 정책 표·획득 1회/녹음 n회·녹음 사이 입력 끔·놓기에서만 stop·ended 재획득·per-answer·거부/무응답/놓는 사이 도착·화면 배선 소스 대조) 뒤 **1332항목**이다. 같은 날 녹음 관리·고칠 문장 다시 녹음(§14-10 — `scripts/eval-toeic-rec-manage.ts` 11묶음, 마이크 유지 K23·K24 동시 호출) 뒤 **1436항목**이다(같은 날 0ec640c의 K0 기본값 행 1개 포함 — 1333 → 1436).
 
 ---
 
@@ -3238,7 +3238,7 @@ interface ToeicAttemptRecord {
 
 ### 13-7. 삭제 — 모의고사 삭제의 연쇄에 녹음을 더한다
 
-- 녹음을 따로 지우는 화면·라우트는 두지 않는다. 지금처럼 **모의고사(연습 문서 포함)를 지우면** 생성 사진·응시 기록과 함께 그 응시들의 녹음이 지워진다(§7-5·§20-6 연쇄). 응시 하나만 지우는 기능은 지금도 없다(스트릭 과거가 사라진다 — §12-8).
+- 녹음을 따로 지우는 화면·라우트는 두지 않는다(**2026-10-03 §14에서 바뀜** — 결과 화면·"내 녹음" 목록에서 답변 녹음 하나·고칠 문장 녹음 하나·응시 녹음 통째를 지운다. 이 절의 모의고사 삭제 연쇄는 그대로다). 지금처럼 **모의고사(연습 문서 포함)를 지우면** 생성 사진·응시 기록과 함께 그 응시들의 녹음이 지워진다(§7-5·§20-6 연쇄). 응시 하나만 지우는 기능은 지금도 없다(스트릭 과거가 사라진다 — §12-8).
 - **순서 — 딸린 것 먼저**: `deleteToeicMock`(두 백엔드)이 그 모의고사의 응시 id를 모은 뒤 ① 응시마다 녹음 접두사 `attempts/{attemptId}/`를 지우고(대체된 옛 객체까지 — §13-1) ② 그다음 사진·응시·모의고사 문서를 지금 순서대로 지운다. ①이 하나라도 실패하면 **문서를 지우지 않고** 던진다 → 라우트 500 `delete_failed`(다시 누르면 접두사 지우기부터 다시 — 이미 지운 것은 0건이라 멱등). 반대 순서면 문서는 사라지고 녹음만 남아, 가리키는 문서 없는 목소리가 버킷에 영영 남는다.
 - **prod-guard**: 녹음 보관소의 지우기 함수(`deleteAttemptRecordings(attemptId)`)는 GCS 백엔드일 때 스스로 `assertDestructiveAllowed("deleteToeicRecordings")`를 부른다(새 `DestructiveOp` — 지금 10개 → 11개). `deleteToeicMock`이 이미 먼저 막지만, 녹음 지우기가 다른 자리에서 불려도 막히게 한 겹 더 둔다. 파일 백엔드는 가드가 없다(지금 규칙과 같다).
 - 소프트 삭제(7일)로 버킷에서 잘못 지운 녹음을 되살릴 수 있다 — 되살린 녹음을 가리킬 응시 문서는 Firestore 쪽 복구가 따로 필요하다(PITR 꺼짐 — CLAUDE.md 서문).
@@ -3353,3 +3353,347 @@ R1~R2는 한 커밋으로 묶어도 되지만 R1만 먼저 나가도 해가 없�
 - **응시 id 모양이 아닌 경로**(`[id]`가 `^[A-Za-z0-9_-]{1,64}$` 밖)는 PUT·GET 모두 404 `attempt_not_found`(그런 응시는 만들어지지 않는다). 삭제 연쇄도 모양이 아닌 응시 id는 녹음 지우기를 건너뛴다.
 - **화면 문구**: 응시 화면 진단 줄 "· 서버 Q5 ✓ · Q6 올리는 중 · Q7 대기", 끝 화면 "🗄️ 녹음 n개 중 m개를 서버에 보관했어요(— 나머지는 결과 화면에서 이어서 올려요)", 결과 머리 "🗄️ 녹음 서버 보관 n/m" + "⬆️ 지금 올리기 (k)", 응시 전체 변화 "📈 지난 실전보다 추정 a → b (±d) · 추정(참고용)" / "📈 지난번과 같은 문항 n개 합 a → b (±d)". 앞선 응시는 같은 범위(scope)끼리 고른다(`toeicPreviousAttempt`).
 - **eval**: `scripts/eval-toeic-recordings.ts` 12묶음 → `eval:toeic` 오프라인 **1308항목**(1170 → 1308). 파일 백엔드 묶음은 자식 프로세스(임시 cwd, `TOEIC_REC_DIR`=임시 폴더)에서 돌고 저장소 `data/db.json`·`data/recordings` 무접촉을 확인한다.
+
+## 14. 녹음 관리 + 고칠 문장 다시 녹음 (2026-10-03)
+
+> 제품 흐름·경계·비용·실기기 확인은 SPEC §20-12. 이 절은 **레코드 필드·지운 자리·지우기 순서·고칠 문장 녹음 라우트·교체 시점·화면·eval**을 정한다. **새 AI 호출·새 프롬프트는 없다**(받아쓰기 비교도 하지 않는다). spec-sync 대상(원문 15 + JSON 8 + 호출 옵션 문장)은 그대로다. 문장 예시는 모두 지어낸 것이다.
+> §13의 원칙은 그대로 따른다 — 백엔드 판정 한 벌(`resolveStoreBackend`), PIN 게이트 뒤 프록시(서명 URL 없음), 경로 조각에 점 없음, 바이트 형식 판정, 4MB 상한(`TOEIC_SCORE_AUDIO_MAX_BYTES`), sha256 서버 계산, 객체 먼저 → 메타(원자 단위 안에서 같은 판정을 다시), "딸린 것(객체) 먼저" 지우기. 바뀐 것은 §13-7의 "녹음을 따로 지우는 화면·라우트는 두지 않는다" 한 줄이다.
+
+### 14-0. 결정 (사용자 확정 2026-10-03)
+
+사용자 원문: "녹음내용을 보고 지울 수도 있게 하자. 그리고 모의고사 결과에서 첨삭을 할 때 고칠문장 단위로 다시 녹음해서 내 목소리를 들어보는 기능을 추가하자."
+
+| 항목 | 결정 | 출처 |
+|---|---|---|
+| 지우는 곳 | ① 결과 화면 문항마다 "🗑 녹음 지우기" ② 아빠의 영어 허브의 **"🎙️ 내 녹음"** 목록(`/toeic/recordings` — 응시별 묶음: 날짜·모의고사/연습 이름·문항·길이·점수, ▶ 듣기, 하나씩·응시 통째 지우기) | 요구 |
+| 지우면 | 서버(GCS 또는 파일 백엔드)와 이 기기(IndexedDB·업로드 대기열) **모두**에서 사라진다. **점수·전사·피드백은 남는다** — 그 문항은 소리가 없어 다시 채점할 수 없다고 보인다. 확인 창(되돌릴 수 없음) | 요구 |
+| 순서 | **서버 먼저**(보관소 객체 → 메타 정리) → 성공한 뒤 이 기기 사본. 실패하면 아무것도 바꾸지 않는다 | 요구 |
+| 대기열 | 기기 대기열에 pending인 녹음을 지우면 업로드도 취소된다(바이트·메타가 함께 지워진다) | 요구 |
+| 고칠 문장 다시 녹음 | 결과 화면 피드백의 "고칠 문장"(`feedback.fixes[i]`: said → better)마다 🔊 고친 문장(TTS) · 🎤 내가 다시 말하기 · ▶ 내 목소리 · ⇄ 내 목소리 → 고친 문장 이어 듣기 | 요구 |
+| 보관 | **서버**(같은 버킷, 응시 아래 별도 경로), 고칠 문장마다 **최신 하나**, 다른 기기에서도 재생, "내 녹음"에 함께 보이고 함께 지워진다 | 요구 |
+| AI | **0** — 받아쓰기 비교는 하지 않는다 | 요구 |
+| 마이크 | `createMicKeeper`(§6-4 마이크 유지)로 **결과 화면 세션 동안** 하나 — 권한을 다시 묻지 않게. 정책은 응시 화면과 같은 기기 설정을 따른다(2026-10-03 §15-13에서 바뀜 — 설정과 상관없이 keep)(0ec640c부터 기본 "문항마다 마이크 다시 열기" 켬 — 그 기기는 🎤마다 연다. 끈 기기만 keep) | 요구 + 0ec640c |
+| 같은 화면 손질 | QA mic-keep P3-1(`startRecording` 동시 호출 경합)·P3-2(점검 녹음이 버려졌는데 "✓") | 요구 |
+
+### 14-1. 레코드 — `ToeicAttemptRecord`에 필드 둘
+
+```ts
+interface ToeicStoredFixRecording {      // lib/toeic-rec-rules.ts
+  q: number;                 // 1..11 — 그 문항 feedback.fixes가 있는 문항
+  fixIndex: number;          // feedback.fixes의 자리(0..)
+  better: string;            // 녹음할 때의 고친 문장 — 서버가 피드백에서 옮긴다("내 녹음" 목록이 피드백 없이 보이게)
+  objectKey: string;         // "attempts/{attemptId}/fixes/{q}/{fixIndex}/{recordedAtMs}"
+  mimeType: string; size: number; sha256: string; durationMs: number; recordedAt: string; uploadedAt: string; // §13-5와 같은 뜻
+}
+interface ToeicRecordingDeletion {       // 지운 자리(tombstone)
+  q: number | null;          // null = 응시 통째
+  fixIndex: number | null;   // null = 그 문항의 답변 녹음
+  deletedAt: string;         // 서버가 지운 시각(ISO)
+}
+interface ToeicAttemptRecord {
+  // …§7-5·§12-3·§13-5 필드 그대로
+  fixRecordings: ToeicStoredFixRecording[];      // (q, fixIndex) 오름차순, 자리마다 하나. 옛 문서 = []
+  recordingDeletions: ToeicRecordingDeletion[];  // 같은 자리는 늦은 시각 하나. 옛 문서 = []
+}
+```
+
+- 둘 다 **answers 밖**이다(§13-5와 같은 이유 — 닫힘 판정 불변). 끝내기·채점은 건드리지 않는다. 쓰는 곳은 `setToeicAttemptFixRecording`·`deleteToeicAttemptRecordingMeta`(+ 답변 메타는 지금처럼 `setToeicAttemptRecording`) 셋.
+- 정규화(`normalizeToeicAttemptRecord`)가 명시적으로 옮긴다 — 깨진 항목만 버리고, 같은 자리 둘이면 늦은 것 하나(`normalizeToeicStoredFixRecordings`·`normalizeToeicRecordingDeletions`). 생성부(`createToeicAttempt` 호출)는 `[]`로 시작한다(`New*` 필수 필드 — tsc가 잡는다).
+- 크기: 고칠 문장 녹음 메타 한 줄 약 300바이트, 응시 하나에 최대 11 × 5 = 55개여도 20KB 안팎. 지운 자리는 자리마다 하나라 늘지 않는다(응시 통째 지운 자리는 그보다 이른 자리 줄을 정리한다 — `addToeicRecordingDeletion`).
+
+### 14-2. 객체 키 · 지우기 접두사
+
+- 고칠 문장 녹음 키 `toeicFixRecObjectKey(attemptId, q, fixIndex, recordedAtMs)` → `attempts/{attemptId}/fixes/{q}/{fixIndex}/{recordedAtMs}`. **응시 접두사 아래**라 모의고사 삭제 연쇄(§13-7 접두사 지우기)가 함께 지운다. 확장자·점 없음. `fixIndex`의 구조 상한 `TOEIC_FIX_REC_INDEX_MAX`(9 — 호출 D zod fixes 상한 5 이상이면 된다, eval이 잠근다), 실제 범위는 그 문항 `feedback.fixes` 길이(판정이 본다).
+- 보관소가 받는 키 = 답변 키(`TOEIC_REC_OBJECT_KEY_RE`) **또는** 고칠 문장 키(`TOEIC_REC_FIX_OBJECT_KEY_RE`) — `isToeicRecObjectKey`. 두 정규식은 서로의 키를 받지 않는다.
+- 지우기 접두사(`toeicRecDeletionPrefixes(attemptId, target)`, 모양 `TOEIC_REC_PREFIX_RE`): 답변 한 문항 `attempts/{id}/{q}/`(대체된 옛 답변 객체까지) · 고칠 문장 하나 `attempts/{id}/fixes/{q}/{i}/` · 응시 통째 `attempts/{id}/`. 끝 슬래시가 있어 Q1 접두사가 Q11을, 답변 접두사가 `fixes/`를 덮지 않는다.
+- 보관소 인터페이스에 둘을 더한다 — `deletePrefix(prefix)`(지운 수, 이미 없으면 0 — 멱등)·`deleteKey(key)`(지웠으면 true, 없으면 false). GCS 구현은 둘 다 **먼저** `assertDestructiveAllowed("deleteToeicRecordings")`(새 `DestructiveOp`는 두지 않고 §13-7의 op를 넓혔다 — 지금 11개 그대로). 파일 백엔드는 가드가 없다.
+
+### 14-3. 지운 자리 — 지운 녹음이 되살아나지 않게
+
+- 문제: 아빠가 iPad에서 Q5 녹음을 지웠는데 iPhone 대기열에 그 녹음이 pending으로 남아 있으면, iPhone이 다음에 열릴 때 그 녹음을 다시 올린다. 메타가 없으니 §13-4 판정은 `store` — 지운 녹음이 되살아난다. 이 기기에서 지울 때도 같다(지우는 사이 업로드가 진행 중이던 경우).
+- 그래서 지우면 메타를 빼면서 **지운 자리**를 남긴다. 판정(`isToeicRecordingTombstoned(deletions, q, fixIndex, recordedAtMs)`): 그 자리(응시 통째 자리는 모든 자리)를 덮는 지운 자리가 있고 **녹음 시각 ≤ 지운 시각**이면 거부한다.
+  - 답변 녹음 판정 `decideToeicRecordingUpload`가 `question_not_found` 다음, 메타 비교 앞에서 본다 → 새 결과 `"deleted"` → 라우트 409 `recording_deleted`.
+  - 고칠 문장 녹음 판정 `decideToeicFixRecordingUpload`도 같다.
+  - 지운 **뒤에 새로** 녹음한 것(녹음 시각 > 지운 시각 — 고칠 문장 다시 말하기)은 받는다. 답변 녹음은 응시 중에만 생기므로 실제로는 지운 뒤 새 답변이 오지 않는다.
+- 시각은 기기 녹음 시각(`recordedAt`)과 서버 지운 시각을 비교한다 — 기기 시계가 서버보다 크게 늦으면 지운 직후 새로 말한 고칠 문장이 거부될 수 있다(§14-9 알려진 틈 — 폰은 망 시계를 쓴다).
+- 기기 쪽: 대기열 응답 해석(`nextToeicRecUploadAction`)에 `"purge"`를 더했다 — 409이고 `error: "recording_deleted"`면 purge, 비우기(`drainToeicRecUploads`)는 같은 녹음일 때(createdAt 대조) 이 기기 사본을 지운다. 409 `recording_locked`는 지금처럼 gone.
+- 결과 화면·"내 녹음" 목록은 열 때 그 응시의 지운 자리가 덮는 이 기기 사본을 지운다(다른 기기에서 지운 녹음을 이 기기가 계속 들려주지 않게). 결과 화면은 다시 풀기 기록(③)의 다른 응시 사본에도 같은 규칙을 쓴다(비교 자료 `ToeicCompareAttempt.recordingDeletions` — 선택 필드).
+
+### 14-4. 지우기 — 라우트 셋, 순서 한 벌
+
+| 경로 | 대상 | 남는 것 |
+|---|---|---|
+| `DELETE /api/toeic/attempts/[id]/recordings/[q]` | 그 문항 **답변 녹음**(대체된 옛 객체까지) | 그 문항 고칠 문장 녹음 · 점수·전사·피드백 |
+| `DELETE /api/toeic/attempts/[id]/recordings/[q]/fixes/[i]` | 그 고칠 문장 녹음 하나 | 나머지 전부 |
+| `DELETE /api/toeic/attempts/[id]/recordings` | 응시의 녹음 통째(답변·고칠 문장 — 응시 접두사) | **응시 기록·점수·전사·피드백**(응시 기록을 지우는 기능은 여전히 없다 — 스트릭 과거가 사라진다, §12-8) |
+
+- 세 라우트가 **한 벌**(`lib/toeic-rec-delete.ts` `deleteToeicRecordingTarget`)을 부른다:
+  1. 응시(404 `attempt_not_found` — 모양이 아닌 id 포함)·문항 범위(404 `question_not_found`, 통째는 검사 없음). 경로 조각 모양이 깨지면 라우트가 400 `invalid_input`.
+  2. **보관소 먼저** — 자리 접두사를 지운다. 실패하면 메타를 건드리지 않고 500 `delete_failed`(retriable). prod-guard(개발 환경 GCS)면 403 `prod_guard`.
+  3. **메타 정리** — 스토어 원자 단위(파일 `mutate`, Firestore `runTransaction` + 먼저 prod-guard) 안에서 순수 함수 `applyToeicRecordingDeletion(attempt, target, now)`: 대상 메타를 빼고 지운 자리를 더한다. **answers·finishedAt은 그대로**. 실패하면 500 `delete_failed` — 객체는 이미 없으니 GET은 `recording_missing`, 다시 누르면 2(0건)·3이 다시 돈다(멱등).
+- 반대 순서(메타 먼저)면 가리키는 메타 없는 객체가 버킷에 영영 남는다 — §13-7과 같은 이유다.
+- 응답(`ToeicRecordingDeleteResponse`, `lib/toeic-attempt-contract.ts` 단일 정의): 200 `{ ok:true, outcome:"deleted"|"absent", removedObjects, recordings, fixRecordings, recordingDeletions }`(absent = 서버 메타가 없었다 — 이 기기에만 있던 녹음. 지운 자리는 남긴다) · 400 `invalid_input` · 404 `attempt_not_found`|`question_not_found` · 403 `prod_guard` · 500 `delete_failed`(retriable). 화면은 응답의 세 필드로 상태를 바꾼다.
+- **이 기기 사본**: 서버가 성공한 **뒤에** `deleteToeicRecordingsLocal(attemptId, qs | "all")`(`lib/toeic-rec-store.ts`)가 메모리·바이트(`rec`)·메타(`meta`)를 함께 지운다 — 대기열 메타가 사라지므로 업로드도 취소된다(비우기는 매 차례 대기열을 새로 읽는다). 이미 올리던 중이면 그 PUT은 지운 자리에 걸려 409 → purge(이미 없음 — 아무 일 없음).
+- 서버가 404 `attempt_not_found`로 답하면(모의고사를 이미 지웠다) 목록은 이 기기 사본만 지운다. 그 밖 실패는 아무것도 지우지 않는다(상태 일관).
+- 로그에는 응시 id·대상·지운 수·결과·ms만 남긴다.
+
+### 14-5. 고칠 문장 다시 녹음 — 라우트 · 판정 · 교체 시점
+
+경로 `/api/toeic/attempts/[id]/recordings/[q]/fixes/[i]` — `i`는 `^\d$`. PUT·GET·DELETE. PIN 게이트 뒤, AI를 부르지 않으므로 키 검사 없음. multipart 필드 이름은 답변 녹음과 같다(`TOEIC_REC_FIELD_*`).
+
+- **PUT 검사 순서**: 400(형식 — `checkToeicFixRecordingUpload`: 답변 녹음과 같은 받는 타입·바이트 판정·빈 파일·시각, 자리 조각, 길이 1 ~ `TOEIC_FIX_REC_MAX_MS` = 35초) · 413(4MB) → 404(`attempt_not_found` · `question_not_found` · `fix_not_found`) → 판정 → 객체 쓰기 → 메타(원자 단위) → **커밋 뒤** 옛 객체 지우기.
+- **판정** `decideToeicFixRecordingUpload(attempt, q, fixIndex, {sha256, recordedAtMs})`:
+
+  | 지금 | 들어온 것 | 결과 |
+  |---|---|---|
+  | 문항이 응시 범위 밖 | — | `question_not_found` → 404 |
+  | 그 문항에 피드백이 없거나 `fixIndex ≥ fixes.length` | — | `fix_not_found` → 404 |
+  | 지운 자리가 덮는다(녹음 시각 ≤ 지운 시각) | — | `deleted` → 409 `recording_deleted` |
+  | 메타 없음 | 무엇이든 | `store` |
+  | 같은 sha | — | `reused` → 200(쓰지 않음) |
+  | 들어온 녹음이 더 이르거나 같음 | 다른 바이트 | `superseded` → 200(서버의 더 새 메타) |
+  | 더 새 녹음 | 다른 바이트 | `store` — **잠그지 않는다**(채점과 무관한 연습이라 몇 번이고 다시 말해 최신으로 바꾼다. 답변 녹음의 `locked`와 다르다) |
+
+- 메타의 `better`는 서버가 응시 기록의 피드백에서 옮긴다(`toeicFixBetterOf` — 클라이언트 값을 받지 않는다). 피드백은 점수가 생긴 뒤 바뀌지 않으므로(채점 대상 = 점수 없는 문항) 자리 번호가 다른 문장을 가리키게 되지 않는다.
+- **옛 객체 지우기 시점 — 메타 커밋 뒤**(스토어가 `replaced`로 바뀌기 전 메타를 돌려준다). 근거:
+  - 메타보다 먼저 지우면 메타 저장이 실패했을 때 지금 녹음을 잃는다(새 객체는 메타가 없어 아무도 가리키지 않고, 옛 객체는 지워졌다).
+  - 연습은 자주 다시 하므로 답변 녹음처럼 옛 객체를 모의고사 삭제 때까지 남기면(§13-1) 버킷에 쌓인다. 고칠 문장 하나에 열 번 다시 말하면 열 개가 남는다.
+  - 지우기가 실패하면(GCS 오류·개발 환경 prod-guard) 응답을 바꾸지 않고 로그만 남긴다 — 남은 옛 객체는 그 자리·응시·모의고사를 지울 때 접두사째 사라진다.
+  - 판정에서 자리를 얻지 못한 방금 쓴 객체(동시 업로드 경합·지운 자리)는 지금 메타가 가리키는 것이 아니면 같은 방식으로 지운다. **답변 녹음 PUT은 바꾸지 않는다** — 지금처럼 업로드 본문에 지우기가 없다(eval이 PUT 본문을 잠근다).
+- **GET**: 답변 녹음 GET과 같은 헤더(`private, no-store`·`nosniff`·`inline`·content-type = 메타 mimeType), 404 `attempt_not_found`|`recording_not_found`|`recording_missing`, 500 `storage_failed`.
+- 응답(`ToeicFixRecordingPutResponse`): 200 `{ ok:true, q, fixIndex, outcome:"stored"|"reused"|"superseded", recording }` · 400 · 413 · 404 · 409 `recording_deleted` · 500 `storage_failed`|`save_failed`(retriable).
+- **기기 보관소에 넣지 않는다.** 결과 화면이 녹음을 **메모리**(Blob URL)에 두고 곧바로 PUT한다. 근거: 응시 녹음 대기열의 보관·정리 규칙(풀마다 최근 5회분·pending 고정 — §13-3·§12-7-6)은 응시 답변을 기준으로 만들어져, 연습 녹음이 들어오면 정리 순위·고정이 흔들린다. 결과 화면은 녹음 직후 네트워크가 있는 자리다. 재시도할 실패는 대기열과 같은 2·10·30초 뒤 최대 3번, 그래도 안 되면 "⬆️ 다시 올리기" 버튼과 "화면을 떠나면 이 녹음은 사라져요" 안내.
+
+### 14-6. "🎙️ 내 녹음" 목록 (`/toeic/recordings`)
+
+- 서버 페이지가 전 응시를 읽어 **줄인 요약**(`ToeicRecAttemptSummary` — 제목·범위 라벨·시작 시각·문항·`{q, recorded, score}`·세 녹음 필드, 피드백 본문·전사문 없음)만 넘긴다. 모의고사가 없는 응시는 넣지 않는다(연쇄로 이미 지워졌다).
+- 클라이언트가 이 기기 메타(`listAllToeicRecordingMetas` — 바이트 없이)와 합친다 — 순수 함수 `buildToeicRecManageView(summaries, localMetas)`(`lib/toeic-rec-manage.ts`):
+  - 묶음 = 녹음 항목이 하나라도 있는 응시, **최신 응시 먼저**. 머리: 날짜(KST) · 제목 · 범위 칩 · "녹음 n개 · 고칠 문장 m개 · 합계 길이" · "결과 보기 →" · "🗑 이 응시 녹음 모두 지우기".
+  - 항목 = 답변 녹음(서버 메타 또는 이 기기 사본 — "서버 ✓" / "이 기기에만(올리는 중)") + 고칠 문장 녹음(서버 메타 — 고친 문장 글자를 함께). 문항 순, 같은 문항은 답변 → 고칠 문장(자리 순). 답변 항목은 점수 "2 / 3점"·"채점 전".
+  - 지운 자리가 덮는 이 기기 사본은 항목에서 빼고 `purgeLocal`로 돌려준다 — 화면이 지운다.
+  - 응시 기록이 없는 이 기기 사본은 `orphans`("응시 기록이 없는 이 기기 녹음" — "🗑 이 기기에서 지우기", 서버 호출 없음).
+- **▶ 듣기**: 이 기기 사본 → 서버 사본(`fetch` → Blob → objectURL — `<audio src>`에 API 주소를 넣지 않는다). 받은 뒤 재생기(`<audio controls>`)를 보인다 — iOS는 탭 안 `await` 뒤의 `play()`를 막으므로 재생기의 ▶를 한 번 더 누른다(목록 전체를 미리 받으면 수십 MB라 미리 받지 않는다).
+- 이 화면도 업로드 대기열 계기다(§13-3 — 토익 화면).
+- 허브 `/toeic`에 넷째 카드 "🎙️ 내 녹음"(`sm:col-span-2`). 결과 화면 머리 "🗄️ 녹음 서버 보관" 줄에 "🎙️ 내 녹음 모아보기 →".
+
+### 14-7. 결과 화면 (`components/toeic-attempt-view.tsx`)
+
+- **내 녹음 블록**: 소리(이 기기 또는 서버)가 있으면 "🗑 녹음 지우기". 지운 뒤(지운 자리가 있고 소리가 없음)는 "🗑 녹음을 지웠어요 — 점수·전사·피드백은 남아 있어요. 이 문항은 다시 채점할 수 없어요." AI 채점 대상(`scorable`)은 소리가 있어야 하므로 저절로 빠진다. 채점 안내의 "아직 서버에 올라가지 않았어요" 셈에서 지운 문항을 뺀다.
+- **고칠 문장 줄마다**: 🔊 고친 문장(`speakQueue` en-US — 결과 화면이 고친 문장을 프리페치에 더한다) · 🎤 내가 말하기/다시 말하기 · (녹음이 있으면) ▶ 내 목소리 · ⇄ 내 목소리 → 고친 문장 · 🗑. 상태 줄 "서버 ✓ 3.2초 · 96KB" / "서버에 올리는 중…" / "서버에 올리지 못했어요 + ⬆️ 다시 올리기".
+  - ▶·⇄는 화면 하나뿐인 공용 플레이어 이어 듣기(§13-9 ①의 `playChain` — 탭 안 동기로 멈춤 → `unlockSpeechPlayback` → `play()`, `ended`에서 600ms 뒤 `speakQueue`)를 그대로 쓴다.
+  - 소리 출처: 이 화면에서 방금 한 녹음(메모리) → 서버 사본(화면이 열릴 때 동시 2개로 **미리 받는다** — iOS 탭 규칙, §13-8).
+- **마이크** (`components/use-toeic-fix-recorder.ts`) (2026-10-03 §15-13에서 바뀜 — 기기 설정과 상관없이 Apple WebKit + 오디오 세션 API면 keep): `createMicKeeper()` 하나를 결과 화면 세션 동안 쥔다. 정책은 응시 화면과 **같은 기기 설정·같은 판정**(`micKeepPolicyFor`)이다 — keep(Apple WebKit + 오디오 세션 API + "문항마다 마이크 다시 열기"를 끈 기기)이면 첫 🎤에서만 권한 창, 이후 고칠 문장마다 같은 스트림에 새 녹음기(녹음 사이 입력 끔). per-answer(0ec640c부터의 기본값 — 설정 켬, 그리고 Chrome·Android 등)는 녹음마다 열고 닫는다. 결과 화면 "⚙️ 소리 설정"에 같은 토글(`ToeicMicKeepToggle`)을 두고, 바꾸면 쥔 마이크를 놓고(`resetMic`) 다음 🎤부터 새 정책이다. 🎤는 **탭 안에서 동기로** `startRecording`을 부르고(권한 창이 탭 맥락에), 그 전에 모든 재생을 멈춘다(재생과 캡처를 겹치지 않는다). 녹음 중 🔊·▶를 누르면 녹음을 먼저 멈춘다. 한 번에 하나(다른 🎤는 막힌다), 30초(`TOEIC_FIX_REC_LIMIT_MS`)면 저절로 멈춘다. **놓는 때**: 언마운트·pagehide·숨김(돌던 녹음은 버린다). 오디오 세션은 mic-session 밖에서 건드리지 않는다(§13-9의 "결과 화면은 녹음하지 않으므로 세션을 건드리지 않는다"는 이제 "녹음은 keeper로만"으로 읽는다).
+- 마이크 거부·미지원이면 그 줄에 "… — 고친 문장 🔊 듣기는 그대로 할 수 있어요."(멈추지 않는다).
+
+### 14-8. 같은 화면 손질 — QA mic-keep P3-1·P3-2
+
+- **P3-1** `createMicKeeper().startRecording` 동시 호출: 호출 순번(`callSeq`)을 두고, 획득을 기다린 뒤 순번이 바뀌었으면 녹음기를 만들지 않고 `MicError("failed", "superseded")`로 끝낸다. 녹음기를 만들기 **직전에** 앞 녹음을 한 번 더 버린다. per-answer도 같다(기다린 뒤 뒤 호출이 왔으면 이 녹음을 버린다). 같은 스트림에 녹음기가 둘 달려 뒤 녹음이 끝날 때 앞 녹음의 입력이 꺼지는(무음으로 도는) 경합이 없어진다. eval K23·K24.
+- **P3-2** 마이크 점검 2초 도중 숨김·설정 바꿈으로 점검 녹음이 버려지면(`stop()`이 null) "✓ 소리가 잘 들어와요" 대신 새 단계 `stopped` — "점검이 멈췄어요(화면이 가려졌거나 설정이 바뀌었어요) — 🎙️ 다시 점검해 주세요." 시작 버튼은 지금처럼 `done`일 때만 녹음 응시를 연다.
+
+### 14-9. 알려진 틈
+
+- **기기 시계**: 지운 자리 판정은 기기 녹음 시각 ↔ 서버 지운 시각 비교다. 기기 시계가 서버보다 늦으면 지운 직후 새로 말한 고칠 문장이 409로 거부될 수 있다(화면은 "지운 녹음이라 다시 올리지 않았어요"를 보이고 다시 말하면 된다).
+- **답변 PUT의 경합 고아**: 쓰기 전 판정과 메타 저장 사이에 그 문항을 지우면 방금 쓴 답변 객체가 메타 없이 남는다(답변 PUT에는 지우기를 두지 않는다 — §13-1). 그 자리를 다시 지우거나 응시·모의고사를 지울 때 접두사째 사라진다.
+- **올리지 못한 고칠 문장 녹음**은 기기 보관소에 없으므로 화면을 떠나면 사라진다(화면이 알린다).
+- **다른 기기의 캐시**: 다른 기기의 이 기기 사본은 그 기기가 그 응시 결과·내 녹음 목록을 열거나 대기열이 409를 받을 때 지워진다 — 그 전까지는 그 기기 IndexedDB에 남는다(서버·이 기기에서는 즉시 사라진다).
+
+### 14-10. eval (오프라인 — `scripts/eval-toeic-rec-manage.ts`, `eval-toeic.ts`가 불러 한 번에 돈다, 실호출 0·GCS 0)
+
+① 키·경로(고칠 문장 키 형식·점 없음·두 정규식 분리·접두사 세 모양·Q1/Q11·답변/고칠 문장 접두사 분리·자리 상한 ≥ zod·주소·라우트 파일·proxy 게이트) ② 업로드 계약(자리 조각·길이 상한·바이트 판정·4MB) ③ 고칠 문장 판정 표(위 일곱 줄 + 잠그지 않음 + 응시 통째 지운 자리) ④ 답변 판정 + 지운 자리(deleted·다른 문항·고칠 문장 자리 무관·경계 시각) ⑤ 지우기 적용(답변만·고칠 문장만·통째, **answers 깊은 같음**, 멱등·자리 병합) ⑥ 정규화(옛 문서·깨진 항목·왕복) ⑦ 기기 대기열(purge·기기 지우기가 바이트·메타 함께) ⑧ 파일 백엔드 자식 프로세스(고칠 문장 저장·교체·superseded·자리 밖, deleteKey 멱등, **실패 주입 → 메타·객체 그대로**, 답변 지우기가 그 문항만·점수 남음, 지운 뒤 늦은 업로드 deleted, absent 멱등, 고칠 문장 지우기·지운 뒤 새로 말하기, 통째 → 응시 기록 남음, 모의고사 연쇄) ⑨ 목록 묶음(순서·pending·purgeLocal·orphans·합계·지운 뒤) ⑩ 소스 대조(지우기 순서·prod-guard·세 라우트 한 벌·PUT 순서·better 서버 값·GET 헤더·AI 0·번들 경계·src 금지·결과 화면/목록 지우기 순서·녹음기 마이크 관문·놓는 때·IndexedDB 안 씀·허브 카드·요약만 넘김·답변 PUT 본문 지우기 없음) ⑪ 마이크 점검 거짓 ✓ 회귀. `eval-toeic.ts` 마이크 유지에 K23(keep 동시 호출)·K24(per-answer 동시 호출). §13-10 ⑦의 "업로드 라우트에 지우기 동작이 없다"는 같은 파일에 DELETE 핸들러가 생겨 **PUT 본문**을 보도록 좁혔다. → `eval:toeic` 오프라인 **1436항목**(0ec640c 뒤 1333 → 1436).
+
+### 14-11. 구현이 정한 것 · 열린 결정
+
+- 새 `DestructiveOp`를 두지 않고 `deleteToeicRecordings`를 넓혔다(보관소 접두사·객체 지우기, Firestore 메타 정리). 유니온 11개 그대로.
+- 지운 자리는 **지운 시각** 하나로 판정한다(녹음 sha 목록을 남기지 않는다) — 문서가 늘지 않고, 지운 뒤 새로 말하기를 막지 않는다.
+- 답변 녹음을 지워도 그 문항 고칠 문장 녹음은 남는다(목록에서 따로 보이고 따로 지운다). 응시 통째는 둘 다.
+- 목록 ▶는 받은 뒤 재생기를 보이는 두 번 탭이다(열린 결정: 목록에서도 미리 받기 — 데이터 비용 대신 한 번 탭).
+- 고칠 문장 녹음의 "⇄" 순서는 내 목소리 → 고친 문장 하나(§13-13 5와 같은 기본값).
+- 열린 결정: ① 올리지 못한 고칠 문장 녹음을 기기 보관소에 넣을지(지금은 메모리 — §14-5 근거) ② 응시 기록 자체 지우기(지금은 없음 — 스트릭) ③ 다른 기기 캐시를 즉시 비울 방법(지금은 열 때·409 때).
+
+## 15. 문항 단위 다시 풀기 + 마이크 유지 대책(F1~F3) + 결과 화면 녹음 마이크 고정 (2026-10-03)
+
+> 제품 흐름·경계·비용·실기기 확인은 SPEC §20-13. 이 절은 **레코드 필드·다시 풀기 계약(시작·끝·업로드 세대)·합치기 규칙·채점 경합·지우기 계획·무음 판정·문항별 진단·탭 안 재획득 상태 기계·eval**을 정한다. **새 AI 호출·새 프롬프트는 없다.** spec-sync 대상(원문 15 + JSON 8 + 호출 옵션 문장)은 그대로다. 문장 예시는 모두 지어낸 것이다.
+> §13·§14의 원칙은 그대로 따른다 — 백엔드 판정 한 벌, PIN 게이트 뒤 프록시, 경로 조각에 점 없음, 바이트 판정·4MB·sha256 서버 계산, 객체 먼저 → 메타(원자 단위 안에서 같은 판정을 다시), "딸린 것 먼저" 지우기. 바뀐 옛 문장은 그 자리에 "(2026-10-03 §15에서 바뀜)" 괄호만 붙였다.
+
+### 15-0. 결정 (사용자·오케스트레이터 확정 2026-10-03)
+
+사용자 원문: "가끔 오류가 나서 모의고사에서 특정 문제들을 다시 풀어야 하는 경우가 발생하는 것 같아. 이럴 때 처음부터 다시하기보다 문제단위로도 다시 풀 수 있게 하면 좋을듯 해."
+
+| 항목 | 결정 | 출처 |
+|---|---|---|
+| 다시 푼 답 | **원래 응시 결과에 합친다** — 그 문항 자리를 새 답(녹음·전사·점수)으로 채우고 추정 총점·등급을 다시 계산한다 | 사용자 |
+| 진입 | 결과 화면 문항 카드마다 "↻ 이 문항 다시 풀기" + 오류 문항(녹음 없음·녹음 실패·중단됨·소리 없음·채점 실패·녹음 지움)이 있으면 위에 "↻ 오류 문항 n개 다시 풀기" | 사용자 |
+| 형식 | 실전처럼 — 그 문항의 지시문(파트 첫 문항일 때)·질문 음성·준비·답변 시간 그대로(형식표 `lib/toeic-mock.ts`). 묶음 문항(Q5–7·Q8–10)은 앞 문항 자료(상황 소개·표)를 그대로 보인다 | 사용자 |
+| 예전 답 | 응시 기록 안 **이력**(`answerHistory`)으로 남겨 결과 화면 ③ "다시 풀기 기록"에서 비교. 예전 녹음은 객체 그대로(새 녹음은 새 객체), "내 녹음" 목록에서 따로 지울 수 있다 | 사용자 |
+| F1 무음 감지 · F2 문항별 진단 · F3 탭 안 재획득 | QA `qa_report_toeic_q34-norec_1.md` 대책 그대로 | 오케스트레이터 |
+| 마이크 기본값 | 응시 화면은 지금 그대로(0ec640c — 설정이 없으면 "문항마다 열기"). F1~F3 뒤 "마이크 유지"를 다시 기본으로 할지는 **열린 결정**(§15-15) | 오케스트레이터 |
+| 결과 화면 고칠 문장 녹음 | 기기 설정과 상관없이 Apple WebKit + 오디오 세션 API면 **keep**, 그 밖 per-answer | 오케스트레이터 |
+
+### 15-1. 레코드 — `ToeicAttemptRecord`에 필드 셋
+
+```ts
+interface ToeicRetakeSession {           // lib/toeic-retake.ts — 다시 풀기 한 번
+  id: string;                  // ^[A-Za-z0-9_-]{1,64}$ (서버가 만든다)
+  questions: number[];         // 다시 푸는 문항(오름차순, attempt.questions 안, 1개 이상)
+  startedAt: string;           // 서버 시각(ISO)
+  closedAt: string | null;     // null = 진행 중
+  finishedAt: string | null;   // 끝까지 = 시각 · 그만둠·닫힘(교체·만료) = null
+  merged: number[];            // 닫을 때 원래 결과에 합친 문항
+  recordings: ToeicStoredRecording[]; // 진행 중에 올라온 녹음(합치기 전 대기 자리 — 합치면 비운다)
+  diags: ToeicAnswerDiag[];    // 이 다시 풀기의 문항별 진단(§15-11)
+}
+interface ToeicAnswerHistoryEntry {      // 다시 풀기로 밀려난 예전 답
+  q: number;
+  replacedBy: string;          // 이 답을 밀어낸 다시 풀기 id
+  replacedAt: string;          // 밀려난 시각(그 다시 풀기를 닫은 서버 시각)
+  answer: ToeicAnswer;         // 밀려난 답 그대로(녹음 여부·길이·전사·대조·피드백·점수)
+  recording: ToeicStoredRecording | null;    // 밀려난 녹음 메타(객체는 그대로 — 같은 키)
+  fixRecordings: ToeicStoredFixRecording[];  // 밀려난 답의 고칠 문장 녹음(자리 번호가 그 답 피드백 기준이라 함께 옮긴다)
+  diag: ToeicAnswerDiag | null;
+  recordingDeletedAt: string | null;         // 예전 답의 녹음을 지운 시각(지우면 recording·fixRecordings 비움, 답은 남김)
+}
+interface ToeicAttemptRecord {
+  // …§7-5·§12-3·§13-5·§14-1 필드 그대로
+  retakes: ToeicRetakeSession[];         // startedAt 오름차순. 옛 문서 = []
+  answerHistory: ToeicAnswerHistoryEntry[]; // q 오름차순 · 같은 q는 replacedAt 오름차순. 옛 문서 = []
+  answerDiags: ToeicAnswerDiag[];        // 지금 답의 문항별 진단(q마다 하나, §15-11). 옛 문서 = []
+}
+```
+
+- **셋 다 answers 밖이다.** "닫힌 응시" 판정(`finishedAt !== null || answers.length > 0`, §7-5)과 끝내기 한 번만(409 `already_finished`)은 그대로다 — 다시 풀기는 **닫힌 응시에만** 시작하고(§15-2), 끝내기 라우트를 다시 쓰지 않으며(자기 끝 라우트가 따로 있다 — §15-5), 합칠 때 answers의 **길이를 바꾸지 않고** 그 q 항목만 바꿔 끼운다(닫힘 판정이 뒤집힐 일이 없다). 이력을 `answers[q].history`처럼 answers 안에 두지 않은 이유: `ToeicAnswer`는 호출 D·채점 라우트·스트릭·비교가 함께 쓰는 모양이라 거기에 배열을 넣으면 그 모두가 이력까지 들고 다닌다.
+- **지금 답의 세대**(`toeicAnswerSourceOf(attempt, q)`, 순수): 그 q 이력의 마지막 줄 `replacedBy`(= 지금 답을 만든 다시 풀기 id), 이력이 없으면 `null`(처음 응시). 업로드 판정·채점 경합·이 기기 사본의 쓰임새가 모두 이 값 하나를 본다. 이력 줄의 세대는 바로 앞 줄의 `replacedBy`(첫 줄은 `null`) — `toeicHistoryGenerationOf`.
+- **상한**: 같은 q의 이력은 `TOEIC_RETAKE_HISTORY_MAX` = 10줄. 넘으면 다시 풀기를 시작하지 않는다(409 `history_full` — 자동으로 오래된 줄을 버리지 않는다. 녹음은 "기간 제한 없이 모두 보관"이 사용자 결정이라 조용히 잃지 않는다). 문서 크기는 이력 한 줄 3KB 안팎 × 11 × 10 = 330KB 안팎으로 1MiB 안이다. 다시 풀기 기록은 이력이 가리키지 않는 닫힌 기록을 최근 `TOEIC_RETAKE_SESSIONS_KEEP` = 30개만 남긴다(이력이 가리키는 기록은 늘 남긴다).
+- 정규화(`normalizeToeicAttemptRecord`)가 셋을 명시적으로 옮긴다 — 깨진 항목만 버린다(`normalizeToeicRetakes`·`normalizeToeicAnswerHistory`·`normalizeToeicAnswerDiags`). 이력의 `answer`는 `normalizeToeicAnswer`를 지난다. 생성부는 `[]`로 시작한다(`New*` 필수 필드 — tsc가 잡는다). Firestore: 배열 속에 배열을 **바로** 넣지 않는다(객체 속 배열은 된다 — 코덱 불필요).
+
+### 15-2. 다시 풀기 시작 — `POST /api/toeic/attempts/[id]/retakes`
+
+본문 `{ questions: number[], replaceOpen?: string | null }`. AI를 부르지 않는다(키 검사 없음). 판정 `decideToeicRetakeStart(attempt, questions, nowMs, replaceOpen)`(순수, `lib/toeic-retake.ts`) — 스토어 원자 단위(파일 `mutate`, Firestore `runTransaction`) **안에서** 다시 부른다.
+
+| 지금 | 결과 |
+|---|---|
+| 문항이 비었거나 중복·정수 아님 | 400 `invalid_input` |
+| 응시 범위(`attempt.questions`) 밖 문항 | 404 `question_not_found` |
+| 아직 닫히지 않은 응시 | 409 `not_finished` |
+| 진행 중인 다시 풀기가 있고 `TOEIC_RETAKE_STALE_MS`(2시간) 안이며 `replaceOpen`이 그 id가 아님 | 409 `retake_in_progress` + `openRetake {id, startedAt, questions}` |
+| 그 문항 이력이 이미 10줄 | 409 `history_full` + `questions`(가득 찬 문항) |
+| 그 밖 | 시작 — 진행 중이던 다시 풀기(오래됐거나 `replaceOpen`으로 고른 것)는 **먼저 닫는다**(§15-5 합치기 규칙 — 대기 자리에 녹음이 올라온 문항은 그 녹음 길이로 합친다) → 새 기록을 더한다 |
+
+- **동시 다시 풀기 방지**: 응시 하나에 진행 중 기록은 하나다. 다른 탭·기기에서 이미 열었으면 409 — 화면은 "다른 곳에서 다시 풀기가 진행 중이에요" + "그 다시 풀기를 닫고 새로 시작"(탭 → 같은 페이지에 `replace=<id>`를 붙여 다시 연다 — 시작 탭이 마이크 권한을 탭 안에서 얻어야 하므로 자동으로 다시 보내지 않는다). 두 시작 요청이 동시에 와도 원자 단위 안의 판정이 하나만 통과시킨다.
+- 응답(`ToeicRetakeStartResponse`, `lib/toeic-attempt-contract.ts`): 200 `{ ok:true, retakeId, questions, startedAt }` · 400 · 404 `attempt_not_found`|`question_not_found` · 409 `not_finished`|`retake_in_progress`|`history_full` · 500 `save_failed`(retriable).
+
+### 15-3. 다시 풀기 응시 화면 — `/toeic/attempts/[id]/retake?q=3,4`
+
+- 서버 페이지가 응시·모의고사를 읽고 `q`(쉼표로 이은 문항 — `parseToeicRetakeQuestions`)를 응시 범위와 대조해 응시 화면(`ToeicTakeView`)을 **그대로** 띄운다(prop `retake: {attemptId, replaceOpen}`). 범위가 어긋나거나 닫히지 않은 응시는 이유와 "← 결과" 링크만. 녹음 보관 풀은 원래 응시와 같다(모의고사 `mock`, 한 문제 연습 `drill`).
+- **형식은 실전 그대로**: 문항 목록이 `[3,4]`면 단계 엔진(`firstPhase`·`nextPhase` — 같은 함수)이 Q3 지시문(파트 첫 문항) → 준비 45초 → 비프 → 답변 30초 → Q4 준비…를 만든다. Q4만 고르면 지시문이 없다(파트 첫 문항이 아니다). Q9만 고르면 표 읽기(Q8 앞 45초)는 없고 표는 질문·준비·답변 동안 보인다. Q10은 질문을 두 번 듣는다. 지시문 글은 고른 문항 수로(`toeicPartDirections(part, count)` — 사진 1장이면 한 장짜리 문장, 읽기·프리페치·화면 세 곳이 같은 함수).
+- 시작 탭: 지금 응시 화면과 같다(마이크 점검 → 탭 안 오디오 잠금 해제 → 프리페치 → 첫 단계). 응시 기록을 만드는 대신 `POST …/retakes`로 다시 풀기 id를 받는다. 409 `retake_in_progress`면 위 안내 화면, `history_full`이면 "이 문항은 다시 풀기 기록이 10개예요 — 🎙️ 내 녹음에서 예전 답 녹음을 지워도 기록은 남으니, 새 응시로 풀어 주세요".
+- 녹음: 문항마다 지금처럼 기기(IndexedDB, 키 `{attemptId}:{q}` — 같은 키라 그 기기의 예전 답 사본을 새 녹음으로 바꾼다) → 백그라운드 업로드. 기기 메타에 `retakeId`를 더하고(옛 메타 = null) 업로드 multipart에 `retakeId` 필드를 싣는다(§15-4). 시작 화면은 고른 문항의 예전 녹음이 이 기기에서 아직 서버에 없으면(pending) "예전 녹음을 먼저 올릴게요"와 함께 대기열을 비우고, 그래도 남으면 "다시 풀면 이 기기의 예전 녹음은 새 녹음으로 바뀌어요"를 보인다(시작은 막지 않는다).
+- 끝/그만두기·화면을 떠남(pagehide 비콘·언마운트 keepalive)은 `POST …/retakes/[rid]/finish`로 보낸다(본문 모양은 끝내기와 같다 — §15-5). 끝 화면: "다시 푼 Q3·Q4를 원래 결과에 합쳤어요" + "📊 결과 보기 · AI 채점"(원래 결과 화면).
+
+### 15-4. 업로드 판정 — 녹음의 세대
+
+답변 녹음 `PUT …/recordings/[q]`에 선택 필드 `retakeId`(없으면 처음 응시의 녹음 — 옛 클라이언트·옛 대기열 그대로)를 더한다. 판정 `decideToeicAnswerUpload(attempt, q, gen, incoming)`(`lib/toeic-retake.ts` — 이력이 없고 `gen`이 null이면 §13-4 표 `decideToeicRecordingUpload`와 **같은 결과**):
+
+| 순서 | 조건 | 결과 |
+|---|---|---|
+| 1 | q가 응시 범위 밖 | `question_not_found` → 404 |
+| 2 | `gen`이 있는데 그 다시 풀기가 없음 / q가 그 다시 풀기 문항이 아님 | `retake_not_found` → 404 · `question_not_found` → 404 |
+| 3 | 지운 자리가 덮음(§14-3) | `deleted` → 409 `recording_deleted` |
+| 4 | 그 다시 풀기가 **진행 중** | 대기 자리(`retake.recordings`) 표 — 없음 → `store_staged` · 같은 sha → `reused` · 이르거나 같음 → `superseded` · 더 새것 → `store_staged`(잠그지 않는다 — 아직 채점 전) |
+| 5 | 닫혔는데 q를 합치지 않았다 | `retaken` → 200(저장 안 함 — 기기는 done) |
+| 6 | `gen` = 지금 답의 세대 | §13-4 표 그대로(지금 메타 `recordings`·지금 답 `answers`) — `store`·`reused`·`superseded`·`locked` |
+| 7 | `gen`이 이력 줄의 세대 | 그 줄 녹음이 없고(지운 적도 없고) 그 답이 `recorded` → `store_history`(다른 기기에서 늦게 온 예전 녹음을 이력에 붙인다) · 같은 sha → `reused` · 그 밖 → `retaken` |
+| 8 | 그 밖 | `retaken` → 200 |
+
+- 응답 `ToeicRecordingPutResponse` 200에 `slot: "current" | "staged" | "history" | null`을 더한다(`retaken`이면 `recording: null`·`slot: null`). 기기 대기열은 200이면 지금처럼 done이고, 결과 화면의 실시간 메타 합치기는 `slot === "current"`일 때만 쓴다(예전·대기 녹음이 지금 녹음 자리에 끼지 않게).
+- 객체 키는 §13-1 그대로(`attempts/{id}/{q}/{recordedAtMs}`) — 세대를 키에 넣지 않는다. 한 녹음 = 한 객체라 세대가 달라도 키가 겹치지 않는다(녹음 시각이 다르다).
+- 라우트는 지금처럼 판정을 **두 번**(쓰기 전·원자 단위 안) 한다. PUT 본문에 지우기 동작은 여전히 없다.
+
+### 15-5. 다시 풀기 끝 — `POST /api/toeic/attempts/[id]/retakes/[rid]/finish` · 합치기 규칙
+
+본문 `{ finishedAt: ISO | null, answers: [{ q, recorded, durationMs, diag? }] }`(끝내기와 같은 모양 + §15-11 진단). 범위는 그 다시 풀기 문항. **한 번만** 받는다 — 이미 닫힌 다시 풀기는 409 `already_finished`(+ `merged`·`recordedCount` — 저장 실패가 아니라 "이미 닫혔다"이므로 화면은 오류로 멈추지 않는다, 비콘·재시도·다른 탭 방어). **다만 409는 이 기기 녹음이 합쳐졌다는 뜻이 아니다** — 끝 화면 문구는 로컬 녹음 수가 아니라 응답(200·409)의 `merged`로 정한다(`toeicRetakeFinishOutcome(이 기기에서 녹음한 문항, merged)` → `{merged, notMerged}`, QA rec-retake P2-2). merged의 문항은 "다시 푼 Q3를 원래 결과에 합쳤어요", 이 기기에서 녹음했는데 merged에 없는 문항(다른 기기·탭이 다시 풀기를 새로 시작해 이 기록을 먼저 닫았다 — §15-2 교체·만료)은 "Q11는 다른 기기(또는 탭)에서 다시 풀기를 새로 시작해 … 원래 결과에 합치지 못했어요 — 이 녹음은 저장되지 않았어요(이 기기 사본도 지웠어요). 원래 답은 그대로예요"로 정직하게 보인다. 그 녹음은 들어갈 자리가 다시 생기지 않으므로(§15-4 5번 `retaken` · 결과 화면도 세대가 맞지 않아 쓰지 않는다 — `toeicLocalCopyRole` stale) 화면이 **그 다시 풀기 세대의 사본만** 지운다(`deleteToeicRecordingsLocal(aid, notMerged, { onlyGeneration: retakeId })` — 대기열에서도 빠진다, 다른 세대 사본은 건드리지 않는다). 업로드 요약·문항 행의 "서버 ✓"는 대기열 이벤트의 `slot`이 있을 때만 센다(200 `retaken`은 `slot: null` — 저장하지 않았으니 ✓가 아니다). 판정·합치기는 원자 단위 안에서 `applyToeicRetakeFinish(attempt, retakeId, input, nowIso)`(순수).
+
+합치기(문항마다):
+
+1. 이번에 녹음됐거나(`recorded` + 길이) **대기 자리에 녹음이 올라왔으면** 합친다. 녹음이 없는 문항(실패·중단·녹음 없이)은 **원래 답을 그대로 둔다** — 다시 풀다 또 실패해도 예전 답을 잃지 않는다.
+2. 합치는 문항: 지금 답·지금 녹음 메타(`recordings[q]`)·그 답의 고칠 문장 녹음(`fixRecordings`의 q)·지금 진단(`answerDiags[q]`)을 이력 한 줄로 옮기고(`replacedBy` = 이 다시 풀기, `replacedAt` = 지금), 그 자리를 새 답 `{q, recorded:true, durationMs, transcript:null, readDiff:null, feedback:null, score:null, scoredAt:null}` · 대기 자리의 녹음 메타(아직 안 올라왔으면 없음 — 늦게 오면 §15-4 6번이 지금 자리에 넣는다) · 이번 진단으로 바꾼다. answers의 길이·순서는 그대로다.
+3. 기록을 닫는다 — `closedAt` = 지금, `finishedAt` = 입력, `merged` = 합친 문항, `recordings` = [](옮겼다), `diags` = 이번 진단.
+- **추정 총점·등급은 다시 계산된다** — 결과 화면이 `estimateToeicTotal(answers)`로 읽으므로 합친 문항이 채점되기 전에는 "11문항을 모두 채점하면"이 되고, AI 채점 받기 대상에 합친 문항이 든다. 머리에 "↻ 다시 푼 Q3·Q4를 채점하면 추정 등급을 다시 계산해요"와, 다시 풀기 전 답으로 계산한 추정이 있으면 "다시 풀기 전 추정 140 → 지금 150 (+10)"(`toeicRetakeEstimates` — 이력의 **첫** 줄 답을 다시 풀기 전 답으로 본다).
+- 응답(`ToeicRetakeFinishResponse`): 200 `{ ok:true, retakeId, merged, recordedCount, answers }` · 400 · 404 `attempt_not_found`|`retake_not_found` · 409 `already_finished`(+ `merged`·`recordedCount`) · 500 `save_failed`. `merged`가 1개 이상이면 화면이 스트릭 갱신 신호를 쏜다(§15-9).
+
+### 15-6. 채점·고칠 문장 녹음과의 경합
+
+- **채점**(`POST …/score`): 라우트가 읽을 때의 세대(`toeicAnswerSourceOf`)를 기억하고, 저장(`updateToeicAttemptAnswer(id, q, patch, expectSource)`) 원자 단위 안에서 세대가 바뀌었으면 쓰지 않고 `ToeicAnswerChangedError` → 409 `answer_changed`("이 문항을 다시 풀어 답이 바뀌었어요 — 화면을 새로 고쳐 주세요"). 전사·피드백이 끝나기 전에 다시 풀기가 합쳐지면 예전 녹음의 전사·점수가 새 답에 붙던 경합을 막는다. 화면은 이 409를 받으면 새로 고친다.
+- **고칠 문장 녹음**(`PUT …/fixes/[i]`): 화면이 그 답의 세대를 multipart `answerSource`(처음 응시는 빈 문자열)로 싣는다. 있고 지금 세대와 다르면 409 `answer_changed`(예전 피드백 자리 번호의 녹음이 새 피드백의 같은 번호에 붙지 않게). 없으면(옛 화면) 검사하지 않는다.
+- **결과 화면의 이 기기 사본**: 사본의 `retakeId`(옛 메타 = null)가 지금 세대와 같을 때만 "지금 녹음"으로 쓴다(재생·채점). 이력 줄의 세대와 같으면 그 줄의 재생에 쓰고, 어느 쪽도 아니면 쓰지 않는다(`toeicLocalCopyRole`). 다른 기기에서 다시 풀어 세대가 바뀐 뒤 이 기기의 예전 사본으로 새 답을 채점하던 길을 막는다.
+
+### 15-7. 결과 화면 (`components/toeic-attempt-view.tsx`)
+
+- 닫힌 응시면 문항 카드 머리에 "↻ 이 문항 다시 풀기"(→ `/toeic/attempts/[id]/retake?q=N`). AI 채점 상자 위에 오류 문항이 있으면 "↻ 오류 문항 n개 다시 풀기"(→ `?q=…`)와 문항별 사유("Q3 소리 없음(무음) · Q4 녹음 실패").
+- **오류 문항**(`toeicErrorQuestions`, 순수): 녹음 없음(`recorded:false` — 진단의 상태로 "녹음 실패"·"중단됨"·"소리 없음"·"녹음 없이"를 가른다) · 소리 없음(무음 — 진단 `silent`) · 녹음 지움(녹음됐는데 소리가 없고, 지운 자리의 가장 늦은 시각이 **지금 답 세대의 시작보다 늦다** — `toeicAnswerRecordingDeleted`. 지운 뒤 다시 풀어 합친 새 답이 아직 안 올라왔으면 "지움"이 아니라 "아직 서버에 올라가지 않았어요" 갈래다 — QA rec-retake P2-1) · 채점 실패(전사문은 있는데 점수가 없다, 또는 이 화면의 채점이 실패했다).
+- **문항 카드 진단 줄**(F2): "마이크 유지 · 열기 1회 · 최고 레벨 0 · 18KB · 30.1초 · 소리 없음(무음)" / "녹음 실패 · 마이크 응답 없음(8초) · 열기 3회". 무음이면 머리 칩 "소리 없음(무음)".
+- **③ 다시 풀기 기록**에 이 응시의 이력 줄이 들어간다(행 이름 "다시 풀기 전"·날짜 — 그 세대의 시작 시각: 처음 응시면 응시 시작, 다시 풀기면 그 시작). 시간순으로 다른 응시 행과 섞이고, 점수 변화(`toeicScoreDelta`)는 지금 답 − 앞선 가장 가까운 채점 행(이력 줄 포함). ▶는 이 기기 사본(그 세대) → 서버 사본(`GET …/recordings/[q]/history/[rid]` — 미리 받기 규칙 §13-8 그대로).
+- 다시 풀기 기록이 진행 중이면 머리에 "↻ 다시 풀기 진행 중(Q3·Q4)" 한 줄(다른 탭에서 열었을 때 알아채게).
+
+### 15-8. 지우기 — 지울 계획 · 예전 답 녹음
+
+- 지울 대상에 `{kind:"history", q, replacedBy}`(예전 답 하나의 답변 녹음 + 그 답의 고칠 문장 녹음)를 더한다 — 라우트 `DELETE /api/toeic/attempts/[id]/recordings/[q]/history/[rid]`(같은 경로 `GET`은 그 녹음 바이트, 헤더는 §13-4 GET과 같다). 지우면 그 줄의 `recording`·`fixRecordings`를 비우고 `recordingDeletedAt`을 남긴다 — **답(점수·전사·피드백)은 남는다.**
+- **지울 계획**(`toeicRecDeletionPlan(attempt, target)` → `{prefixes, keys}`): 이력이 없으면 지금처럼 접두사(§14-2 — 대체된 옛 객체까지). **그 q에 이력이 있으면** 지금 답·고칠 문장 지우기는 접두사 대신 **그 메타의 객체 키만** 지운다 — 세대가 같은 접두사(`attempts/{id}/{q}/`)를 쓰므로 접두사로 지우면 예전 답 녹음까지 지워진다. 예전 답 지우기는 늘 그 줄의 키들만. 응시 통째는 지금처럼 접두사(이력 녹음·대기 자리까지 메타도 함께 비운다).
+- 대체된 옛 객체(같은 세대 안 "이 문항 다시")가 이력이 있는 q에서는 키 지우기로 남는다 — 응시 통째·모의고사를 지울 때 접두사째 사라진다(알려진 틈 §15-15).
+- "🎙️ 내 녹음" 목록: 이력 녹음이 항목 `kind:"history"`("Q3 · 다시 풀기 전 답 · 날짜")로 보이고 하나씩 지운다. 목록 서버 요약에 이력 줄(녹음 메타·세대 시작·점수·`recordingDeletedAt`만)이 실린다. 예전 답의 "이 기기" 표시는 키 `${q}:${replacedBy}`로 가른다(결과 화면과 같다 — QA rec-retake P2-3).
+- **다른 기기 사본**: 예전 답 지우기는 지운 자리를 남기지 않으므로(위) 지운 자리만 보는 정리로는 다른 기기의 그 세대 사본이 남는다. 결과 화면과 목록이 열릴 때 이 기기 사본 중 쓰임새가 이력 줄이고 그 줄의 `recordingDeletedAt`이 있는 것을 지운다(`toeicDeletedHistoryLocalCopies` → `deleteToeicRecordingsLocal(id, [q], { keepGeneration: 지금 세대 })` — 지금 답 사본은 남긴다, QA rec-retake P2-4). 목록은 `purgeLocalHistory`로 넘긴다.
+
+### 15-9. 스트릭 — 다시 풀기도 센다
+
+- 닫혔고 합친 문항이 1개 이상인 다시 풀기 기록은 **그 시작 시각(KST 날짜)의 영어 트랙 세션**으로 센다(`toeicStreakSessions` — 합친 문항 = answered). 처음 응시가 어제고 오늘 다시 풀었으면 오늘도 공부한 날이다. 원래 응시의 세션은 그대로다(합쳐도 그 응시의 녹음된 문항 수는 줄지 않는다).
+
+### 15-10. F1 — 무음 감지 (`lib/toeic-mic-health.ts` 순수 + `lib/mic-session.ts` + 응시 화면)
+
+- **레벨 표본**: 응시 화면이 녹음 중 90ms마다 `rec.level()`을 읽는다. 표본은 `rec.levelReliable()`(분석기가 있고 오디오 컨텍스트가 `running`)일 때만 센다 — 컨텍스트가 멈추면 분석기가 0을 내어 무음으로 잘못 판정하기 때문이다. `stepLevelTrack(state, {at, level, reliable})`가 최고 레벨·표본 수·조용해진 시각을 모은다.
+- **판정**(`toeicSilenceVerdict`): 믿을 표본이 `TOEIC_SILENCE_MIN_SAMPLES`(10 ≈ 0.9초) 미만이면 `unknown`(판정하지 않는다), 최고 레벨이 `TOEIC_SILENT_PEAK_LEVEL`(= 마이크 점검 문턱 `TOEIC_MIC_CHECK_OK_LEVEL` 0.35의 1/3 ≈ -53dB) 미만이면 `silent`, 아니면 `sound`. 문턱 상수는 이 모듈 한 곳이다(응시 화면의 점검 ✓도 같은 상수를 import한다).
+- **무음이면**: 그 문항을 "소리 없음(무음)"(상태 `silent`)으로 표시하고 녹음은 **버리지 않는다**(기기 저장·서버 보관·`recorded:true` — 거짓 양성이어도 목소리를 잃지 않고, 결과 화면에서 들어 보고 다시 풀거나 채점할 수 있다). 안내 "Q3에 소리가 들어오지 않았어요 — 마이크를 다시 열어요" 뒤 **마이크를 놓아**(`releaseMic`) 다음 답변이 새로 연다(F3가 탭으로 다시 켜게 한다).
+- **녹음을 켠 뒤 트랙이 muted면 다시 연다**(`lib/mic-session.ts` keep): 입력을 켠 뒤 트랙이 `muted`면 `MIC_UNMUTE_WAIT_MS`(300ms) 동안 `unmute`를 기다리고, 그래도 muted면 쥔 스트림을 버리고 한 번 다시 얻는다(같은 대기 상한). 다시 얻은 트랙도 muted면 그대로 녹음한다(무음 판정이 잡는다). 꺼 둔 동안의 muted는 여전히 근거로 쓰지 않는다 — **켠 뒤에만** 본다(§6-4 "`muted`는 재획득 근거로 쓰지 않는다"는 이 한 곳에서 바뀐다). 다시 연 횟수는 녹음의 `remuted`로 진단에 남는다.
+- **같은 응시에서 두 번**(무음 판정 + muted 다시 열기의 합 `TOEIC_MIC_TROUBLE_MAX` = 2)이면 그 응시는 남은 문항을 문항마다 열기로 바꾼다(`toeicMicTroubleAction` — keeper를 per-answer로 다시 만든다. 기기 설정은 바꾸지 않는다). 진단 줄 "마이크 문항마다(이번 응시만 — 소리 문제 2회)".
+- **실시간 알림**: 녹음 중 레벨이 문턱 아래로 `TOEIC_SILENCE_ALERT_MS`(3초) 넘게 이어지면 녹음 카드에 "🔇 소리가 안 들어와요 — 마이크를 가리지 않았는지 확인해 주세요"(소리가 다시 들어오면 사라진다). 녹음은 멈추지 않는다.
+
+### 15-11. F2 — 문항별 진단 (`ToeicAnswerDiag`)
+
+```ts
+interface ToeicAnswerDiag {
+  q: number;
+  status: "recorded" | "silent" | "interrupted" | "failed" | "empty" | "nomic" | "none";
+  policy: "keep" | "per-answer" | null;  // 이 문항을 녹음할 때의 마이크 정책
+  opens: number;                          // 이 문항 동안 getUserMedia 호출 수(0..20)
+  remuted: number;                        // 켠 뒤 muted라 다시 연 횟수(0..5)
+  error: string | null;                   // 마지막 오류(≤120자)
+  peak: number | null;                    // 최고 레벨 0..1(소수 둘째 자리) — 잴 수 없었으면 null
+  size: number | null;                    // 녹음 바이트
+  durationMs: number | null;
+  silent: boolean;                        // F1 무음 판정
+}
+```
+
+- 응시 화면이 문항마다 모아 **끝내기 본문**(`answers[].diag`, 선택 — 옛 화면은 없다)과 다시 풀기 끝 본문에 싣는다. 서버는 zod로 범위만 확인하고(정책 열거·정수 범위·문자열 길이) `answerDiags`(지금 답)·다시 풀기 기록의 `diags`에 둔다. 판정에는 쓰지 않는다(표시·오류 문항 사유용) — 화면이 보낸 값을 믿어도 해가 없는 자리다.
+- 응시 화면 끝 화면 행에도 같은 진단을 한 줄로("녹음됨 · 30.1초 · 18KB · 최고 레벨 85 · 열기 1회").
+- 비콘·keepalive 끝내기 본문은 진단을 실어도 2KB 안팎이라 한도(64KiB)와 무관하다.
+
+### 15-12. F3 — 탭 안 재획득 (`toeicMicPromptReducer` 순수 상태 기계 + 응시 화면)
+
+- **언제 멈추나**: ① 마이크를 놓은 상태(keep인데 쥔 스트림이 없고 여는 중도 아님 — 숨김·무음 판정·트랙 ended)로 **준비 단계에 들어갈 때**와 **답변을 열 때**(`toeicMicGate` → `ask_tap`) ② 답변 녹음 시작이 8초 감시에 걸리거나 `timeout`·`failed`·`busy`·`no_device`로 실패했을 때(`toeicMicFailureAction` — `denied`·`unsupported`는 지금처럼 시간만 잰다). 시계는 멈춘다(그 단계의 종료 시각을 비운다).
+- **화면**: "🎙️ 마이크를 다시 켜 주세요"와 버튼 "🎙️ 마이크 다시 켜기"(탭 안에서 동기로 — 준비 앞이면 `keeper.prime()`, 답변이면 그 답변 녹음을 **탭 안에서** 다시 시작해 권한 창이 탭 맥락에서 뜬다. 대기 상한은 점검과 같은 15초) / "시간만 재고 계속"(지금의 녹음 없이 진행). 탭 안 재획득도 실패하면 이유를 보이고 같은 두 버튼.
+- 상태 기계: `idle` →(need)→ `ask` →(tap)→ `opening` →(opened)→ `idle` / →(fail)→ `failed` →(tap)→ `opening` · 어디서든 (skip) → `idle`. eval이 전이표를 잠근다.
+- **같이 손질**(QA mic-keep P3-3~P3-6): 시작 탭은 `ensureToeicAudio`·`unlockSpeechPlayback`·`setAudioSessionPlayback` **뒤에** `prime`(P3-3). 숨김 뒤 재개 탭("다시 듣기"·"질문 보기"·"다음 문항으로"·지시문 "계속")도 keep이고 놓였으면 탭 안에서 `prime`(P3-4). per-answer `startRecording`도 기다리는 사이 놓였으면 "released"로 버린다(P3-5). 진단의 열기 횟수는 실제 getUserMedia를 부를 때만 센다(P3-6).
+
+### 15-13. 결과 화면 고칠 문장 녹음은 마이크 유지로 고정
+
+- `components/use-toeic-fix-recorder.ts`는 `createMicKeeper({ policy: toeicFixRecMicPolicy(detectMicKeepEnv()) })` — **기기 설정과 상관없이** Apple WebKit + `navigator.audioSession`이면 keep, 그 밖 per-answer(`lib/mic-session.ts` 순수 함수, eval이 잠근다). 근거: 결과 화면의 녹음은 모두 사용자의 🎤 탭으로 시작하고 끝나면 바로 ▶로 들을 수 있어 무음을 사람이 곧 알아챈다 — 응시 화면처럼 타이머가 탭 없이 이어 가는 자리가 아니다. 그래서 권한을 한 번만 묻는 이득이 위험보다 크다(§14-7의 "같은 기기 설정을 따른다"는 이 절로 바뀐다).
+- 결과 화면 "⚙️ 소리 설정"의 "문항마다 마이크 다시 열기"는 **응시·다시 풀기 화면용 설정**으로 남기고 문구를 "응시·다시 풀기 화면에만 적용돼요(이 화면의 고칠 문장 녹음은 마이크를 화면 동안 하나로 유지해요)"로 바꾼다. 바꿔도 결과 화면의 쥔 마이크는 놓지 않는다.
+
+### 15-14. eval (오프라인 — `scripts/eval-toeic-retake.ts`, `eval-toeic.ts`가 불러 한 번에 돈다, 실호출 0·GCS 0)
+
+① 시작 판정 표(위 여섯 줄 + 오래된 진행 기록 자동 닫기 + replaceOpen + 동시 두 시작 — 원자 단위 하나만) ② 합치기(녹음된 문항만·녹음 없으면 원래 답 그대로·answers 길이 불변·닫힘 판정 불변·이력 줄 모양·지금 메타/고칠 문장/진단 이동·대기 자리 비움·한 번만 409) ③ 세대 판정 표(§15-4 여덟 줄 — 이력 없음 + gen null이면 §13-4 표와 같음을 무작위 대조) ④ 채점 경합(세대 바뀜 → answer_changed, 같으면 저장) ⑤ 추정 재계산(합친 뒤 미완 → 채점 뒤 완성 · 다시 풀기 전 추정) ⑥ 지울 계획(이력 없음 → 접두사 · 이력 있음 → 키 · 예전 답 → 그 줄 키 · 통째 → 접두사 + 이력 메타 비움) ⑦ 정규화(옛 문서 · 깨진 항목) ⑧ 비교 행(이력 줄 시간순·점수 변화·세대 시작 시각) ⑨ 이 기기 사본 쓰임새 ⑩ 오류 문항 사유 ⑪ 스트릭(다시 풀기 날짜) ⑫ 파일 백엔드 자식 프로세스(시작 → 업로드 대기 → 끝 → 합침 → 늦은 업로드 지금 자리 → 예전 녹음 GET → 예전 답 지우기 → 통째 지우기 · 실패 주입 일관성) ⑬ F1 무음 판정·실시간 알림·문제 횟수 ⑭ F2 진단 zod 경계·저장 ⑮ F3 상태 기계 전이표·게이트·실패 분기 ⑯ 고칠 문장 녹음 정책(설정 무시) ⑰ 소스 대조(라우트 순서·원자 단위·PUT 본문 지우기 없음·키 검사 없음·번들 경계·화면 배선). `eval-toeic.ts`의 마이크 유지 K22는 "muted를 켠 뒤에만 본다"로 좁히고, K25(켠 뒤 muted → 다시 얻음·`remuted` 1)·K25b/c(기다리는 사이 unmute → 다시 열지 않음)·K26(per-answer 기다리는 사이 놓기 → released, 열기 횟수 = 실제 getUserMedia)·K27(`opening()`)을 더했다. 소스 대조 셋(끝내기 범위 검사 한 벌·PUT 세대 판정·고칠 문장 녹음기 정책)은 새 모양으로 좁혔다. → `eval:toeic` 오프라인 **1576항목**(1436 → 1576, 줄어든 항목 없음). 수정 루프 1(QA rec-retake P2-1~P2-4)에서 ⑱ 반례 묶음(지운 자리 vs 세대 시작·끝 화면 merged·목록 키·지운 예전 답 사본 + 이 기기 보관소 keepGeneration/onlyGeneration 메모리 실행)을 더해 **1606항목**.
+
+### 15-15. 열린 결정 · 알려진 틈
+
+- **열린 결정 — 응시 화면 마이크 기본값**: F1~F3가 들어간 뒤 "마이크 유지"(keep)를 다시 기본으로 할지는 실기기 확인(SPEC §20-13) 뒤 오케스트레이터가 정한다. 지금은 0ec640c 그대로(설정이 없으면 문항마다 열기).
+- 열린 결정: 이력 상한 10(넘으면 시작 거부) · 진행 중 기록 만료 2시간 · 무음 문턱(-53dB)·알림 3초·문제 횟수 2 · 채점 실패도 오류 문항에 넣기.
+- 알려진 틈: ① 같은 기기에서 예전 답 녹음이 아직 서버에 없을 때 다시 풀면 기기 사본이 새 녹음으로 바뀐다(시작 화면이 먼저 올리고 남으면 알린다). ② 이력이 있는 문항의 대체된 옛 객체(같은 세대 안 다시 녹음)는 키 지우기로 남는다(통째·모의고사 삭제 때 사라진다). ③ 고칠 문장 녹음의 세대 검사는 새 화면부터(옛 화면은 `answerSource`가 없다). ④ 진단은 화면이 보낸 값이다(판정에 쓰지 않는다).

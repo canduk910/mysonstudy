@@ -22,6 +22,7 @@
  * - 413 { ok:false, error:"audio_too_large", messageKo }          ← TOEIC_SCORE_AUDIO_MAX_BYTES(4MB) 초과
  * - 404 { ok:false, error:"attempt_not_found" | "question_not_found", messageKo }
  * - 409 { ok:false, error:"not_finished" | "not_recorded", messageKo }
+ * - 409 { ok:false, error:"answer_changed", messageKo }                     ← 채점하는 사이 그 문항을 다시 풀어 답이 바뀌었다(§15-6 — 저장 안 함)
  * - 501 { ok:false, error:"no_api_key", messageKo }
  * - 499 { ok:false, error:"client_closed", messageKo }            ← 클라이언트가 먼저 끊었다(전사도 멈췄다)
  * - 500 { ok:false, error:"transcribe_failed", messageKo, retriable:true }          ← 아무것도 저장 안 함
@@ -33,7 +34,8 @@ import { NextResponse } from "next/server";
 import { generateFeedback } from "@/lib/ai/toeic/calls";
 import { buildFeedbackInput } from "@/lib/ai/toeic/mock";
 import type { ToeicAnswer } from "@/lib/ai/toeic/schemas";
-import { getStore, type ToeicAnswerScorePatch } from "@/lib/store";
+import { ToeicAnswerChangedError, getStore, type ToeicAnswerScorePatch } from "@/lib/store";
+import { toeicAnswerSourceOf } from "@/lib/toeic-retake";
 import {
   TOEIC_SCORE_AUDIO_MAX_BYTES,
   TOEIC_SCORE_FIELD_AUDIO,
@@ -104,6 +106,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (answer.score !== null) {
     return json({ ok: true, q, answer, reused: true, transcriptSource: "reused", noResponse: isNoResponseTranscript(answer.transcript) });
   }
+  // 읽을 때의 답 세대(§15-6) — 저장 원자 단위 안에서 다르면(그 사이 다시 풀기가 합쳐졌다) 쓰지 않는다
+  const expectSource = toeicAnswerSourceOf(attempt, q);
 
   const mock = await store.getToeicMock(attempt.mockId);
   if (!mock || !isRenderableToeicMock(mock)) {
@@ -147,11 +151,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const noResponse = isNoResponseTranscript(transcript);
   const save = async (patch: ToeicAnswerScorePatch): Promise<ToeicAnswer | null> => {
-    const rec = await store.updateToeicAttemptAnswer(id, q, patch);
+    const rec = await store.updateToeicAttemptAnswer(id, q, patch, expectSource);
     return rec?.answers.find((a) => a.q === q) ?? null;
   };
-  const saveFailed = () =>
-    json({ ok: false, error: "save_failed", messageKo: "채점 결과를 저장하지 못했어요. 다시 시도해 주세요.", retriable: true }, 500);
+  const saveFailed = (err?: unknown) =>
+    err instanceof ToeicAnswerChangedError
+      ? json({ ok: false, error: "answer_changed", messageKo: `Q${q}를 다시 풀어 답이 바뀌었어요 — 화면을 새로 고쳐 주세요.` }, 409)
+      : json({ ok: false, error: "save_failed", messageKo: "채점 결과를 저장하지 못했어요. 다시 시도해 주세요.", retriable: true }, 500);
 
   // ── 5a. Q1–2 — 지문 대조(AI 없음) ──
   if (f.part === "read") {
@@ -163,7 +169,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       return json({ ok: true, q, answer: saved, reused: false, transcriptSource, noResponse });
     } catch (err) {
       console.error(`[/api/toeic/attempts/${id}/score] Q${q} 저장 실패:`, err);
-      return saveFailed();
+      return saveFailed(err);
     }
   }
 
@@ -175,7 +181,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       return json({ ok: true, q, answer: saved, reused: false, transcriptSource, noResponse: true });
     } catch (err) {
       console.error(`[/api/toeic/attempts/${id}/score] Q${q} 저장 실패:`, err);
-      return saveFailed();
+      return saveFailed(err);
     }
   }
 
@@ -187,7 +193,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       if (!transcriptOnly) return json({ ok: false, error: "attempt_not_found", messageKo: "응시 기록을 찾을 수 없어요." }, 404);
     } catch (err) {
       console.error(`[/api/toeic/attempts/${id}/score] Q${q} 전사문 저장 실패:`, err);
-      return saveFailed();
+      return saveFailed(err);
     }
   } else {
     transcriptOnly = answer;
@@ -218,6 +224,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return json({ ok: true, q, answer: saved, reused: false, transcriptSource, noResponse: false });
   } catch (err) {
     console.error(`[/api/toeic/attempts/${id}/score] Q${q} 저장 실패:`, err);
-    return saveFailed();
+    return saveFailed(err);
   }
 }

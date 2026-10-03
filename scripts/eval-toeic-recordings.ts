@@ -251,7 +251,7 @@ function runRecordChecks(): GuideCheckResult[] {
   ]);
   add("깨진 항목만 버림 · 같은 q 둘 → 늦은 recordedAt 하나 · q 오름차순", eqJson(messy.map((r) => `${r.q}:${r.sha256[0]}`), ["5:b", "6:a"]), JSON.stringify(messy.map((r) => r.q)));
   add("배열이 아니면 []", eqJson(normalizeToeicStoredRecordings({ q: 1 }), []) && eqJson(normalizeToeicStoredRecordings(undefined), []));
-  const open: ToeicAttemptRecord = { id: "att-1", mockId: "m", scope: "part", parts: ["respond"], questions: [5, 6, 7], startedAt: ISO(T), finishedAt: null, answers: [], recordings: [] };
+  const open: ToeicAttemptRecord = { id: "att-1", mockId: "m", scope: "part", parts: ["respond"], questions: [5, 6, 7], startedAt: ISO(T), finishedAt: null, answers: [], recordings: [], fixRecordings: [], recordingDeletions: [], retakes: [], answerHistory: [], answerDiags: [] };
   const withRec = applyToeicAttemptRecording(open, stored(5, T));
   add("응시 중 메타 저장이 answers를 만들지 않는다 → 닫힘 판정 false 유지(answers에 넣는 구현이면 실패)", withRec.answers.length === 0 && !isToeicAttemptClosed(withRec) && withRec.recordings.length === 1);
   const fin = applyAttemptFinish(withRec, { finishedAt: ISO(T + 1000), answers: [{ q: 5, recorded: true, durationMs: 9000 }] });
@@ -460,7 +460,9 @@ function runDeleteSourceChecks(): GuideCheckResult[] {
   const fileDel = /async deleteToeicMock\(id: string\)[\s\S]*?\n {2}\}/.exec(fileSrc)?.[0] ?? "";
   add("파일 deleteToeicMock: 녹음 지우기가 mutate(문서 지우기)보다 먼저", fileDel.indexOf("deleteAttemptRecordings(") >= 0 && fileDel.indexOf("deleteAttemptRecordings(") < fileDel.indexOf("this.mutate("));
   const route = codeOnly(read("app/api/toeic/attempts/[id]/recordings/[q]/route.ts"));
-  add("업로드 라우트에 지우기 동작이 없다(대체된 옛 객체는 모의고사 삭제 때)", !/deleteAttempt|\.delete\(|deleteAttemptRecordings/.test(route));
+  // 2026-10-03(§14-4): 같은 파일에 녹음 관리 DELETE 핸들러가 생겼다 — 이 줄은 **업로드(PUT) 본문**에 지우기가 없음을 본다
+  const putOnly = route.slice(route.indexOf("export async function PUT"), route.indexOf("export async function GET"));
+  add("업로드(PUT) 본문에 지우기 동작이 없다(대체된 옛 답변 객체는 문항·응시·모의고사를 지울 때 접두사째)", putOnly.length > 0 && !/deleteAttempt|\.delete\(|deleteAttemptRecordings|deleteRecording/.test(putOnly));
   return results;
 }
 
@@ -633,7 +635,8 @@ function runSourceChecks(): GuideCheckResult[] {
   add("GET content-type = 메타의 mimeType(바이트 판정)", /"content-type": meta\.mimeType/.test(getBody));
   const putBody = route.slice(route.indexOf("export async function PUT"), route.indexOf("export async function GET"));
   add("PUT: 객체 먼저(put) → 메타(setToeicAttemptRecording)", putBody.indexOf(".put(objectKey") > 0 && putBody.indexOf(".put(objectKey") < putBody.indexOf("setToeicAttemptRecording("));
-  add("PUT: 판정을 쓰기 전에 한 번(decideToeicRecordingUpload) — 원자 단위 안 판정은 스토어", putBody.indexOf("decideToeicRecordingUpload(") > 0 && putBody.indexOf("decideToeicRecordingUpload(") < putBody.indexOf(".put(objectKey"));
+  // 2026-10-03(§15-4): 쓰기 전 판정은 세대를 보는 decideToeicAnswerUpload(이력이 없고 세대가 null이면 decideToeicRecordingUpload와 같다 — eval-toeic-retake가 무작위 대조)
+  add("PUT: 판정을 쓰기 전에 한 번(decideToeicAnswerUpload — §13-4 표를 감싼다) — 원자 단위 안 판정은 스토어", putBody.indexOf("decideToeicAnswerUpload(") > 0 && putBody.indexOf("decideToeicAnswerUpload(") < putBody.indexOf(".put(objectKey"));
   add("PUT: sha256은 서버가 바이트로 계산(클라이언트 값을 받지 않음)", /createHash\("sha256"\)\.update\(bytes\)/.test(putBody) && !/form\.get\([^)]*sha/i.test(putBody));
   add("PUT·GET에 OpenAI 키 검사·AI 호출 없음", !/OPENAI_API_KEY|lib\/ai\//.test(route));
   add("라우트 로그에 바이트·파일 이름을 남기지 않는다(id·q·바이트 수·결과·ms)", !/console\.(log|error)\([^;]*(fileName|\.name\b|bytes\))/.test(route));

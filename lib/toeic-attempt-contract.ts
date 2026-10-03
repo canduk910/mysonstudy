@@ -8,7 +8,11 @@
  * - `POST /api/toeic/mocks/[id]/attempts`  응시 시작 — 녹음 IndexedDB 키로 attemptId가 필요해 시작에 만든다(§7-5)
  * - `POST /api/toeic/attempts/[id]/finish`  끝/그만두기 — 문항별 recorded·durationMs(한 번만 받는다 — lib/toeic-attempt-rules)
  * - `POST /api/toeic/attempts/[id]/score`   AI 채점 한 문항(multipart: q, audio) — 관문 T 전사 + 호출 D / Q1–2 대조
- * - `PUT|GET /api/toeic/attempts/[id]/recordings/[q]`  내 녹음 서버 보관 한 문항 올리기·내려받기(§13-4 — PIN 게이트 뒤 프록시)
+ * - `PUT|GET|DELETE /api/toeic/attempts/[id]/recordings/[q]`  내 녹음 서버 보관 한 문항 올리기·내려받기(§13-4 — PIN 게이트 뒤 프록시)·지우기(§14-4)
+ * - `PUT|GET|DELETE /api/toeic/attempts/[id]/recordings/[q]/fixes/[i]`  고칠 문장 다시 녹음 하나(§14-5)
+ * - `DELETE /api/toeic/attempts/[id]/recordings`  응시 녹음 통째 지우기(§14-4 — 응시 기록·점수는 남는다)
+ * - `POST /api/toeic/attempts/[id]/retakes`  문항 단위 다시 풀기 시작(§15-2) · `POST …/retakes/[rid]/finish` 끝·합치기(§15-5)
+ * - `GET|DELETE /api/toeic/attempts/[id]/recordings/[q]/history/[rid]`  다시 풀기로 밀려난 예전 답의 녹음(§15-8)
  *
  * ── 클라이언트 번들 경계 ──────────────────────────────────────────────────────
  * `lib/ai/*`·`lib/store`는 **`import type` / `export type`만** 한다. 값은 런타임 의존이 0인 순수 모듈(`lib/toeic-mock.ts`·
@@ -25,11 +29,26 @@ import type {
   ToeicUsedExpression,
 } from "./ai/toeic/schemas";
 import type { ToeicAttemptRecord } from "./store";
-import type { ToeicStoredRecording } from "./toeic-rec-rules";
+import type { ToeicRecordingDeletion, ToeicStoredFixRecording, ToeicStoredRecording } from "./toeic-rec-rules";
+import type { ToeicAnswerHistoryEntry, ToeicRetakeSession } from "./toeic-retake";
+import type { ToeicAnswerDiag } from "./toeic-mic-health";
 import { TOEIC_READ_KIND_KO, toeicMockPartLabelKo } from "./toeic-mock-contract";
 import { TOEIC_MOCK_PART_NAME_KO, toeicPartQuestions, toeicQuestionFormat, type ToeicMockPart } from "./toeic-mock";
 
-export type { ToeicAnswer, ToeicAttemptRecord, ToeicAttemptScope, ToeicFeedback, ToeicInfoTable, ToeicReadDiff, ToeicStoredRecording };
+export type {
+  ToeicAnswer,
+  ToeicAttemptRecord,
+  ToeicAttemptScope,
+  ToeicFeedback,
+  ToeicInfoTable,
+  ToeicReadDiff,
+  ToeicRecordingDeletion,
+  ToeicStoredFixRecording,
+  ToeicStoredRecording,
+  ToeicAnswerHistoryEntry,
+  ToeicRetakeSession,
+  ToeicAnswerDiag,
+};
 
 type Issue = { path: string; message: string };
 
@@ -160,8 +179,8 @@ export type ToeicAttemptCreateResponse =
 export interface ToeicAttemptFinishRequest {
   /** 끝까지 마친 시각(ISO). 중간에 그만뒀으면 null(§7-5) */
   finishedAt: string | null;
-  /** 응시 범위의 문항별 녹음 결과. 빠진 문항은 서버가 recorded:false로 채운다 */
-  answers: { q: number; recorded: boolean; durationMs: number | null }[];
+  /** 응시 범위의 문항별 녹음 결과. 빠진 문항은 서버가 recorded:false로 채운다. diag = 문항별 진단(§15-11, 선택 — 옛 화면은 없다) */
+  answers: { q: number; recorded: boolean; durationMs: number | null; diag?: ToeicAnswerDiag | null }[];
 }
 
 export type ToeicAttemptFinishResponse =
@@ -216,7 +235,9 @@ export type ToeicScoreResponse =
         /** 피드백(호출 D) 실패 — 전사문은 저장됐다(answer에 실림). 다시 누르면 전사 없이 호출 D만 한다 */
         | "ai_failed"
         | "save_failed"
-        | "client_closed";
+        | "client_closed"
+        /** 채점하는 사이 그 문항을 다시 풀어 답이 바뀌었다(§15-6) — 화면을 새로 고친다 */
+        | "answer_changed";
       messageKo: string;
       retriable?: boolean;
       /** ai_failed면 전사문까지 저장된 그 문항 */
@@ -401,24 +422,61 @@ export const TOEIC_REC_FIELD_AUDIO = "audio";
 export const TOEIC_REC_FIELD_DURATION_MS = "durationMs";
 /** 기기에서 녹음이 끝난 시각(epoch ms 정수) — 같은 문항 녹음끼리 어느 쪽이 새것인지 가를 때만 쓴다 */
 export const TOEIC_REC_FIELD_RECORDED_AT = "recordedAt";
+/** 그 녹음을 만든 다시 풀기 id(§15-4 — 선택, 없으면 처음 응시의 녹음) */
+export const TOEIC_REC_FIELD_RETAKE_ID = "retakeId";
+/** 고칠 문장 녹음이 기댄 답의 세대(§15-6 — 선택, 처음 응시는 빈 문자열) */
+export const TOEIC_REC_FIELD_ANSWER_SOURCE = "answerSource";
 
-/** 녹음 한 문항 주소 — 마지막 조각에 **점이 없다**(proxy.ts 정적 확장자 예외를 피한다, §13-4) */
-export function toeicRecordingHref(attemptId: string, q: number): string {
-  return `/api/toeic/attempts/${encodeURIComponent(attemptId)}/recordings/${Math.trunc(q)}`;
+/**
+ * 녹음 한 문항 주소 — 마지막 조각에 **점이 없다**(proxy.ts 정적 확장자 예외를 피한다, §13-4).
+ * `fixIndex`를 주면 그 문항의 고칠 문장 다시 녹음 하나(§14-5 — `…/recordings/{q}/fixes/{i}`).
+ */
+export function toeicRecordingHref(attemptId: string, q: number, fixIndex?: number): string {
+  const base = `/api/toeic/attempts/${encodeURIComponent(attemptId)}/recordings/${Math.trunc(q)}`;
+  return fixIndex === undefined ? base : `${base}/fixes/${Math.trunc(fixIndex)}`;
 }
 
-/** `PUT` 응답(§13-4) */
+/** 응시 녹음 통째 지우기 주소(§14-4) */
+export function toeicAttemptRecordingsHref(attemptId: string): string {
+  return `/api/toeic/attempts/${encodeURIComponent(attemptId)}/recordings`;
+}
+
+/** 예전 답(다시 풀기로 밀려난 답) 녹음 주소(§15-8) — `…/recordings/{q}/history/{rid}`(점 없음) */
+export function toeicRecordingHistoryHref(attemptId: string, q: number, replacedBy: string): string {
+  return `/api/toeic/attempts/${encodeURIComponent(attemptId)}/recordings/${Math.trunc(q)}/history/${encodeURIComponent(replacedBy)}`;
+}
+
+/** `PUT` 응답(§13-4·§15-4) */
 export type ToeicRecordingPutResponse =
   | {
       ok: true;
       q: number;
       /** stored: 새로 저장 · reused: 같은 바이트가 이미 있음 · superseded: 이미 더 새 녹음이 있음(recording이 그 메타) */
       outcome: "stored" | "reused" | "superseded";
+      /** 그 녹음의 자리 — 지금 답(current) · 다시 풀기 대기 자리(staged) · 예전 답 이력(history). 결과 화면은 current만 지금 메타로 쓴다 */
+      slot: "current" | "staged" | "history";
       recording: ToeicStoredRecording;
     }
   | {
+      ok: true;
+      q: number;
+      /** 그 문항은 다시 풀기로 바뀌었고 이 녹음이 들어갈 자리가 없다 — 저장하지 않았다(기기는 done — 캐시로만) */
+      outcome: "retaken";
+      slot: null;
+      recording: null;
+    }
+  | {
       ok: false;
-      error: "invalid_input" | "audio_too_large" | "attempt_not_found" | "question_not_found" | "recording_locked" | "storage_failed" | "save_failed";
+      error:
+        | "invalid_input"
+        | "audio_too_large"
+        | "attempt_not_found"
+        | "question_not_found"
+        | "retake_not_found"
+        | "recording_locked"
+        | "recording_deleted"
+        | "storage_failed"
+        | "save_failed";
       messageKo: string;
       retriable?: boolean;
     };
@@ -430,3 +488,113 @@ export interface ToeicRecordingGetErrorResponse {
   messageKo: string;
   retriable?: boolean;
 }
+
+// ===========================================================================
+// 녹음 관리 · 고칠 문장 다시 녹음 (2026-10-03, docs/harness/toeic.md §14)
+// ===========================================================================
+
+/** `PUT …/recordings/[q]/fixes/[i]` 응답(§14-5) — multipart 필드 이름은 답변 녹음과 같다(TOEIC_REC_FIELD_*) */
+export type ToeicFixRecordingPutResponse =
+  | {
+      ok: true;
+      q: number;
+      fixIndex: number;
+      /** stored: 새로 저장(옛 녹음은 바꿔 꼈다) · reused: 같은 바이트 · superseded: 이미 더 새 녹음이 있음(recording이 그 메타) */
+      outcome: "stored" | "reused" | "superseded";
+      recording: ToeicStoredFixRecording;
+    }
+  | {
+      ok: false;
+      error:
+        | "invalid_input"
+        | "audio_too_large"
+        | "attempt_not_found"
+        | "question_not_found"
+        | "fix_not_found"
+        | "recording_deleted"
+        /** 그 답을 다시 풀어 피드백이 바뀌었다(§15-6 — 예전 피드백 자리의 녹음을 새 피드백에 붙이지 않는다) */
+        | "answer_changed"
+        | "storage_failed"
+        | "save_failed";
+      messageKo: string;
+      retriable?: boolean;
+    };
+
+/** 녹음 지우기 응답(§14-4) — 답변 한 문항 · 고칠 문장 하나 · 응시 통째 모두 같은 모양. 응시의 녹음 메타 세 필드를 새 값으로 돌려준다 */
+export type ToeicRecordingDeleteResponse =
+  | {
+      ok: true;
+      /** deleted: 메타를 뺐다 · absent: 서버 메타가 없었다(기기에만 있던 녹음 — 지운 자리만 남겼다) */
+      outcome: "deleted" | "absent";
+      /** 보관소에서 지운 객체 수(대체된 옛 객체 포함) */
+      removedObjects: number;
+      recordings: ToeicStoredRecording[];
+      fixRecordings: ToeicStoredFixRecording[];
+      recordingDeletions: ToeicRecordingDeletion[];
+      /** 예전 답 이력(§15-8 — 예전 답 녹음을 지우면 그 줄의 녹음 메타가 비워진다) */
+      answerHistory: ToeicAnswerHistoryEntry[];
+    }
+  | {
+      ok: false;
+      error: "invalid_input" | "attempt_not_found" | "question_not_found" | "history_not_found" | "prod_guard" | "delete_failed";
+      messageKo: string;
+      retriable?: boolean;
+    };
+
+/** 예전 답 녹음 `GET` 오류(200은 오디오 바이트) */
+export interface ToeicHistoryRecordingGetErrorResponse {
+  ok: false;
+  error: "attempt_not_found" | "history_not_found" | "recording_not_found" | "recording_missing" | "storage_failed";
+  messageKo: string;
+  retriable?: boolean;
+}
+
+// ===========================================================================
+// 문항 단위 다시 풀기 (2026-10-03, docs/harness/toeic.md §15)
+// ===========================================================================
+
+/** 다시 풀기 시작·끝 주소 */
+export function toeicRetakesHref(attemptId: string): string {
+  return `/api/toeic/attempts/${encodeURIComponent(attemptId)}/retakes`;
+}
+export function toeicRetakeFinishHref(attemptId: string, retakeId: string): string {
+  return `${toeicRetakesHref(attemptId)}/${encodeURIComponent(retakeId)}/finish`;
+}
+
+/** `POST …/retakes` 본문 */
+export interface ToeicRetakeStartRequest {
+  questions: number[];
+  /** 진행 중인 다른 다시 풀기를 닫고 시작한다(그 id) — 409 retake_in_progress 뒤 사용자가 고를 때만 */
+  replaceOpen?: string | null;
+}
+
+/** `POST …/retakes` 응답(§15-2) */
+export type ToeicRetakeStartResponse =
+  | { ok: true; retakeId: string; questions: number[]; startedAt: string }
+  | {
+      ok: false;
+      error: "invalid_input" | "attempt_not_found" | "question_not_found" | "not_finished" | "retake_in_progress" | "history_full" | "save_failed";
+      messageKo: string;
+      issues?: Issue[];
+      retriable?: boolean;
+      /** retake_in_progress면 진행 중인 다시 풀기 */
+      openRetake?: { id: string; startedAt: string; questions: number[] };
+      /** history_full이면 이력이 가득 찬 문항 */
+      questions?: number[];
+    };
+
+/** `POST …/retakes/[rid]/finish` 본문 — 끝내기와 같은 모양(§15-5) */
+export type ToeicRetakeFinishRequest = ToeicAttemptFinishRequest;
+
+/** `POST …/retakes/[rid]/finish` 응답(§15-5) */
+export type ToeicRetakeFinishResponse =
+  | { ok: true; retakeId: string; merged: number[]; recordedCount: number; answers: ToeicAnswer[] }
+  | {
+      ok: false;
+      /** already_finished: 이미 닫힌 다시 풀기(한 번만) — 오류로 멈추지 않지만 이 기기 녹음이 합쳐졌다는 뜻은 아니다: 끝 화면은 `merged`(저장된 값)로 합친·못 합친 문항을 가른다(§15-5) */
+      error: "invalid_input" | "attempt_not_found" | "retake_not_found" | "already_finished" | "save_failed";
+      messageKo: string;
+      issues?: Issue[];
+      merged?: number[];
+      recordedCount?: number;
+    };

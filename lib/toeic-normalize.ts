@@ -51,7 +51,9 @@ import { isToeicSetEnriched } from "./ai/toeic/points";
 import { isToeicQuizMode, isToeicTemplateBankMode } from "./toeic-quiz";
 import { TOEIC_DEFAULT_TARGET_GRADE, TOEIC_MOCK_PARTS, TOEIC_QUESTION_COUNT, TOEIC_TARGET_GRADES, type ToeicMockPart } from "./toeic-mock";
 import { toeicAttemptQuestions } from "./toeic-attempt-rules";
-import { normalizeToeicStoredRecordings } from "./toeic-rec-rules";
+import { normalizeToeicRecordingDeletions, normalizeToeicStoredFixRecordings, normalizeToeicStoredRecordings } from "./toeic-rec-rules";
+import { normalizeToeicAnswerHistory, normalizeToeicRetakes } from "./toeic-retake";
+import { normalizeToeicAnswerDiags } from "./toeic-mic-health";
 
 // ---------------------------------------------------------------------------
 // 작은 방어 헬퍼
@@ -449,5 +451,12 @@ export function normalizeToeicAttemptRecord(v: unknown): ToeicAttemptRecord {
     answers: Array.isArray(r.answers) ? r.answers.map(normalizeToeicAnswer) : [],
     // 내 녹음 서버 보관 메타(§13-5) — 모르는 키를 버리는 정규화라 명시적으로 옮긴다. 옛 문서 = [], 깨진 항목만 버림, 같은 q는 늦은 녹음 하나
     recordings: normalizeToeicStoredRecordings(r.recordings),
+    // 고칠 문장 다시 녹음 메타·지운 자리(§14-2·§14-3) — 같은 이유로 명시적으로 옮긴다. 옛 문서 = []
+    fixRecordings: normalizeToeicStoredFixRecordings(r.fixRecordings),
+    recordingDeletions: normalizeToeicRecordingDeletions(r.recordingDeletions),
+    // 문항 단위 다시 풀기(§15-1) — 다시 풀기 기록·예전 답 이력·문항별 진단. 같은 이유로 명시적으로 옮긴다. 옛 문서 = []
+    retakes: normalizeToeicRetakes(r.retakes),
+    answerHistory: normalizeToeicAnswerHistory(r.answerHistory, normalizeToeicAnswer),
+    answerDiags: normalizeToeicAnswerDiags(r.answerDiags),
   };
 }
