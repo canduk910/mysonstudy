@@ -1,0 +1,22 @@
+.toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.5;
+  cursor: pointer;
+  word-break: keep-all;
+}
+.toggle input {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  accent-color: var(--accent);
+}
+.sub {
+  display: block;
+  color: var(--ink-3);
+  font-size: 13px;
+}

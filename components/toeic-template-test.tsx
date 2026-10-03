@@ -14,6 +14,8 @@
  *   묶음·쓰임 한 줄은 두 모드 모두 라틴을 "…"로 가린다(templateTestPromptMeta — `useKo`가 틀의 영어 고정 낱말을 담을 수 있다, QA S2 P2-1).
  * - 🎤 말하기 탭: **큐 멈춤 → unlockSpeechPlayback() → startRecording()** 순서(0.1초 무음 재생과 캡처 시작이 겹치지 않게 — 선례
  *   talk-start-view). 녹음 규칙은 응시와 같다(lib/mic-session — 재생과 캡처를 겹치지 않는다, 대기 상한, 첫 녹음은 권한 창 15초).
+ *   **마이크 유지**(2026-10-03, SPEC §20-4): 테스트 하나에 `createMicKeeper()` 하나 — 첫 🎤에서 연 마이크를 끝까지 쥐고 🎤마다
+ *   녹음기만 새로 만든다. 놓는 때: 끝·그만두기·"녹음 없이" 전환·언마운트·pagehide·화면 숨김. 다시 열어야 할 때만 15초 상한.
  * - "다 말했어요" 탭 또는 20초 → 녹음 끝(트랙 stop 뒤 playback) → 0.6초 미만이면 보내지 않음 → `toWav16kMono`(실패하면 원본) →
  *   전사 라우트(요청마다 45초 타임아웃). 한 번에 하나(요청이 떠 있는 동안 말하기 잠금), 문항당 2·세션당 20(canTranscribeAgain 하나).
  * - **유효한 첫 시도**(받아쓰기가 오고 들은 낱말이 있다 — isValidTemplateAttempt)로 판정한다. 무효면 정답을 공개하지 않은 채
@@ -33,15 +35,17 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ToeicMicKeepToggle from "@/components/toeic-mic-keep-toggle";
 import { ExampleLine, FrameLine, slotChipClass } from "@/components/toeic-template-lines";
 import { useToeicWakeLock } from "@/components/use-toeic-wake-lock";
 import {
   MIC_CHECK_GUM_TIMEOUT_MS,
   MicError,
+  createMicKeeper,
   detectMicSupport,
   setAudioSessionPlayback,
-  startRecording,
   toWav16kMono,
+  type MicKeeper,
   type MicRecording,
   type RecordingResult,
 } from "@/lib/mic-session";
@@ -193,6 +197,12 @@ export default function ToeicTemplateTest({
   const abortRef = useRef<AbortController | null>(null);
   const autoStopRef = useRef<number | null>(null);
   const firstMicRef = useRef(true);
+  /** 이 테스트의 마이크(전략 B — 테스트 내내 하나). 렌더 중에 만들지 않는다(navigator) — 핸들러에서 micKeeper()로 */
+  const keeperRef = useRef<MicKeeper | null>(null);
+  const micKeeper = (): MicKeeper => {
+    if (!keeperRef.current) keeperRef.current = createMicKeeper();
+    return keeperRef.current;
+  };
   const sessionIdRef = useRef<string>("");
   const startedAtRef = useRef<string>("");
   const finishedAtRef = useRef<string | null | undefined>(undefined);
@@ -297,18 +307,22 @@ export default function ToeicTemplateTest({
     haltAsync();
     const token = runRef.current;
     setPhase({ kind: "arming" });
-    const first = firstMicRef.current;
+    const keeper = micKeeper();
+    // 마이크를 (다시) 열어야 할 때만 권한 창 시간(15초) — 첫 🎤, 또는 keep인데 놓인 뒤(숨김 등)
+    const needsPrompt = firstMicRef.current || (keeper.policy === "keep" && !keeper.holding());
     const micFail = (e: unknown) => {
       if (runRef.current !== token) return;
       recRef.current?.abort();
       recRef.current = null;
+      keeperRef.current?.release(); // 이 세션은 "녹음 없이" — 마이크를 쥘 이유가 없다
       clearAutoStop();
       const msg = e instanceof MicError ? e.message : e instanceof Error ? e.message : "녹음을 시작하지 못했어요.";
       setMicNotice(msg);
       setSelfReason("nomic");
       setPhase({ kind: "ask" });
     };
-    startRecording(first ? { gumTimeoutMs: MIC_CHECK_GUM_TIMEOUT_MS } : {})
+    keeper
+      .startRecording(needsPrompt ? { gumTimeoutMs: MIC_CHECK_GUM_TIMEOUT_MS } : {})
       .then((rec) => {
         if (runRef.current !== token) {
           rec.abort();
@@ -529,6 +543,7 @@ export default function ToeicTemplateTest({
 
   function finish(completed: boolean) {
     haltAsync();
+    keeperRef.current?.release(); // 테스트가 끝났다 — 마이크를 놓는다(트랙 stop → playback)
     stopSound();
     revokeMyRec(); // 내 녹음은 이 세션 동안만 — 끝나면 버린다(§12-12 14)
     setStage("done");
@@ -553,9 +568,11 @@ export default function ToeicTemplateTest({
     const onVis = () => {
       if (document.visibilityState !== "hidden") return;
       const k = phaseRef.current.kind;
-      if (k !== "arming" && k !== "recording" && k !== "stopping") return;
-      haltAsync();
-      setPhase({ kind: "interrupted" });
+      if (k === "arming" || k === "recording" || k === "stopping") {
+        haltAsync();
+        setPhase({ kind: "interrupted" });
+      }
+      keeperRef.current?.release(); // 숨김이면 단계와 무관하게 마이크를 놓는다 — 다음 🎤(탭)가 다시 연다(SPEC §20-4)
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
@@ -591,6 +608,7 @@ export default function ToeicTemplateTest({
   useEffect(() => {
     const onPageHide = (e: PageTransitionEvent) => {
       if (!e.persisted) leaveSaveRef.current(); // bfcache로 되살아날 수 있는 이탈이면 저장하지 않는다(이어서 풀 수 있다)
+      keeperRef.current?.release(); // 어떤 이탈이든 마이크는 놓는다(bfcache로 돌아오면 다음 🎤가 다시 연다)
     };
     window.addEventListener("pagehide", onPageHide);
     return () => window.removeEventListener("pagehide", onPageHide);
@@ -602,6 +620,7 @@ export default function ToeicTemplateTest({
       if (autoStopRef.current !== null) window.clearTimeout(autoStopRef.current);
       recRef.current?.abort();
       recRef.current = null;
+      keeperRef.current?.release(); // 화면을 떠났다 — 마이크를 놓는다
       abortRef.current?.abort();
       abortRef.current = null;
       const st = stopSoundRef.current;
@@ -640,6 +659,12 @@ export default function ToeicTemplateTest({
         </ul>
         <p className={s.cost}>{costLabel}</p>
         {micSupported === false && <p className={s.notice}>{TOEIC_TEMPLATE_SELF_REASON_KO.nomic}</p>}
+        <ToeicMicKeepToggle
+          onChange={() => {
+            keeperRef.current?.release(); // 정책이 바뀌었다 — 다음 🎤부터 새 정책
+            keeperRef.current = null;
+          }}
+        />
         <div className={s.introActions}>
           <button type="button" className={`u-btn u-btn-primary ${s.startBtn}`} onClick={() => start(false)}>
             ▶ 시작

@@ -195,6 +195,9 @@ import {
   mixToMono,
   pickMimeTypeFrom,
   resampleLinear,
+  createMicKeeper,
+  getMicDiag,
+  micKeepPolicyFor,
   setAudioSessionPlayback,
   startRecording,
 } from "../lib/mic-session";
@@ -2199,6 +2202,385 @@ async function runMicSessionChecks(): Promise<CheckResult[]> {
 }
 
 // ---------------------------------------------------------------------------
+// 14-5. 마이크 유지 — 전략 B (2026-10-03, SPEC §20-4 · toeic.md §6-4 — lib/mic-session.ts createMicKeeper)
+//   정책 표(순수) + 가짜 navigator·MediaRecorder·트랙으로 실제 keeper를 돌린다: 획득 1회 · 녹음 n회 · 녹음 사이 입력 끔 ·
+//   쥔 동안 play-and-record 유지(playback 전환 거부) · 놓기에서만 트랙 stop → **그다음** playback · ended면 재획득 ·
+//   per-answer는 녹음마다 획득·해제 · 거부·무응답·놓는 사이 도착한 스트림 정리. 화면 배선은 소스로 잠근다.
+// ---------------------------------------------------------------------------
+
+async function runMicKeepChecks(): Promise<CheckResult[]> {
+  const results: CheckResult[] = [];
+  const addRow = makeAdder(results, "마이크 유지");
+  const add = (name: string, ok: boolean, detail = "") => addRow(name, ok, detail);
+
+  // ── 정책 표(순수) ──
+  const pol = (appleWebKit: boolean, audioSession: boolean, perAnswerPref: boolean) => micKeepPolicyFor({ appleWebKit, audioSession, perAnswerPref });
+  add("K1 정책: Apple WebKit + audioSession + 기기 설정 꺼짐 → keep", pol(true, true, false) === "keep");
+  add("K2 정책: Apple WebKit인데 audioSession 없음(구형 iOS < 16.4) → per-answer(소리 우선 — 권한 재요청 감수)", pol(true, false, false) === "per-answer");
+  add("K3 정책: Apple WebKit 아님(Chrome·Android·Firefox) → per-answer(audioSession 유무와 무관)", pol(false, true, false) === "per-answer" && pol(false, false, false) === "per-answer");
+  add("K4 정책: 기기 설정 '문항마다 마이크 다시 열기'가 켜지면 어디서나 per-answer", pol(true, true, true) === "per-answer" && pol(false, false, true) === "per-answer");
+
+  const g = globalThis as unknown as Record<string, unknown>;
+  const navDesc = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const hadWindow = Object.prototype.hasOwnProperty.call(g, "window");
+  const prevWindow = g.window;
+  const hadRecorder = Object.prototype.hasOwnProperty.call(g, "MediaRecorder");
+  const prevRecorder = g.MediaRecorder;
+
+  const log: string[] = [];
+  type GumMode = { kind: "ok"; delayMs: number } | { kind: "hang" } | { kind: "reject"; name: string };
+  let gumMode: GumMode = { kind: "ok", delayMs: 1 };
+  let gumCalls = 0;
+  let trackSeq = 0;
+  const session = {
+    _t: "auto",
+    get type(): string {
+      return this._t;
+    },
+    set type(v: string) {
+      this._t = v;
+      log.push(`session=${v}`);
+    },
+  };
+  class FakeTrack {
+    stopped = false;
+    readyState: "live" | "ended" = "live";
+    private _enabled = true;
+    private listeners: (() => void)[] = [];
+    constructor(readonly id: string) {}
+    get enabled(): boolean {
+      return this._enabled;
+    }
+    set enabled(v: boolean) {
+      if (v !== this._enabled) log.push(`track.enabled=${v}:${this.id}`);
+      this._enabled = v;
+    }
+    stop(): void {
+      if (this.stopped) return;
+      this.stopped = true;
+      this.readyState = "ended";
+      log.push(`track.stop:${this.id}`);
+    }
+    addEventListener(type: string, fn: () => void): void {
+      if (type === "ended") this.listeners.push(fn);
+    }
+    /** 장치 분리·권한 철회 흉내 — stop()과 달리 ended 이벤트가 온다 */
+    endExternally(): void {
+      this.readyState = "ended";
+      log.push(`track.ended:${this.id}`);
+      for (const fn of this.listeners) fn();
+    }
+  }
+  const tracks = new Map<string, FakeTrack>();
+  const mediaDevices = {
+    getUserMedia: (): Promise<unknown> => {
+      gumCalls += 1;
+      log.push("gUM");
+      const m = gumMode;
+      if (m.kind === "hang") return new Promise(() => {});
+      if (m.kind === "reject") return Promise.reject(new DOMException("denied", m.name));
+      return new Promise((resolve) =>
+        setTimeout(() => {
+          const t = new FakeTrack(`k${++trackSeq}`);
+          tracks.set(t.id, t);
+          log.push(`gUM.resolve:${t.id}`);
+          resolve({ getTracks: () => [t] });
+        }, m.delayMs),
+      );
+    },
+  };
+  class FakeRecorder {
+    static isTypeSupported(t: string): boolean {
+      return t.startsWith("audio/webm");
+    }
+    state: "inactive" | "recording" = "inactive";
+    mimeType: string;
+    onstart: (() => void) | null = null;
+    onstop: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    ondataavailable: ((ev: { data: Blob }) => void) | null = null;
+    private enabledAtStart: boolean;
+    constructor(stream: { getTracks: () => FakeTrack[] }, opts?: { mimeType?: string }) {
+      this.mimeType = opts?.mimeType ?? "audio/webm";
+      this.enabledAtStart = stream.getTracks().every((t) => t.enabled && t.readyState === "live");
+    }
+    start(): void {
+      this.state = "recording";
+      log.push(`rec.start(enabled=${this.enabledAtStart})`);
+      setTimeout(() => this.onstart?.(), 1);
+    }
+    stop(): void {
+      if (this.state === "inactive") return;
+      this.state = "inactive";
+      log.push("rec.stop");
+      setTimeout(() => {
+        this.ondataavailable?.({ data: new Blob(["x"], { type: this.mimeType }) });
+        this.onstop?.();
+      }, 1);
+    }
+  }
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    writable: true,
+    value: {
+      userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+      platform: "iPhone",
+      maxTouchPoints: 5,
+      mediaDevices,
+      audioSession: session,
+    },
+  });
+  g.window = { isSecureContext: true, MediaRecorder: FakeRecorder };
+  g.MediaRecorder = FakeRecorder;
+  const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  const catchErr = async (p: Promise<unknown>): Promise<unknown> => {
+    const hang = new Promise<string>((r) => setTimeout(() => r("HANG"), 1000));
+    try {
+      return await Promise.race([p.then(() => null), hang]);
+    } catch (e) {
+      return e;
+    }
+  };
+  /** 녹음 하나 — 시작 → start 이벤트 → 잠깐 → stop */
+  const recordOnce = async (k: ReturnType<typeof createMicKeeper>, gumTimeoutMs?: number) => {
+    const rec = await k.startRecording(gumTimeoutMs ? { gumTimeoutMs } : {});
+    await rec.started;
+    await sleepMs(3);
+    return rec.stop();
+  };
+  const reset = () => {
+    log.length = 0;
+    gumCalls = 0;
+    gumMode = { kind: "ok", delayMs: 1 };
+  };
+
+  try {
+    // K5~K8 keep: 점검(첫 녹음) + 답변 3개 = 녹음 4회, getUserMedia 1회
+    {
+      reset();
+      const k = createMicKeeper(); // 정책을 넘기지 않는다 — 가짜 iPhone UA + audioSession에서 스스로 keep을 고른다
+      const results4: unknown[] = [];
+      results4.push(await recordOnce(k, MIC_CHECK_GUM_TIMEOUT_MS)); // 마이크 점검
+      const betweenGuard = setAudioSessionPlayback(); // 녹음 사이 — 쥔 동안은 거부(바꾸면 트랙이 끝난다)
+      for (let i = 0; i < 3; i++) results4.push(await recordOnce(k));
+      const id = log.find((l) => l.startsWith("gUM.resolve:"))?.split(":")[1] ?? "";
+      const t = tracks.get(id);
+      const recStarts = log.filter((l) => l.startsWith("rec.start"));
+      add(
+        "K5 keep: 점검 + 답변 3 = 녹음 4회에 getUserMedia **1회** · acquisitions()=1 · 녹음 결과 4개 · 놓기 전 트랙 stop 0",
+        k.policy === "keep" && gumCalls === 1 && k.acquisitions() === 1 && results4.every((r) => !!r) && recStarts.length === 4 && t?.stopped === false && k.holding(),
+        `policy=${k.policy} gUM=${gumCalls} acq=${k.acquisitions()} starts=${recStarts.length} log=${log.join(",")}`,
+      );
+      // 녹음마다: 입력 켬 → rec.start(켜진 채) … rec.stop → 입력 끔
+      const seq = log.filter((l) => l.startsWith("track.enabled") || l.startsWith("rec."));
+      const want: string[] = [`track.enabled=false:${id}`];
+      for (let i = 0; i < 4; i++) want.push(`track.enabled=true:${id}`, "rec.start(enabled=true)", "rec.stop", `track.enabled=false:${id}`);
+      add(
+        "K6 keep: 획득 직후 입력 끔 · 녹음마다 입력 켬 → 녹음기 start(켜진 채) → rec.stop → **그다음** 입력 끔(녹음 사이에는 소리가 들어오지 않는다)",
+        seq.join(",") === want.join(","),
+        seq.join(","),
+      );
+      add(
+        "K7 keep: 쥔 동안 세션은 play-and-record 그대로 — 녹음 사이 playback 전환 거부(false) · 놓기 전 session=playback 0",
+        betweenGuard === false && !log.includes("session=playback") && session.type === "play-and-record" && setAudioSessionPlayback() === false,
+        `guard=${betweenGuard} session=${session.type}`,
+      );
+      k.release();
+      const iStop = log.indexOf(`track.stop:${id}`);
+      const iPlay = log.lastIndexOf("session=playback");
+      k.release(); // 멱등
+      add(
+        "K8 keep 놓기: 트랙 stop → **그다음** playback · 두 번 놓아도 한 번 · 놓은 뒤 activeCaptures 0(playback 전환이 다시 먹음) · holding false",
+        iStop > 0 && iPlay > iStop && log.filter((l) => l === `track.stop:${id}`).length === 1 && !k.holding() && setAudioSessionPlayback() === true,
+        `stop@${iStop} playback@${iPlay}`,
+      );
+      // 놓은 뒤 녹음 → 다시 얻는다(그때만 권한 창)
+      const again = await recordOnce(k);
+      add("K9 keep: 놓은 뒤의 녹음은 다시 얻는다(getUserMedia 2회째) · 결과 있음", gumCalls === 2 && k.acquisitions() === 2 && !!again && k.holding(), `gUM=${gumCalls}`);
+      k.release();
+    }
+    // K10 트랙 ended(권한 철회·장치 분리) → 쥔 스트림을 버리고(activeCaptures 반환) 다음 녹음이 다시 얻는다
+    {
+      reset();
+      const k = createMicKeeper({ policy: "keep" });
+      await recordOnce(k);
+      const id1 = log.find((l) => l.startsWith("gUM.resolve:"))?.split(":")[1] ?? "";
+      tracks.get(id1)?.endExternally();
+      const afterEnded = setAudioSessionPlayback(); // 버렸으니 캡처 0 → true
+      const r2 = await recordOnce(k);
+      add(
+        "K10 keep: 트랙 ended → 쥔 스트림 버림(playback 전환 다시 먹음) · 다음 녹음이 다시 얻는다(gUM 2) · 결과 있음",
+        afterEnded === true && k.holding() && gumCalls === 2 && !!r2,
+        `afterEnded=${afterEnded} gUM=${gumCalls} log=${log.join(",")}`,
+      );
+      k.release();
+      add("K10b keep: ended 뒤 재획득한 것도 놓으면 activeCaptures 0", setAudioSessionPlayback() === true);
+    }
+    // K11 per-answer: 녹음 3회 = getUserMedia 3회, 녹음마다 트랙 stop → playback(전략 A 그대로)
+    {
+      reset();
+      const k = createMicKeeper({ policy: "per-answer" });
+      for (let i = 0; i < 3; i++) await recordOnce(k);
+      const ids = log.filter((l) => l.startsWith("gUM.resolve:")).map((l) => l.split(":")[1]);
+      const allStopped = ids.every((id) => tracks.get(id)?.stopped === true);
+      const playbacks = log.filter((l) => l === "session=playback").length;
+      add(
+        "K11 per-answer: 녹음 3회 = getUserMedia 3회 · 녹음마다 트랙 stop → playback(3회) · holding 늘 false · acquisitions()=3",
+        gumCalls === 3 && ids.length === 3 && allStopped && playbacks === 3 && !k.holding() && k.acquisitions() === 3 && setAudioSessionPlayback() === true,
+        `gUM=${gumCalls} playback=${playbacks}`,
+      );
+      k.release();
+    }
+    // K12 keep 거부 → denied · activeCaptures 반환 · 다음 시도는 다시 묻는다
+    {
+      reset();
+      const k = createMicKeeper({ policy: "keep" });
+      gumMode = { kind: "reject", name: "NotAllowedError" };
+      const err = await catchErr(k.startRecording());
+      add(
+        "K12 keep 권한 거부 → MicError('denied') · play-and-record → playback · activeCaptures 0 · holding false",
+        err instanceof MicError && err.kind === "denied" && log.join(",") === "session=play-and-record,gUM,session=playback" && !k.holding() && setAudioSessionPlayback() === true,
+        `log=${log.join(",")}`,
+      );
+      k.release();
+    }
+    // K13 keep 무응답 → 상한 뒤 timeout · 늦은 스트림 즉시 stop · activeCaptures 반환
+    {
+      reset();
+      const k = createMicKeeper({ policy: "keep" });
+      gumMode = { kind: "ok", delayMs: 80 };
+      const err = await catchErr(k.startRecording({ gumTimeoutMs: 30 }));
+      await sleepMs(120);
+      const id = log.find((l) => l.startsWith("gUM.resolve:"))?.split(":")[1] ?? "";
+      add(
+        "K13 keep getUserMedia 무응답 → 상한 뒤 MicError('timeout') · 늦게 온 스트림 트랙 즉시 stop · 녹음 시작 안 함 · activeCaptures 0",
+        err instanceof MicError && err.kind === "timeout" && tracks.get(id)?.stopped === true && !log.some((l) => l.startsWith("rec.start")) && !k.holding() && setAudioSessionPlayback() === true,
+        `log=${log.join(",")}`,
+      );
+      k.release();
+    }
+    // K14 획득 합류 — 탭의 prime()이 기다리는 동안 첫 녹음이 오면 getUserMedia는 한 번
+    {
+      reset();
+      gumMode = { kind: "ok", delayMs: 20 };
+      const k = createMicKeeper({ policy: "keep" });
+      const primed = k.prime();
+      const rec = await k.startRecording();
+      await primed;
+      await rec.started;
+      const r = await rec.stop();
+      add("K14 keep: prime() 대기 중의 녹음은 같은 획득에 합류(getUserMedia 1회) · 결과 있음", gumCalls === 1 && !!r && k.holding(), `gUM=${gumCalls}`);
+      k.release();
+    }
+    // K15 놓는 사이 도착한 스트림(숨김·끝이 획득보다 먼저) → 바로 stop · 녹음 거부 · activeCaptures 0
+    {
+      reset();
+      gumMode = { kind: "ok", delayMs: 30 };
+      const k = createMicKeeper({ policy: "keep" });
+      const p = k.startRecording();
+      await sleepMs(5);
+      k.release();
+      const err = await catchErr(p);
+      await sleepMs(40);
+      const id = log.find((l) => l.startsWith("gUM.resolve:"))?.split(":")[1] ?? "";
+      add(
+        "K15 keep: 획득을 기다리는 사이 놓으면 늦게 온 스트림은 바로 stop · 녹음 거부(MicError) · 녹음기 없음 · activeCaptures 0",
+        err instanceof MicError && tracks.get(id)?.stopped === true && !log.some((l) => l.startsWith("rec.start")) && !k.holding() && setAudioSessionPlayback() === true,
+        `err=${String(err)} log=${log.join(",")}`,
+      );
+    }
+    // K16 녹음 중 숨김(녹음 abort) → 그 녹음만 버리고 마이크는 쥔 채(입력 끔) — 놓는 것은 화면의 release
+    {
+      reset();
+      const k = createMicKeeper({ policy: "keep" });
+      const rec = await k.startRecording();
+      await rec.started;
+      rec.abort();
+      const stopRes = await rec.stop();
+      const id = log.find((l) => l.startsWith("gUM.resolve:"))?.split(":")[1] ?? "";
+      const t = tracks.get(id);
+      add(
+        "K16 keep: 녹음 abort → 결과 null · 트랙은 살아 있고 입력만 꺼짐 · 다음 녹음은 같은 트랙(getUserMedia 1회)",
+        stopRes === null && t?.stopped === false && t?.enabled === false && k.holding() && !!(await recordOnce(k)) && gumCalls === 1,
+        `log=${log.join(",")}`,
+      );
+      // 숨김 → 화면이 release — 다음 녹음은 다시 얻는다
+      k.release();
+      await recordOnce(k);
+      add("K16b keep: 숨김으로 놓은 뒤 다음 녹음 = 재획득(getUserMedia 2회)", gumCalls === 2 && tracks.get(id)?.stopped === true);
+      k.release();
+    }
+    // K17 진단: getMicDiag().keep = 마지막 keeper의 정책·획득 수
+    {
+      reset();
+      const k = createMicKeeper({ policy: "keep" });
+      await recordOnce(k);
+      await recordOnce(k);
+      const d = getMicDiag();
+      add("K17 진단: getMicDiag().keep = { policy: keep, acquisitions: 1 }(녹음 2회 뒤)", d.keep?.policy === "keep" && d.keep.acquisitions === 1, JSON.stringify(d.keep));
+      k.release();
+    }
+  } finally {
+    if (navDesc) Object.defineProperty(globalThis, "navigator", navDesc);
+    else delete g.navigator;
+    if (hadWindow) g.window = prevWindow;
+    else delete g.window;
+    if (hadRecorder) g.MediaRecorder = prevRecorder;
+    else delete g.MediaRecorder;
+  }
+
+  // ── 화면 배선(소스) ──
+  const code = (rel: string) =>
+    readFileSync(new URL(rel, import.meta.url), "utf-8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
+  const take = code("../components/toeic-take-view.tsx");
+  const tpl = code("../components/toeic-template-test.tsx");
+  const bare = /(^|[^.\w])startRecording\(/;
+  add(
+    "K18 응시 화면: 녹음은 전부 keeper(micKeeper().startRecording) — 맨 startRecording 호출 0 · 점검·답변 두 곳",
+    !bare.test(take) && (take.match(/micKeeper\(\)\s*\.startRecording\(/g) ?? []).length === 2,
+  );
+  const fn = (src: string, head: string) => {
+    const at = src.indexOf(head);
+    return at < 0 ? "" : src.slice(at, at + 1600);
+  };
+  add(
+    "K19 응시 화면: 놓기 — 응시 끝(endTest)·시작 실패(abortStart)·pagehide·언마운트·숨김 effect·\"녹음 없이\" 시작",
+    /releaseMic\(\)/.test(fn(take, "const endTest = useCallback")) &&
+      /releaseMic\(\)/.test(fn(take, "function abortStart")) &&
+      /const onPageHide = \(\) => \{\s*releaseMic\(\);/.test(take) &&
+      /keeperRef\.current\?\.release\(\);/.test(fn(take, "recordingRef.current?.rec.abort();\n      recordingRef.current = null;\n      checkRecRef")) &&
+      /if \(document\.visibilityState === "hidden"\) releaseMic\(\);/.test(take) &&
+      /if \(mode === "nomic"\) releaseMic\(\);/.test(fn(take, "function start()")),
+  );
+  add(
+    "K20 응시 화면: 놓인 뒤 탭(시작·이 문항 다시)은 탭 안에서 다시 연다(keep && !holding → prime) — 권한 창이 타이머 콜백에서 뜨지 않게",
+    /k\.policy === "keep" && !k\.holding\(\)\) void k\.prime\(\)\.catch/.test(fn(take, "function start()")) &&
+      /k\.policy === "keep" && !k\.holding\(\)\) void k\.prime\(\)\.catch/.test(fn(take, "function retryQuestion()")),
+  );
+  add(
+    "K21 틀 테스트: 녹음은 keeper만 · 놓기 — 끝(finish)·마이크 실패(녹음 없이)·숨김·pagehide·언마운트",
+    !bare.test(tpl) &&
+      /keeperRef\.current\?\.release\(\);/.test(fn(tpl, "function finish(")) &&
+      /keeperRef\.current\?\.release\(\);/.test(fn(tpl, "const micFail =")) &&
+      /keeperRef\.current\?\.release\(\);[^\n]*\n\s*\};\s*document\.addEventListener\("visibilitychange"/.test(tpl) &&
+      /const onPageHide = \(e: PageTransitionEvent\) => \{\s*if \(!e\.persisted\) leaveSaveRef\.current\(\);\s*keeperRef\.current\?\.release\(\);/.test(tpl) &&
+      /recRef\.current = null;\s*keeperRef\.current\?\.release\(\);/.test(tpl),
+  );
+  const mic = code("../lib/mic-session.ts");
+  const keepStart = fn(mic, "async startRecording(o: StartRecordingOptions = {})");
+  add(
+    "K22 mic-session: keep 녹음은 입력 켜기 → recordOn(녹음기) 순 · 끝나면 입력 끄기만(트랙 stop 없음) · 재획득 근거에 muted를 쓰지 않는다",
+    keepStart.indexOf("setTracksEnabled(s, true)") > 0 &&
+      keepStart.indexOf("setTracksEnabled(s, true)") < keepStart.indexOf("recordOn(s, o,") &&
+      /if \(recSeq === mySeq\) setTracksEnabled\(s, false\);/.test(keepStart) &&
+      !/\.muted\b/.test(mic),
+  );
+  return results;
+}
+
+// ---------------------------------------------------------------------------
 // 15. 번들 경계 — 클라이언트 import 가능 모듈은 lib/ai를 런타임 import하지 않는다
 // ---------------------------------------------------------------------------
 
@@ -2757,6 +3139,7 @@ async function main(): Promise<void> {
   all.push(...(await runMockStoreRuleChecks()));
   all.push(...(await runAttemptChecks()));
   all.push(...(await runMicSessionChecks()));
+  all.push(...(await runMicKeepChecks()));
   all.push(...runBundleBoundaryChecks());
   all.push(...runTemplateFlowAiChecks());
   all.push(...runToeicGuideChecks());

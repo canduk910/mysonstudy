@@ -548,7 +548,14 @@ function runS2SourceChecks(): GuideCheckResult[] {
   const iUnlock = mic.indexOf("unlockSpeechPlayback()");
   const iRec = mic.indexOf("startRecording(");
   add("🎤 탭: 큐 멈춤 → unlockSpeechPlayback() → startRecording() 순서", iStop > 0 && iStop < iUnlock && iUnlock < iRec, `${iStop} < ${iUnlock} < ${iRec}`);
-  add("🎤 첫 녹음은 권한 창 시간(MIC_CHECK_GUM_TIMEOUT_MS), 상한 판정은 canTranscribeAgain", /startRecording\(first \? \{ gumTimeoutMs: MIC_CHECK_GUM_TIMEOUT_MS \} : \{\}\)/.test(mic) && /canTranscribeAgain\(countsRef\.current\)/.test(mic));
+  // 2026-10-03 마이크 유지(SPEC §20-4): 녹음은 keeper.startRecording — 마이크를 (다시) 여는 때(첫 🎤·keep인데 놓인 뒤)만 15초
+  add(
+    "🎤 마이크를 (다시) 여는 때만 권한 창 시간(MIC_CHECK_GUM_TIMEOUT_MS — 첫 🎤 또는 keep인데 놓인 뒤), 녹음은 마이크 유지(keeper.startRecording), 상한 판정은 canTranscribeAgain",
+    /const needsPrompt = firstMicRef\.current \|\| \(keeper\.policy === "keep" && !keeper\.holding\(\)\);/.test(mic) &&
+      /keeper\s*\.startRecording\(needsPrompt \? \{ gumTimeoutMs: MIC_CHECK_GUM_TIMEOUT_MS \} : \{\}\)/.test(mic) &&
+      !/(^|[^.\w])startRecording\(/.test(mic) &&
+      /canTranscribeAgain\(countsRef\.current\)/.test(mic),
+  );
   const startFn = fnBody(tcc, "start");
   add("시작 탭: unlockSpeechPlayback · 멱등 키(newTemplateSessionId) · startedAt · 첫 문항 열기", /unlockSpeechPlayback\(\)/.test(startFn) && /newTemplateSessionId\(\)/.test(startFn) && /startedAtRef\.current = new Date\(\)\.toISOString\(\)/.test(startFn) && /openQuestion\(0\)/.test(startFn));
   const trFn = fnBody(tcc, "transcribe");

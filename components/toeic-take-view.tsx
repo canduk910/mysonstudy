@@ -15,6 +15,9 @@
  * ── 규칙 ──────────────────────────────────────────────────────────────────────
  * - 시계는 **종료 시각(epoch ms)** 기반 250ms 틱. 렌더 중 Date.now()를 읽지 않는다("지금"은 state — 핸들러·타이머가 갱신).
  * - 재생과 마이크 캡처를 겹치지 않는다 — 질문 음성·비프가 끝난 뒤 녹음(세션 전환은 lib/mic-session.ts 한 곳).
+ * - **마이크 유지**(2026-10-03, SPEC §20-4): 응시 하나에 `createMicKeeper()` 하나 — 마이크 점검에서 연 마이크를 응시 끝까지 쥐고
+ *   문항마다 녹음기만 새로 만든다(정책 keep — Apple WebKit + audioSession). 놓는 때: 끝·그만두기·시작 실패·"녹음 없이" 시작·
+ *   언마운트·pagehide·화면 숨김. 놓인 뒤 "시작"·"이 문항 다시" 탭은 탭 안에서 먼저 연다(keeper.prime — 권한 창을 탭 안에).
  * - 질문 음성은 큐가 돌려준 stop만 쓴다(전역 stopSpeaking 금지). 큐가 "stopped"(외부 pause·소리 못 냄)로 끝나거나, "done"이어도
  *   onEnd의 `sounded`가 모자라면(1~2조각 큐가 무음 — toeicSpeechOutcome) 일시정지 + "다시 듣기"/"질문 보기"(Q8–10은 평소 질문 글을 숨긴다).
  * - 녹음 중 화면이 숨겨지면 즉시 녹음을 버리고 그 문항 "중단됨" — 돌아오면 "이 문항 다시"/"다음 문항으로".
@@ -31,16 +34,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ToeicInfoTableView from "@/components/toeic-info-table";
 import TtsEngineControl from "@/components/tts-engine-control";
 import TtsSpeedControl from "@/components/tts-speed-control";
+import ToeicMicKeepToggle from "@/components/toeic-mic-keep-toggle";
 import { useToeicWakeLock } from "@/components/use-toeic-wake-lock";
 import {
   MIC_CHECK_GUM_TIMEOUT_MS,
   MIC_GUM_TIMEOUT_MS,
   MicError,
+  createMicKeeper,
   detectMicSupport,
   getMicDiag,
   setAudioSessionPlayback,
-  startRecording,
   type MicDiag,
+  type MicKeeper,
   type MicErrorKind,
   type MicRecording,
   type RecordingResult,
@@ -246,6 +251,16 @@ export default function ToeicTakeView({
   const checkRecRef = useRef<MicRecording | null>(null);
   const checkUrlRef = useRef<string | null>(null);
   const levelSourceRef = useRef<MicRecording | null>(null);
+  /** 이 응시의 마이크(전략 B — 세션 내내 하나). 렌더 중에 만들지 않는다(navigator) — 핸들러·effect에서 micKeeper()로 */
+  const keeperRef = useRef<MicKeeper | null>(null);
+  const micKeeper = useCallback((): MicKeeper => {
+    if (!keeperRef.current) keeperRef.current = createMicKeeper();
+    return keeperRef.current;
+  }, []);
+  /** 마이크를 놓는다(트랙 stop → playback) — 끝·그만두기·이탈·숨김. 다음 녹음은 새로 연다. */
+  const releaseMic = useCallback(() => {
+    keeperRef.current?.release();
+  }, []);
 
   const setPhase = useCallback((st: ToeicPhaseState | null) => {
     phaseRef.current = st;
@@ -375,7 +390,8 @@ export default function ToeicTakeView({
       };
       // 마이크가 끝내 답하지 않으면(권한 창이 탭 밖에서 떠 멈춤 등) 시간만 잰다 — 시험이 "녹음 준비 중"에 멈춰 서지 않게
       const watchdog = window.setTimeout(() => fallbackToTimer("마이크 응답이 없어요"), MIC_START_WATCHDOG_MS);
-      startRecording({ audioContext: getToeicAudioContext() })
+      micKeeper()
+        .startRecording({ audioContext: getToeicAudioContext() })
         .then((rec) => {
           if (runRef.current !== token || abandoned) {
             rec.abort();
@@ -396,7 +412,7 @@ export default function ToeicTakeView({
         })
         .catch((e: unknown) => fallbackToTimer(e instanceof MicError ? e.message : e instanceof Error ? e.message : "녹음 시작 실패"));
     },
-    [abortRecording, patchAnswer, scaled, setPhase],
+    [abortRecording, micKeeper, patchAnswer, scaled, setPhase],
   );
 
   /** 답변 시간이 끝났다 — 녹음을 멈추고(트랙 stop → 세션 playback) 기기에 보관한 뒤 다음 단계 */
@@ -485,6 +501,7 @@ export default function ToeicTakeView({
         abortRecording();
         patchAnswer(st.q, { status: "interrupted", error: "그만두기로 멈춤" });
       }
+      releaseMic(); // 응시가 끝났다 — 마이크를 놓는다(트랙 stop → playback)
       setPause(null);
       setLevel(0);
       finishedAtRef.current = done ? new Date().toISOString() : null;
@@ -494,7 +511,7 @@ export default function ToeicTakeView({
       prefetchStopRef.current = null;
       void sendFinish();
     },
-    [abortRecording, cancelBeep, patchAnswer, sendFinish, setPause, stopSpeech],
+    [abortRecording, cancelBeep, patchAnswer, releaseMic, sendFinish, setPause, stopSpeech],
   );
 
   const enterPhase = useCallback(
@@ -603,6 +620,15 @@ export default function ToeicTakeView({
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [stage, abortRecording, patchAnswer, setPause, setPhase]);
 
+  // ── 화면이 숨겨지면(잠금·앱 전환) 마이크를 놓는다 — 단계와 무관(SPEC §20-4 마이크 유지의 "놓는 때"). 돌아온 뒤의 녹음이 다시 연다 ──
+  useEffect(() => {
+    const onHide = () => {
+      if (document.visibilityState === "hidden") releaseMic();
+    };
+    document.addEventListener("visibilitychange", onHide);
+    return () => document.removeEventListener("visibilitychange", onHide);
+  }, [releaseMic]);
+
   // visible 복귀: 시계 즉시 갱신 + 오디오 컨텍스트 깨우기 + Wake Lock 재요청
   const onVisible = useCallback(() => {
     setNow(Date.now());
@@ -613,6 +639,7 @@ export default function ToeicTakeView({
   // ── 언마운트: 소리·녹음 정리, 시작했는데 끝을 못 보냈으면 best-effort로 "그만둠" 저장 ──
   useEffect(() => {
     const onPageHide = () => {
+      releaseMic(); // 페이지를 떠난다 — 마이크부터 놓는다
       const aid = attemptIdRef.current;
       if (!aid || finishSentRef.current) return;
       finishSentRef.current = true;
@@ -625,7 +652,7 @@ export default function ToeicTakeView({
     };
     window.addEventListener("pagehide", onPageHide);
     return () => window.removeEventListener("pagehide", onPageHide);
-  }, [buildFinishBody]);
+  }, [buildFinishBody, releaseMic]);
 
   useEffect(
     () => () => {
@@ -639,6 +666,7 @@ export default function ToeicTakeView({
       recordingRef.current?.rec.abort();
       recordingRef.current = null;
       checkRecRef.current?.abort();
+      keeperRef.current?.release(); // 화면을 떠났다 — 마이크를 놓는다(트랙 stop → playback)
       prefetchStopRef.current?.();
       if (checkUrlRef.current) URL.revokeObjectURL(checkUrlRef.current);
       const aid = attemptIdRef.current;
@@ -675,7 +703,7 @@ export default function ToeicTakeView({
     setMicCheck({ phase: "checking" });
     let rec: MicRecording | null = null;
     try {
-      rec = await startRecording({ audioContext: ctx, gumTimeoutMs: MIC_CHECK_GUM_TIMEOUT_MS });
+      rec = await micKeeper().startRecording({ audioContext: ctx, gumTimeoutMs: MIC_CHECK_GUM_TIMEOUT_MS }); // keep이면 이 마이크를 응시 끝까지 쥔다
       if (runRef.current !== gen) {
         rec.abort();
         return;
@@ -725,9 +753,15 @@ export default function ToeicTakeView({
     // 점검 녹음이 아직 돌면(녹음 없이 시작) 먼저 버린다 — 트랙 stop 뒤 playback(캡처 중이면 아래 playback 전환이 무시된다)
     checkRecRef.current?.abort();
     checkRecRef.current = null;
+    if (mode === "nomic") releaseMic(); // 녹음 없이 — 점검에서 연 마이크를 쥘 이유가 없다
+    else {
+      // 마이크 유지(keep): 점검 뒤 화면이 숨겨져 놓였으면 이 탭 안에서 다시 연다(권한 창이 탭 밖 타이머에서 뜨지 않게)
+      const k = micKeeper();
+      if (k.policy === "keep" && !k.holding()) void k.prime().catch(() => {}); // 실패는 첫 녹음이 다시 판정한다(8초 감시)
+    }
     ensureToeicAudio();
     unlockSpeechPlayback();
-    setAudioSessionPlayback();
+    setAudioSessionPlayback(); // keep으로 마이크를 쥐고 있으면 아무것도 하지 않는다(play-and-record 유지 — 바꾸면 트랙이 끝난다)
     const texts: string[] = [];
     for (const part of parts) texts.push(...enPieces(directionsByPart.get(part)?.en ?? null).map((p) => p.text));
     for (const v of questions) texts.push(...enPieces(v.spokenIntro).map((p) => p.text), ...enPieces(v.question).map((p) => p.text));
@@ -778,6 +812,7 @@ export default function ToeicTakeView({
     stopSpeech();
     cancelBeep();
     abortRecording();
+    releaseMic();
     prefetchStopRef.current?.();
     prefetchStopRef.current = null;
     finishSentRef.current = true;
@@ -807,6 +842,11 @@ export default function ToeicTakeView({
     const st = phaseRef.current;
     if (!st || st.q === null) return;
     ensureToeicAudio();
+    // 숨김으로 마이크를 놓았다 — 이 탭 안에서 다시 연다(권한 창이 뜬다면 탭 안에서. 녹음은 질문·준비·비프 뒤라 겹치지 않는다)
+    if (modeRef.current === "mic") {
+      const k = micKeeper();
+      if (k.policy === "keep" && !k.holding()) void k.prime().catch(() => {});
+    }
     const t = Date.now();
     let solo = firstPhase([st.q], t);
     while (solo.phase === "directions" || solo.phase === "reading") solo = nextPhase([st.q], solo, t);
@@ -927,6 +967,13 @@ export default function ToeicTakeView({
               <input type="checkbox" checked={mode === "nomic"} onChange={(e) => setMode(e.target.checked ? "nomic" : "mic")} />
               <span>녹음 없이 연습(타이머만 — 채점할 녹음이 남지 않아요)</span>
             </label>
+            <ToeicMicKeepToggle
+              onChange={() => {
+                // 정책이 바뀌었다 — 지금 쥔 마이크를 놓고 새 정책으로 다시 만든다(다음 녹음부터)
+                keeperRef.current?.release();
+                keeperRef.current = null;
+              }}
+            />
           </section>
 
           <details className={s.settings}>
@@ -1171,7 +1218,8 @@ export default function ToeicTakeView({
 
         {diag && mode === "mic" && (
           <p className={s.diag}>
-            진단 · 녹음 형식 {diag.mimeType ?? diag.requestedMimeType ?? "기본"} · 마지막{" "}
+            진단 · {diag.keep ? `마이크 ${diag.keep.policy === "keep" ? "유지" : "문항마다"} · 열기 ${diag.keep.acquisitions}회 · ` : ""}녹음 형식{" "}
+            {diag.mimeType ?? diag.requestedMimeType ?? "기본"} · 마지막{" "}
             {diag.durationMs !== null ? `${(diag.durationMs / 1000).toFixed(1)}초` : "–"} · {kb(diag.size)} · 세션 {diag.audioSession ?? "API 없음"}
             {diag.error ? ` · 오류 ${diag.error}` : ""}
             {attemptId ? "" : " · 응시 기록 만드는 중"}
