@@ -14,6 +14,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   TOEIC_EXAM_PART_TYPE_EN,
+  TOEIC_REC_TOAST_MS,
+  toeicRecToastFor,
   formatToeicExamClock,
   toeicExamBandTitle,
   toeicExamDirectionsTitle,
@@ -310,6 +312,32 @@ export function runToeicExamScreenChecks(): GuideCheckResult[] {
       /function abortStart\(message: string\) \{\s*runRef\.current \+= 1;\s*stopSpeech\(\);\s*stopCue\(\);/.test(take) &&
       /if \(cueTimerRef\.current !== null\) window\.clearTimeout\(cueTimerRef\.current\);\s*recordingRef\.current\?\.rec\.abort\(\);/.test(take) &&
       /const texts: string\[\] = \[\.\.\.toeicCueTexts\(qs\)\];/.test(take),
+  );
+  // ── ⑦ 녹음 끝 알림 (§18-8) ──
+  const toast = (status: Parameters<typeof toeicRecToastFor>[0]["status"], o: Partial<{ paused: boolean; stale: boolean; last: boolean }> = {}) =>
+    toeicRecToastFor({ q: 3, status, paused: false, stale: false, last: false, ...o });
+  add(
+    "R1 녹음됨 → \"✓ Q3 녹음 끝\"(ok) · 빈 녹음 → \"⚠ Q3 녹음이 저장되지 않았어요\"(warn)",
+    JSON.stringify(toast("recorded")) === JSON.stringify({ kind: "ok", text: "✓ Q3 녹음 끝" }) &&
+      JSON.stringify(toast("empty")) === JSON.stringify({ kind: "warn", text: "⚠ Q3 녹음이 저장되지 않았어요" }),
+  );
+  add(
+    "R2 다른 안내가 이미 말하는 경우는 알림 없음: 소리 없음(무음)·녹음 시작 실패·중단·녹음 없이",
+    (["silent", "failed", "interrupted", "nomic"] as const).every((x) => toast(x) === null),
+  );
+  add(
+    "R3 일시정지 중·그만둔 뒤(세대 바뀜)·마지막 문항(바로 끝 화면) → 알림 없음",
+    toast("recorded", { paused: true }) === null && toast("recorded", { stale: true }) === null && toast("recorded", { last: true }) === null && toast("empty", { last: true }) === null,
+  );
+  const finAt = take.indexOf("const finishAnswer = useCallback(");
+  const finBody = finAt < 0 ? "" : take.slice(finAt, take.indexOf("[advance, finalizeDiag", finAt));
+  add(
+    "R4 화면: 알림은 1.5초(실제 시간) 뒤 저절로 사라짐 · 녹음 끝 처리에서 알림을 띄운 뒤 advance를 그대로 부른다(기다리지 않음) · 그만두기에서 걷음 · 탭을 가로채지 않음",
+    TOEIC_REC_TOAST_MS === 1500 &&
+      /showRecToast\(\s*toeicRecToastFor\(\{[\s\S]*?\}\),\s*\);\s*advance\(token\);/.test(finBody) &&
+      /window\.setTimeout\(\(\) => \{[\s\S]*?\}, TOEIC_REC_TOAST_MS\)/.test(take) &&
+      /cancelBeep\(\);\s*showRecToast\(null\);/.test(take) &&
+      /\.recToast \{[\s\S]*?pointer-events: none;/.test(readFileSync(path.join(ROOT, "components/toeic-take-view.module.css"), "utf-8")),
   );
   return results;
 }

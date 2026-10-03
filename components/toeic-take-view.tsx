@@ -109,6 +109,9 @@ import {
 import { toeicImageUrl } from "@/lib/toeic-mock-contract";
 import {
   TOEIC_EXAM_CRITERIA_EN,
+  TOEIC_REC_TOAST_MS,
+  toeicRecToastFor,
+  type ToeicRecToast,
   TOEIC_EXAM_PART_TYPE_EN,
   formatToeicExamClock,
   toeicExamBandTitle,
@@ -371,6 +374,20 @@ export default function ToeicTakeView({
   const [speakIdx, setSpeakIdx] = useState(-1);
   /** 진행 멘트("Begin preparing now." 등 — §18)를 읽는 중(앱 띠 단계 이름만 바꾼다) */
   const [cueOn, setCueOn] = useState(false);
+  /** 녹음 끝 알림(§18-8 — 표현 전용, 1.5초 뒤 저절로 사라짐) */
+  const [recToast, setRecToast] = useState<(ToeicRecToast & { id: number }) | null>(null);
+  const recToastTimerRef = useRef<number | null>(null);
+  const showRecToast = useCallback((t: ToeicRecToast | null) => {
+    if (recToastTimerRef.current !== null) window.clearTimeout(recToastTimerRef.current);
+    recToastTimerRef.current = null;
+    if (!t) return;
+    const id = Date.now();
+    setRecToast({ ...t, id });
+    recToastTimerRef.current = window.setTimeout(() => {
+      recToastTimerRef.current = null;
+      setRecToast((cur) => (cur && cur.id === id ? null : cur));
+    }, TOEIC_REC_TOAST_MS);
+  }, []);
   /** 진행 멘트 상한 타이머(소리가 안 나도 이 시간 뒤 그대로 진행) */
   const cueTimerRef = useRef<number | null>(null);
   const [memoOpen, setMemoOpen] = useState(false);
@@ -755,10 +772,21 @@ export default function ToeicTakeView({
           finalizeDiag(q, "empty", { size: result?.size ?? 0, error: "녹음된 소리가 없어요", remuted: cur.rec.remuted });
         }
         liveRef.current = null;
+        // 녹음 끝 알림(§18-8) — 표현만. 진행은 아래 advance가 그대로(알림을 기다리지 않는다)
+        const ended = answersRef.current[q]?.status;
+        showRecToast(
+          toeicRecToastFor({
+            q,
+            status: ended === "recorded" || ended === "silent" || ended === "empty" ? ended : "failed",
+            paused: pauseRef.current !== null,
+            stale: runRef.current !== token,
+            last: q === qs[qs.length - 1],
+          }),
+        );
         advance(token);
       });
     },
-    [advance, finalizeDiag, noteMicTrouble, patchAnswer, storeRecording],
+    [advance, finalizeDiag, noteMicTrouble, patchAnswer, qs, showRecToast, storeRecording],
   );
 
   // ── 끝/그만두기 저장 ──
@@ -828,6 +856,8 @@ export default function ToeicTakeView({
       stopSpeech();
       stopCue();
       cancelBeep();
+      showRecToast(null); // 녹음 끝 알림도 걷는다(§18-8)
+      setRecToast(null);
       const st = phaseRef.current;
       if (recordingRef.current && st?.q) {
         abortRecording();
@@ -845,7 +875,7 @@ export default function ToeicTakeView({
       prefetchStopRef.current = null;
       void sendFinish();
     },
-    [abortRecording, cancelBeep, dispatchMic, finalizeDiag, patchAnswer, releaseMic, sendFinish, setPause, stopCue, stopSpeech],
+    [abortRecording, cancelBeep, dispatchMic, finalizeDiag, patchAnswer, releaseMic, sendFinish, setPause, showRecToast, stopCue, stopSpeech],
   );
 
   const enterPhase = useCallback(
@@ -1055,6 +1085,7 @@ export default function ToeicTakeView({
       if (beepRef.current) cancelToeicBeep(beepRef.current.nodes);
       beepRef.current = null;
       if (beepTimerRef.current !== null) window.clearTimeout(beepTimerRef.current);
+      if (recToastTimerRef.current !== null) window.clearTimeout(recToastTimerRef.current);
       if (cueTimerRef.current !== null) window.clearTimeout(cueTimerRef.current);
       recordingRef.current?.rec.abort();
       recordingRef.current = null;
@@ -1845,6 +1876,12 @@ export default function ToeicTakeView({
                 ))}
               {screen === "question" && timerRow}
             </div>
+          )}
+          {/* 녹음 끝 알림(§18-8) — 창 아래쪽 가운데 작은 반투명 띠. 소리 없음·탭 불필요·1.5초 뒤 사라짐(진행을 막지 않는다) */}
+          {recToast && !pause && (
+            <p key={recToast.id} className={recToast.kind === "ok" ? s.recToast : `${s.recToast} ${s.recToastWarn}`} role="status" data-testid="rec-toast" lang="ko">
+              {recToast.text}
+            </p>
           )}
         </div>
       </div>

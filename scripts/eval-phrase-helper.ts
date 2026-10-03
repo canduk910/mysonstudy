@@ -700,6 +700,9 @@ async function runAppChecks(): Promise<CheckResult[]> {
     ["/toeic/sets/s1/quiz?wrong=meaning", true],
     ["/toeic/guides/q3-4/templates/quiz", true],
     ["/toeic/guides/q11/templates/test", true],
+    ["/toeic/guides/q5_7/frame-drill/take", true],
+    ["/toeic/guides/q11/frame-drill/take?topics=a&n=10&t=1", true],
+    ["/toeic/guides/q11/frame-drill/fd-abc12345", false],
     ["/japanese/vocab/v1/quiz", true],
     ["/japanese/vocab/v1/quiz?wrong=reading", true],
     ["/japanese/kanji/quiz", true],
@@ -723,7 +726,7 @@ async function runAppChecks(): Promise<CheckResult[]> {
     ["/english/vocab/v1/quizzes", false],
   ];
   const badExam = examRows.filter(([p, b]) => isPhraseHelperExamPath(p) !== b).map(([p, b]) => `${p}→${!b}`);
-  add(`시험 경로 판정 ${examRows.length}행(응시·다시 풀기·표현 시험·틀 시험·틀 테스트·일본어 단어/한자 시험·은우 단어장 시험 / 목록·오답노트·결과는 아님)`, badExam.length === 0, badExam.join(" / "));
+  add(`시험 경로 판정 ${examRows.length}행(응시·다시 풀기·표현 시험·틀 시험·틀 테스트·틀 말하기 진행·일본어 단어/한자 시험·은우 단어장 시험 / 목록·오답노트·결과는 아님)`, badExam.length === 0, badExam.join(" / "));
   add("시험 경로 정규식은 모두 ^…$로 닫혔다(앞뒤 덧붙은 경로를 잘못 막지 않게)", PHRASE_HELPER_EXAM_PATHS.every((x) => x.re.source.startsWith("^") && x.re.source.endsWith("$")), "");
 
   // app/의 시험 라우트 파일이 전부 시험 경로로 판정되는가(새 시험 라우트를 만들고 표에 안 넣으면 FAIL)

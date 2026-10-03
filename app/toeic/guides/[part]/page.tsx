@@ -16,6 +16,8 @@
  *   → 최근 연습 최신 10·응시 전 연습 수·가장 최근 응시 전 연습(lib/toeic-drill-view summarizeToeicDrill), 🧩 이 유형 답변 흐름(§12-13-3 —
  *   buildAnswerFlow(…, { order: "flow" }) → drillPrepFlowFold: 단계마다 첫 틀 + "+n", 소재 틀 — 모범답변이 고르는 목록과 같다). 파트 본문
  *   (모범답변 등)은 넘기지 않는다 — 응시 전 노출 방지.
+ * - ⑤ 🗣️ 틀 말하기(§20 — Q5–7·Q11 폴더만): 소재별 틀 말하기 은행(`toeicFrameBank`)·통계·지난 판 → buildFrameDrillTabData(소재·틀·문항 수·
+ *   오답률·질문 유형·최근 판). 문항 글(한국어·모범 영어)은 넘기지 않는다 — 출제는 진행 화면이 서버에서 한다. 읽기 실패는 이 탭만 빈 상태.
  * 클라이언트에는 직렬화 가능한 값만 넘긴다(lib/ai 값은 넘기지 않는다 — 타입은 lib/toeic-guide-contract 재수출).
  */
 
@@ -49,6 +51,20 @@ import {
   toeicTemplateChoiceWrongModeCounts,
 } from "@/lib/toeic-template-quiz";
 import { recentTemplateTests, templateWrongCountsByMode } from "@/lib/toeic-template-test-view";
+import { TOEIC_FRAME_DRILL_PARTS, type ToeicFrameDrillPart } from "@/lib/toeic-frame-drill";
+import { buildFrameDrillTabData, type ToeicFrameDrillTabData } from "@/lib/toeic-frame-drill-view";
+
+/** ⑤ 틀 말하기 탭 자료 — 은행·통계·판을 읽는다. 읽기 실패는 이 탭만 "열지 못했어요"(다른 탭을 죽이지 않게) */
+async function loadFrameDrillTab(part: ToeicFrameDrillPart): Promise<ToeicFrameDrillTabData> {
+  const store = getStore();
+  try {
+    const [bank, stats, sessions] = await Promise.all([store.getToeicFrameDrillBank(), store.getToeicFrameDrillStats(), store.listToeicFrameDrillSessions()]);
+    return buildFrameDrillTabData({ part, bank, bankExists: bank !== null, stats: stats.items, sessions });
+  } catch (err) {
+    console.error("[toeic guides] 틀 말하기 은행을 읽지 못했다:", err instanceof Error ? err.name : "unknown");
+    return { part, bankState: "broken", topics: [], questionTypes: [], recent: [], bankItems: 0 };
+  }
+}
 
 export const dynamic = "force-dynamic";
 
@@ -69,12 +85,14 @@ export default async function ToeicGuideFolderPage({ params }: FolderPageProps) 
   const store = getStore();
   const guideId = toeicGuideSetId(part);
   const unit = toeicDrillUnit(part)!; // 네 유형 모두 단위표에 있다(isToeicGuidePart 뒤)
-  const [guideSet, bank, bankSessions, drills, attempts] = await Promise.all([
+  const framePart = (TOEIC_FRAME_DRILL_PARTS as readonly string[]).includes(part) ? (part as ToeicFrameDrillPart) : null;
+  const [guideSet, bank, bankSessions, drills, attempts, frameTab] = await Promise.all([
     store.getToeicSet(guideId),
     store.getToeicSet(TOEIC_TEMPLATE_BANK_ID),
     store.listToeicQuizzes(TOEIC_TEMPLATE_BANK_ID),
     store.listToeicDrills(unit.mockPart),
     store.listAllToeicAttempts(),
+    framePart ? loadFrameDrillTab(framePart) : Promise.resolve(null),
   ]);
   const today = kstTodayString();
 
@@ -170,6 +188,7 @@ export default async function ToeicGuideFolderPage({ params }: FolderPageProps) 
           }
         : null,
     },
+    frame: frameTab,
   };
 
   return (

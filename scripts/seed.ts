@@ -688,6 +688,9 @@ async function main() {
     talkSessions: [],
     // 자유대화 주제 일러스트(english.md §12-6)도 같은 이유로 빈 배열.
     talkImages: [],
+    // 소재별 틀 말하기(toeic.md §20)도 빈 배열 — 문제 은행은 교재 유래라 저장소에 넣지 않는다(앱의 "파일로 가져오기"로만).
+    toeicFrameBank: [],
+    toeicFrameDrills: [],
   };
 
   await mergeDbForSeed(db);

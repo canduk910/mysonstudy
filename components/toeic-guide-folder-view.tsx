@@ -11,6 +11,7 @@
  * - 교재 ↔ 틀 오가기(§12-4 🧩 칩 · §12-5-7 📘 교재 틀 칩 · §12-13-1 `goto=k:`): 같은 폴더면 pushState(`?tab=templates&tpl=` /
  *   `?tab=read&goto=`), 다른 유형 폴더면 router.push. 받는 탭이 그 줄·블록·카드로 스크롤한다. 옛 `?tab=quiz&expr=`는 ③이 틀 시험으로
  *   바뀌어 무시한다(③ 탭이 열린다).
+ * - ⑤ 🗣️ 틀 말하기(§20 — Q5–7·Q11 폴더만, data.frame이 있을 때): 소재 → 틀 체크 → 문항 수 → 진행 화면(`frame-drill/take`).
  * - 빈 상태: 공략이 없으면 📖 탭은 "아직 공략 자료가 없어요", 틀이 없으면 🧩·👀 탭은 "아직 틀이 없어요" — 둘 다 "📂 파일로 가져오기".
  *   ④ 🎤 한 문제 연습은 공략·틀 없이도 된다(AI가 새로 만든다 — §12-8).
  */
@@ -22,6 +23,8 @@ import ToeicDrillView, { type ToeicDrillTabData } from "@/components/toeic-drill
 import ToeicGuideReadView from "@/components/toeic-guide-read-view";
 import ToeicTemplateQuizTab, { type ToeicTemplateQuizTabData } from "@/components/toeic-template-quiz-tab";
 import ToeicTemplateView from "@/components/toeic-template-view";
+import ToeicFrameDrillTab from "@/components/toeic-frame-drill-tab";
+import type { ToeicFrameDrillTabData } from "@/lib/toeic-frame-drill-view";
 import type { ToeicGuidePart, ToeicGuideSection, ToeicTemplate, ToeicTemplateAlternate, ToeicTemplateFlow } from "@/lib/toeic-guide-contract";
 import { TOEIC_GUIDE_TAB_LABELS_KO, resolveGuideTab, type ToeicGuideTab } from "@/lib/toeic-guide-view";
 import type { ToeicTemplateQuizMode } from "@/lib/toeic-quiz";
@@ -84,6 +87,8 @@ export interface ToeicGuideFolderData {
   choice: ToeicTemplateQuizTabData;
   /** ④ 한 문제 연습 탭 자료(최근 연습·응시 전 연습·답변 흐름 — 파트 본문 없음) */
   drill: ToeicDrillTabData;
+  /** ⑤ 틀 말하기 탭 자료(§20 — Q5–7·Q11 폴더만, 그 밖 null — 탭이 없다) */
+  frame: ToeicFrameDrillTabData | null;
 }
 
 export default function ToeicGuideFolderView({ data }: { data: ToeicGuideFolderData }) {
@@ -92,7 +97,9 @@ export default function ToeicGuideFolderView({ data }: { data: ToeicGuideFolderD
   const params = useSearchParams();
   const tabsRef = useRef<HTMLDivElement>(null);
 
-  const tab = resolveGuideTab(params.get("tab"), data.templates.length, AVAILABLE_TABS);
+  // ⑤ 틀 말하기는 Q5–7·Q11 폴더에만(§20) — 그 밖 폴더의 `?tab=frame`은 기본 탭으로
+  const tabs: readonly ToeicGuideTab[] = data.frame ? [...AVAILABLE_TABS, "frame"] : AVAILABLE_TABS;
+  const tab = resolveGuideTab(params.get("tab"), data.templates.length, tabs);
   const focusTpl = tab === "templates" ? params.get("tpl") : null;
   const goto = tab === "read" ? params.get("goto") : null;
   const initialRange = tab === "templates" && params.get("range") === "wrong" ? "wrong" : null;
@@ -144,7 +151,7 @@ export default function ToeicGuideFolderView({ data }: { data: ToeicGuideFolderD
   return (
     <div>
       <div ref={tabsRef} role="tablist" aria-label="폴더 탭" className={s.tabs}>
-        {AVAILABLE_TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t}
             type="button"
@@ -231,6 +238,8 @@ export default function ToeicGuideFolderView({ data }: { data: ToeicGuideFolderD
           ))}
 
         {tab === "drill" && <ToeicDrillView part={data.part} partLabelKo={data.partLabelKo} data={data.drill} onOpenTemplate={openTemplate} />}
+
+        {tab === "frame" && data.frame && <ToeicFrameDrillTab data={data.frame} />}
       </div>
     </div>
   );

@@ -143,3 +143,31 @@ export const TOEIC_EXAM_CRITERIA_EN: Record<ToeicMockPart, string> = {
   info: "Scored on: everything above",
   opinion: "Scored on: everything above",
 };
+
+// ---------------------------------------------------------------------------
+// 녹음 끝 알림 (docs/harness/toeic.md §18-8) — 답변 시간이 끝나 녹음이 멈춘 순간 시험 창 아래쪽에 잠깐 띄우는 작은 띠.
+// 소리 없음·탭 불필요·약 1.5초 뒤 저절로 사라짐. 표현 전용 — 단계 진행·타이밍을 막거나 늦추지 않는다(화면은 advance를 그대로 부른다).
+// ---------------------------------------------------------------------------
+
+/** 알림이 떠 있는 시간(ms) — 실제 시간(개발용 시간 배율과 무관 — 사람이 읽는 시간) */
+export const TOEIC_REC_TOAST_MS = 1500;
+
+export type ToeicRecToastStatus = "recorded" | "silent" | "empty" | "failed" | "interrupted" | "nomic";
+export interface ToeicRecToast {
+  kind: "ok" | "warn";
+  text: string;
+}
+
+/**
+ * 답변이 끝났을 때 띄울 알림(없으면 null).
+ * - 녹음됨 → "✓ Qn 녹음 끝"
+ * - 빈 녹음(멈췄는데 소리 데이터 0) → "⚠ Qn 녹음이 저장되지 않았어요" — 응시 중 다른 안내가 없는 경우라 여기서 알린다
+ * - 소리 없음(무음 — 녹음은 남김)·녹음 시작 실패(시간만)·중단·녹음 없이 → null: 앱 띠 안내·일시정지가 이미 말한다(겹치지 않게)
+ * - 일시정지 중·그만둔 뒤(세대가 바뀜)·마지막 문항(바로 끝 화면) → null
+ */
+export function toeicRecToastFor(o: { q: number; status: ToeicRecToastStatus; paused: boolean; stale: boolean; last: boolean }): ToeicRecToast | null {
+  if (o.paused || o.stale || o.last) return null;
+  if (o.status === "recorded") return { kind: "ok", text: `✓ Q${o.q} 녹음 끝` };
+  if (o.status === "empty") return { kind: "warn", text: `⚠ Q${o.q} 녹음이 저장되지 않았어요` };
+  return null;
+}

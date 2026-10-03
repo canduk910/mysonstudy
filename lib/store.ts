@@ -140,6 +140,33 @@ import {
 import type { TalkCard, TalkExplanation, TalkTopic, TalkTurn } from "./ai/english/talk-schemas";
 import { decideTalkExplanation, normalizeTalkImageRecord, normalizeTalkSessionRecord } from "./talk-normalize";
 import { FirestoreStore } from "./store-firestore";
+import {
+  TOEIC_FRAME_DRILL_BANK_ID,
+  TOEIC_FRAME_DRILL_MAX_BYTES,
+  TOEIC_FRAME_DRILL_STATS_ID,
+  frameDrillBankBytes,
+  mergeFrameDrillImport,
+  type ToeicFrameDrillBank,
+  type ToeicFrameDrillFile,
+  type ToeicFrameDrillImportResult,
+  type ToeicFrameDrillSession,
+  type ToeicFrameDrillStatsDoc,
+  type ToeicFrameDrillSupplyOut,
+} from "./toeic-frame-drill";
+import {
+  decideFrameDrillJudgeWrite,
+  decideFrameDrillSupplyFinish,
+  decideFrameDrillSupplyStart,
+  frameDrillSessionData,
+  normalizeToeicFrameDrillBank,
+  normalizeToeicFrameDrillSession,
+  normalizeToeicFrameDrillStats,
+  type FrameDrillJudgeWrite,
+  type FrameDrillJudged,
+  type FrameDrillSupplyFinish,
+  type FrameDrillSupplyStart,
+  type ToeicFrameDrillSessionRecord,
+} from "./toeic-frame-drill-record";
 
 export type { ClosedCycleStatus, FailedAt, WorkoutCycleRecord, WorkoutEvent, WorkoutRm };
 
@@ -1402,7 +1429,40 @@ export interface StudyStore {
    * append라 prod-guard 무관. 없는 id면 null.
    */
   addTalkExplanation(id: string, explanation: TalkExplanation): Promise<AddTalkExplanationResult | null>;
+
+  // ---- 소재별 틀 말하기 — 컬렉션 `toeicFrameBank`(문서 둘: 은행·통계) + `toeicFrameDrills`(한 판) (docs/harness/toeic.md §20) ----
+  // 표현 시험(toeicQuizzes)과 섞지 않는다. 삭제 경로 없음(prod-guard 대상 없음). 판정은 lib/toeic-frame-drill-record의 순수 함수.
+
+  /** 문제 은행(문서 `frame-drill-bank`) — 없거나 깨졌으면 null */
+  getToeicFrameDrillBank(): Promise<ToeicFrameDrillBank | null>;
+  /** 문항별 통계(문서 `frame-drill-stats`, 은행과 따로) — 없으면 빈 통계 */
+  getToeicFrameDrillStats(): Promise<ToeicFrameDrillStatsDoc>;
+  /**
+   * 파일로 가져오기 — 지금 은행을 읽어 mergeFrameDrillImport → (바뀌었으면) 은행 문서만 쓴다. **통계 문서는 건드리지 않는다.**
+   * 읽기·병합·쓰기가 한 원자 단위(파일 mutate, Firestore runTransaction — 보충 합치기와 겹쳐도 AI 문항을 잃지 않게).
+   * 합친 은행이 바이트 상한을 넘으면 쓰지 않고 too_large.
+   */
+  importToeicFrameDrill(file: ToeicFrameDrillFile, nowIso: string): Promise<ImportToeicFrameDrillResult>;
+  /** 끝난 한 판 저장 — 문서 id = `fd-{clientSessionId}`. 이미 있으면 쓰지 않고 그 판(reused:true). 생성이라 prod-guard 무관 */
+  createToeicFrameDrillSession(id: string, session: ToeicFrameDrillSession): Promise<{ record: ToeicFrameDrillSessionRecord; reused: boolean }>;
+  getToeicFrameDrillSession(id: string): Promise<ToeicFrameDrillSessionRecord | null>;
+  /** 전 판 — startedAt 내림차순(가족 규모 — 메모리 정렬, 스트릭도 읽는다) */
+  listToeicFrameDrillSessions(): Promise<ToeicFrameDrillSessionRecord[]>;
+  /**
+   * 판정 저장(§20-10 ②) — decideFrameDrillJudgeWrite를 원자 단위 **안에서**: 판정 합치기·review·통계 더하기·statsAppliedAt을 한 번에.
+   * 이미 판정된 판이면 쓰지 않고 already(먼저 저장된 판정이 이긴다 — 두 탭이 겹쳐도 통계는 한 번). 없는 id면 null.
+   */
+  judgeToeicFrameDrillSession(id: string, judged: FrameDrillJudged | null, nowIso: string): Promise<FrameDrillJudgeWrite | null>;
+  /** 보충 시작(§20-10 ③) — 잡기 + 보충 판정을 원자 단위 안에서, skip이면 skipped·supply면 running 표시를 쓴다. 판정에 쓴 은행을 함께 돌려준다. 없는 id면 null */
+  startToeicFrameDrillSupply(id: string, nowMs: number, nowIso: string): Promise<{ start: FrameDrillSupplyStart; bank: ToeicFrameDrillBank | null } | null>;
+  /** 보충 끝 — **최신 은행 위에** 합치기 + 표시 added(실패면 out=null → failed). 원자 단위. 없는 id면 null */
+  finishToeicFrameDrillSupply(id: string, out: readonly ToeicFrameDrillSupplyOut[] | null, failReason: string | null, nowIso: string): Promise<FrameDrillSupplyFinish | null>;
 }
+
+/** 가져오기 결과 — ok면 병합 결과(은행 포함), too_large면 아무것도 쓰지 않았다 */
+export type ImportToeicFrameDrillResult = { kind: "ok"; result: ToeicFrameDrillImportResult } | { kind: "too_large"; bytes: number };
+
+export type { ToeicFrameDrillSessionRecord };
 
 /**
  * 예전 이름. 과목이 영어뿐이던 시절의 이름이라 수학 기록까지 안는 지금은 좁게 읽히지만,
@@ -1439,7 +1499,14 @@ export interface DbShape {
   talkSessions: TalkSessionRecord[];
   /** 자유대화 주제 일러스트(english.md §12-6) — 같은 이유로 필수 필드 */
   talkImages: TalkImageRecord[];
+  /** 소재별 틀 말하기(toeic.md §20) — 은행·통계 문서 둘(id frame-drill-bank·frame-drill-stats, 원본 그대로 두고 읽을 때 정규화) */
+  toeicFrameBank: ToeicFrameBankDoc[];
+  /** 소재별 틀 말하기 한 판 */
+  toeicFrameDrills: ToeicFrameDrillSessionRecord[];
 }
+
+/** 파일 백엔드의 은행·통계 문서(모양이 달라 원본으로 두고 id로 골라 정규화한다) */
+export type ToeicFrameBankDoc = { id: string } & Record<string, unknown>;
 
 const DB_DIR = path.join(process.cwd(), "data");
 const DB_PATH = path.join(DB_DIR, "db.json");
@@ -1449,6 +1516,7 @@ function emptyDb(): DbShape {
     books: [], cards: [], readings: [], explanations: [], vocabBooks: [], vocabQuizzes: [], jaVocabBooks: [], jaQuizzes: [], jaKanji: [], jaKanjiQuizzes: [], jaDialogs: [], workoutCycles: [],
     toeicSets: [], toeicQuizzes: [], toeicMocks: [], toeicImages: [], toeicAttempts: [],
     talkSessions: [], talkImages: [],
+    toeicFrameBank: [], toeicFrameDrills: [],
   };
 }
 
@@ -1532,6 +1600,11 @@ async function readDb(): Promise<DbShape> {
       talkSessions: (parsed.talkSessions ?? []).map(normalizeTalkSessionRecord),
       // 주제 일러스트(§12-6)도 같은 하위호환 — 이 키가 없던 db.json이면 빈 배열
       talkImages: (parsed.talkImages ?? []).map(normalizeTalkImageRecord),
+      // 소재별 틀 말하기(§20) 이전 db.json엔 이 두 키가 없다 — 같은 하위호환. 은행·통계는 원본 그대로(get에서 정규화), 판은 정규화로 방어
+      toeicFrameBank: (parsed.toeicFrameBank ?? []).filter((d): d is ToeicFrameBankDoc => d !== null && typeof d === "object" && typeof (d as { id?: unknown }).id === "string"),
+      toeicFrameDrills: (parsed.toeicFrameDrills ?? [])
+        .map((d) => normalizeToeicFrameDrillSession(typeof (d as { id?: unknown })?.id === "string" ? (d as { id: string }).id : "", d))
+        .filter((d): d is ToeicFrameDrillSessionRecord => d !== null && d.id !== ""),
     };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyDb();
@@ -3046,6 +3119,103 @@ class JsonFileStore implements BookCardStore {
       return decision;
     });
   }
+
+  // ---- 소재별 틀 말하기 (toeic.md §20) — 판정은 lib/toeic-frame-drill-record의 순수 함수, 쓰기는 mutate 안에서 ----
+
+  async getToeicFrameDrillBank(): Promise<ToeicFrameDrillBank | null> {
+    const db = await readDb();
+    return normalizeToeicFrameDrillBank(db.toeicFrameBank.find((d) => d.id === TOEIC_FRAME_DRILL_BANK_ID) ?? null);
+  }
+
+  async getToeicFrameDrillStats(): Promise<ToeicFrameDrillStatsDoc> {
+    const db = await readDb();
+    return normalizeToeicFrameDrillStats(db.toeicFrameBank.find((d) => d.id === TOEIC_FRAME_DRILL_STATS_ID) ?? null);
+  }
+
+  async importToeicFrameDrill(file: ToeicFrameDrillFile, nowIso: string): Promise<ImportToeicFrameDrillResult> {
+    return this.mutate((db): ImportToeicFrameDrillResult => {
+      const existing = normalizeToeicFrameDrillBank(db.toeicFrameBank.find((d) => d.id === TOEIC_FRAME_DRILL_BANK_ID) ?? null);
+      const result = mergeFrameDrillImport(existing, file, nowIso);
+      if (result.unchanged) return { kind: "ok", result };
+      const bytes = frameDrillBankBytes(result.bank);
+      if (bytes > TOEIC_FRAME_DRILL_MAX_BYTES) return { kind: "too_large", bytes };
+      putFrameBankDoc(db, TOEIC_FRAME_DRILL_BANK_ID, result.bank);
+      return { kind: "ok", result };
+    });
+  }
+
+  async createToeicFrameDrillSession(id: string, session: ToeicFrameDrillSession): Promise<{ record: ToeicFrameDrillSessionRecord; reused: boolean }> {
+    // 확인과 생성이 한 mutate(큐 직렬화) — 같은 id로 두 번 와도 한 번만 생긴다
+    return this.mutate((db) => {
+      const existing = db.toeicFrameDrills.find((d) => d.id === id);
+      if (existing) return { record: normalizeToeicFrameDrillSession(id, existing) ?? existing, reused: true };
+      const record: ToeicFrameDrillSessionRecord = { id, ...frameDrillSessionData({ id, ...session }) };
+      db.toeicFrameDrills.push(record);
+      return { record, reused: false };
+    });
+  }
+
+  async getToeicFrameDrillSession(id: string): Promise<ToeicFrameDrillSessionRecord | null> {
+    const db = await readDb();
+    const found = db.toeicFrameDrills.find((d) => d.id === id);
+    return found ? normalizeToeicFrameDrillSession(id, found) : null;
+  }
+
+  async listToeicFrameDrillSessions(): Promise<ToeicFrameDrillSessionRecord[]> {
+    const db = await readDb();
+    return db.toeicFrameDrills.slice().sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0));
+  }
+
+  async judgeToeicFrameDrillSession(id: string, judged: FrameDrillJudged | null, nowIso: string): Promise<FrameDrillJudgeWrite | null> {
+    return this.mutate((db): FrameDrillJudgeWrite | null => {
+      const i = db.toeicFrameDrills.findIndex((d) => d.id === id);
+      if (i < 0) return null;
+      const session = normalizeToeicFrameDrillSession(id, db.toeicFrameDrills[i]);
+      if (!session) return null;
+      const stats = normalizeToeicFrameDrillStats(db.toeicFrameBank.find((d) => d.id === TOEIC_FRAME_DRILL_STATS_ID) ?? null);
+      const w = decideFrameDrillJudgeWrite(session, judged, stats.items, nowIso);
+      if (w.kind !== "write") return w;
+      db.toeicFrameDrills[i] = { id, ...frameDrillSessionData(w.session) };
+      if (w.stats) putFrameBankDoc(db, TOEIC_FRAME_DRILL_STATS_ID, { items: w.stats, updatedAt: nowIso });
+      return w;
+    });
+  }
+
+  async startToeicFrameDrillSupply(id: string, nowMs: number, nowIso: string): Promise<{ start: FrameDrillSupplyStart; bank: ToeicFrameDrillBank | null } | null> {
+    return this.mutate((db) => {
+      const i = db.toeicFrameDrills.findIndex((d) => d.id === id);
+      if (i < 0) return null;
+      const session = normalizeToeicFrameDrillSession(id, db.toeicFrameDrills[i]);
+      if (!session) return null;
+      const bank = normalizeToeicFrameDrillBank(db.toeicFrameBank.find((d) => d.id === TOEIC_FRAME_DRILL_BANK_ID) ?? null);
+      const stats = normalizeToeicFrameDrillStats(db.toeicFrameBank.find((d) => d.id === TOEIC_FRAME_DRILL_STATS_ID) ?? null);
+      const start = decideFrameDrillSupplyStart(session, bank, stats.items, nowMs, nowIso);
+      if (start.kind === "skip" || start.kind === "supply") db.toeicFrameDrills[i] = { id, ...frameDrillSessionData({ ...session, supply: start.mark }) };
+      return { start, bank };
+    });
+  }
+
+  async finishToeicFrameDrillSupply(id: string, out: readonly ToeicFrameDrillSupplyOut[] | null, failReason: string | null, nowIso: string): Promise<FrameDrillSupplyFinish | null> {
+    return this.mutate((db) => {
+      const i = db.toeicFrameDrills.findIndex((d) => d.id === id);
+      if (i < 0) return null;
+      const session = normalizeToeicFrameDrillSession(id, db.toeicFrameDrills[i]);
+      if (!session) return null;
+      const bank = normalizeToeicFrameDrillBank(db.toeicFrameBank.find((d) => d.id === TOEIC_FRAME_DRILL_BANK_ID) ?? null);
+      const fin = decideFrameDrillSupplyFinish(bank, out, failReason, nowIso);
+      if (fin.bank) putFrameBankDoc(db, TOEIC_FRAME_DRILL_BANK_ID, fin.bank);
+      db.toeicFrameDrills[i] = { id, ...frameDrillSessionData({ ...session, supply: fin.mark }) };
+      return fin;
+    });
+  }
+}
+
+/** 파일 백엔드 — 은행·통계 문서 하나를 id로 바꿔 끼운다(없으면 더한다) */
+function putFrameBankDoc(db: DbShape, id: string, data: object): void {
+  const doc = { ...(JSON.parse(JSON.stringify(data)) as Record<string, unknown>), id } as ToeicFrameBankDoc;
+  const i = db.toeicFrameBank.findIndex((d) => d.id === id);
+  if (i >= 0) db.toeicFrameBank[i] = doc;
+  else db.toeicFrameBank.push(doc);
 }
 
 /**
@@ -3183,5 +3353,8 @@ export async function mergeDbForSeed(seed: DbShape): Promise<void> {
     // 은우 자유대화 — 같은 이유로 반드시 mergeById(시드가 아이의 대화 기록을 지우지 않게).
     talkSessions: mergeById(cur.talkSessions, seed.talkSessions),
     talkImages: mergeById(cur.talkImages, seed.talkImages),
+    // 소재별 틀 말하기 — 같은 이유로 반드시 mergeById(시드가 은행·통계·연습 기록을 지우지 않게). 교재 유래라 시드는 늘 빈 배열이다.
+    toeicFrameBank: mergeById(cur.toeicFrameBank, seed.toeicFrameBank),
+    toeicFrameDrills: mergeById(cur.toeicFrameDrills, seed.toeicFrameDrills),
   });
 }

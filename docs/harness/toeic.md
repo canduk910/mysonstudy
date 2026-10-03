@@ -3970,6 +3970,23 @@ C1 파트별 답변 멘트·상수 · C2 단계 → 멘트(준비·표 읽기 �
   - 회귀(run.cjs): Chromium 1280×800·390×844, WebKit 1180×820 — 녹음 11/11·서버 보관 11·결과 이동·오류 0. 시작 안내 맞춤 6뷰포트 통과.
 - 남은 것: 실기기에서 멘트 소리 크기·간격(iPhone·iPad — 클라우드 en-US 목소리), 화면 숨김 중 멘트(헤드리스 미검증).
 
+### 18-8. 녹음 끝 알림 (2026-10-03)
+
+> 사용자 요청: "모의시험할 때 문제 간 넘어갈 때 말하는 responding time이 끝나고 나면 팝업 메시지로 녹음이 종료됐다는걸 알려줘. 바로 다음 문제 듣는데 집중할 수 있게." — **표현 전용**(상태 기계·타이밍 불변).
+
+- **정의처** `lib/toeic-exam-screen.ts` — `TOEIC_REC_TOAST_MS`(1500, 실제 시간 — 개발용 시간 배율과 무관) · `toeicRecToastFor({ q, status, paused, stale, last })`.
+  - 녹음됨 → "✓ Qn 녹음 끝"(ok)
+  - 빈 녹음(멈췄는데 데이터 0) → "⚠ Qn 녹음이 저장되지 않았어요"(warn) — 응시 중 다른 안내가 없는 경우라 여기서 알린다
+  - 소리 없음(무음 — 녹음은 남김)·녹음 시작 실패(시간만)·중단·녹음 없이 → 없음 — 앱 띠 안내(notice)·일시정지가 이미 말한다(겹치지 않게)
+  - 일시정지 중·세대가 바뀜(그만둠)·마지막 문항(바로 끝 화면) → 없음
+- **화면**(`components/toeic-take-view.tsx`): `finishAnswer`가 녹음을 멈추고 보관한 직후 `showRecToast(toeicRecToastFor(…))`를 부르고 **곧바로** 기존처럼 `advance(token)` — 알림을 기다리지 않는다. 1.5초 타이머가 지우고, 그만두기(`endTest`)·언마운트가 걷는다. 일시정지 중에는 그리지 않는다.
+- **모양**(`.recToast`): 시험 창 아래쪽 가운데 작은 반투명 검은 띠(경고는 어두운 빨강), Arial 굵게·창 폭 비례, 소리 없음, `pointer-events: none`(탭을 가로채지 않는다), 160ms 나타남(움직임 줄이기면 끔). 폰 세로는 창 바닥의 타이머 위(`bottom: 96px`). `role="status"`·`data-testid="rec-toast"`.
+- **eval**(`scripts/eval-toeic-exam-screen.ts` ⑦ R1~R4): 문구 둘 · 알림 없는 상태 넷 · 일시정지·세대·마지막 문항 · 소스(1.5초 타이머·띄운 뒤 advance 그대로·그만두기에서 걷음·`pointer-events: none`).
+- **e2e**(`scratchpad/realtest/e2e/toast.cjs` — 키 없음·file 스토어·무음·배율 0.1, 지어낸 모의고사):
+  - Chromium 1280×800·390×844, WebKit 1180×820 모두 알림이 Q1~Q10에 한 번씩(Q11 없음)·떠 있는 시간 1.4~1.8초·시험 창 안·탭 통과·녹음 11/11·오류 0.
+  - 다음 소리 시작 시각(녹음 start + 답변 시간 → 다음 소리): 알림 전 커밋의 Chromium 기준 실행과 차이 ±150ms 안(Chromium 두 배치). WebKit은 기준 실행이 Chromium이라 −116~−166ms(더 빠름 — 엔진 차이, 늦어지지 않음).
+  - 빈 녹음(warn) 경로는 헤드리스에서 만들지 못해 eval R1로만 잠갔다.
+
 ## 19. 표현 도우미 — 한국어 → 가장 회화적인 영어 표현 + 예문 (2026-10-03)
 
 아빠의 영어 화면 옆에 띄우는 간이 챗봇(사용자 요청 "시험이다 보니 사이드에 간이챗봇")은 과목 공통 기능 **표현 도우미**의 `toeic` 모드다 — 프롬프트·JSON Schema·zod·모델(`OPENAI_PHRASE_HELPER_MODEL`, 기본 `gpt-6-luna` — 이 문서의 `OPENAI_TOEIC_MODEL`과 따로)·eval(`npm run eval:phrase`)의 단일 정의처는 **`docs/harness/phrase-helper.md`**다(제품 흐름 SPEC §22). 이 과목의 호출 A~D·spec-sync 대상·JSON Schema 8은 바뀌지 않았다. 모의고사 응시·표현 시험·틀 테스트·틀 시험 중에는 열 수 없다(phrase-helper.md §9 — 막을 화면은 app-builder가 정한다).
@@ -4530,3 +4547,38 @@ interface ToeicFrameDrillFile {
 3. 문항 수 상한 20 — 호출 E 지연 실측 뒤 넓힐 수 있다.
 4. 시드 문항 수(틀마다 최소 1, 권장 3) — 데이터 단계 실측 뒤.
 5. AI 문항을 사람이 지우는 화면은 없다(은행 상한 1500에 닿으면 보충이 멈춘다 — `full`).
+
+### 20-14. 앱 층 구현 (app-builder — 2026-10-03)
+
+> §20-10 제안을 그대로 확정했다(경로·컬렉션 이름 그대로). 이 절은 구현이 채운 공백과 파일 위치만 적는다 — 위 절의 규칙은 바꾸지 않았다.
+
+**파일**
+
+| 층 | 파일 |
+|---|---|
+| 계약(요청·응답·주소·문서 id) | `lib/toeic-frame-drill-contract.ts` — `ToeicFrameDrill{Import,Session,Judge,Supply}Response`·`ToeicFrameDrillSessionRequest`·`parseFrameDrillSelection`·`toeicFrameDrillTakeHref`·`isToeicFrameDrillDocId` |
+| 저장 판정·정규화(순수) | `lib/toeic-frame-drill-record.ts` — `decideFrameDrillJudgeWrite`(판정 합치기·review·통계·statsAppliedAt을 한 결과로)·`decideFrameDrillSupplyStart`(잡기 + 보충 판정)·`decideFrameDrillSupplyFinish`(최신 은행 위 합치기·실패 표시)·`normalizeToeicFrameDrill{Bank,Stats,Session}` |
+| 화면 판단(순수) | `lib/toeic-frame-drill-view.ts` — `buildFrameDrillTabData`·`frameDrillTabScope`·`frameDrillShouldSend`·`frameDrillItemResult` |
+| 저장소 | `lib/store.ts`(파일 — `DbShape.toeicFrameBank`·`toeicFrameDrills`, mutate)·`lib/store-firestore.ts`(컬렉션 `toeicFrameBank` 문서 둘 + `toeicFrameDrills`, runTransaction·한 판 저장은 `create`) |
+| 라우트 | `app/api/toeic/frame-drill/import` · `sessions` · `sessions/[id]/judge` · `sessions/[id]/supply` (머리 주석이 상태코드별 shape) |
+| 화면 | 폴더 탭 `components/toeic-frame-drill-tab.tsx`(+ `toeic-frame-drill-import-button.tsx`) · 진행 `app/toeic/guides/[part]/frame-drill/take` + `components/toeic-frame-drill-runner.tsx` · 결과 `app/toeic/guides/[part]/frame-drill/[id]` + `components/toeic-frame-drill-result.tsx` · CSS `components/toeic-frame-drill.module.css` |
+| 스트릭 | `/api/streak` — `toeicStreakSessions(toeicQuizzes, toeicAttempts, frameDrills)`, 읽기 실패는 `[]`, 오늘 라벨은 셋 중 가장 늦게 시작한 것 |
+| eval | `scripts/eval-toeic-frame-drill-app.ts`(`eval-toeic.ts`가 `runToeicFrameDrillAppChecks()`로 부른다 — 저장 판정·화면 판단·파일 백엔드 자식 프로세스·소스 배선) |
+
+**구현이 정한 것**
+
+1. **탭**: `TOEIC_GUIDE_TABS`에 `frame`("🗣️ 틀 말하기")을 더하고, 폴더 화면은 서버 페이지가 `frame` 자료를 넘긴 폴더(Q5–7·Q11)에만 탭을 보인다. 다른 폴더의 `?tab=frame`은 기본 탭으로 간다.
+2. **출제는 서버가 한다** — 진행 페이지가 은행·통계를 읽고 `buildFrameDrillOrder(…, Math.random)`를 한 번 돌려 문항을 props로 넘긴다(틀 테스트 관용구, hydration 안전). 폴더 탭에는 문항 글을 넘기지 않는다(소재·틀·문항 수·오답률만).
+3. **진행 경로 `/toeic/guides/[part]/frame-drill/take`는 표현 도우미 시험 경로**다(`PHRASE_HELPER_EXAM_PATHS`). 진행 화면도 `usePhraseHelperBlock()`을 건다. 결과 화면은 막지 않는다.
+4. **무응답을 보낼지**(`frameDrillShouldSend`): 상태 기계가 `no_speech`로 끝났어도 그 문항에서 `reliable=false` 표본이 하나라도 있었으면 녹음을 보내서 전사 낱말 수로 가른다. 멈춘 분석기의 0 때문에 말한 답이 버려지지 않게 하려는 것이다. 0.6초 미만 녹음은 보내지 않는다.
+5. **"다 말했어요"**(manual)는 레벨과 무관하게 보낸다. 녹음기 안전 타이머는 20.5초다(`TOEIC_FRAME_DRILL_REC_HARD_STOP_MS` — 표본이 멈춰도 녹음이 끝나게).
+6. **녹음 없이**(마이크 거부·미지원·"녹음 없이 하기"·전사 501): 한국어 → "정답 보기" 탭 → 모범 영어. 그런 문항은 `transcribe_failed`로 저장한다(판정·통계 밖). 녹음한 문항이 하나도 없는 판은 **저장하지 않는다**("기록·판정은 남기지 않았어요").
+7. **그만두기**: 모범 영어까지 본 문항만 남긴다(녹음 중이던 문항은 버린다). 남은 문항이 0이면 저장하지 않는다.
+8. **한 판 저장**: 서버가 결과를 다시 가른다(`transcribe_failed`가 아니면 `frameDrillOutcomeOf(transcript)`). 같은 id로 두 번 오면 내용과 상관없이 `reused`다(쓰지 않는다).
+9. **판정 라우트**: 두 탭이 같이 열면 호출 E가 두 번 날 수 있다(잡기 없음). 저장은 원자 단위라 먼저 커밋한 판정이 이기고, 통계는 한 번만 더해진다. 결과 화면은 판정을 한 번만 요청한다(ref 가드).
+10. **보충 라우트**: 표시를 `running`으로 잡은 뒤 키가 없으면 표시를 `failed`(`no_api_key`)로 되돌린다. 2분 동안 막히지 않게 하려는 것이다. 호출 F가 실패해도 `failed`로 둔다(다음에 결과를 열면 다시 잡는다). 합친 은행이 바이트 상한을 넘으면 더하지 않고 `skipped`(`full`)로 둔다.
+11. **가져오기**: 합친 은행(시드 + 남긴 AI 문항)이 바이트 상한을 넘으면 413 `too_large`를 돌려주고 아무것도 쓰지 않는다. 같은 파일이면 Firestore 쓰기 0이다(파일 백엔드는 mutate가 db.json을 늘 다시 쓰지만 내용은 같다). 정규화가 키 순서를 고정하므로 Firestore가 맵 키 순서를 바꿔 돌려줘도 `unchanged` 판정은 흔들리지 않는다(eval).
+12. **스트릭 라벨**: 오늘 한 것 가운데 틀 말하기 판(말한 문항 ≥1)이 표현 시험·응시보다 늦게 시작했으면 `틀 말하기 · {유형 이름}`이다(같은 시각이면 표현 시험·응시가 먼저다).
+13. **순수 층 경계값 수정**(`decideFrameDrillSupply`): 평균 오답률 비교에 1e-9 여유를 두었다. 0.2 여섯 개의 평균이 0.19999999999999998이 되어 "20%는 보충하지 않는다"가 새는 것을 앱 eval이 잡았다.
+14. 삭제 경로가 없다 — `DestructiveOp`를 추가하지 않았다. `migrate-to-firestore`·시드에도 넣지 않았다(시드는 빈 배열, `mergeDbForSeed`는 mergeById).
+15. **문항 일감 등록 시점**(QA frame-drill_1 P2-A): 녹음 멈춤 → 보낼지 판단 → 전사를 한 일감으로 묶어, `endItem`이 `rec.stop()`을 부르는 그 자리에서 동기로 등록한다. 끝·그만두기는 등록된 일감을 모두 기다린다. 그래서 iOS에서 onstop이 늦어도(최대 3초) 마지막 답을 잃지 않는다. 전사는 진행·마무리 단계에서만 보내고, 저장이 시작된 뒤에는 보내지 않는다. 키가 없어(501) 녹음 없이로 바뀌면 마이크를 놓는다(P3-B).

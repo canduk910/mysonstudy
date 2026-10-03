@@ -237,6 +237,7 @@ import { runToeicRecManageChecks } from "./eval-toeic-rec-manage";
 import { runToeicRetakeChecks, runToeicRetakeLocalStoreChecks } from "./eval-toeic-retake";
 import { runToeicExamScreenChecks } from "./eval-toeic-exam-screen";
 import { runToeicFrameDrillChecks } from "./eval-toeic-frame-drill"; // 소재별 틀 말하기(§20 — 2026-10-03, 원문 6·JSON 2는 그 파일이 따로 대조)
+import { runToeicFrameDrillAppChecks } from "./eval-toeic-frame-drill-app"; // 소재별 틀 말하기 앱 층(§20-14 — 저장 판정·화면 판단·파일 백엔드·배선)
 
 // .env.local / .env 로드 (없으면 무시). 이미 설정된 환경 변수가 우선한다(빈 값으로 미리 둔 키는 덮지 않는다).
 for (const envFile of [".env.local", ".env"]) {
@@ -3302,6 +3303,7 @@ async function main(): Promise<void> {
   all.push(...runToeicExamScreenChecks());
   all.push(...(await import("./eval-toeic-print")).runToeicPrintChecks()); // 결과 화면 인쇄할 항목(§16-10)
   all.push(...runToeicFrameDrillChecks());
+  all.push(...runToeicFrameDrillAppChecks());
   all.push(...runSpecSyncChecks());
   all.push(...runJsonSchemaSyncChecks());
 

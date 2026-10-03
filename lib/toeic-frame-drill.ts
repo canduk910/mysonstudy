@@ -716,7 +716,8 @@ export function decideFrameDrillSupply(args: {
   if (args.alreadySupplied) return { kind: "skip", reason: "already", rate, sample, scopeItems: scope };
   if (scope === 0) return { kind: "skip", reason: "no_scope", rate, sample, scopeItems: scope };
   if (sample < Math.min(TOEIC_FRAME_DRILL_SUPPLY_MIN_SAMPLE, scope)) return { kind: "skip", reason: "sample", rate, sample, scopeItems: scope };
-  if (rate === null || rate >= TOEIC_FRAME_DRILL_SUPPLY_RATE_BELOW) return { kind: "skip", reason: "rate", rate, sample, scopeItems: scope };
+  // 경계 20%는 보충하지 않는다 — 평균의 부동소수 오차(0.2 여섯 개 평균 = 0.19999999999999998)로 경계가 미만으로 새지 않게 1e-9 여유(app 층 eval이 잡음)
+  if (rate === null || rate >= TOEIC_FRAME_DRILL_SUPPLY_RATE_BELOW - 1e-9) return { kind: "skip", reason: "rate", rate, sample, scopeItems: scope };
   const room = Math.max(0, TOEIC_FRAME_DRILL_ITEMS_MAX - args.bankItemCount);
   const count = Math.min(frameDrillSupplyCount(scope), room);
   if (count <= 0) return { kind: "skip", reason: "full", rate, sample, scopeItems: scope };

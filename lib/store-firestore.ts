@@ -118,7 +118,34 @@ import {
   type NewTalkSession,
   type TalkImageRecord,
   type TalkSessionRecord,
+  type ImportToeicFrameDrillResult,
 } from "./store";
+import {
+  TOEIC_FRAME_DRILL_BANK_ID,
+  TOEIC_FRAME_DRILL_MAX_BYTES,
+  TOEIC_FRAME_DRILL_STATS_ID,
+  frameDrillBankBytes,
+  mergeFrameDrillImport,
+  type ToeicFrameDrillBank,
+  type ToeicFrameDrillFile,
+  type ToeicFrameDrillSession,
+  type ToeicFrameDrillStatsDoc,
+  type ToeicFrameDrillSupplyOut,
+} from "./toeic-frame-drill";
+import {
+  decideFrameDrillJudgeWrite,
+  decideFrameDrillSupplyFinish,
+  decideFrameDrillSupplyStart,
+  frameDrillSessionData,
+  normalizeToeicFrameDrillBank,
+  normalizeToeicFrameDrillSession,
+  normalizeToeicFrameDrillStats,
+  type FrameDrillJudgeWrite,
+  type FrameDrillJudged,
+  type FrameDrillSupplyFinish,
+  type FrameDrillSupplyStart,
+  type ToeicFrameDrillSessionRecord,
+} from "./toeic-frame-drill-record";
 // 은우 자유대화(english.md §12-4·§12-6) — 정규화·설명 추가 판정은 파일 백엔드와 **같은 함수**(두 백엔드가 안 갈린다).
 import { decideTalkExplanation, normalizeTalkImageRecord, normalizeTalkSessionRecord } from "./talk-normalize";
 import type { TalkExplanation } from "./ai/english/talk-schemas";
@@ -664,6 +691,13 @@ export class FirestoreStore implements StudyStore {
   }
   private toeicAttempts(): CollectionReference {
     return getDb().collection("toeicAttempts");
+  }
+  // 소재별 틀 말하기(toeic.md §20) — 은행·통계 문서 둘 + 한 판. 표현 시험(toeicQuizzes)과 섞지 않는다
+  private toeicFrameBank(): CollectionReference {
+    return getDb().collection("toeicFrameBank");
+  }
+  private toeicFrameDrills(): CollectionReference {
+    return getDb().collection("toeicFrameDrills");
   }
   // 은우 자유대화(english.md §12-4·§12-6) — 은우 단어장 컬렉션과 섞지 않는다
   private talkSessions(): CollectionReference {
@@ -1949,4 +1983,115 @@ export class FirestoreStore implements StudyStore {
       return decision;
     });
   }
+
+  // ---- 소재별 틀 말하기 (toeic.md §20) ----
+  // 트랜잭션(runTransaction)을 쓰는 곳 — 모두 "지금 문서를 읽고 판정한 뒤 그 위에 쓴다"라서다: 가져오기(은행 위 병합 — 보충과 겹쳐도
+  // AI 문항을 잃지 않게)·판정(판정 + 통계를 한 번만 — 두 탭이 겹쳐도 통계가 두 번 더해지지 않게)·보충 시작(잡기 — 호출 F 한 번)·
+  // 보충 끝(최신 은행 위 합치기). 판정은 파일 백엔드와 같은 순수 함수(lib/toeic-frame-drill-record). 삭제 경로 없음(prod-guard 무관).
+  // 한 판 저장은 `create`(이미 있으면 ALREADY_EXISTS — 확인과 생성이 원자적, 자유대화 저장 관용구).
+
+  async getToeicFrameDrillBank(): Promise<ToeicFrameDrillBank | null> {
+    const snap = await this.toeicFrameBank().doc(TOEIC_FRAME_DRILL_BANK_ID).get();
+    return snap.exists ? normalizeToeicFrameDrillBank(snap.data()) : null;
+  }
+
+  async getToeicFrameDrillStats(): Promise<ToeicFrameDrillStatsDoc> {
+    const snap = await this.toeicFrameBank().doc(TOEIC_FRAME_DRILL_STATS_ID).get();
+    return normalizeToeicFrameDrillStats(snap.exists ? snap.data() : null);
+  }
+
+  async importToeicFrameDrill(file: ToeicFrameDrillFile, nowIso: string): Promise<ImportToeicFrameDrillResult> {
+    const ref = this.toeicFrameBank().doc(TOEIC_FRAME_DRILL_BANK_ID);
+    return getDb().runTransaction(async (tx): Promise<ImportToeicFrameDrillResult> => {
+      const snap = await tx.get(ref);
+      const existing = snap.exists ? normalizeToeicFrameDrillBank(snap.data()) : null;
+      const result = mergeFrameDrillImport(existing, file, nowIso);
+      if (result.unchanged) return { kind: "ok", result }; // 같은 파일 다시 가져오기 — 쓰기 0
+      const bytes = frameDrillBankBytes(result.bank);
+      if (bytes > TOEIC_FRAME_DRILL_MAX_BYTES) return { kind: "too_large", bytes };
+      tx.set(ref, frameFirestoreData(result.bank));
+      return { kind: "ok", result };
+    });
+  }
+
+  async createToeicFrameDrillSession(id: string, session: ToeicFrameDrillSession): Promise<{ record: ToeicFrameDrillSessionRecord; reused: boolean }> {
+    const ref = this.toeicFrameDrills().doc(id);
+    const record: ToeicFrameDrillSessionRecord = { id, ...frameDrillSessionData({ id, ...session }) };
+    try {
+      await ref.create(frameFirestoreData(frameDrillSessionData(record)));
+      return { record, reused: false };
+    } catch (err) {
+      if ((err as { code?: unknown } | null)?.code !== GRPC_ALREADY_EXISTS) throw err;
+      const snap = await ref.get();
+      const existing = snap.exists ? normalizeToeicFrameDrillSession(id, snap.data()) : null;
+      return { record: existing ?? record, reused: true };
+    }
+  }
+
+  async getToeicFrameDrillSession(id: string): Promise<ToeicFrameDrillSessionRecord | null> {
+    const snap = await this.toeicFrameDrills().doc(id).get();
+    return snap.exists ? normalizeToeicFrameDrillSession(id, snap.data()) : null;
+  }
+
+  async listToeicFrameDrillSessions(): Promise<ToeicFrameDrillSessionRecord[]> {
+    // 전체를 읽어 메모리 정렬(orderBy는 필드 없는 문서를 뺀다 — app-patterns §4, 가족 규모)
+    const snap = await this.toeicFrameDrills().get();
+    return snap.docs
+      .map((d) => normalizeToeicFrameDrillSession(d.id, d.data()))
+      .filter((d): d is ToeicFrameDrillSessionRecord => d !== null)
+      .sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0));
+  }
+
+  async judgeToeicFrameDrillSession(id: string, judged: FrameDrillJudged | null, nowIso: string): Promise<FrameDrillJudgeWrite | null> {
+    const ref = this.toeicFrameDrills().doc(id);
+    const statsRef = this.toeicFrameBank().doc(TOEIC_FRAME_DRILL_STATS_ID);
+    return getDb().runTransaction(async (tx): Promise<FrameDrillJudgeWrite | null> => {
+      const [snap, statsSnap] = await Promise.all([tx.get(ref), tx.get(statsRef)]);
+      if (!snap.exists) return null;
+      const session = normalizeToeicFrameDrillSession(id, snap.data());
+      if (!session) return null;
+      const stats = normalizeToeicFrameDrillStats(statsSnap.exists ? statsSnap.data() : null);
+      const w = decideFrameDrillJudgeWrite(session, judged, stats.items, nowIso);
+      if (w.kind !== "write") return w;
+      tx.set(ref, frameFirestoreData(frameDrillSessionData(w.session)));
+      if (w.stats) tx.set(statsRef, frameFirestoreData({ items: w.stats, updatedAt: nowIso }));
+      return w;
+    });
+  }
+
+  async startToeicFrameDrillSupply(id: string, nowMs: number, nowIso: string): Promise<{ start: FrameDrillSupplyStart; bank: ToeicFrameDrillBank | null } | null> {
+    const ref = this.toeicFrameDrills().doc(id);
+    const bankRef = this.toeicFrameBank().doc(TOEIC_FRAME_DRILL_BANK_ID);
+    const statsRef = this.toeicFrameBank().doc(TOEIC_FRAME_DRILL_STATS_ID);
+    return getDb().runTransaction(async (tx) => {
+      const [snap, bankSnap, statsSnap] = await Promise.all([tx.get(ref), tx.get(bankRef), tx.get(statsRef)]);
+      if (!snap.exists) return null;
+      const session = normalizeToeicFrameDrillSession(id, snap.data());
+      if (!session) return null;
+      const bank = bankSnap.exists ? normalizeToeicFrameDrillBank(bankSnap.data()) : null;
+      const stats = normalizeToeicFrameDrillStats(statsSnap.exists ? statsSnap.data() : null);
+      const start = decideFrameDrillSupplyStart(session, bank, stats.items, nowMs, nowIso);
+      if (start.kind === "skip" || start.kind === "supply") tx.update(ref, { supply: frameFirestoreData(start.mark) });
+      return { start, bank };
+    });
+  }
+
+  async finishToeicFrameDrillSupply(id: string, out: readonly ToeicFrameDrillSupplyOut[] | null, failReason: string | null, nowIso: string): Promise<FrameDrillSupplyFinish | null> {
+    const ref = this.toeicFrameDrills().doc(id);
+    const bankRef = this.toeicFrameBank().doc(TOEIC_FRAME_DRILL_BANK_ID);
+    return getDb().runTransaction(async (tx) => {
+      const [snap, bankSnap] = await Promise.all([tx.get(ref), tx.get(bankRef)]);
+      if (!snap.exists) return null;
+      const bank = bankSnap.exists ? normalizeToeicFrameDrillBank(bankSnap.data()) : null;
+      const fin = decideFrameDrillSupplyFinish(bank, out, failReason, nowIso);
+      if (fin.bank) tx.set(bankRef, frameFirestoreData(fin.bank));
+      tx.update(ref, { supply: frameFirestoreData(fin.mark) });
+      return fin;
+    });
+  }
+}
+
+/** 소재별 틀 말하기 문서 본문 — 정규화된 값을 JSON 왕복으로 한 번 더 걸러 undefined를 남기지 않는다(Firestore 거부) */
+function frameFirestoreData<T extends object>(data: T): DocumentData {
+  return JSON.parse(JSON.stringify(data)) as DocumentData;
 }

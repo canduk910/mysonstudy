@@ -41,8 +41,8 @@ import type { ToeicGuideBlock, ToeicGuideSection, ToeicTemplate, ToeicTemplateGu
 // 폴더 탭 (§12-8)
 // ---------------------------------------------------------------------------
 
-/** 탭 순서 = 학습 흐름(① 읽기 ② 템플릿 훈련 ③ 틀 시험 ④ 한 문제 연습 — ③은 2026-10-02 교재 표현 시험 → 틀 시험, 탭 id `quiz` 그대로) */
-export const TOEIC_GUIDE_TABS = ["read", "templates", "quiz", "drill"] as const;
+/** 탭 순서 = 학습 흐름(① 읽기 ② 템플릿 훈련 ③ 틀 시험 ④ 한 문제 연습 — ③은 2026-10-02 교재 표현 시험 → 틀 시험, 탭 id `quiz` 그대로) + ⑤ 틀 말하기(Q5–7·Q11만, §20) */
+export const TOEIC_GUIDE_TABS = ["read", "templates", "quiz", "drill", "frame"] as const;
 export type ToeicGuideTab = (typeof TOEIC_GUIDE_TABS)[number];
 
 export const TOEIC_GUIDE_TAB_LABELS_KO: Record<ToeicGuideTab, string> = {
@@ -50,6 +50,7 @@ export const TOEIC_GUIDE_TAB_LABELS_KO: Record<ToeicGuideTab, string> = {
   templates: "🧩 템플릿 훈련",
   quiz: "👀 틀 시험", // §12-13-2 — 사용자 표현 그대로(이름은 사용자 확인 대상 §12-12 27, 주소 `?tab=quiz`는 그대로)
   drill: "🎤 한 문제 연습",
+  frame: "🗣️ 틀 말하기", // 소재별 틀 말하기(§20 — 2026-10-03) — Q5–7·Q11 폴더에만(폴더 화면이 available로 거른다)
 };
 
 /**

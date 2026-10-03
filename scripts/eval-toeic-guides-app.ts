@@ -150,7 +150,7 @@ function runViewFnChecks(): GuideCheckResult[] {
 
   // 기본 탭(§12-8)
   const S1 = ["read", "templates", "quiz"] as const;
-  add("탭 순서 = 읽기·템플릿·표현 시험·한 문제 연습", eqJson([...TOEIC_GUIDE_TABS], ["read", "templates", "quiz", "drill"]));
+  add("탭 순서 = 읽기·템플릿·표현 시험·한 문제 연습·틀 말하기(§20 — Q5–7·Q11만)", eqJson([...TOEIC_GUIDE_TABS], ["read", "templates", "quiz", "drill", "frame"]));
   add("?tab 없음 + 틀 있음 → 템플릿 훈련", resolveGuideTab(null, 3, S1) === "templates");
   add("?tab 없음 + 틀 없음 → 공략 읽기", resolveGuideTab(null, 0, S1) === "read");
   add("?tab=read는 틀이 있어도 읽기", resolveGuideTab("read", 3, S1) === "read");

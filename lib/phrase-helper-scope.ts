@@ -53,6 +53,7 @@ export const PHRASE_HELPER_EXAM_PATHS: readonly { re: RegExp; labelKo: string }[
   { re: /^\/toeic\/sets\/[^/]+\/quiz$/, labelKo: "토익 표현 시험(방식 고르기 포함)" },
   { re: /^\/toeic\/guides\/[^/]+\/templates\/quiz$/, labelKo: "토익 👀 틀 시험" },
   { re: /^\/toeic\/guides\/[^/]+\/templates\/test$/, labelKo: "토익 🧩 틀 테스트" },
+  { re: /^\/toeic\/guides\/[^/]+\/frame-drill\/take$/, labelKo: "토익 🗣️ 틀 말하기 진행" },
   { re: /^\/japanese\/vocab\/[^/]+\/quiz$/, labelKo: "일본어 단어 시험(방식 고르기·오답 다시 풀기 포함)" },
   { re: /^\/japanese\/kanji\/quiz$/, labelKo: "일본어 한자 시험" },
   { re: /^\/english\/vocab\/[^/]+\/quiz$/, labelKo: "은우 단어장 시험(오답 재시험·관계 문제 포함)" },

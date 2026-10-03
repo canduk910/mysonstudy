@@ -1,0 +1,509 @@
+/* 🗣️ 소재별 틀 말하기 — 폴더 탭(고르기)·진행·결과(docs/harness/toeic.md §20, SPEC §20-17). 성인 학습자용, 토큰 재사용(새 색조 없음). */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.lead {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.55;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+}
+.boxTitle {
+  margin: 0;
+  font-size: var(--fs-section-title);
+  font-weight: 700;
+  color: var(--ink);
+}
+.rowLabel {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+}
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.chip {
+  max-width: 100%;
+  min-height: 40px;
+  padding: 4px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+  text-align: left;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.chipOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.chipCount {
+  margin-left: 4px;
+  font-weight: 500;
+  opacity: 0.8;
+}
+
+/* 틀 체크 목록 */
+.frameGroup {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.frameGroupHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 6px;
+  color: var(--ink);
+  font-size: var(--fs-vocab-example);
+  font-weight: 700;
+}
+.linkBtn {
+  min-height: 32px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--accent-ink);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.frameList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.frameRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: var(--tap-min);
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  cursor: pointer;
+}
+.frameRowOff {
+  background: var(--bg);
+  opacity: 0.6;
+}
+.frameCheck {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+.frameText {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.frameEn {
+  color: var(--ink);
+  font-size: var(--fs-vocab-example);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.frameKo {
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.frameMeta {
+  flex: 0 0 auto;
+  color: var(--ink-3);
+  font-size: var(--fs-caption);
+  white-space: nowrap;
+}
+
+.countRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.countInput {
+  width: 84px;
+  min-height: var(--tap-min);
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 700;
+  text-align: center;
+}
+.caption {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-caption);
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.notice {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.empty {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px 16px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+.emptyText {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.6;
+  word-break: keep-all;
+}
+
+/* 지난 판 */
+.recentList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.recentRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: var(--tap-min);
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  color: var(--ink);
+  text-decoration: none;
+}
+.recentRow:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.recentMain {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.recentTitle {
+  font-size: var(--fs-vocab-example);
+  font-weight: 500;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.recentScore {
+  flex: 0 0 auto;
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* ── 진행 화면 ── */
+.runHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.progress {
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+}
+.stage {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 18px;
+  min-height: 46vh;
+  padding: 24px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+  text-align: center;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.stageTap {
+  cursor: pointer;
+}
+.ko {
+  margin: 0;
+  color: var(--ink);
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.45;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 480px) {
+  .ko {
+    font-size: 22px;
+  }
+}
+.koSmall {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.modelEn {
+  margin: 0;
+  color: var(--accent-ink);
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 480px) {
+  .modelEn {
+    font-size: 21px;
+  }
+}
+.mine {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.mineLabel {
+  margin-right: 6px;
+  color: var(--ink-3);
+  font-size: var(--fs-caption);
+  font-weight: 700;
+}
+.status {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+}
+.meter {
+  width: min(260px, 80%);
+  height: 8px;
+  margin: 0 auto;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.meterFill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.08s linear;
+}
+.revealBar {
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.revealFill {
+  height: 100%;
+  background: var(--accent);
+  animation-name: revealShrink;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+@keyframes revealShrink {
+  from {
+    width: 100%;
+  }
+  to {
+    width: 0%;
+  }
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+.textBtn {
+  min-height: 40px;
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+/* ── 결과 화면 ── */
+.scoreBig {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--fs-stat-number);
+  font-weight: 700;
+}
+.scoreSub {
+  margin-left: 6px;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  font-weight: 500;
+}
+.summary {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  word-break: keep-all;
+}
+.bullets {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--ink);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.6;
+  word-break: keep-all;
+}
+.itemList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--bg);
+}
+.itemHead {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.badge {
+  flex: 0 0 auto;
+  min-width: 52px;
+  padding: 2px 8px;
+  border-radius: var(--radius-chip);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: var(--fs-meta-chip);
+  font-weight: 700;
+  text-align: center;
+}
+.badgeCorrect {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.badgeWrong {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.itemKo {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--fs-vocab-example);
+  font-weight: 500;
+  line-height: 1.5;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-vocab-example);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.lineLabel {
+  flex: 0 0 auto;
+  min-width: 44px;
+  color: var(--ink-3);
+  font-size: var(--fs-caption);
+  font-weight: 700;
+  line-height: 22px;
+}
+.lineText {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.speakBtn {
+  flex: 0 0 auto;
+  min-width: 36px;
+  min-height: 32px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  cursor: pointer;
+}
+.fixed {
+  color: var(--accent-ink);
+  font-weight: 500;
+}

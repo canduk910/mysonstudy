@@ -383,16 +383,27 @@ const TODAY = "2026-09-21";
   // ⑥ 라우트 배선(정적) — /api/streak가 영어 트랙을 **토익 두 컬렉션만으로** 계산하고, 은우·일본어 계산식은 그대로인가.
   //    누가 영어 날짜를 일본어·은우 계산에 섞거나(한 집합), 영어 트랙에 은우 vocabQuizzes를 넣으면 여기서 걸린다.
   const route = readFileSync(new URL("../app/api/streak/route.ts", import.meta.url), "utf-8");
-  const wiredEnglish = /computeStreak\(toeicStreakSessions\(toeicQuizzes, toeicAttempts\), today\)/.test(route);
+  // 2026-10-03 소재별 틀 말하기(toeic.md §20-9) — 셋째 인자 frameDrills(토익 컬렉션 toeicFrameDrills)만 더해졌다
+  const wiredEnglish = /computeStreak\(toeicStreakSessions\(toeicQuizzes, toeicAttempts, frameDrills\), today\)/.test(route) && /const frameDrills = toeicFrameDrills \?\? \[\];/.test(route);
   // 은우 계산식 — §17-9부터 단어장 시험 + 자유대화(talkStreakSessions)다. 그 밖의 것(토익·일본어)은 여기 섞이지 않는다(noLeak).
   const eunwooUntouched = /computeStreak\(\[\.\.\.vocab, \.\.\.talkStreakSessions\(talks\)\], today\)/.test(route);
   const jaUntouched = /computeStreak\(\[\.\.\.jaVocab, \.\.\.jaKanji\], today\)/.test(route);
   const noLeak = !/toeicStreakSessions\([^)]*\b(vocab|jaVocab|jaKanji)\b/.test(route) && !/computeStreak\(\[[^\]]*toeic/i.test(route);
   add(
     "영어 트랙",
-    "⑥ /api/streak 배선: 영어=toeicStreakSessions(토익 2컬렉션)만, 은우(단어장+자유대화 §17-9)·일본어 계산식 그대로",
+    "⑥ /api/streak 배선: 영어=toeicStreakSessions(토익 컬렉션 — 표현 시험·응시 + 틀 말하기)만, 은우(단어장+자유대화 §17-9)·일본어 계산식 그대로",
     wiredEnglish && eunwooUntouched && jaUntouched && noLeak,
     `영어배선=${wiredEnglish} 은우=${eunwooUntouched} 일본어=${jaUntouched} 무혼합=${noLeak}`,
+  );
+  // ⑥-2 틀 말하기 배선(toeic.md §20-9) — 읽기 실패는 null → [](표현 시험·응시만으로), 라벨은 셋 중 가장 늦게 시작한 판
+  const frameFallback = /listToeicFrameDrillSessions\(\)\.catch\(/.test(route);
+  const frameLabel = /toeicFrameDrillStreakLabel\(tFrame, TOEIC_LABEL_NAMES\.guidePartKo\)/.test(route) && /it\.outcome === "spoken"/.test(route);
+  const frameNoLeak = !/computeStreak\(\[[^\]]*frameDrills/.test(route) && (route.match(/frameDrills\)/g) ?? []).length === 1;
+  add(
+    "영어 트랙",
+    "⑥-2 /api/streak 틀 말하기: 영어 트랙 셋째 인자로만·읽기 실패 폴백·오늘 라벨(말한 문항 ≥1 판)",
+    frameFallback && frameLabel && frameNoLeak,
+    `폴백=${frameFallback} 라벨=${frameLabel} 무혼합=${frameNoLeak}`,
   );
 
   // ⑦ 오늘 라벨(docs/harness/toeic.md §12-9) — 계산식은 그대로, 라벨만 가른다. 이름표는 라우트와 같은 단일 정의처에서.

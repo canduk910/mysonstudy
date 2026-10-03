@@ -337,6 +337,7 @@
   container-type: size;
 }
 .win {
+  position: relative; /* 녹음 끝 알림(.recToast)의 기준 */
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
@@ -875,5 +876,48 @@
   .qBody .timerRow {
     margin-top: auto;
     padding-top: 20px;
+  }
+}
+
+/* 녹음 끝 알림(§18-8) — 창 아래쪽 가운데 작은 반투명 띠. 시험 창 글꼴(Arial)·창 폭 비례, 탭을 가로채지 않는다 */
+.recToast {
+  position: absolute;
+  left: 50%;
+  bottom: clamp(10px, 2.2cqw, 36px);
+  z-index: 1;
+  max-width: calc(100% - 24px);
+  margin: 0;
+  padding: clamp(6px, 0.7cqw, 12px) clamp(12px, 1.6cqw, 26px);
+  border-radius: 999px;
+  background: rgba(27, 27, 27, 0.78);
+  color: #fff;
+  font-size: clamp(14px, 1.45cqw, 24px);
+  font-weight: 700; /* 한글은 Arial에 없어 대체 글꼴로 — 가늘게 보이지 않게 */
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  transform: translateX(-50%);
+  animation: recToastIn 160ms ease-out;
+}
+.recToastWarn {
+  background: rgba(122, 32, 32, 0.85);
+}
+@keyframes recToastIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .recToast {
+    animation: none;
+  }
+}
+/* 폰 세로 — 타이머가 창 바닥이라 알림은 그 위에(기본 규칙보다 뒤에 둬야 이긴다) */
+@media (max-aspect-ratio: 1/1) and (max-width: 599.98px) {
+  .recToast {
+    bottom: 96px;
   }
 }

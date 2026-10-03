@@ -4,7 +4,8 @@
  * 세는 것(§17-1): 은우=영어 단어 시험(VocabQuizRecord) + 자유대화(TalkSessionRecord, 은우 발화≥1 — §17-9 은우 트랙 한정 예외) /
  * 아빠·일본어=일본어 단어 시험(JaQuizRecord)+한자 시험(JaKanjiQuizRecord) /
  * 아빠·운동=러시안 파이터 루틴을 지킨 날(WorkoutCycleRecord — 운동·실패 기록일 + 계획된 휴식일 + 재측정 끝낸 날, §17-7) /
- * 아빠·영어=토익스피킹 표현 시험(ToeicQuizRecord, 답한 문항≥1) + 모의고사 응시(ToeicAttemptRecord, 녹음된 문항≥1) — toeic.md §0-2.
+ * 아빠·영어=토익스피킹 표현 시험(ToeicQuizRecord, 답한 문항≥1) + 모의고사 응시(ToeicAttemptRecord, 녹음된 문항≥1) — toeic.md §0-2
+ *   + 소재별 틀 말하기 한 판(toeicFrameDrills, 말한 문항≥1 — toeic.md §20-9, 못 읽으면 이 기록만 빼고 계산).
  * 일본어·운동·영어는 **각자의 트랙**이다(합치지 않는다). 수학·읽음·대화·생성·발화 포인트는 제외.
  * 새 레코드 없이 기존 기록에서 파생(§17-5) — 전체를 읽어 메모리에서 접는다(복합 인덱스 회피).
  * 캐시 없음(no-store). PIN 게이트는 proxy가 자동.
@@ -14,7 +15,14 @@ import { NextResponse } from "next/server";
 import { kstDateString, kstTodayString } from "@/lib/kst";
 import { computeStreak, computeStreakFromDays, type StreakSession } from "@/lib/streak";
 import type { PersonStreak, StreakResponse } from "@/lib/streak-contract";
-import { getStore, type TalkSessionRecord, type ToeicAttemptRecord, type ToeicQuizRecord, type WorkoutCycleRecord } from "@/lib/store";
+import {
+  getStore,
+  type TalkSessionRecord,
+  type ToeicAttemptRecord,
+  type ToeicFrameDrillSessionRecord,
+  type ToeicQuizRecord,
+  type WorkoutCycleRecord,
+} from "@/lib/store";
 import { isCountedTalkSession, talkStreakLabel, talkStreakSessions } from "@/lib/talk-streak";
 import { TOEIC_GUIDE_PART_TO_MOCK_PART, isToeicGuidePart } from "@/lib/toeic-guide";
 import { toeicMockPartLabelKo } from "@/lib/toeic-mock-contract";
@@ -23,6 +31,7 @@ import { TOEIC_TEMPLATE_BANK_MODE_LABELS_KO, isToeicTemplateBankMode } from "@/l
 import {
   isCountedToeicAttempt,
   toeicAttemptStreakLabel,
+  toeicFrameDrillStreakLabel,
   toeicQuizStreakLabel,
   toeicStreakSessions,
   type ToeicQuizLabelNames,
@@ -60,7 +69,7 @@ export async function GET() {
   const store = getStore();
   const today = kstTodayString();
 
-  const [vocab, jaVocab, jaKanji, workoutCycles, toeicQuizzes, toeicAttempts, talkSessions] = await Promise.all([
+  const [vocab, jaVocab, jaKanji, workoutCycles, toeicQuizzes, toeicAttempts, talkSessions, toeicFrameDrills] = await Promise.all([
     store.listAllVocabQuizzes(),
     store.listAllJaQuizzes(),
     store.listJaKanjiQuizzes(),
@@ -81,6 +90,11 @@ export async function GET() {
     // 은우 자유대화(§17-9) — 못 읽으면 은우 트랙은 **단어장 시험만으로** 계산한다(새 컬렉션의 읽기 실패가 은우 트랙 전체를 죽이지 않게)
     store.listAllTalkSessions().catch((err: unknown): TalkSessionRecord[] | null => {
       console.error("[streak] 자유대화 기록을 읽지 못했다 — 은우 트랙은 단어장 시험만으로 계산한다", err);
+      return null;
+    }),
+    // 소재별 틀 말하기(toeic.md §20-9) — 못 읽으면 영어 트랙은 표현 시험·응시만으로(새 컬렉션의 읽기 실패가 트랙 전체를 죽이지 않게)
+    store.listToeicFrameDrillSessions().catch((err: unknown): ToeicFrameDrillSessionRecord[] | null => {
+      console.error("[streak] 틀 말하기 기록을 읽지 못했다 — 영어 트랙은 표현 시험·응시만으로 계산한다", err);
       return null;
     }),
   ]);
@@ -132,12 +146,19 @@ export async function GET() {
   let appaEnglish: PersonStreak = NEUTRAL_STREAK;
   if (toeicQuizzes && toeicAttempts) {
     try {
-      appaEnglish = { info: computeStreak(toeicStreakSessions(toeicQuizzes, toeicAttempts), today), todayLabel: null };
+      const frameDrills = toeicFrameDrills ?? [];
+      appaEnglish = { info: computeStreak(toeicStreakSessions(toeicQuizzes, toeicAttempts, frameDrills), today), todayLabel: null };
       const tQuiz = todaysAnswered(toeicQuizzes, today)[0];
       const tAttempt = toeicAttempts
         .filter((a) => kstDateString(a.startedAt) === today && isCountedToeicAttempt(a))
         .sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0))[0];
-      if (tQuiz && (!tAttempt || tQuiz.startedAt >= tAttempt.startedAt)) {
+      // 틀 말하기 한 판(말한 문항 ≥ 1) — 셋 중 가장 늦게 시작한 것이 라벨(같은 시각이면 표현 시험·응시 먼저)
+      const tFrame = frameDrills
+        .filter((d) => kstDateString(d.startedAt) === today && d.items.some((it) => it.outcome === "spoken"))
+        .sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0))[0];
+      if (tFrame && (!tQuiz || tFrame.startedAt > tQuiz.startedAt) && (!tAttempt || tFrame.startedAt > tAttempt.startedAt)) {
+        appaEnglish.todayLabel = toeicFrameDrillStreakLabel(tFrame, TOEIC_LABEL_NAMES.guidePartKo);
+      } else if (tQuiz && (!tAttempt || tQuiz.startedAt >= tAttempt.startedAt)) {
         // 라벨만 가른다(§12-9) — 틀 테스트 `템플릿 훈련 · {모드}` / 공략 표현 시험 `공략 표현 · {유형}` / 그 밖 `표현집 · {세트}`
         const set = await store.getToeicSet(tQuiz.setId);
         appaEnglish.todayLabel = toeicQuizStreakLabel(tQuiz, set, TOEIC_LABEL_NAMES);
