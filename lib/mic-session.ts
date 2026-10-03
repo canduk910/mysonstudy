@@ -565,20 +565,24 @@ export function micKeepPolicyFor(env: MicKeepEnv): MicKeepPolicy {
   return env.appleWebKit && env.audioSession ? "keep" : "per-answer";
 }
 
-/** 기기 설정 읽기(없거나 못 읽으면 false). 렌더 중이 아니라 effect·핸들러에서 부른다. */
+/**
+ * 기기 설정 읽기 — **기본은 켬(문항마다 열기)**. 2026-10-03 아빠 iPhone에서 마이크 유지 중 Q3·Q4가 "녹음 실패"(놓은 뒤 다시 열기가
+ * 8초 안에 응답 없음 — QA q34-norec)로 비어, 무음·재획득 대책(F1~F3)이 들어갈 때까지 예전 방식을 기본으로 되돌렸다.
+ * 명시적으로 끈 기기("0")만 마이크 유지(keep 정책 판정으로). 못 읽으면 켬. 렌더 중이 아니라 effect·핸들러에서 부른다.
+ */
 export function readMicPerAnswerPref(): boolean {
   try {
-    return typeof window !== "undefined" && window.localStorage.getItem(MIC_PER_ANSWER_PREF_KEY) === "1";
+    if (typeof window === "undefined") return true;
+    return window.localStorage.getItem(MIC_PER_ANSWER_PREF_KEY) !== "0";
   } catch {
-    return false;
+    return true;
   }
 }
 
 /** 기기 설정 쓰기(best-effort) */
 export function writeMicPerAnswerPref(on: boolean): void {
   try {
-    if (on) window.localStorage.setItem(MIC_PER_ANSWER_PREF_KEY, "1");
-    else window.localStorage.removeItem(MIC_PER_ANSWER_PREF_KEY);
+    window.localStorage.setItem(MIC_PER_ANSWER_PREF_KEY, on ? "1" : "0");
   } catch {
     /* 저장 못 해도 이번 화면에는 적용된다 */
   }

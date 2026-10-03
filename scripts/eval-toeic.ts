@@ -198,6 +198,7 @@ import {
   createMicKeeper,
   getMicDiag,
   micKeepPolicyFor,
+  readMicPerAnswerPref,
   setAudioSessionPlayback,
   startRecording,
 } from "../lib/mic-session";
@@ -2358,7 +2359,9 @@ async function runMicKeepChecks(): Promise<CheckResult[]> {
     // K5~K8 keep: 점검(첫 녹음) + 답변 3개 = 녹음 4회, getUserMedia 1회
     {
       reset();
-      const k = createMicKeeper(); // 정책을 넘기지 않는다 — 가짜 iPhone UA + audioSession에서 스스로 keep을 고른다
+      // 2026-10-03부터 기기 설정 기본이 "문항마다 열기"(켬)라 정책을 자동으로 고르면 per-answer다 — keep 동작은 명시해서 본다
+      add("K0 기본: 저장된 설정이 없으면 '문항마다 마이크 다시 열기' 켬(마이크 유지는 명시적으로 끈 기기만 — QA q34-norec)", readMicPerAnswerPref() === true);
+      const k = createMicKeeper({ policy: "keep" });
       const results4: unknown[] = [];
       results4.push(await recordOnce(k, MIC_CHECK_GUM_TIMEOUT_MS)); // 마이크 점검
       const betweenGuard = setAudioSessionPlayback(); // 녹음 사이 — 쥔 동안은 거부(바꾸면 트랙이 끝난다)
