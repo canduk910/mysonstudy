@@ -45,6 +45,18 @@
  *   §12-6의 도구 호출 처리·이어 말하기(질문 없는 도구 응답 → response.create)는 2026-09-27 걷어 냈다 — 그 이어 말하기가 앞말을 잇지
  *   않는 새 응답을 만들어 선생님이 두 명처럼 답했다(보호자 iPhone 신고).
  *
+ * ── 반이중 마이크 + 기기 안 끼어들기 판정(2026-10-03 — lib/talk-barge-in.ts·lib/talk-level-meter.ts, §12-1 "끼어들기 판정") ─────────
+ *   실연결 진단: 세션 `interrupt_response: false`를 서버가 적용했는데도 선생님 소리 재생 중 은우의 짧은 "Um."이 speech_started로
+ *   잡히자 서버가 스스로 output_audio_buffer.cleared + conversation.item.truncated를 냈다 — WebRTC에서는 그 플래그로 재생 자르기를
+ *   못 막는다. 그래서 선생님 소리가 나는 동안(output_audio_buffer.started ~ 같은 응답의 stopped/cleared) **서버로 가는 마이크 트랙을
+ *   끈다**(track.enabled = false — 무음 프레임, 끝내기 기다림과 같은 방식). 같은 마이크의 복제 트랙(서버로 안 보냄)을 기기에서 듣고
+ *   (레벨 미터 약 40ms), 문턱(재생 직전 소음 바닥 + 15dB, 하한 −45 dBFS) 이상인 소리가 덩어리 안 합계 700ms 쌓이면 선생님을 멈춘다
+ *   (진행 중 응답이 있으면 response.cancel + output_audio_buffer.clear, 소리만 남았으면 clear만) + 마이크를 켠다(그때부터 은우 말이
+ *   서버 VAD로 간다). 짧은 소리는 무시(마이크도 닫힌 채). 재생이 끝나면 켠다. 재생 전에 서버가 듣기 시작한 말이 닫힌 동안 끝나면 그
+ *   조각에 대한 자동 응답(1.5초 안, 앱이 청하지 않은 response.created)만 response.cancel {response_id}로 취소한다("선생님 두 명" 방지).
+ *   대화 중(live)·마무리 중(wrapping)에만 마이크를 바꾸고 동작을 보낸다 — 끝내기 기다림(finishing)은 마이크를 끈 채로 둔다. 셈은 스냅숏
+ *   `bargeIn` → 결과 패널 "진단"(기기 판정 끼어들기·문턱·최대 음량).
+ *
  * ── 5분 상한 ───────────────────────────────────────────────────────────────────
  *   닿으면 도움 상태 기계에 wrapup_started(카드·요청 중지) → 선생님이나 은우가 말하는 중이면 최대 8초 기다린 뒤(은우 말이 끝나면 그
  *   말에 대한 자동 응답이 먼저 나가고, 그 응답이 끝난 뒤) 마무리 안내 → 그 응답의 소리가 멈추면(또는 오디오 없이 끝나면, 또는 25초
@@ -81,6 +93,14 @@ import type {
 } from "openai/resources/realtime/realtime";
 import type { TalkAppOrigin, TalkCard, TalkTopicWord } from "./ai/english/talk-schemas";
 import { MicError, type MicStreamHandle } from "./mic-session";
+import {
+  createTalkBargeIn,
+  reduceTalkBargeIn,
+  type TalkBargeInEvent,
+  type TalkBargeInState,
+  type TalkBargeInStats,
+} from "./talk-barge-in";
+import { closeTalkLevelContext, createTalkLevelMeter, type TalkLevelMeter } from "./talk-level-meter";
 import { TALK_CARD_LIMITS, buildTalkCardsRequest, decideTalkCardsArrival, matchTalkWord, sanitizeTalkScreenCards } from "./talk-cards";
 import {
   TALK_DEBUG_FAKE_KEY,
@@ -360,7 +380,7 @@ export class WebRtcTalkTransport implements TalkTransport {
 export async function createTalkTransport(mic: MediaStream, audio: HTMLAudioElement): Promise<TalkTransport> {
   if (process.env.NODE_ENV !== "production" && readTalkDebugFake()) {
     const mod = await import("./talk-fake-transport");
-    return mod.createFakeTalkTransport();
+    return mod.createFakeTalkTransport(mic);
   }
   return new WebRtcTalkTransport(mic, audio);
 }
@@ -408,8 +428,18 @@ export interface TalkCardsStats {
   staleHints: number;
 }
 
+/** 반이중 마이크·기기 판정 끼어들기 진단(§12-1 — 결과 패널 "진단") */
+export interface TalkBargeInView extends TalkBargeInStats {
+  /** 서버로 가는 마이크가 지금 켜져 있다(선생님 재생 중 false) */
+  micToServer: boolean;
+  /** 기기 레벨 미터가 꺼진 이유(켜져 있으면 null — 꺼지면 끼어들기 판정 없이 선생님이 차례를 끝까지 말한다) */
+  meterOff: string | null;
+}
+
 export interface TalkSnapshot {
   phase: TalkPhase;
+  /** 반이중 마이크·기기 판정 끼어들기 셈(§12-1 — 결과 패널 "진단": 끼어들기 n회·짧은 소리·문턱·최대 음량) */
+  bargeIn: TalkBargeInView;
   lines: readonly TalkLine[];
   hints: TalkHintsView;
   teacherSpeaking: boolean;
@@ -453,6 +483,13 @@ export interface TalkCallOptions {
   labelKo: string;
   /** 전송 만들기(기본 createTalkTransport). eval이 합성 이벤트 전송을 넣으려고 둔 주입점이다 — 화면은 넘기지 않는다 */
   createTransport?: (mic: MediaStream, audio: HTMLAudioElement) => Promise<TalkTransport>;
+  /**
+   * 기기 레벨 미터용 AudioContext — 📞 탭 안에서 동기로 만든 것(lib/talk-level-meter.ts `createTalkLevelContext`). 주인은 컨트롤러다
+   * (end에서 닫는다). 없으면 끼어들기 판정 없이(선생님이 차례를 끝까지) 대화한다.
+   */
+  levelContext?: AudioContext | null;
+  /** 레벨 미터 만들기(기본: 마이크 트랙 복제 + levelContext). eval이 음량 열을 손으로 넣으려고 둔 주입점이다 — 화면은 넘기지 않는다 */
+  createLevelMeter?: (mic: MediaStream) => TalkLevelMeter;
 }
 
 /** 마이크 실패 → 대화 화면 안내(녹음 문구 대신 전화 문구로) */
@@ -487,6 +524,9 @@ const TALK_VAD_OFF_EVENT = {
 const TALK_COMMIT_EVENT = { type: "input_audio_buffer.commit" } as const satisfies InputAudioBufferCommitEvent;
 /** 진행 중 응답 취소 */
 const TALK_CANCEL_EVENT = { type: "response.cancel" } as const satisfies ResponseCancelEvent;
+/** 응답 하나만 취소(짧은 소리에 서버가 만든 자동 응답 — §12-1 끼어들기 판정). id를 모르면 진행 중 응답 취소 */
+const talkCancelResponseEvent = (responseId: string | null): ResponseCancelEvent =>
+  responseId ? ({ type: "response.cancel", response_id: responseId } satisfies ResponseCancelEvent) : TALK_CANCEL_EVENT;
 /** 재생 중인 선생님 소리 비우기(WebRTC 전용 — response.cancel 뒤에 보낸다, SDK 주석) */
 const TALK_AUDIO_CLEAR_EVENT = { type: "output_audio_buffer.clear" } as const satisfies OutputAudioBufferClearEvent;
 
@@ -555,6 +595,19 @@ export class TalkCallController {
   private pendingNudge = false;
   private pendingSceneNote = false;
   private noteSeq = 0;
+
+  // 반이중 마이크 + 기기 안 끼어들기 판정(§12-1, lib/talk-barge-in.ts) — 동작·마이크 전환은 대화 중·마무리 중에만 실행한다
+  private bargeIn: TalkBargeInState = createTalkBargeIn({ replyWaitMs: TALK_AUTO_REPLY_WAIT_MS });
+  /** 기기 레벨 미터(마이크 복제 트랙) — 마이크를 얻은 뒤 만든다 */
+  private meter: TalkLevelMeter | null = null;
+  /** 서버로 가는 마이크 트랙을 마지막으로 켠/끈 값(진단) */
+  private serverMicOpen = true;
+  /** 레벨 미터 프레임이 도는 컨텍스트에서 온 적이 있다(진단 — 끝난 뒤 닫힌 컨텍스트를 "꺼짐"으로 보이지 않게) */
+  private meterRunningSeen = false;
+  /** 마지막 프레임 때 컨텍스트 상태(running이 아니면 진단에 보인다) */
+  private meterContextState: string | null = null;
+  /** 재생 중인 선생님 응답 id(소리 상태가 늦게 온 앞 응답의 멈춤에 흔들리지 않게 — QA cutoff_2 P3-B) */
+  private playingResponseId: string | null = null;
 
   // 화면 카드(호출 J, §12-7)
   /** 진행 중인 카드 요청(최신 줄 하나) — 새 줄의 요청·마무리·끝내기가 끊는다 */
@@ -635,6 +688,11 @@ export class TalkCallController {
     const words = this.info?.topic.kind === "vocab" ? this.info.topic.words : [];
     return {
       phase: this.phase,
+      bargeIn: {
+        ...this.bargeIn.stats,
+        micToServer: this.serverMicOpen,
+        meterOff: this.meterOffReason(),
+      },
       lines: this.transcript.lines,
       hints: viewTalkHints(this.hints),
       teacherSpeaking: this.teacherSpeaking,
@@ -681,6 +739,7 @@ export class TalkCallController {
       return;
     }
     this.mic = mic;
+    this.startMeter(mic.stream);
     void this.loadScene();
     try {
       this.transport = await (this.opts.createTransport ?? createTalkTransport)(mic.stream, this.opts.audio);
@@ -867,6 +926,118 @@ export class TalkCallController {
     this.sendResponseCreate("nudge");
   }
 
+  // ---- 반이중 마이크 + 기기 안 끼어들기 판정(§12-1) ----
+
+  /** 레벨 미터 시작(마이크를 얻은 직후 — 연결 중에도 소음 바닥을 미리 잰다) */
+  private startMeter(stream: MediaStream): void {
+    try {
+      this.meter = this.opts.createLevelMeter
+        ? this.opts.createLevelMeter(stream)
+        : createTalkLevelMeter(stream.getAudioTracks()[0] ?? null, this.opts.levelContext ?? null);
+    } catch {
+      this.meter = null;
+    }
+    this.meter?.start((now, db) => this.onLevel(now, db));
+  }
+
+  private stopMeter(): void {
+    try {
+      this.meter?.stop();
+    } catch {
+      /* noop */
+    }
+  }
+
+  /** 진단: 미터가 꺼진 이유 — 만들지 못함(offReason) 또는 프레임이 도는 컨텍스트에서 한 번도 오지 않음(suspended 등) */
+  private meterOffReason(): string | null {
+    if (!this.meter) return null;
+    if (this.meter.offReason) return this.meter.offReason;
+    if (this.meterRunningSeen) return null;
+    return this.meterContextState && this.meterContextState !== "running" ? `오디오 컨텍스트 ${this.meterContextState}` : null;
+  }
+
+  /** 레벨 미터 한 프레임 — 판정 상태가 바뀌었을 때만 화면에 알린다(프레임마다 다시 그리지 않는다) */
+  private onLevel(now: number, db: number): void {
+    if (this.phase === "ended" || this.phase === "finishing") return;
+    const ctxState = this.opts.levelContext ? this.opts.levelContext.state : "running"; // 주입한 미터(eval)는 컨텍스트 없이 돈다
+    this.meterContextState = ctxState;
+    if (ctxState === "running") this.meterRunningSeen = true;
+    if (this.applyBargeIn({ type: "level", now, db, responseActive: this.bargeInResponseActive() })) this.emit();
+  }
+
+  /** 서버 이벤트 → 판정 이벤트(해당 없으면 null). 진행 중 응답 여부는 지금 컨트롤러 값으로 채운다 */
+  private bargeInEventFromServer(ev: Rec, type: string, now: number): TalkBargeInEvent | null {
+    const rid = typeof ev.response_id === "string" ? ev.response_id : null;
+    switch (type) {
+      case "output_audio_buffer.started":
+        return { type: "teacher_audio_started", now, responseId: rid };
+      case "output_audio_buffer.stopped":
+      case "output_audio_buffer.cleared":
+        return { type: "teacher_audio_stopped", now, responseId: rid };
+      case "input_audio_buffer.speech_started":
+        return { type: "child_speech_started", now };
+      case "input_audio_buffer.speech_stopped":
+        return { type: "child_speech_stopped", now };
+      case "response.created":
+        return {
+          type: "response_created",
+          now,
+          responseId: isRec(ev.response) && typeof ev.response.id === "string" ? ev.response.id : null,
+          // 앱이 response.create를 보내고 created를 기다리던 중이면 그 응답(인사·도움 요청·마무리)이다 — 취소하지 않는다
+          requestedByApp: this.awaitingCreatedSince !== null,
+        };
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * 판정 한 걸음. 상태는 연결 중·대화 중·마무리 중에 접고(연결 중에는 소음 바닥만), 동작과 마이크 전환은 대화 중(live)·마무리 중
+   * (wrapping)에만 실행한다 — 끝내기 기다림(finishing)은 마이크를 끈 채로 두고 직접 취소한다.
+   * cut_teacher: 진행 중 응답이 있으면 response.cancel 뒤 output_audio_buffer.clear(SDK 주석의 순서), 없으면 clear만.
+   * cancel_reply: 마이크가 닫힌 동안 끝난 서버 말소리에 서버가 만든 자동 응답만 response.cancel {response_id}.
+   * 앱이 보내는 response.create는 늘지 않는다(§12-7 — 첫 인사·도움 요청·마무리 셋). 화면에 알릴 변화(셈·마이크)가 있으면 true.
+   */
+  private applyBargeIn(ev: TalkBargeInEvent): boolean {
+    if (this.phase !== "connecting" && this.phase !== "live" && this.phase !== "wrapping") return false;
+    const prev = this.bargeIn;
+    const step = reduceTalkBargeIn(prev, ev);
+    this.bargeIn = step.state;
+    if (this.phase === "connecting") return step.state.stats !== prev.stats;
+    for (const a of step.actions) {
+      if (a.type === "cut_teacher") {
+        if (a.cancelResponse) this.send(TALK_CANCEL_EVENT);
+        this.send(TALK_AUDIO_CLEAR_EVENT);
+      } else {
+        this.send(talkCancelResponseEvent(a.responseId));
+      }
+    }
+    let micChanged = false;
+    if (step.state.micOpen !== this.serverMicOpen) {
+      this.setServerMic(step.state.micOpen);
+      micChanged = true;
+    }
+    return micChanged || step.state.stats !== prev.stats;
+  }
+
+  /**
+   * 서버로 가는 마이크 트랙 켜기/끄기 — `enabled`(동기, 재협상 없음, 꺼지면 무음 프레임). 레벨 미터는 복제 트랙을 들으므로 영향이
+   * 없다. replaceTrack(null)을 쓰지 않는 이유: 비동기(끼어들기 순간 켜는 데 지연)이고 RTP가 아예 끊긴다 — §12-1.
+   */
+  private setServerMic(open: boolean): void {
+    this.serverMicOpen = open;
+    try {
+      for (const t of this.mic?.stream.getAudioTracks() ?? []) t.enabled = open;
+    } catch {
+      /* noop */
+    }
+  }
+
+  /** cut_teacher가 response.cancel을 보낼지 — 진행 중 응답이 실제로 있을 때만(우리가 보낸 create의 created를 기다리는 중은 아직 없다) */
+  private bargeInResponseActive(): boolean {
+    return this.responseActive && this.awaitingCreatedSince === null;
+  }
+
   // ---- 도움 상태 기계 ----
 
   private applyHints(ev: TalkHintsEvent): void {
@@ -894,10 +1065,19 @@ export class TalkCallController {
     this.transcript = reduceTalkTranscript(this.transcript, ev);
 
     // 2) 소리·말하기 상태
-    if (type === "output_audio_buffer.started") this.teacherSpeaking = true;
+    const audioRid = typeof ev.response_id === "string" ? ev.response_id : null;
+    if (type === "output_audio_buffer.started") {
+      this.teacherSpeaking = true;
+      this.playingResponseId = audioRid;
+    }
     if (type === "output_audio_buffer.stopped" || type === "output_audio_buffer.cleared") {
-      this.teacherSpeaking = false;
-      this.onTeacherAudioStopped(typeof ev.response_id === "string" ? ev.response_id : null);
+      // 늦게 온 앞 응답의 멈춤(재생 중인 응답과 id가 다르다)은 소리 상태를 바꾸지 않는다(QA cutoff_2 P3-B)
+      const stale = this.playingResponseId !== null && audioRid !== null && audioRid !== this.playingResponseId;
+      if (!stale) {
+        this.teacherSpeaking = false;
+        this.playingResponseId = null;
+      }
+      this.onTeacherAudioStopped(audioRid);
     }
     if (type === "input_audio_buffer.speech_started") {
       this.childSpeaking = true;
@@ -917,6 +1097,11 @@ export class TalkCallController {
       if (type === "response.created") this.send(TALK_CANCEL_EVENT);
       if (type === "output_audio_buffer.started") this.send(TALK_AUDIO_CLEAR_EVENT);
     }
+
+    // 2-1) 반이중 마이크·끼어들기 판정(§12-1) — response.created는 "앱이 청한 응답인가"를 진행 표시(4)가 지우기 전에 읽는다.
+    //      마무리 응답 소리가 멈춰 finish로 넘어갔으면(위 onTeacherAudioStopped) 단계가 finishing·ended라 마이크를 다시 켜지 않는다
+    const bargeEv = this.bargeInEventFromServer(ev, type, now);
+    if (bargeEv) this.applyBargeIn(bargeEv);
 
     // 3) 도움 상태 기계
     const hintEv = talkHintEventFromServer(ev, now);
@@ -1146,6 +1331,7 @@ export class TalkCallController {
       this.transcript = requestTalkResponseOrigin(this.transcript, null);
     }
     this.applyHints({ type: "tick", now });
+    this.applyBargeIn({ type: "tick", now });
 
     if (this.phase === "live" && this.capAtMs !== null && now >= this.capAtMs) this.beginWrapup(now);
 
@@ -1220,15 +1406,12 @@ export class TalkCallController {
    */
   private beginFinishing(reason: TalkFinishReason, pending: Set<string>): void {
     this.phase = "finishing";
+    this.stopMeter(); // 끝내기 기다림은 턴 감지를 끄고 직접 취소한다 — 끼어들기 판정은 멈추고 마이크는 아래에서 끈 채로 둔다
     this.endedAtIso = new Date().toISOString(); // 대화가 끝난 시각은 끝내기를 누른 때다(기다린 시간은 대화가 아니다)
     this.pendingNudge = false;
     this.pendingSceneNote = false;
     this.abortCards(false);
-    try {
-      for (const t of this.mic?.stream.getAudioTracks() ?? []) t.enabled = false;
-    } catch {
-      /* noop */
-    }
+    this.setServerMic(false);
     let prevMuted = false;
     try {
       prevMuted = this.opts.audio.muted;
@@ -1266,6 +1449,8 @@ export class TalkCallController {
       clearInterval(this.tickTimer);
       this.tickTimer = null;
     }
+    this.stopMeter(); // 레벨 미터(복제 트랙·노드) 정리 → 컨텍스트 닫기 — 숨김·뒤로가기·pagehide·끝내기 전부 여기를 지난다
+    closeTalkLevelContext(this.opts.levelContext);
     if (this.scene.status === "loading") {
       this.sceneAbort.abort(); // 대화가 먼저 끝났다 — 그림 생성도 멈춘다(그림 없이 저장)
       this.scene = { status: "failed", shown: false, dataUrl: null, sceneEn: null };

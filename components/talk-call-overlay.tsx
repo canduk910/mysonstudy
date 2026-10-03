@@ -551,6 +551,11 @@ export default function TalkCallOverlay({ controller, onClose }: { controller: T
   );
 }
 
+/** dBFS 표시(없으면 —) */
+function fmtDb(db: number | null): string {
+  return db === null ? "—" : `${db} dBFS`;
+}
+
 function ResultPanel({
   snap,
   save,
@@ -574,6 +579,7 @@ function ResultPanel({
           : null;
   const u = snap.usage;
   const c = snap.cards;
+  const b = snap.bargeIn;
   // 선생님이 한마디도 하기 전에 끝났다(연결 중 끝내기·첫 인사 전 끊김) — 은우에게 "한마디 해 볼까요?"는 맞지 않는다
   const beforeTeacher = !toTalkTurns(snap.lines).some((t) => t.speaker === "teacher");
   return (
@@ -622,7 +628,7 @@ function ResultPanel({
           닫기
         </button>
       </div>
-      {(u.responses > 0 || c.sent > 0) && (
+      {(u.responses > 0 || c.sent > 0 || b.playbacks > 0) && (
         <details className={s.diag}>
           <summary>진단</summary>
           응답 {u.responses}회 · 입력 토큰 {u.inputTokens}(캐시 {u.cachedTokens}) · 출력 토큰 {u.outputTokens}
@@ -630,6 +636,18 @@ function ResultPanel({
           {snap.timescale !== 1 ? ` · 시간 배율 ${snap.timescale}` : ""}
           <br />
           화면 카드 요청 {c.sent}회 · 받음 {c.ok} · 실패 {c.failed} · 새 줄로 끊음 {c.superseded} · 철 지난 도움 {c.staleHints}
+          <br />
+          {/* 반이중 마이크 + 기기 안 끼어들기 판정(§12-1) — 선생님 재생 중엔 서버가 못 듣고, 기기가 0.7초 넘는 말만 끼어들기로 본다 */}
+          기기 판정 끼어들기 {b.bargeIns}회(짧은 소리 {b.shortSounds}회) · 마이크 닫은 재생 {b.playbacks}회 · 문턱 {fmtDb(b.thresholdDb)}
+          (소음 바닥 {fmtDb(b.floorDb)}) · 끊지 않은 재생 중 최대 음량 {fmtDb(b.quietPeakDb)}
+          {b.repliesCancelled > 0 ? ` · 닫힌 동안 끝난 말의 응답 취소 ${b.repliesCancelled}회` : ""}
+          {b.meterOff ? ` · 기기 판정 꺼짐(${b.meterOff})` : ""}
+          {b.recent.length > 0 && (
+            <>
+              <br />
+              재생 중 소리 덩어리(소리 ms/최대 dBFS): {b.recent.map((r) => `${r.voicedMs}/${r.peakDb}${r.cut ? " 끊음" : ""}`).join(" · ")}
+            </>
+          )}
         </details>
       )}
     </section>
@@ -638,6 +656,7 @@ function ResultPanel({
 
 /** 개발 빌드 전용 — 가짜 전송 조종 버튼(production에서는 이 컴포넌트를 부르는 분기가 컴파일 때 접힌다) */
 function FakePanel() {
+  // 서버가 듣는 은우 발화(선생님 재생 중에는 마이크가 꺼져 서버가 못 듣는다 — 끼어들기는 실제 마이크 소리로 기기가 판정한다, §12-1)
   const say = (text: string, opts?: { late?: boolean; fail?: boolean }) => window.__talkFake?.childSays(text, opts);
   const [cardsMode, setCardsMode] = useState(() => window.__talkFake?.state().cardsMode ?? "route");
   const pickCards = (mode: "route" | "local" | "slow" | "fail") => {

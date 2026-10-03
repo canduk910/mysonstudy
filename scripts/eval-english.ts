@@ -278,6 +278,25 @@ import {
 } from "../lib/talk-transcript";
 import { buildTalkExplainSpeakQueue } from "../lib/talk-explain-script";
 import {
+  TALK_BARGE_IN_GAP_MS,
+  TALK_BARGE_IN_MARGIN_DB,
+  TALK_BARGE_IN_MIN_MS,
+  TALK_BARGE_IN_MIN_THRESHOLD_DB,
+  TALK_BARGE_IN_RECENT_MAX,
+  TALK_LEVEL_FRAME_MAX_MS,
+  TALK_LEVEL_SILENCE_DB,
+  createTalkBargeIn,
+  reduceTalkBargeIn,
+  reduceTalkBargeInEvents,
+  talkBargeInThresholdDb,
+  talkLevelFrames,
+  talkRmsDbfs,
+  updateTalkNoiseFloor,
+  type TalkBargeInAction,
+  type TalkBargeInState,
+} from "../lib/talk-barge-in";
+import { TALK_LEVEL_POLL_MS, type TalkLevelMeter } from "../lib/talk-level-meter";
+import {
   TALK_AUTO_REPLY_WAIT_MS,
   TALK_TICK_MS,
   TALK_WRAPUP_WAIT_MS,
@@ -3174,7 +3193,13 @@ function runTalkSpecChecks(): CheckResult[] {
     ["전사 언어", `language: "${TALK_TRANSCRIBE_LANGUAGE}" }\`, **prompt·keywords 지정 없음**`],
     ["max_output_tokens", `| \`max_output_tokens\` | ${TALK_REALTIME_MAX_OUTPUT_TOKENS} |`],
     ["속도 두 값", `천천히 ${TALK_SPEED_VALUES.slow}(기본) · 보통 ${TALK_SPEED_VALUES.normal.toFixed(1)}`],
-    ["턴 감지", `\`{ type: "semantic_vad", eagerness: "low", create_response: true, interrupt_response: true }\``],
+    ["턴 감지", `\`{ type: "semantic_vad", eagerness: "low", create_response: true, interrupt_response: false }\``],
+    ["끼어들기 판정 700ms", `**${TALK_BARGE_IN_MIN_MS}ms**(\`TALK_BARGE_IN_MIN_MS\`)`],
+    ["끼어들기 덩어리 틈 250ms", `**${TALK_BARGE_IN_GAP_MS}ms**(\`TALK_BARGE_IN_GAP_MS\`)`],
+    ["끼어들기 문턱 하한", `**${TALK_BARGE_IN_MIN_THRESHOLD_DB} dBFS**(\`TALK_BARGE_IN_MIN_THRESHOLD_DB\`)`],
+    ["끼어들기 문턱 여유", `**${TALK_BARGE_IN_MARGIN_DB} dB**(\`TALK_BARGE_IN_MARGIN_DB\`)`],
+    ["기기 레벨 미터 간격", `**${TALK_LEVEL_POLL_MS}ms**(\`TALK_LEVEL_POLL_MS\`)`],
+    ["닫힌 동안 끝난 말 응답 취소 1.5초", `**${(TALK_AUTO_REPLY_WAIT_MS / 1000).toFixed(1)}초**(\`TALK_AUTO_REPLY_WAIT_MS\``],
     ["소음 억제", `\`{ type: "far_field" }\``],
     ["저장 상한", `상한: 턴 ${TALK_LIMITS.turns}개, 턴 글자 ${TALK_LIMITS.turnChars.toLocaleString("en-US")}자, 설명 ${TALK_LIMITS.explanations}개`],
     ["단어장 상한", `**최대 ${TALK_LIMITS.vocabWords}개**`],
@@ -3554,8 +3579,8 @@ function runTalkSessionConfigChecks(): CheckResult[] {
       JSON.stringify(overridden.audio?.input?.transcription),
     );
     add(
-      "턴 감지: semantic_vad · eagerness low · 응답 생성·끼어들기 허용",
-      talkDeepEqual(c.audio?.input?.turn_detection, { type: "semantic_vad", eagerness: "low", create_response: true, interrupt_response: true }),
+      "턴 감지: semantic_vad · eagerness low · 응답 자동 생성은 켜고 서버 끼어들기는 끔(2026-10-03 — 끼어들기는 앱이 700ms로 판정)",
+      talkDeepEqual(c.audio?.input?.turn_detection, { type: "semantic_vad", eagerness: "low", create_response: true, interrupt_response: false }),
       JSON.stringify(c.audio?.input?.turn_detection),
     );
     add("소음 억제 far_field", c.audio?.input?.noise_reduction?.type === "far_field");
@@ -3844,6 +3869,48 @@ function runTalkTranscriptChecks(): CheckResult[] {
   );
   add("진행 중 선생님 줄(글자 전)은 보임", isVisibleTalkLine({ itemId: "x", speaker: "teacher", text: "", status: "partial", filtered: false, origin: null }));
 
+  // 재생 중 잘림(2026-10-03 — QA talk-cutoff P2-A): 생성이 끝난 뒤 재생 중에 잘리면 서버는 cleared·truncated만 보낸다 → 끊김
+  const doneLine: RealtimeServerEvent[] = [
+    talkEv.itemAdded("item_t50", "assistant", null),
+    talkEv.outDelta("item_t50", "resp_50", "Wow, you like dogs!"),
+    talkEv.outDone("item_t50", "resp_50", "Wow, you like dogs! What color is your favorite dog?"),
+    talkEv.responseDone("resp_50", "completed", ["item_t50"]),
+  ];
+  const cleared50 = { type: "output_audio_buffer.cleared", event_id: talkEid(), response_id: "resp_50" } as RealtimeServerEvent;
+  const truncated50 = { type: "conversation.item.truncated", event_id: talkEid(), item_id: "item_t50", content_index: 0, audio_end_ms: 1200 } as RealtimeServerEvent;
+  const viaCleared = reduceTalkTranscriptEvents([...doneLine, cleared50]);
+  add(
+    "생성 뒤 재생 중 cleared(응답 id) → 그 선생님 줄 interrupted(글자 유지) · 저장 interrupted:true",
+    viaCleared.lines[0].status === "interrupted" &&
+      viaCleared.lines[0].text === "Wow, you like dogs! What color is your favorite dog?" &&
+      toTalkTurns(viaCleared.lines)[0]?.interrupted === true,
+    talkLinesKey(viaCleared),
+  );
+  const viaTruncated = reduceTalkTranscriptEvents([...doneLine, truncated50]);
+  add("생성 뒤 재생 중 conversation.item.truncated(항목 id) → 그 선생님 줄 interrupted(글자 유지)", viaTruncated.lines[0].status === "interrupted" && viaTruncated.lines[0].text.length > 0, talkLinesKey(viaTruncated));
+  const both = reduceTalkTranscriptEvents([cleared50, truncated50, cleared50, truncated50], viaCleared);
+  add("cleared·truncated가 겹치거나 두 번 와도 결과가 같다(멱등 — 같은 상태 객체)", both === viaCleared, talkLinesKey(both));
+  const playedFully = reduceTalkTranscriptEvents([...doneLine, { type: "output_audio_buffer.stopped", event_id: talkEid(), response_id: "resp_50" } as RealtimeServerEvent]);
+  add("정상 재생 끝(stopped) → final 그대로 · 저장 interrupted:false", playedFully.lines[0].status === "final" && toTalkTurns(playedFully.lines)[0]?.interrupted === false, talkLinesKey(playedFully));
+  const stoppedThenCleared = reduceTalkTranscriptEvents([cleared50], playedFully);
+  add("소리가 끝까지 난 뒤(stopped 뒤) 온 cleared는 끊김으로 보지 않음", stoppedThenCleared.lines[0].status === "final", talkLinesKey(stoppedThenCleared));
+  const clearedFirst = reduceTalkTranscriptEvents([
+    { type: "output_audio_buffer.cleared", event_id: talkEid(), response_id: "resp_51" } as RealtimeServerEvent,
+    talkEv.itemAdded("item_t51", "assistant", null),
+    talkEv.outDelta("item_t51", "resp_51", "Let's"),
+    talkEv.outDone("item_t51", "resp_51", "Let's count to three."),
+    talkEv.responseDone("resp_51", "completed", ["item_t51"]),
+  ]);
+  add("cleared가 줄보다 먼저 와도 그 응답의 줄이 생기면 끊김(completed done이 와도 끊김 유지)", clearedFirst.lines[0]?.status === "interrupted", talkLinesKey(clearedFirst));
+  const otherResp = reduceTalkTranscriptEvents([...doneLine, { type: "output_audio_buffer.cleared", event_id: talkEid(), response_id: "resp_other" } as RealtimeServerEvent]);
+  add("다른 응답의 cleared는 이 줄을 건드리지 않음", otherResp.lines[0].status === "final", talkLinesKey(otherResp));
+  const childTrunc = reduceTalkTranscriptEvents([
+    talkEv.speechStarted("item_c52"),
+    talkEv.inCompleted("item_c52", "Yes."),
+    { type: "conversation.item.truncated", event_id: talkEid(), item_id: "item_c52", content_index: 0, audio_end_ms: 0 } as RealtimeServerEvent,
+  ]);
+  add("은우 항목의 truncated는 무시(선생님 줄만 끊김)", childTrunc.lines[0].status === "final", talkLinesKey(childTrunc));
+
   // 모르는 이벤트·모양이 틀린 이벤트 — 같은 상태 객체를 그대로
   const ignored = [
     { type: "session.created", event_id: "x1", session: {} },
@@ -3876,6 +3943,263 @@ function runTalkTranscriptChecks(): CheckResult[] {
   add("끊긴 선생님 턴은 interrupted:true로 저장, 글자 없는 listening 줄은 제외", cutTurns.length === 1 && cutTurns[0].interrupted === true, JSON.stringify(cutTurns));
   const partialLine: TalkLine = { itemId: "item_c17", speaker: "child", text: "  My dog is ", status: "partial", filtered: false, origin: null };
   add("세션이 끝날 때 partial 은우 글자는 trim해서 남긴다", toTalkTurns([partialLine])[0]?.text === "My dog is");
+  return results;
+}
+
+/**
+ * 반이중 마이크 + 기기 안 끼어들기 판정(2026-10-03 두 번째 수정 — §12-1, lib/talk-barge-in.ts). 선생님 재생 중에는 서버로 가는 마이크를
+ * 끄고(서버가 짧은 소리에 스스로 자르지 못하게), 기기가 복제 트랙의 음량(dBFS)으로 "덩어리 안 합계 700ms"를 넘는 말만 끼어들기로 본다.
+ * 음량 열 → 끼어들기 시각, 적응형 문턱(소음 바닥 + 15dB, 하한 -45), 690/710 경계, 짧은 덩어리 여러 개, 틈 250ms 경계, 잡음 바닥 변화,
+ * 재생 중 꺼짐/재생 끝 켜짐 상태 기계, 늦게 온 앞 응답의 멈춤, 닫힌 동안 끝난 서버 말소리의 자동 응답 취소. 시계는 인자.
+ */
+function runTalkBargeInChecks(): CheckResult[] {
+  const results: CheckResult[] = [];
+  const add = talkAdder(results, "자유대화 끼어들기");
+  const fresh = () => createTalkBargeIn({ replyWaitMs: TALK_AUTO_REPLY_WAIT_MS });
+  const T0 = 10_000;
+  const QUIET = -70;
+  const LOUD = -25;
+  const F = 10; // 판정 경계를 ms 단위로 보려고 10ms 프레임
+  const play = (now: number, responseId: string | null = "r1") => ({ type: "teacher_audio_started" as const, now, responseId });
+  const stopA = (now: number, responseId: string | null = "r1") => ({ type: "teacher_audio_stopped" as const, now, responseId });
+  const created = (now: number, responseId: string, requestedByApp = false) => ({ type: "response_created" as const, now, responseId, requestedByApp });
+  const acts = (a: readonly unknown[]) => JSON.stringify(a);
+  /** 조용한 방(바닥 -70)에서 재생 시작까지 — 마지막 프레임 시각 T0 */
+  const warm = (floorDb = QUIET, ms = 500) => reduceTalkBargeInEvents(talkLevelFrames(T0 - ms, [[floorDb, ms]], F), fresh()).state;
+  /** 재생 시작(T0) 뒤 음량 열을 넣고, 첫 동작이 나온 프레임 시각(onset 기준 ms)을 잰다 */
+  const playThen = (segments: readonly (readonly [number, number])[], opts: { responseActive?: boolean; floor?: number; start?: TalkBargeInState } = {}) => {
+    let st = reduceTalkBargeIn(opts.start ?? warm(opts.floor), play(T0)).state;
+    const all: TalkBargeInAction[] = [];
+    let firstActAt: number | null = null;
+    for (const fr of talkLevelFrames(T0, segments, F, opts.responseActive ?? false)) {
+      const step = reduceTalkBargeIn(st, fr);
+      st = step.state;
+      if (step.actions.length > 0 && firstActAt === null) firstActAt = fr.now - T0;
+      all.push(...step.actions);
+    }
+    return { st, all, firstActAt };
+  };
+
+  add(
+    "상수: 판정 700ms · 덩어리 틈 250ms · 문턱 하한 -45 dBFS · 여유 15 dB · 최근 기록 8 · 미터 40ms(§12-1)",
+    TALK_BARGE_IN_MIN_MS === 700 && TALK_BARGE_IN_GAP_MS === 250 && TALK_BARGE_IN_MIN_THRESHOLD_DB === -45 && TALK_BARGE_IN_MARGIN_DB === 15 &&
+      TALK_BARGE_IN_RECENT_MAX === 8 && TALK_LEVEL_POLL_MS === 40 && fresh().config.replyWaitMs === TALK_AUTO_REPLY_WAIT_MS && fresh().micOpen,
+  );
+
+  // 1. 음량 계산(RMS dBFS)
+  const sine = (amp: number, n = 4800) => Float32Array.from({ length: n }, (_, i) => amp * Math.sin((2 * Math.PI * 440 * i) / 48_000));
+  const near = (a: number, b: number, eps = 0.05) => Math.abs(a - b) <= eps;
+  add(
+    "talkRmsDbfs: 사인 진폭 1 = -3.01 · 진폭 0.1 = -23.01 · 직류 0.5 = -6.02 · 무음/빈 배열 = -100",
+    near(talkRmsDbfs(sine(1)), -3.01) && near(talkRmsDbfs(sine(0.1)), -23.01) && near(talkRmsDbfs(new Float32Array(100).fill(0.5)), -6.02) &&
+      talkRmsDbfs(new Float32Array(256)) === TALK_LEVEL_SILENCE_DB && talkRmsDbfs([]) === TALK_LEVEL_SILENCE_DB,
+    `${talkRmsDbfs(sine(1)).toFixed(2)} · ${talkRmsDbfs(sine(0.1)).toFixed(2)}`,
+  );
+
+  // 2. 적응형 문턱 = max(-45, 바닥 + 15)
+  add(
+    "문턱: 바닥 모름 → -45 · 바닥 -70 → -45(하한) · 바닥 -50 → -35 · 바닥 -30 → -15",
+    talkBargeInThresholdDb(null) === -45 && talkBargeInThresholdDb(-70) === -45 && talkBargeInThresholdDb(-50) === -35 && talkBargeInThresholdDb(-30) === -15,
+  );
+
+  // 3. 소음 바닥 추적 — 첫 값 그대로, 빨리 내려가고, 천천히 올라가고, 큰 소리(말)로는 아주 천천히
+  const f1 = updateTalkNoiseFloor(null, -55, 40);
+  const fFall = updateTalkNoiseFloor(-40, -70, 40);
+  const fRise = updateTalkNoiseFloor(-60, -50, 40);
+  const fLoud = updateTalkNoiseFloor(-60, -20, 40);
+  add(
+    "소음 바닥: 첫 프레임 = 그 값 · 조용해지면 프레임마다 30% 내려감 · 문턱 아래 소리는 2초 시상수 · 문턱 이상(말소리)은 20초 시상수",
+    f1 === -55 && fFall !== null && near(fFall, -49, 1e-9) && fRise !== null && near(fRise, -59.8, 1e-9) && fLoud !== null && near(fLoud, -59.92, 1e-9),
+    `${f1} · ${fFall} · ${fRise} · ${fLoud}`,
+  );
+  let zeroFloor: number | null = updateTalkNoiseFloor(null, TALK_LEVEL_SILENCE_DB, 40);
+  const zeroKeep = updateTalkNoiseFloor(-70, TALK_LEVEL_SILENCE_DB, 40);
+  for (let t = 0; t < 400; t += 40) zeroFloor = updateTalkNoiseFloor(zeroFloor, TALK_LEVEL_SILENCE_DB, 40);
+  zeroFloor = updateTalkNoiseFloor(zeroFloor, -72, 40);
+  let roomFloor: number | null = -90;
+  for (let t = 0; t < 6_000; t += 40) roomFloor = updateTalkNoiseFloor(roomFloor, -70, 40);
+  add(
+    "디지털 무음(트랙이 막 열릴 때의 0)은 바닥에 넣지 않음 · 바닥이 방 소리보다 낮으면 문턱 아래 소리로 2초 시상수 따라 올라감(6초 뒤 -71 안쪽)",
+    zeroKeep === -70 && zeroFloor === -72 && roomFloor !== null && roomFloor > -71,
+    `${zeroKeep} · ${zeroFloor} · ${roomFloor}`,
+  );
+  let talkFloor: number | null = -65;
+  for (let t = 0; t < 2_000; t += 40) talkFloor = updateTalkNoiseFloor(talkFloor, LOUD, 40);
+  add(
+    "선생님 말 사이 은우가 2초 말해도 소음 바닥은 4dB 안쪽으로만 오름(문턱이 은우 목소리를 따라 올라가지 않음 — 여전히 -45)",
+    talkFloor !== null && talkFloor - -65 < 4 && talkBargeInThresholdDb(talkFloor) === -45,
+    String(talkFloor),
+  );
+  let tvFloor: number | null = -65;
+  for (let t = 0; t < 60_000; t += 40) tvFloor = updateTalkNoiseFloor(tvFloor, -38, 40);
+  add(
+    "계속되는 큰 소음(-38 dBFS, 1분 — 텔레비전)에는 바닥이 결국 따라 올라가 문턱이 소음보다 위(-38 + 여유)",
+    tvFloor !== null && tvFloor > -40 && talkBargeInThresholdDb(tvFloor) > -38,
+    String(tvFloor),
+  );
+
+  // 4. 반이중 상태 기계 — 재생 시작 = 마이크 끔·문턱 얼림, 재생 끝 = 켬
+  const w = warm();
+  const p1 = reduceTalkBargeIn(w, play(T0));
+  add(
+    "재생 시작 → 마이크 끔(micOpen false) · 재생 셈 1 · 문턱 -45·바닥 -70 기록(재생 직전 바닥으로 얼림)",
+    w.micOpen && !p1.state.micOpen && p1.state.teacherPlaying && p1.state.stats.playbacks === 1 && p1.state.stats.thresholdDb === -45 && p1.state.stats.floorDb === -70,
+    JSON.stringify({ open: p1.state.micOpen, thr: p1.state.stats.thresholdDb, floor: p1.state.stats.floorDb }),
+  );
+  const pDup = reduceTalkBargeIn(p1.state, play(T0 + 5));
+  add("같은 응답의 started가 또 와도 그대로(같은 객체 — 재생 셈 1)", pDup.state === p1.state);
+  const pStop = reduceTalkBargeIn(p1.state, stopA(T0 + 3_000));
+  add("재생 끝(stopped·cleared) → 마이크 켬 · 판정 상태 비움", pStop.state.micOpen && !pStop.state.teacherPlaying && pStop.state.run === null && pStop.actions.length === 0);
+  const during = reduceTalkBargeInEvents(talkLevelFrames(T0, [[-40, 2_000]], 40), p1.state).state;
+  add("재생 중에는 소음 바닥을 고치지 않음(새어 든 선생님 소리가 바닥을 끌어올리지 않게)", during.floorDb === p1.state.floorDb, String(during.floorDb));
+
+  // 5. 690/710 경계 — 덩어리 안 합계 700ms
+  const b690 = playThen([[QUIET, 100], [LOUD, 690], [QUIET, 400]]);
+  add(
+    "690ms 소리 → 끼어들기 없음 · 짧은 소리 1 · 마이크 닫힌 채 · 기록 690ms/-25 dBFS",
+    b690.all.length === 0 && b690.st.stats.shortSounds === 1 && b690.st.stats.bargeIns === 0 && !b690.st.micOpen &&
+      JSON.stringify(b690.st.stats.recent) === JSON.stringify([{ voicedMs: 690, spanMs: 680, peakDb: -25, cut: false }]),
+    JSON.stringify(b690.st.stats.recent),
+  );
+  const b710 = playThen([[QUIET, 100], [LOUD, 710], [QUIET, 400]], { responseActive: true });
+  add(
+    "710ms 소리 → 소리 시작 700ms 되는 프레임에 끼어들기(진행 중 응답 → cancel + clear) · 마이크 켬 · 셈 1",
+    acts(b710.all) === acts([{ type: "cut_teacher", cancelResponse: true }]) && b710.firstActAt === 100 + 700 && b710.st.micOpen && b710.st.cut && b710.st.stats.bargeIns === 1,
+    `동작 ${acts(b710.all)} @${b710.firstActAt}ms`,
+  );
+  const bDone = playThen([[QUIET, 100], [LOUD, 1_200]], { responseActive: false });
+  add("생성이 끝나 소리만 남았으면 끼어들기 = clear만(cancel 없음 — 진행 중 응답 없이 cancel은 서버 오류)", acts(bDone.all) === acts([{ type: "cut_teacher", cancelResponse: false }]), acts(bDone.all));
+  add("한 재생에서 끊기는 한 번(끊은 뒤 1.2초 말해도 동작 1)", bDone.all.length === 1 && bDone.st.stats.bargeIns === 1);
+
+  // 6. 짧은 덩어리 여러 개 — 틈이 250ms를 넘으면 따로, 넘지 않으면 한 덩어리
+  const chunks = playThen([[LOUD, 200], [QUIET, 300], [LOUD, 200], [QUIET, 300], [LOUD, 200], [QUIET, 300], [LOUD, 200], [QUIET, 300]]);
+  add(
+    "200ms 소리 넷(틈 300ms — \"음… 어… 응… 네\") → 합 800ms여도 끼어들기 없음 · 짧은 소리 4",
+    chunks.all.length === 0 && chunks.st.stats.shortSounds === 4 && !chunks.st.micOpen,
+    JSON.stringify(chunks.st.stats),
+  );
+  const joined = playThen([[LOUD, 200], [QUIET, 240], [LOUD, 200], [QUIET, 240], [LOUD, 200], [QUIET, 240], [LOUD, 200]]);
+  add(
+    "200ms 소리 넷(틈 240ms — 음절 사이 틈) → 한 덩어리로 합 700ms에서 끼어들기",
+    acts(joined.all) === acts([{ type: "cut_teacher", cancelResponse: false }]) && joined.st.stats.shortSounds === 0 && joined.firstActAt === 3 * 440 + 100,
+    `@${joined.firstActAt}`,
+  );
+  const gap260 = playThen([[LOUD, 400], [QUIET, 260], [LOUD, 400], [QUIET, 300]]);
+  const gap250 = playThen([[LOUD, 400], [QUIET, 250], [LOUD, 400]]);
+  add(
+    "틈 경계: 260ms 틈이면 따로(400+400 끼어들기 없음), 250ms 틈이면 이어짐(700에서 끼어들기)",
+    gap260.all.length === 0 && gap260.st.stats.shortSounds === 2 && gap250.all.length === 1,
+    `${acts(gap260.all)} · ${acts(gap250.all)}`,
+  );
+
+  // 7. 잡음 바닥 변화 — 같은 -40 dBFS 1초가 조용한 방에선 끼어들기, 시끄러운 방(바닥 -35)에선 소리로 안 봄
+  const quietRoom = playThen([[-40, 1_000]], { floor: -70 });
+  const noisyRoom = playThen([[-40, 1_000]], { floor: -35 });
+  add(
+    "같은 -40 dBFS 1초: 조용한 방(문턱 -45) → 끼어들기 · 시끄러운 방(바닥 -35 → 문턱 -20) → 동작 0·덩어리 0",
+    quietRoom.all.length === 1 && noisyRoom.all.length === 0 && noisyRoom.st.stats.thresholdDb === -20 && noisyRoom.st.stats.shortSounds === 0,
+    `${noisyRoom.st.stats.thresholdDb}`,
+  );
+  add(
+    "문턱 바로 아래(-46 dBFS) 소리는 아무리 길어도 끼어들기가 아님(조용한 방 — 새어 든 잔향 크기)",
+    playThen([[-46, 3_000]]).all.length === 0 && playThen([[-45, 800]]).all.length === 1,
+  );
+
+  // 8. 프레임 공백 — 타이머가 멈췄다 돌아온 시간은 120ms까지만 소리로 센다
+  const stall = reduceTalkBargeInEvents(
+    [play(T0), { type: "level" as const, now: T0 + 10, db: LOUD, responseActive: false }, { type: "level" as const, now: T0 + 2_010, db: LOUD, responseActive: false }],
+    warm(),
+  );
+  add("프레임 사이 2초 공백은 120ms만 셈(끼어들기 없음)", stall.actions.length === 0 && stall.state.run?.voicedMs === 10 + TALK_LEVEL_FRAME_MAX_MS, String(stall.state.run?.voicedMs));
+
+  // 9. 재생 끝·다음 재생
+  const endMid = reduceTalkBargeIn(playThen([[LOUD, 400]]).st, stopA(T0 + 500));
+  add(
+    "말하는 중에 선생님 소리가 먼저 끝나면 판정을 거둠(짧은 소리로 세지 않음) · 마이크 켬(이제 서버가 은우 말을 듣는다)",
+    endMid.state.micOpen && endMid.state.stats.shortSounds === 0 && endMid.state.stats.bargeIns === 0 && endMid.actions.length === 0,
+  );
+  const quietPeak = reduceTalkBargeIn(playThen([[-52, 500], [-49, 300]]).st, stopA(T0 + 900)).state.stats.quietPeakDb;
+  const cutPeak = reduceTalkBargeIn(bDone.st, stopA(T0 + 1_500)).state.stats.quietPeakDb;
+  add("진단 — 끊지 않은 재생 중 최대 음량 -49 dBFS를 남김 · 끊은 재생은 남기지 않음", quietPeak === -49 && cutPeak === null, `${quietPeak} · ${cutPeak}`);
+  const next = reduceTalkBargeIn(reduceTalkBargeIn(bDone.st, stopA(T0 + 1_500)).state, play(T0 + 2_000, "r2"));
+  add("다음 재생은 다시 마이크를 끄고 새로 판정(끊음 표시 초기화 · 재생 셈 2)", !next.state.micOpen && !next.state.cut && next.state.stats.playbacks === 2);
+
+  // 10. 늦게 온 앞 응답의 멈춤(QA cutoff_2 P3-B) — 지금 재생과 id가 다르면 무시
+  const r2 = reduceTalkBargeIn(p1.state, play(T0 + 100, "r2"));
+  const stale = reduceTalkBargeIn(r2.state, stopA(T0 + 200, "r1"));
+  const fresh2 = reduceTalkBargeIn(stale.state, stopA(T0 + 300, "r2"));
+  const noId = reduceTalkBargeIn(r2.state, stopA(T0 + 200, null));
+  add(
+    "다음 응답(r2) 재생 중 늦게 온 r1 cleared → 마이크 닫힌 채 · r2 stopped → 켬 · id 없는 멈춤은 받아들임",
+    r2.state.stats.playbacks === 2 && stale.state === r2.state && !stale.state.micOpen && fresh2.state.micOpen && noId.state.micOpen,
+  );
+
+  // 11. 닫힌 동안 끝난 서버 말소리 — 그 조각의 자동 응답만 1회 취소(1.5초 안, 앱이 청하지 않은 것)
+  const gated = reduceTalkBargeInEvents([{ type: "child_speech_started", now: T0 - 200 }, play(T0), { type: "child_speech_stopped", now: T0 + 400 }], warm()).state;
+  add("재생 전에 듣기 시작한 말이 마이크가 닫힌 동안 끝남 → 취소 예약(말 끝 + 1.5초)", gated.suppressUntil === T0 + 400 + TALK_AUTO_REPLY_WAIT_MS, String(gated.suppressUntil));
+  const gc = reduceTalkBargeIn(gated, created(T0 + 500, "resp_frag"));
+  add(
+    "그 뒤 1.5초 안 자동 응답 → cancel_reply(그 id) · 셈 1 · 다음 응답은 건드리지 않음",
+    acts(gc.actions) === acts([{ type: "cancel_reply", responseId: "resp_frag" }]) && gc.state.stats.repliesCancelled === 1 && reduceTalkBargeIn(gc.state, created(T0 + 600, "resp_next")).actions.length === 0,
+    acts(gc.actions),
+  );
+  add(
+    "예약 만료(1.5초 넘어 온 응답)·앱이 청한 응답(인사·도움 요청·마무리)·새 말소리로 거둔 예약은 취소하지 않음 · tick이 만료를 거둠",
+    reduceTalkBargeIn(gated, created(T0 + 400 + TALK_AUTO_REPLY_WAIT_MS + 1, "late")).actions.length === 0 &&
+      reduceTalkBargeIn(gated, created(T0 + 500, "nudge", true)).actions.length === 0 &&
+      reduceTalkBargeInEvents([{ type: "child_speech_started", now: T0 + 450 }, created(T0 + 500, "real")], gated).actions.length === 0 &&
+      reduceTalkBargeIn(gated, { type: "tick", now: T0 + 400 + TALK_AUTO_REPLY_WAIT_MS + 1 }).state.suppressUntil === null,
+  );
+  const openStop = reduceTalkBargeInEvents([{ type: "child_speech_started", now: T0 }, { type: "child_speech_stopped", now: T0 + 900 }, created(T0 + 1_000, "reply")], warm());
+  const afterCut = reduceTalkBargeInEvents([{ type: "child_speech_stopped", now: T0 + 1_400 }, created(T0 + 1_500, "reply_after_cut")], bDone.st);
+  add(
+    "마이크가 열린 채 끝난 말(재생 없음·끼어들어 켠 뒤)의 자동 응답은 취소하지 않음(은우 말에 대한 대답)",
+    openStop.actions.length === 0 && afterCut.actions.length === 0,
+    `${acts(openStop.actions)} · ${acts(afterCut.actions)}`,
+  );
+
+  // 12. 같은 객체·기록 상한
+  const idle = fresh();
+  add("판정 대기·예약이 없으면 tick·created·말소리 이벤트가 상태를 바꾸지 않음(같은 객체)", reduceTalkBargeIn(idle, { type: "tick", now: T0 }).state === idle && reduceTalkBargeIn(idle, created(T0, "r")).state === idle && reduceTalkBargeIn(idle, { type: "child_speech_stopped", now: T0 }).state === idle && reduceTalkBargeIn(idle, stopA(T0)).state === idle);
+  let many = warm();
+  for (let i = 0; i < 12; i++) {
+    const base = T0 + i * 10_000;
+    many = reduceTalkBargeIn(many, play(base, `m${i}`)).state;
+    many = reduceTalkBargeInEvents(talkLevelFrames(base, [[LOUD, 200], [QUIET, 400]], F), many).state;
+    many = reduceTalkBargeIn(many, stopA(base + 2_000, `m${i}`)).state;
+  }
+  add("최근 소리 덩어리 기록은 8개까지(오래된 것부터 버림)·셈은 전부", many.stats.recent.length === TALK_BARGE_IN_RECENT_MAX && many.stats.shortSounds === 12 && many.stats.playbacks === 12, JSON.stringify(many.stats).slice(0, 140));
+  const lf = talkLevelFrames(100, [[-30, 30], [-60, 20]], 10, true);
+  add("talkLevelFrames: 구간 길이/간격만큼 프레임 · 첫 시각 = 시작 + 간격", lf.length === 5 && lf[0].now === 110 && lf[2].db === -30 && lf[3].db === -60 && lf[4].now === 150 && lf.every((f) => f.responseActive));
+  return results;
+}
+
+/**
+ * 반이중 배선(§12-1) — 브라우저 API라 오프라인으로 태울 수 없는 자리를 소스로 잠근다(주석을 걷고 본다).
+ * 복제 트랙으로 듣기(원본을 끄면 원본 소스는 무음), destination에 잇지 않기(되울림), 탭 안 컨텍스트(마이크 요청 뒤), enabled로 끄기.
+ */
+function runTalkHalfDuplexStaticChecks(): CheckResult[] {
+  const results: CheckResult[] = [];
+  const add = talkAdder(results, "자유대화 정적");
+  const read = (rel: string) => readFileSync(new URL(`../${rel}`, import.meta.url), "utf-8").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+  const meter = read("lib/talk-level-meter.ts");
+  add(
+    "레벨 미터는 마이크 트랙의 복제로 듣고(track.clone → MediaStream([clone])) destination에 잇지 않으며 멈출 때 복제를 stop",
+    /clone = track\.clone\(\)/.test(meter) && /createMediaStreamSource\(new MediaStream\(\[clone\]\)\)/.test(meter) && !/\.destination/.test(meter) && /clone\.stop\(\)/.test(meter),
+  );
+  const start = read("components/talk-start-view.tsx");
+  const micAt = start.indexOf("acquireMicStream()");
+  const ctxAt = start.indexOf("createTalkLevelContext()");
+  add(
+    "📞 탭 핸들러가 레벨 컨텍스트를 마이크 요청 뒤에 동기로 만들어 컨트롤러에 넘김(iOS — 탭 밖 컨텍스트는 suspended)",
+    micAt > 0 && ctxAt > micAt && /new TalkCallController\(\{[^}]*levelContext[^}]*\}\)/.test(start) && !/await[^;]*createTalkLevelContext/.test(start),
+    `mic@${micAt} ctx@${ctxAt}`,
+  );
+  const ctl = read("lib/talk-realtime.ts");
+  add(
+    "컨트롤러는 서버로 가는 트랙을 enabled로만 켜고 끔(replaceTrack 없음) · end에서 미터 멈춤과 컨텍스트 닫기",
+    /t\.enabled = open/.test(ctl) && !/replaceTrack\(/.test(ctl) && /this\.stopMeter\(\);[\s\S]{0,40}closeTalkLevelContext\(this\.opts\.levelContext\)/.test(ctl),
+  );
   return results;
 }
 
@@ -5819,6 +6143,222 @@ async function runTalkControllerChecks(): Promise<CheckResult[]> {
       hHeld && hAfter.creates === 1 && !hAfter.held && H.creates() === 1 && JSON.stringify(H.teacherAfter("h_c2")) === '["reply"]',
       JSON.stringify({ hHeld, hAfter, end: H.creates(), after: H.teacherAfter("h_c2") }),
     );
+
+    // ── 반이중 마이크 + 기기 판정 끼어들기(2026-10-03 두 번째 수정 — §12-1): 선생님 재생 중 서버로 가는 트랙을 끄고, 레벨 미터(손으로 넣는
+    //    음량 열 — 40ms 프레임)가 덩어리 안 합계 700ms를 넘을 때만 cancel·clear를 보내고 트랙을 켠다. ScriptedTransport는 보낸 이벤트를
+    //    쌓기만 하고, 서버 반응은 손으로 흘린다(실서버 순서 — 생성이 재생보다 먼저 끝난다).
+    const biTrack = { kind: "audio", enabled: true, readyState: "live" } as unknown as MediaStreamTrack;
+    const biMic: MicStreamHandle = { stream: { getAudioTracks: () => [biTrack] } as unknown as MediaStream, release() {} };
+    let biFrame: ((now: number, db: number) => void) | null = null;
+    let biMeterStops = 0;
+    let biCtxCloses = 0;
+    const biCtx = {
+      state: "running",
+      close() {
+        biCtxCloses += 1;
+        (this as { state: string }).state = "closed";
+        return Promise.resolve();
+      },
+    } as unknown as AudioContext;
+    const biMeter: TalkLevelMeter = {
+      offReason: null,
+      start(cb) {
+        biFrame = cb;
+      },
+      stop() {
+        biMeterStops += 1;
+      },
+    };
+    const biTr = new ScriptedTransport();
+    const biC = new TalkCallController({
+      topic: { kind: "preset", key: "animals" },
+      speed: "slow",
+      notes: { greeting: "GREETING NOTE", wrapup: "WRAPUP NOTE", nudge: "NUDGE NOTE" },
+      micPromise: Promise.resolve(biMic),
+      audio,
+      labelKo: "동물",
+      createTransport: async () => biTr,
+      levelContext: biCtx,
+      createLevelMeter: () => biMeter,
+    });
+    timed.push(biC);
+    await biC.start();
+    await flush();
+    const biPriv = biC as unknown as TimedPriv;
+    /** 음량 db로 ms만큼 — 40ms 프레임마다 미터 콜백, TALK_TICK_MS마다 tick */
+    let biTickAcc = 0;
+    const biLevel = (ms: number, db: number) => {
+      for (let t = 0; t < ms; t += TALK_LEVEL_POLL_MS) {
+        clock += TALK_LEVEL_POLL_MS;
+        biFrame?.(clock, db);
+        biTickAcc += TALK_LEVEL_POLL_MS;
+        if (biTickAcc >= TALK_TICK_MS) {
+          biTickAcc = 0;
+          biPriv.onTick();
+        }
+      }
+    };
+    const iSent = (from: number) => biTr.sent.slice(from).map((e) => `${String(e.type)}${typeof e.response_id === "string" ? `:${e.response_id}` : ""}`);
+    const iSpeech = (id: string): RealtimeServerEvent => ({ type: "input_audio_buffer.speech_started", event_id: talkEid(), item_id: id, audio_start_ms: 0 });
+    const iStop = (id: string): RealtimeServerEvent => ({ type: "input_audio_buffer.speech_stopped", event_id: talkEid(), item_id: id, audio_end_ms: 0 });
+    const iCleared = (rid: string) => ({ type: "output_audio_buffer.cleared", event_id: talkEid(), response_id: rid }) as RealtimeServerEvent;
+    const iLine = (id: string) => biC.getSnapshot().lines.find((l) => l.itemId === id) ?? null;
+    // 연결 중에도 소음 바닥을 잰다(조용한 방 -70) — 문턱 -45
+    biLevel(400, -70);
+    biTr.handlers?.onOpen();
+    if (biPriv.tickTimer !== null) clearInterval(biPriv.tickTimer);
+    biLevel(200, -70);
+    add(
+      "반이중: 연결·인사 전에는 서버로 가는 트랙이 켜져 있음 · 미터는 마이크를 얻자마자 시작(연결 중 소음 바닥)",
+      biTrack.enabled && biFrame !== null && biC.getSnapshot().bargeIn.micToServer && biC.getSnapshot().bargeIn.meterOff === null,
+    );
+    // ① 인사 소리 시작 → 트랙 끔(생성 중)
+    biTr.emit(created("i_r1"), talkEv.itemAdded("i_t1", "assistant", null), audioEv("output_audio_buffer.started", "i_r1"), talkEv.outDelta("i_t1", "i_r1", "Hi! I'm Sunny."));
+    await flush();
+    const g = biC.getSnapshot().bargeIn;
+    add(
+      "반이중 ① 선생님 소리 시작(output_audio_buffer.started) → 서버로 가는 트랙 enabled=false · 재생 셈 1 · 문턱 -45(바닥 -70 + 15 → 하한)",
+      !biTrack.enabled && !g.micToServer && g.playbacks === 1 && g.thresholdDb === -45 && g.floorDb === -70,
+      JSON.stringify({ enabled: biTrack.enabled, g: { p: g.playbacks, thr: g.thresholdDb, floor: g.floorDb } }),
+    );
+    // ② 생성 중 짧은 소리 300ms → 보낸 것 0, 트랙 꺼진 채
+    let iMark = biTr.sent.length;
+    biLevel(300, -25);
+    biLevel(400, -70);
+    add(
+      "반이중 ② 재생 중 짧은 소리 0.3초 → cancel·clear 0 · 트랙 꺼진 채(서버는 못 들음) · 선생님 줄 그대로(partial) · 짧은 소리 1",
+      iSent(iMark).length === 0 && !biTrack.enabled && iLine("i_t1")?.status === "partial" && biC.getSnapshot().bargeIn.shortSounds === 1,
+      JSON.stringify({ sent: iSent(iMark), en: biTrack.enabled, t1: iLine("i_t1")?.status }),
+    );
+    // ③ 생성이 끝난 뒤(소리만 남음) 긴 말 1.2초 → 680ms까지 0, 720ms에 clear만 + 트랙 켬
+    biTr.emit(talkEv.outDone("i_t1", "i_r1", "Hi! I'm Sunny. Do you like dogs?"), talkEv.responseDone("i_r1", "completed", ["i_t1"]));
+    await flush();
+    iMark = biTr.sent.length;
+    biLevel(680, -25);
+    const before = iSent(iMark);
+    const enBefore = biTrack.enabled;
+    biLevel(40, -25);
+    const atCut = iSent(iMark);
+    add(
+      "반이중 ③ 소리만 남은 재생 중 긴 말: 680ms까지 0 · 700ms를 넘는 프레임(720ms)에 output_audio_buffer.clear만(cancel 없음) · 그 순간 트랙 켬",
+      before.length === 0 && !enBefore && JSON.stringify(atCut) === JSON.stringify(["output_audio_buffer.clear"]) && biTrack.enabled && biC.getSnapshot().bargeIn.micToServer,
+      JSON.stringify({ before, atCut, en: biTrack.enabled }),
+    );
+    biLevel(480, -25);
+    biTr.emit(iCleared("i_r1"));
+    await flush();
+    add(
+      "반이중 ③ 끊은 뒤에는 같은 재생에서 더 보내지 않음 · 서버 cleared → 그 선생님 줄 끊김(글자 유지) · 트랙 켜진 채",
+      iSent(iMark).length === 1 && iLine("i_t1")?.status === "interrupted" && (iLine("i_t1")?.text.length ?? 0) > 0 && biTrack.enabled,
+      JSON.stringify({ sent: iSent(iMark), t1: iLine("i_t1")?.status }),
+    );
+    // ④ 서버가 이제 은우 말을 듣는다 → 자동 응답(취소 안 함) → 소리 시작 → 트랙 끔 → 생성 중 긴 말 → cancel 다음 clear
+    iMark = biTr.sent.length;
+    biTr.emit(iSpeech("i_c2"));
+    biLevel(400, -25);
+    biTr.emit(iStop("i_c2"), talkEv.committed("i_c2", "i_t1"), talkEv.itemAdded("i_c2", "user", "i_t1"), talkEv.inCompleted("i_c2", "dog at home."));
+    biLevel(80, -70);
+    biTr.emit(created("i_r2"), talkEv.itemAdded("i_t2", "assistant", "i_c2"), audioEv("output_audio_buffer.started", "i_r2"), talkEv.outDelta("i_t2", "i_r2", "You have a dog!"));
+    await flush();
+    const offAgain = !biTrack.enabled;
+    add("반이중 ④ 끼어든 말이 끝난 뒤의 자동 응답은 취소하지 않음 · 그 응답 소리가 시작되면 트랙을 다시 끔", iSent(iMark).length === 0 && offAgain, JSON.stringify(iSent(iMark)));
+    biLevel(800, -25);
+    const genCut = iSent(iMark);
+    add(
+      "반이중 ④ 생성 중(진행 중 응답) 긴 말 → response.cancel 다음 output_audio_buffer.clear · 트랙 켬",
+      JSON.stringify(genCut) === JSON.stringify(["response.cancel", "output_audio_buffer.clear"]) && biTrack.enabled,
+      JSON.stringify(genCut),
+    );
+    biTr.emit(iCleared("i_r2"), talkEv.responseDone("i_r2", "cancelled", ["i_t2"]));
+    await flush();
+    biTr.emit(iSpeech("i_c3"));
+    biLevel(200, -25);
+    biTr.emit(iStop("i_c3"), talkEv.committed("i_c3", "i_t2"), talkEv.itemAdded("i_c3", "user", "i_t2"), talkEv.inCompleted("i_c3", "I want to say."));
+    biLevel(80, -70);
+    // ⑤ 보통 차례가 끝까지 재생 → 재생 끝(stopped)에 트랙 켬
+    biTr.emit(created("i_r3"), talkEv.itemAdded("i_t3", "assistant", "i_c3"), audioEv("output_audio_buffer.started", "i_r3"), talkEv.outDelta("i_t3", "i_r3", "Sure! What is it?"));
+    await flush();
+    const off3 = !biTrack.enabled;
+    biTr.emit(talkEv.outDone("i_t3", "i_r3", "Sure! What is it?"), talkEv.responseDone("i_r3", "completed", ["i_t3"]));
+    biLevel(600, -52); // 새어 든 선생님 소리(문턱 아래)
+    biTr.emit(audioEv("output_audio_buffer.stopped", "i_r3"));
+    await flush();
+    add(
+      "반이중 ⑤ 재생 끝(output_audio_buffer.stopped) → 트랙 켬 · 문턱 아래 잔향(-52)은 소리 덩어리 아님 · 끊지 않은 재생 최대 음량 -52 기록",
+      off3 && biTrack.enabled && iLine("i_t3")?.status === "final" && biC.getSnapshot().bargeIn.quietPeakDb === -52,
+      JSON.stringify({ off3, en: biTrack.enabled, peak: biC.getSnapshot().bargeIn.quietPeakDb }),
+    );
+    // ⑥ 늦게 온 앞 응답의 멈춤(QA cutoff_2 P3-B) — 다음 응답 재생 중 i_r3 cleared가 와도 트랙은 꺼진 채
+    biTr.emit(created("i_r4"), talkEv.itemAdded("i_t4", "assistant", "i_t3"), audioEv("output_audio_buffer.started", "i_r4"), talkEv.outDelta("i_t4", "i_r4", "Tell me more."));
+    await flush();
+    biTr.emit(iCleared("i_r3"));
+    await flush();
+    const staleOff = !biTrack.enabled && biC.getSnapshot().teacherSpeaking;
+    biTr.emit(talkEv.outDone("i_t4", "i_r4", "Tell me more."), talkEv.responseDone("i_r4", "completed", ["i_t4"]), audioEv("output_audio_buffer.stopped", "i_r4"));
+    await flush();
+    add(
+      "반이중 ⑥ 다음 응답(r4) 재생 중 늦게 온 r3 cleared → 트랙 꺼진 채·선생님 말하는 중 유지 → r4 stopped에 켬",
+      staleOff && biTrack.enabled && !biC.getSnapshot().teacherSpeaking,
+      JSON.stringify({ staleOff, en: biTrack.enabled }),
+    );
+    // ⑦ 재생 전에 듣기 시작한 말이 마이크가 닫힌 동안 끝남 → 그 조각의 자동 응답만 response.cancel{id}
+    iMark = biTr.sent.length;
+    biTr.emit(iSpeech("i_c5"));
+    biLevel(120, -25);
+    biTr.emit(created("i_r5"), talkEv.itemAdded("i_t5", "assistant", "i_t4"), audioEv("output_audio_buffer.started", "i_r5"), talkEv.outDelta("i_t5", "i_r5", "Great!"));
+    await flush();
+    biLevel(200, -70);
+    biTr.emit(talkEv.outDone("i_t5", "i_r5", "Great! Do you like cats?"), talkEv.responseDone("i_r5", "completed", ["i_t5"]));
+    biTr.emit(iStop("i_c5"), talkEv.committed("i_c5", "i_t5"), talkEv.itemAdded("i_c5", "user", "i_t5"));
+    biLevel(120, -70);
+    biTr.emit(created("i_r6"));
+    await flush();
+    add(
+      "반이중 ⑦ 마이크가 닫힌 동안 끝난 서버 말소리의 자동 응답만 response.cancel{response_id} (clear 없음 — 선생님 소리 그대로) · 셈 1",
+      JSON.stringify(iSent(iMark)) === JSON.stringify(["response.cancel:i_r6"]) && biC.getSnapshot().bargeIn.repliesCancelled === 1 && !biTrack.enabled,
+      JSON.stringify(iSent(iMark)),
+    );
+    biTr.emit(talkEv.responseDone("i_r6", "cancelled", []), talkEv.inCompleted("i_c5", "Um."), audioEv("output_audio_buffer.stopped", "i_r5"));
+    await flush();
+    const biStats = biC.getSnapshot().bargeIn;
+    add(
+      "반이중 진단 셈(스냅숏 bargeIn): 재생 5(취소된 r6은 소리 없음) · 기기 판정 끼어들기 2 · 짧은 소리 1 · 응답 취소 1 · 문턱 -45 · 바닥 -70 근처(은우 말 사이에도 거의 그대로) · 최근 덩어리 3(끊은 것 2)",
+      biStats.playbacks === 5 && biStats.bargeIns === 2 && biStats.shortSounds === 1 && biStats.repliesCancelled === 1 && biStats.thresholdDb === -45 &&
+        biStats.floorDb !== null && biStats.floorDb <= -66 &&
+        biStats.recent.length === 3 && biStats.recent.filter((r) => r.cut).length === 2,
+      JSON.stringify(biStats),
+    );
+    const biCreates = biTr.sent.filter((e) => e.type === "response.create").length;
+    add(
+      "반이중은 response.create를 늘리지 않음(앱 create = 첫 인사 1 — 선생님 두 명 규칙 §12-7) · 보낸 cancel·clear = 끼어들기 2회분 + 응답 취소 1",
+      biCreates === 1 && biTr.sent.filter((e) => e.type === "response.cancel" || e.type === "output_audio_buffer.clear").length === 4,
+      JSON.stringify(biTr.sent.map((e) => e.type)),
+    );
+    // ⑧ 끝내기 기다림(finishing) — 트랙을 끈 채로 두고(재생이 끝나도 켜지 않음) 판정 동작도 없음, 미터 멈춤
+    biTr.emit(created("i_r7"), talkEv.itemAdded("i_t7", "assistant", "i_c5"), audioEv("output_audio_buffer.started", "i_r7"));
+    await flush();
+    biTr.emit(audioEv("output_audio_buffer.stopped", "i_r7"), talkEv.responseDone("i_r7", "completed", []), iSpeech("i_c8"));
+    await flush();
+    biC.finish("user");
+    iMark = biTr.sent.length;
+    const stopsAtFinish = biMeterStops;
+    biLevel(1_000, -25);
+    biTr.emit(created("i_r9"), audioEv("output_audio_buffer.started", "i_r9"), audioEv("output_audio_buffer.stopped", "i_r9"));
+    await flush();
+    add(
+      "반이중 ⑧ 끝내기 기다림 중: 트랙 꺼진 채(재생이 끝나도 켜지 않음) · 미터 멈춤 · 1초 말해도 끼어들기 동작 없음(늦은 응답 취소·소리 비우기만)",
+      biC.getSnapshot().phase === "finishing" && !biTrack.enabled && stopsAtFinish >= 1 &&
+        JSON.stringify(iSent(iMark)) === JSON.stringify(["response.cancel", "output_audio_buffer.clear"]),
+      JSON.stringify({ phase: biC.getSnapshot().phase, en: biTrack.enabled, stops: stopsAtFinish, sent: iSent(iMark) }),
+    );
+    add(
+      "반이중: 레벨 미터가 없으면(트랙·컨텍스트 없음) 진단에 꺼진 이유 — 마이크는 여전히 재생 중 닫힌다(끼어들기만 없음)",
+      ctl.getSnapshot().bargeIn.meterOff === "마이크 트랙 없음",
+      String(ctl.getSnapshot().bargeIn.meterOff),
+    );
+    biC.end("user");
+    await flush();
+    add("반이중 ⑨ 끝(end — 숨김·뒤로가기·pagehide 공통) → 미터 멈춤 · 레벨 미터 오디오 컨텍스트 닫음(한 번)", biMeterStops >= 2 && biCtxCloses === 1 && biC.getSnapshot().phase === "ended", `${biMeterStops} · ${biCtxCloses}`);
   } finally {
     Date.now = realDateNow;
     for (const c of timed) c.end("user");
@@ -6174,6 +6714,8 @@ function runTalkChecks(): CheckResult[] {
     ...runTalkStreakChecks(),
     ...runTalkCardChecks(),
     ...runTalkHintsChecks(),
+    ...runTalkBargeInChecks(),
+    ...runTalkHalfDuplexStaticChecks(),
     ...runTalkSaveBodyChecks(),
     ...runTalkSceneChecks(),
     ...runTalkCardsCallChecks(),

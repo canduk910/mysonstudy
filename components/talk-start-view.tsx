@@ -7,7 +7,9 @@
  * id로 읽는다). 선생님 말 빠르기(천천히·보통). 안내문. 📞 대화 시작. 아래에 지난 대화 목록(관리 모드).
  *
  * 📞 탭 핸들러 안에서 **동기로**(첫 await 전에): 발음 큐 정지 → `unlockSpeechPlayback()`(대화 뒤 설명 낭독이 탭 밖에서도 나게) →
- * 원격 소리 요소 `play()`(재생 준비 — iOS 탭 밖 재생 잠금) → `acquireMicStream()`(getUserMedia 요청이 탭 안에서 나간다 — 권한 창).
+ * 원격 소리 요소 `play()`(재생 준비 — iOS 탭 밖 재생 잠금) → `acquireMicStream()`(getUserMedia 요청이 탭 안에서 나간다 — 권한 창)
+ * → 레벨 미터용 AudioContext(`createTalkLevelContext` — 선생님 재생 중 기기 안 끼어들기 판정, §12-1. iOS는 탭 밖에서 만든 컨텍스트가
+ * suspended로 남는다. 세션 전환(play-and-record)이 먼저 걸리도록 마이크 요청 **뒤에** 만든다. 닫는 것은 컨트롤러의 end).
  * 그다음 컨트롤러가 주제 일러스트(`/scene`)와 연결(`/connect`)을 **병렬로** 시작한다.
  *
  * 프롬프트 원문(첫 인사·마무리·도움 요청)은 서버 컴포넌트가 props(`notes`)로 내린다 — 이 파일은 lib/ai를 값으로 import하지 않는다.
@@ -19,6 +21,7 @@ import TalkCallOverlay from "@/components/talk-call-overlay";
 import TalkHistoryList from "@/components/talk-history-list";
 import { acquireMicStream } from "@/lib/mic-session";
 import { stopSpeaking, unlockSpeechPlayback } from "@/lib/speech";
+import { createTalkLevelContext } from "@/lib/talk-level-meter";
 import type { TalkHistoryItem, TalkTopicRequest, TalkVocabBookOption } from "@/lib/talk-contract";
 import { TalkCallController, type TalkAppNotes } from "@/lib/talk-realtime";
 import {
@@ -84,7 +87,8 @@ export default function TalkStartView({
     }
     const micPromise = acquireMicStream(); // getUserMedia 요청이 이 탭 안에서 나간다(권한 창)
     micPromise.catch(() => {}); // 실패는 컨트롤러가 받아 화면에 보인다
-    const controller = new TalkCallController({ topic, speed, notes, micPromise, audio, labelKo });
+    const levelContext = createTalkLevelContext(); // 선생님 재생 중 기기 안 끼어들기 판정(§12-1) — 탭 안에서(iOS), 마이크 요청 뒤에
+    const controller = new TalkCallController({ topic, speed, notes, micPromise, audio, labelKo, levelContext });
     setCall(controller);
     void controller.start();
   }
@@ -187,7 +191,7 @@ export default function TalkStartView({
           <ul className={s.noticeList}>
             <li>어른과 함께 해요.</li>
             <li>이름·학교·주소는 말하지 않아요.</li>
-            <li>이어폰이 있으면 더 잘 들려요.</li>
+            <li>이어폰을 끼면 선생님 말이 더 잘 들리고 덜 끊겨요.</li>
           </ul>
         </div>
         <button type="button" className={`u-btn u-btn-primary ${s.startBtn}`} onClick={onStart} disabled={!topic || call !== null}>

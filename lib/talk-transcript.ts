@@ -15,6 +15,10 @@
  * 3. 선생님 글자: `response.output_audio_transcript.delta` 이어 붙임, `.done` 교체(`final`).
  * 4. `response.done` status `cancelled`(또는 `failed`) → 그 선생님 줄 `interrupted`(글자는 남긴다). `incomplete` + `content_filter` →
  *    `filtered`. 글자가 하나도 오기 전에 끊긴 줄은 화면에서 숨긴다(`isVisibleTalkLine`).
+ *    **재생 중 잘림**(2026-10-03 — QA talk-cutoff P2-A): 응답 생성이 끝난 뒤(completed) 소리가 재생되는 중에 잘리면 서버는 response.done을
+ *    다시 보내지 않고 `output_audio_buffer.cleared{response_id}`·`conversation.item.truncated{item_id}`만 보낸다 — 둘 다 그 선생님 줄을
+ *    `interrupted`로 둔다(글자는 남긴다). cleared가 줄보다 먼저 오면 응답 id를 기억해 두었다가 줄이 생길 때 끊김으로 만든다. 같은 응답의
+ *    소리가 이미 끝까지 났으면(`output_audio_buffer.stopped` 뒤의 cleared) 끊김으로 보지 않는다.
  * 5. 앱이 넣은 숨은 항목(아이디 접두사 `app_` — 첫 인사·마무리·도움 요청·일러스트 안내 system 메시지, 도구 호출 결과)과
  *    **선생님의 도구 호출 항목(`function_call`, §12-6)**은 줄로 만들지 않는다 — 그 항목을 가리키는 연결은 건너 이어 준다
  *    (도구 호출이 선생님 말 앞뒤에 끼어도 스크립트 순서가 흔들리지 않게).
@@ -77,6 +81,10 @@ export interface TalkTranscriptState {
   pendingOrigin: TalkAppOrigin | null;
   /** 응답 id → 출처(response.created 때 정한다). 같은 created가 두 번 와도 다시 정하지 않는다(멱등) */
   originOfResponse: Readonly<Record<string, TalkTurnOrigin>>;
+  /** 소리가 재생 중에 잘린 응답(output_audio_buffer.cleared) — 그 응답의 선생님 줄은 끊김(줄이 늦게 생겨도) */
+  cutResponses: Readonly<Record<string, true>>;
+  /** 소리가 끝까지 난 응답(output_audio_buffer.stopped) — 그 뒤에 온 cleared는 끊김으로 보지 않는다 */
+  playedResponses: Readonly<Record<string, true>>;
 }
 
 /** 앱이 `conversation.item.create`로 넣는 숨은 항목의 아이디 접두사(§12-2 5). 앱은 이 상수로 id를 만든다. */
@@ -104,11 +112,28 @@ export const TALK_REALTIME_EVENTS = {
   outputDone: "response.output_audio_transcript.done",
   responseCreated: "response.created",
   responseDone: "response.done",
+  /** 재생 중 잘림(2026-10-03) — 그 항목의 선생님 줄을 끊김으로 */
+  itemTruncated: "conversation.item.truncated",
+  /** 재생 중 잘림(2026-10-03) — 그 응답의 선생님 줄을 끊김으로 */
+  audioCleared: "output_audio_buffer.cleared",
+  /** 소리가 끝까지 났다 — 뒤늦은 cleared를 끊김으로 보지 않게 */
+  audioStopped: "output_audio_buffer.stopped",
 } as const satisfies Record<string, RealtimeServerEvent["type"]>;
 
 /** 빈 스크립트(대화 시작 상태) */
 export function createTalkTranscript(): TalkTranscriptState {
-  return { lines: [], placedAfter: {}, hidden: {}, responseOf: {}, textDone: {}, seenDeltas: {}, pendingOrigin: null, originOfResponse: {} };
+  return {
+    lines: [],
+    placedAfter: {},
+    hidden: {},
+    responseOf: {},
+    textDone: {},
+    seenDeltas: {},
+    pendingOrigin: null,
+    originOfResponse: {},
+    cutResponses: {},
+    playedResponses: {},
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +291,8 @@ function rememberResponse(s: TalkTranscriptState, itemId: string, responseId: st
   if (line && line.speaker === "teacher") {
     const origin = Object.prototype.hasOwnProperty.call(next.originOfResponse, responseId) ? next.originOfResponse[responseId] : "reply";
     next = patchLine(next, itemId, { origin });
+    // 소리가 먼저 잘린 응답의 줄(cleared가 글자보다 먼저 왔다) — 끊김(2026-10-03)
+    if (next.cutResponses[responseId]) next = patchLine(next, itemId, { status: "interrupted" });
   }
   return next;
 }
@@ -342,6 +369,41 @@ function onResponseDone(s: TalkTranscriptState, ev: Rec): TalkTranscriptState {
   return next;
 }
 
+/** 선생님 줄 하나를 끊김으로(글자는 남긴다). 선생님 줄이 아니면 그대로. */
+function markInterrupted(s: TalkTranscriptState, itemId: string): TalkTranscriptState {
+  const i = findIndex(s.lines, itemId);
+  if (i < 0 || s.lines[i].speaker !== "teacher") return s;
+  return patchLine(s, itemId, { status: "interrupted" });
+}
+
+/** conversation.item.truncated{item_id} — 재생 중 잘린 선생님 항목(2026-10-03, §12-2 4) */
+function onItemTruncated(s: TalkTranscriptState, ev: Rec): TalkTranscriptState {
+  const id = str(ev.item_id);
+  if (id === null || isHidden(id)) return s;
+  return markInterrupted(s, id);
+}
+
+/**
+ * output_audio_buffer.cleared{response_id} — 그 응답의 소리가 재생 중에 잘렸다(2026-10-03, §12-2 4). 그 응답의 선생님 줄을 끊김으로 두고,
+ * 줄이 아직 없으면 응답 id를 기억한다(rememberResponse가 줄이 생길 때 끊김으로). 소리가 이미 끝까지 났으면(stopped 뒤의 cleared) 무시한다.
+ */
+function onAudioCleared(s: TalkTranscriptState, ev: Rec): TalkTranscriptState {
+  const responseId = str(ev.response_id);
+  if (responseId === null || s.playedResponses[responseId]) return s;
+  let next = s.cutResponses[responseId] ? s : { ...s, cutResponses: { ...s.cutResponses, [responseId]: true as const } };
+  for (const line of s.lines) {
+    if (line.speaker === "teacher" && s.responseOf[line.itemId] === responseId) next = markInterrupted(next, line.itemId);
+  }
+  return next;
+}
+
+/** output_audio_buffer.stopped{response_id} — 그 응답의 소리가 끝까지 났다(뒤늦은 cleared를 끊김으로 보지 않게) */
+function onAudioStopped(s: TalkTranscriptState, ev: Rec): TalkTranscriptState {
+  const responseId = str(ev.response_id);
+  if (responseId === null || s.playedResponses[responseId] || s.cutResponses[responseId]) return s;
+  return { ...s, playedResponses: { ...s.playedResponses, [responseId]: true } };
+}
+
 // ---------------------------------------------------------------------------
 // 리듀서
 // ---------------------------------------------------------------------------
@@ -375,6 +437,12 @@ export function reduceTalkTranscript(state: TalkTranscriptState, event: unknown)
       return onResponseCreated(state, event);
     case E.responseDone:
       return onResponseDone(state, event);
+    case E.itemTruncated:
+      return onItemTruncated(state, event);
+    case E.audioCleared:
+      return onAudioCleared(state, event);
+    case E.audioStopped:
+      return onAudioStopped(state, event);
     default:
       return state;
   }

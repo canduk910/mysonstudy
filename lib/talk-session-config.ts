@@ -248,7 +248,9 @@ export function buildTalkSceneEn(topic: TalkTopic): string {
  * - 전사: 모델 + `language: "en"`(영어 고정 — 자동 감지가 아이 영어를 다른 언어로 적던 것, 2026-09-27). **prompt·keywords 지정
  *   없음** — 단어장 단어를 넣으면 하지 않은 말이 맞게 적힐 위험(토익 관문 T와 같은 원칙 — 토익도 language en·prompt 없음).
  *   eval이 키 목록이 정확히 {model, language}인지 본다.
- * - 턴 감지: semantic_vad, eagerness low(아이의 긴 쉼·"음…"에서 끊지 않게, 최대 약 8초), 응답 자동 생성·끼어들기 허용.
+ * - 턴 감지: semantic_vad, eagerness low(아이의 긴 쉼·"음…"에서 끊지 않게, 최대 약 8초), 응답 자동 생성은 켜고 **서버 끼어들기는
+ *   끈다**(`interrupt_response: false`, 2026-10-03 — 말소리 시작만으로 서버가 선생님 소리를 잘라 "음"·맞장구·스피커 잔향에도 말이
+ *   중간마다 끊겼다). 진짜 끼어들기(선생님 소리 위 은우 말소리 700ms 이상)는 앱이 판정해 멈춘다(lib/talk-barge-in.ts, §12-1).
  * - 소음 억제: far_field(폰을 들고 스피커로 말하는 상황).
  * - 도구 없음(§12-7): `tools`·`tool_choice`를 싣지 않는다 — 선생님은 한 차례를 한 번에 말하고(지시문 끝 TALK_TURN_RULES),
  *   화면 카드는 앱이 선생님 줄마다 호출 J(`POST /api/english/talk/cards`)로 따로 만든다. eval이 두 키가 없는지 본다.
@@ -266,7 +268,7 @@ export function buildTalkSessionConfig(args: { topic: TalkTopic; speed: TalkSpee
     audio: {
       input: {
         transcription: { model: resolveTalkTranscribeModel(), language: TALK_TRANSCRIBE_LANGUAGE },
-        turn_detection: { type: "semantic_vad", eagerness: "low", create_response: true, interrupt_response: true },
+        turn_detection: { type: "semantic_vad", eagerness: "low", create_response: true, interrupt_response: false },
         noise_reduction: { type: "far_field" },
       },
       output: {

@@ -16,8 +16,16 @@
  *   VAD 자동 응답이 **하나** 나간다.
  * - 은우 발화는 조종 손잡이 `window.__talkFake`(개발 전용)로 흘린다: `childSays(text, {late, lateMs, fail, durationMs, commitNewId})` —
  *   speech_started → stopped → committed → item.added(user) → 전사 delta/completed(late면 선생님 응답이 끝난 **뒤에** 도착 — 기본
- *   2.6초, `lateMs`로 바꾼다) → VAD 자동 응답. 선생님이 말하는 중이면 끼어들기(speech_started 뒤 output_audio_buffer.cleared +
- *   response.done cancelled — 실서버 순서). `drop()`은 연결 끊김.
+ *   2.6초, `lateMs`로 바꾼다) → VAD 자동 응답. **서버는 마이크 트랙이 켜져 있을 때만 듣는다**(2026-10-03 반이중 — 컨트롤러가 선생님
+ *   재생 중 트랙을 끈다, §12-1): 트랙이 꺼져 있으면 발화를 버린다(콘솔 `[talk-fake] (서버는 못 들음 — 마이크 꺼짐)`). 켜진 채 선생님이
+ *   말하는 중이면 **실서버 진단(2026-10-03)처럼** `interrupt_response: false`여도 말소리 시작에 서버가 스스로 선생님 소리를 자른다
+ *   (`output_audio_buffer.cleared` + `conversation.item.truncated`) — 반이중이 깨지면 e2e에서 끊김이 보이게. 응답을 만드는 중에 은우
+ *   말이 끝나면 자동 응답을 만들지 못하고 error(conversation_already_has_active_response), 생성이 끝나 소리만 남은 때면 만든다.
+ *   `drop()`은 연결 끊김.
+ * - `response.cancel`: 진행 중 응답이 없거나(생성이 끝나 소리만 남은 때 포함) `response_id`가 진행 중 응답과 다르면 error
+ *   (response_cancel_not_active — 실서버처럼 소리는 그대로). 진행 중이면 끊는다(소리 버퍼 비움 + response.done cancelled).
+ * - 속도 손잡이 `setPacing({deltaGapMs, audioTailMs})`: 선생님 글자 간격(생성 시간)·생성 끝 뒤 소리가 더 나는 시간 — 생성 중 끼어들기와
+ *   "응답이 끝난 뒤 재생 중" 끼어들기를 e2e로 가르려고. 앱이 보낸 이벤트는 콘솔에 `[talk-fake] →`로 남긴다(e2e가 읽는다).
  * - **화면 카드 흉내**(호출 J — `setCards(mode)`, 컨트롤러가 `fetchCards`로 묻는다): `route`(기본 — 가로채지 않고 실제
  *   `/api/english/talk/cards`로. 키가 없으면 501 → 기본 문구, 루프백 스텁이면 스텁 결과) · `local`(이 모듈이 선생님 대사마다 적어 둔 답
  *   예시·핵심 단어·그림을 호출 J 후처리 `sanitizeTalkScreenCards`에 통과시켜 돌려준다 — 말에 없는 그림은 버려진다) · `slow`(local을
@@ -90,6 +98,8 @@ export interface FakeTalkControls {
   drop(): void;
   /** 화면 카드 흉내 방식(기본 route) */
   setCards(mode: FakeCardsMode): void;
+  /** 선생님 응답 속도 — 글자 간격(ms, 생성 시간)·생성 끝 뒤 소리가 더 나는 시간(ms). null이면 기본으로 */
+  setPacing(p: { deltaGapMs?: number | null; audioTailMs?: number | null }): void;
   /** 앱이 보낸 클라이언트 이벤트(모양 그대로) */
   readonly sent: readonly Record<string, unknown>[];
   /** 흘려보낸 서버 이벤트 */
@@ -109,6 +119,12 @@ export interface FakeTalkControls {
     appResponseCreates: number;
     /** 은우 발화 뒤 서버 자동 응답 수 */
     autoReplies: number;
+    /** 서버로 가는 마이크 트랙이 켜져 있다(트랙이 없으면 null) — 반이중 e2e */
+    micEnabled: boolean | null;
+    /** 마이크가 꺼져 서버가 버린 발화 수 */
+    unheard: number;
+    /** 서버가 말소리 시작에 스스로 자른 선생님 소리 수(반이중이 깨졌을 때만 생긴다) */
+    serverCuts: number;
   };
 }
 
@@ -177,6 +193,9 @@ class FakeTalkTransport implements TalkTransport {
   private appResponseCreates = 0;
   private topic: TalkTopic | null = null;
   private cardsMode: FakeCardsMode = "route";
+  /** setPacing — null이면 기본(DELTA_GAP_MS·글자 길이로 정한 재생 시간) */
+  private deltaGapMs: number | null = null;
+  private audioTailMs: number | null = null;
   /** 선생님 대사 → 그 대사의 카드 흉내 값(local) */
   private cardsByText = new Map<string, FakePlan>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
@@ -187,6 +206,20 @@ class FakeTalkTransport implements TalkTransport {
   private vadOff = false;
   /** 말하는 중인 은우 발화(speech_started ~ 커밋 전) */
   private utterance: { itemId: string; text: string; opts: FakeChildOpts; bucket: Set<ReturnType<typeof setTimeout>> } | null = null;
+  /** 입력 소리 시각(audio_start_ms·audio_end_ms)의 기준 */
+  private readonly bornAt = Date.now();
+  private unheard = 0;
+  private serverCuts = 0;
+
+  /** mic = 컨트롤러가 서버로 보내는 마이크 스트림(실제 전송이라면 피어 연결에 실릴 트랙) — 켜짐 여부로 서버가 듣는지 정한다 */
+  constructor(private readonly mic: MediaStream | null = null) {}
+
+  /** 서버가 은우 소리를 들을 수 있는가(트랙이 없으면 늘 듣는다 — eval·트랙 없는 환경) */
+  private micEnabled(): boolean | null {
+    const tracks = this.mic?.getAudioTracks() ?? [];
+    if (tracks.length === 0) return null;
+    return tracks.some((t) => t.enabled && t.readyState !== "ended");
+  }
   readonly sent: Record<string, unknown>[] = [];
   readonly emitted: Record<string, unknown>[] = [];
   readonly cardsCalls: { mode: FakeCardsMode; body: TalkCardsRequest }[] = [];
@@ -224,6 +257,10 @@ class FakeTalkTransport implements TalkTransport {
       setCards: (mode) => {
         this.cardsMode = mode;
       },
+      setPacing: (p) => {
+        if (p.deltaGapMs !== undefined) this.deltaGapMs = p.deltaGapMs === null ? null : Math.max(10, p.deltaGapMs);
+        if (p.audioTailMs !== undefined) this.audioTailMs = p.audioTailMs === null ? null : Math.max(0, p.audioTailMs);
+      },
       sent: this.sent,
       emitted: this.emitted,
       cardsCalls: this.cardsCalls,
@@ -237,6 +274,9 @@ class FakeTalkTransport implements TalkTransport {
         cardsMode: this.cardsMode,
         appResponseCreates: this.appResponseCreates,
         autoReplies: this.autoReplies,
+        micEnabled: this.micEnabled(),
+        unheard: this.unheard,
+        serverCuts: this.serverCuts,
       }),
     };
   }
@@ -299,6 +339,8 @@ class FakeTalkTransport implements TalkTransport {
     if (this.closed || !this.open) return;
     const ev = event as Record<string, unknown>;
     this.sent.push(ev);
+    // e2e가 콘솔로 읽는다(개발 전용 모듈) — 앱이 보낸 이벤트 종류와 응답 id만
+    console.info(`[talk-fake] → ${String(ev.type)}${typeof ev.response_id === "string" ? ` ${ev.response_id}` : ""}`);
     if (ev.type === "conversation.item.create") {
       const item = (ev.item ?? {}) as Record<string, unknown>;
       const id = typeof item.id === "string" ? item.id : `item_x${++this.itemSeq}`;
@@ -321,6 +363,13 @@ class FakeTalkTransport implements TalkTransport {
       return;
     }
     if (ev.type === "response.cancel") {
+      const a = this.active;
+      const wanted = typeof ev.response_id === "string" ? ev.response_id : null;
+      if (!a || a.done || (wanted !== null && wanted !== a.id)) {
+        // 실서버: 취소할 응답이 없으면 오류(세션은 그대로 — 생성이 끝나 소리만 남은 때도 소리는 계속 난다)
+        this.emit({ type: "error", error: { type: "invalid_request_error", code: "response_cancel_not_active", message: "fake: no active response" } });
+        return;
+      }
       this.cancelActive("client_cancelled");
       return;
     }
@@ -423,9 +472,10 @@ class FakeTalkTransport implements TalkTransport {
     );
     t += 60;
     const words = text.split(/(\s+)/).filter((w) => w !== "");
+    const gap = this.deltaGapMs ?? DELTA_GAP_MS;
     for (const w of words) {
       this.later(t, () => this.emit({ type: "response.output_audio_transcript.delta", response_id: id, item_id: itemId, delta: w }), bucket);
-      t += DELTA_GAP_MS;
+      t += gap;
     }
     this.later(t, () => this.emit({ type: "response.output_audio_transcript.done", response_id: id, item_id: itemId, transcript: text }), bucket);
     output.push(msg);
@@ -433,7 +483,8 @@ class FakeTalkTransport implements TalkTransport {
     this.later(t, () => this.finishResponse(id, output), bucket);
     // 오디오 재생은 글자보다 늦게 끝난다(버퍼 비움) — stopped는 response.done 뒤
     const audioMs = Math.max(600, text.length * MS_PER_CHAR);
-    this.later(Math.max(t + AUDIO_TAIL_MS, audioMs), () => {
+    const stopAt = this.audioTailMs !== null ? t + this.audioTailMs : Math.max(t + AUDIO_TAIL_MS, audioMs);
+    this.later(stopAt, () => {
       if (this.speakingResponseId !== id) return;
       this.speakingResponseId = null;
       this.emit({ type: "output_audio_buffer.stopped", response_id: id });
@@ -454,8 +505,8 @@ class FakeTalkTransport implements TalkTransport {
     });
   }
 
-  /** 진행 중 응답을 끊는다(끼어들기·response.cancel) — 소리 버퍼 비움 + response.done cancelled */
-  private cancelActive(reason: "turn_detected" | "client_cancelled"): void {
+  /** 진행 중 응답을 끊는다(앱의 response.cancel) — 소리 버퍼 비움 + response.done cancelled */
+  private cancelActive(reason: "client_cancelled"): void {
     const a = this.active;
     if (!a) return;
     for (const t of a.timers) {
@@ -485,13 +536,26 @@ class FakeTalkTransport implements TalkTransport {
 
   private childSays(text: string, opts: FakeChildOpts): void {
     if (this.closed || !this.open || this.vadOff) return; // 턴 감지가 꺼지면 서버는 말하기 시작·끝을 알리지 않는다
+    if (this.micEnabled() === false) {
+      // 반이중: 컨트롤러가 선생님 재생 중 마이크 트랙을 껐다 — 서버에는 무음만 간다(말소리 이벤트 없음)
+      this.unheard += 1;
+      console.info("[talk-fake] (서버는 못 들음 — 마이크 꺼짐)");
+      return;
+    }
     if (this.utterance) this.endUtterance("vad"); // 앞 발화가 아직 말하는 중이면 먼저 끝낸다
     const itemId = `item_c${++this.itemSeq}`;
     const u = { itemId, text, opts, bucket: new Set<ReturnType<typeof setTimeout>>() };
     this.utterance = u; // 끼어들기 처리 중에 앱이 곧바로 커밋할 수 있다(끝내기 전 기다림) — 먼저 세워 둔다
-    this.emit({ type: "input_audio_buffer.speech_started", item_id: itemId, audio_start_ms: this.seq * 10 });
-    // 선생님이 말하는 중이면 끼어들기(실서버처럼 speech_started 뒤에)
-    if (this.speakingResponseId !== null || (this.active && !this.active.done)) this.cancelActive("turn_detected");
+    this.emit({ type: "input_audio_buffer.speech_started", item_id: itemId, audio_start_ms: Date.now() - this.bornAt });
+    // 실서버 진단(2026-10-03): interrupt_response: false여도 선생님 소리 재생 중 말소리가 시작되면 서버가 스스로 소리를 자른다
+    if (this.speakingResponseId !== null && !this.closed) {
+      const rid = this.speakingResponseId;
+      const itemT = this.active && this.active.id === rid ? this.active.itemId : null;
+      this.speakingResponseId = null;
+      this.serverCuts += 1;
+      this.emit({ type: "output_audio_buffer.cleared", response_id: rid });
+      if (itemT) this.emit({ type: "conversation.item.truncated", item_id: itemT, content_index: 0, audio_end_ms: 0 });
+    }
     if (this.utterance === u) this.later(opts.durationMs ?? 700, () => this.endUtterance("vad"), u.bucket);
   }
 
@@ -506,7 +570,7 @@ class FakeTalkTransport implements TalkTransport {
     }
     const { text, opts } = u;
     const itemId = how === "manual" && opts.commitNewId ? `item_c${++this.itemSeq}` : u.itemId;
-    if (how === "vad") this.emit({ type: "input_audio_buffer.speech_stopped", item_id: itemId, audio_end_ms: this.seq * 10 });
+    if (how === "vad") this.emit({ type: "input_audio_buffer.speech_stopped", item_id: itemId, audio_end_ms: Date.now() - this.bornAt });
     const prev = this.lastItemId;
     this.emit({ type: "input_audio_buffer.committed", item_id: itemId, previous_item_id: prev });
     this.emit({
@@ -533,7 +597,11 @@ class FakeTalkTransport implements TalkTransport {
     // VAD 자동 응답(create_response: true) — 커밋 순간 정해진다(그 뒤에 턴 감지를 꺼도 나간다 → 앱이 취소해야 한다).
     // 은우의 한 번 대답에 선생님 응답은 이것 **하나**다(§12-7 — 앱은 이어 말하기를 보내지 않는다)
     this.later(200, () => {
-      if (this.active && !this.active.done) return;
+      if (this.active && !this.active.done) {
+        // 응답을 만드는 중이면 자동 응답을 만들지 못한다(interrupt_response: false — SDK 주석)
+        this.emit({ type: "error", error: { type: "invalid_request_error", code: "conversation_already_has_active_response", message: "fake: auto reply skipped" } });
+        return;
+      }
       this.autoReplies += 1;
       this.startResponse("reply");
     });
@@ -548,6 +616,7 @@ class FakeTalkTransport implements TalkTransport {
   }
 }
 
-export function createFakeTalkTransport(): TalkTransport {
-  return new FakeTalkTransport();
+/** mic = 컨트롤러가 서버로 보내는 마이크 스트림(트랙 켜짐 여부 = 서버가 듣는가) */
+export function createFakeTalkTransport(mic: MediaStream | null = null): TalkTransport {
+  return new FakeTalkTransport(mic);
 }
