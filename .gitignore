@@ -26,3 +26,6 @@ firebase-debug.log
 design/*_o.jpeg
 # 토익스피킹 유형별 공략 교재 사진(2026-09-27) — 같은 이유로 git 밖. 전사본은 data/private/
 design/toeicspeaking/
+
+# 엄마의 생활영어 교재·강의 전사·원어민 음원(저작물 — PUBLIC 저장소에 넣지 않는다)
+design/mom_english/
