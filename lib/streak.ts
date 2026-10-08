@@ -40,12 +40,19 @@ function hasAnswered(s: StreakSession): boolean {
  * @param todayKst 오늘 KST 일자 `YYYY-MM-DD`
  */
 export function computeStreak(sessions: readonly StreakSession[], todayKst: string): StreakInfo {
-  // 답한 세션만 → KST 일자 집합(같은 날 접기)
+  return computeStreakFromDays(streakDays(sessions), todayKst);
+}
+
+/**
+ * 답한 세션만 → KST 일자 집합(같은 날 접기). computeStreak의 앞단을 떼어 낸 것 —
+ * 아빠 📚 어학 트랙(§17-10)이 일본어·영어 두 트랙의 날짜를 합집합으로 접을 때 쓴다.
+ */
+export function streakDays(sessions: readonly StreakSession[]): Set<string> {
   const days = new Set<string>();
   for (const s of sessions) {
     if (hasAnswered(s)) days.add(kstDateString(s.startedAt));
   }
-  return computeStreakFromDays(days, todayKst);
+  return days;
 }
 
 /**

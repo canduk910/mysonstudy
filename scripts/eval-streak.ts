@@ -18,7 +18,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { computeStreak, computeStreakFromDays, type StreakSession } from "../lib/streak";
+import { computeStreak, computeStreakFromDays, streakDays, type StreakSession } from "../lib/streak";
 import { formatKst, formatKstDate, isZonedIsoTimestamp, kstDateString, shiftDateString } from "../lib/kst";
 import { isCountedToeicAttempt, toeicAttemptStreakLabel, toeicQuizStreakLabel, toeicStreakSessions, type ToeicQuizLabelNames } from "../lib/toeic-streak";
 import { TOEIC_GUIDE_PART_TO_MOCK_PART, isToeicGuidePart } from "../lib/toeic-guide";
@@ -385,10 +385,11 @@ const TODAY = "2026-09-21";
   //    누가 영어 날짜를 일본어·은우 계산에 섞거나(한 집합), 영어 트랙에 은우 vocabQuizzes를 넣으면 여기서 걸린다.
   const route = readFileSync(new URL("../app/api/streak/route.ts", import.meta.url), "utf-8");
   // 2026-10-03 소재별 틀 말하기(toeic.md §20-9) — 셋째 인자 frameDrills(토익 컬렉션 toeicFrameDrills)만 더해졌다
-  const wiredEnglish = /computeStreak\(\[\.\.\.toeicStreakSessions\(toeicQuizzes, toeicAttempts, frameDrills\), \.\.\.reviewStreakSessions\(reviewsOf\("toeic"\)\)\], today\)/.test(route) && /const frameDrills = toeicFrameDrills \?\? \[\];/.test(route);
+  //    2026-10-08(§17-10) — 세션을 변수(toeicSessions·jaSessions)로 받아 어학 합집합에도 쓰게 했다. 식 자체는 같다.
+  const wiredEnglish = /const toeicSessions: StreakSession\[\] = \[\.\.\.toeicStreakSessions\(toeicQuizzes, toeicAttempts, frameDrills\), \.\.\.reviewStreakSessions\(reviewsOf\("toeic"\)\)\];/.test(route) && /info: computeStreak\(toeicSessions, today\)/.test(route) && /const frameDrills = toeicFrameDrills \?\? \[\];/.test(route);
   // 은우 계산식 — §17-9부터 단어장 시험 + 자유대화(talkStreakSessions)다. 그 밖의 것(토익·일본어)은 여기 섞이지 않는다(noLeak).
   const eunwooUntouched = /computeStreak\(\[\.\.\.vocab, \.\.\.talkStreakSessions\(talks\), \.\.\.reviewStreakSessions\(reviewsOf\("english"\)\)\], today\)/.test(route);
-  const jaUntouched = /computeStreak\(\[\.\.\.jaVocab, \.\.\.jaKanji, \.\.\.reviewStreakSessions\(reviewsOf\("japanese"\)\)\], today\)/.test(route);
+  const jaUntouched = /const jaSessions: StreakSession\[\] = \[\.\.\.jaVocab, \.\.\.jaKanji, \.\.\.reviewStreakSessions\(reviewsOf\("japanese"\)\)\];/.test(route) && /info: computeStreak\(jaSessions, today\)/.test(route);
   const noLeak = !/toeicStreakSessions\([^)]*\b(vocab|jaVocab|jaKanji)\b/.test(route) && !/computeStreak\(\[\.\.\.(?:vocab|jaVocab)\b[^\]]*toeic/i.test(route);
   add(
     "영어 트랙",
@@ -699,6 +700,40 @@ const TODAY = "2026-09-21";
       /appa\.todayLabel === null\) appa\.todayLabel = reviewTodayLabel\(reviewsOf\("japanese"\)/.test(route),
     "",
   );
+}
+
+// ---------------------------------------------------------------------------
+// 10) 아빠 📚 어학 트랙(SPEC §17-10, 2026-10-08) — 일본어 + 영어 날짜의 합집합. 둘 중 하나만 해도 그날이 켜진다.
+//     은우·운동은 섞지 않는다. 헤드라인은 이 트랙 하나만(🗾·🎙️ 칸 대신) 보인다.
+// ---------------------------------------------------------------------------
+{
+  const B = "어학 트랙";
+  const TODAY10 = "2026-10-08";
+  const at = (d: string, answered = true): StreakSession => ({ startedAt: `${d}T03:00:00.000Z`, items: [{ answered }] });
+  // 일본어는 10-06·10-08, 영어는 10-07만 → 각자는 끊기지만 합치면 3일 연속
+  const ja = [at("2026-10-06"), at(TODAY10)];
+  const en = [at("2026-10-07")];
+  const merged = computeStreakFromDays(new Set([...streakDays(ja), ...streakDays(en)]), TODAY10);
+  add(B, "번갈아 해도 이어진다(일·영·일 → 3일 연속, 따로 세면 일본어 1·영어는 오늘 아직)", merged.current === 3 && merged.doneToday && computeStreak(ja, TODAY10).current === 1 && !computeStreak(en, TODAY10).doneToday, JSON.stringify(merged));
+  const enOnly = computeStreakFromDays(new Set([...streakDays([]), ...streakDays([at(TODAY10)])]), TODAY10);
+  add(B, "영어만 오늘 함 → 어학 doneToday", enOnly.doneToday && enOnly.current === 1, JSON.stringify(enOnly));
+  const both = computeStreakFromDays(new Set([...streakDays([at(TODAY10)]), ...streakDays([at(TODAY10)])]), TODAY10);
+  add(B, "같은 날 둘 다 → 하루로 접는다", both.current === 1 && both.best === 1, JSON.stringify(both));
+  const unanswered = computeStreakFromDays(new Set([...streakDays([at(TODAY10, false)]), ...streakDays([])]), TODAY10);
+  add(B, "답한 문항 0 세션은 합집합에도 안 들어간다", !unanswered.doneToday && unanswered.current === 0, JSON.stringify(unanswered));
+  add(B, "streakDays ∘ computeStreakFromDays = computeStreak(같은 결과)", JSON.stringify(computeStreakFromDays(streakDays(ja), TODAY10)) === JSON.stringify(computeStreak(ja, TODAY10)), "");
+
+  const route = readFileSync(new URL("../app/api/streak/route.ts", import.meta.url), "utf-8");
+  const wired = /computeStreakFromDays\(new Set\(\[\.\.\.streakDays\(jaSessions\), \.\.\.streakDays\(enSessions\)\]\), today\)/.test(route);
+  const noLeak = !/streakDays\((?:vocab|talks|workoutCycles)/.test(route) && (route.match(/streakDays\(/g) ?? []).length === 2;
+  const fallback = /let enSessions: StreakSession\[\] = reviewStreakSessions\(reviewsOf\("toeic"\)\);/.test(route);
+  const label = /`일본어 · \$\{appa\.todayLabel\}`/.test(route) && /`영어 · \$\{appaEnglish\.todayLabel\}`/.test(route);
+  const inBody = /appaWorkout, appaEnglish, appaLanguage \}/.test(route);
+  add(B, "/api/streak 배선: 일본어∪영어 날짜 · 은우·운동 무혼합 · 토익 읽기 실패면 토익 복습만 · 라벨 접두 · 응답에 appaLanguage", wired && noLeak && fallback && label && inBody, `배선=${wired} 무혼합=${noLeak} 폴백=${fallback} 라벨=${label} 응답=${inBody}`);
+
+  const head = readFileSync(new URL("../components/streak-headline.tsx", import.meta.url), "utf-8");
+  const one = /<Track emoji="📚" name="어학" p=\{data\?\.appaLanguage\} \/>/.test(head) && !/p=\{data\?\.appa\}/.test(head) && !/p=\{data\?\.appaEnglish\}/.test(head) && /p=\{data\?\.appaWorkout\}/.test(head);
+  add(B, "헤드라인: 아빠 칸 = 📚 어학 + 💪 운동(🗾·🎙️ 칸 없음)", one, "");
 }
 
 // ---------------------------------------------------------------------------

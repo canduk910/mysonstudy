@@ -7,14 +7,16 @@
  * 아빠·영어=토익스피킹 표현 시험(ToeicQuizRecord, 답한 문항≥1) + 모의고사 응시(ToeicAttemptRecord, 녹음된 문항≥1) — toeic.md §0-2
  *   + 소재별 틀 말하기 한 판(toeicFrameDrills, 말한 문항≥1 — toeic.md §20-9, 못 읽으면 이 기록만 빼고 계산).
  * 세 트랙(은우·일본어·영어)은 **오늘의 복습**(reviewSchedules — 복습 1개 이상 끝낸 날, SPEC §23-9)도 각자 센다(영역 = 트랙, 못 읽으면 복습만 빼고).
- * 일본어·운동·영어는 **각자의 트랙**이다(합치지 않는다). 수학·읽음·대화·생성·발화 포인트는 제외.
+ * 일본어·운동·영어는 각자 계산하고(`appa`·`appaEnglish` — 호환·라벨용으로 그대로 낸다), 헤드라인은 2026-10-08부터 일본어+영어를
+ *   **하나의 📚 어학 트랙**(`appaLanguage` — 두 트랙의 날짜를 합집합으로, 둘 중 하나만 해도 그날이 켜진다, SPEC §17-10)으로 보인다.
+ *   운동은 여전히 따로다. 수학·읽음·대화·생성·발화 포인트는 제외.
  * 새 레코드 없이 기존 기록에서 파생(§17-5) — 전체를 읽어 메모리에서 접는다(복합 인덱스 회피).
  * 캐시 없음(no-store). PIN 게이트는 proxy가 자동.
  */
 
 import { NextResponse } from "next/server";
 import { kstDateString, kstTodayString } from "@/lib/kst";
-import { computeStreak, computeStreakFromDays, type StreakSession } from "@/lib/streak";
+import { computeStreak, computeStreakFromDays, streakDays, type StreakSession } from "@/lib/streak";
 import type { PersonStreak, StreakResponse } from "@/lib/streak-contract";
 import {
   getStore,
@@ -127,7 +129,8 @@ export async function GET() {
 
   // ── 아빠 · 일본어: 일본어 단어 시험 + 한자 시험(두 컬렉션을 한 스트릭으로 접는다) ──
   // 라벨은 짧게 — 헤드라인이 "🗾 일본어"를 앞에 붙인다(§17-7).
-  const appa: PersonStreak = { info: computeStreak([...jaVocab, ...jaKanji, ...reviewStreakSessions(reviewsOf("japanese"))], today), todayLabel: null };
+  const jaSessions: StreakSession[] = [...jaVocab, ...jaKanji, ...reviewStreakSessions(reviewsOf("japanese"))];
+  const appa: PersonStreak = { info: computeStreak(jaSessions, today), todayLabel: null };
   const aVocab = todaysAnswered(jaVocab, today)[0];
   const aKanji = todaysAnswered(jaKanji, today)[0];
   if (aVocab && (!aKanji || aVocab.startedAt >= aKanji.startedAt)) {
@@ -136,6 +139,8 @@ export async function GET() {
   } else if (aKanji) {
     appa.todayLabel = "한자 시험";
   }
+  /** 오늘 일본어 기록 중 가장 늦게 시작한 시각(어학 트랙 라벨 고르기용 — 복습만 했으면 null) */
+  const jaLatestToday = [aVocab?.startedAt, aKanji?.startedAt].filter((t): t is string => !!t).sort().pop() ?? null;
 
   // ── 아빠 · 운동: 루틴을 지킨 날(엔진이 휴식 슬롯까지 접는다) → 시험과 같은 연속 판정 코어 ──
   let appaWorkout: PersonStreak = NEUTRAL_STREAK;
@@ -153,10 +158,15 @@ export async function GET() {
   // ── 아빠 · 영어(토익스피킹): 표현 시험(답한 문항≥1) + 모의고사 응시(녹음된 문항≥1) → 같은 연속 판정 코어 ──
   // 은우 영어(vocabQuizzes)와 컬렉션부터 다르다(§0-1) — 은우 트랙에 섞이지 않는다. 라벨은 짧게(헤드라인이 "🎙️ 영어"를 붙인다).
   let appaEnglish: PersonStreak = NEUTRAL_STREAK;
+  /** 영어 트랙의 세션(어학 트랙 합집합용). 토익 기록을 못 읽으면 토익 복습만 남긴다(복습 일정은 따로 읽었다) */
+  let enSessions: StreakSession[] = reviewStreakSessions(reviewsOf("toeic"));
+  let enLatestToday: string | null = null;
   if (toeicQuizzes && toeicAttempts) {
     try {
       const frameDrills = toeicFrameDrills ?? [];
-      appaEnglish = { info: computeStreak([...toeicStreakSessions(toeicQuizzes, toeicAttempts, frameDrills), ...reviewStreakSessions(reviewsOf("toeic"))], today), todayLabel: null };
+      const toeicSessions: StreakSession[] = [...toeicStreakSessions(toeicQuizzes, toeicAttempts, frameDrills), ...reviewStreakSessions(reviewsOf("toeic"))];
+      appaEnglish = { info: computeStreak(toeicSessions, today), todayLabel: null };
+      enSessions = toeicSessions;
       const tQuiz = todaysAnswered(toeicQuizzes, today)[0];
       const tAttempt = toeicAttempts
         .filter((a) => kstDateString(a.startedAt) === today && isCountedToeicAttempt(a))
@@ -165,6 +175,7 @@ export async function GET() {
       const tFrame = frameDrills
         .filter((d) => kstDateString(d.startedAt) === today && d.items.some((it) => it.outcome === "spoken"))
         .sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0))[0];
+      enLatestToday = [tQuiz?.startedAt, tAttempt?.startedAt, tFrame?.startedAt].filter((t): t is string => !!t).sort().pop() ?? null;
       if (tFrame && (!tQuiz || tFrame.startedAt > tQuiz.startedAt) && (!tAttempt || tFrame.startedAt > tAttempt.startedAt)) {
         appaEnglish.todayLabel = toeicFrameDrillStreakLabel(tFrame, TOEIC_LABEL_NAMES.guidePartKo);
       } else if (tQuiz && (!tAttempt || tQuiz.startedAt >= tAttempt.startedAt)) {
@@ -179,6 +190,8 @@ export async function GET() {
     } catch (err) {
       console.error("[streak] 영어 스트릭 계산 실패 — 영어 트랙만 중립값으로 보낸다", err);
       appaEnglish = NEUTRAL_STREAK;
+      enSessions = reviewStreakSessions(reviewsOf("toeic"));
+      enLatestToday = null;
     }
   }
 
@@ -187,6 +200,21 @@ export async function GET() {
   if (appa.todayLabel === null) appa.todayLabel = reviewTodayLabel(reviewsOf("japanese"), today);
   if (appaEnglish !== NEUTRAL_STREAK && appaEnglish.todayLabel === null) appaEnglish.todayLabel = reviewTodayLabel(reviewsOf("toeic"), today);
 
-  const body: StreakResponse = { ok: true, today, eunwoo, appa, appaWorkout, appaEnglish };
+  // ── 아빠 · 📚 어학(SPEC §17-10, 2026-10-08): 일본어 + 영어 날짜의 합집합 → 둘 중 하나만 해도 그날이 켜진다 ──
+  // 라벨 = 오늘 한 것 중 가장 늦게 시작한 쪽에 "일본어 · "/"영어 · "를 붙인다(시각을 모르는 복습뿐이면 기록 있는 쪽 → 일본어 먼저).
+  const appaLanguage: PersonStreak = {
+    info: computeStreakFromDays(new Set([...streakDays(jaSessions), ...streakDays(enSessions)]), today),
+    todayLabel: null,
+  };
+  const jaLabel = appa.todayLabel ? `일본어 · ${appa.todayLabel}` : null;
+  const enLabel = appaEnglish.todayLabel ? `영어 · ${appaEnglish.todayLabel}` : null;
+  if (jaLabel && enLabel) {
+    const enLater = enLatestToday !== null && (jaLatestToday === null || enLatestToday > jaLatestToday);
+    appaLanguage.todayLabel = enLater ? enLabel : jaLabel;
+  } else {
+    appaLanguage.todayLabel = jaLabel ?? enLabel;
+  }
+
+  const body: StreakResponse = { ok: true, today, eunwoo, appa, appaWorkout, appaEnglish, appaLanguage };
   return NextResponse.json(body, { headers: { "cache-control": "no-store" } });
 }
