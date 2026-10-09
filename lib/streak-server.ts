@@ -16,7 +16,7 @@
  */
 
 import "server-only";
-import { kstDateString, shiftDateString } from "@/lib/kst";
+import { kstDateString } from "@/lib/kst";
 import { computeStreak, computeStreakFromDays, streakDays, type StreakSession } from "@/lib/streak";
 import type { PersonStreak, StreakResponse } from "@/lib/streak-contract";
 import type {
@@ -27,8 +27,6 @@ import type {
   ToeicQuizRecord,
   WorkoutCycleRecord,
 } from "@/lib/store";
-import type { PushPerson } from "@/lib/push-contract";
-import type { PersonState } from "@/lib/push-decide";
 import { isCountedTalkSession, talkStreakLabel, talkStreakSessions } from "@/lib/talk-streak";
 import { TOEIC_GUIDE_PART_TO_MOCK_PART, isToeicGuidePart } from "@/lib/toeic-guide";
 import { toeicMockPartLabelKo } from "@/lib/toeic-mock-contract";
@@ -44,7 +42,7 @@ import {
 } from "@/lib/toeic-streak";
 import { workoutKeptDays, workoutStreakTodayLabel } from "@/lib/workout";
 import { reviewFullDays, reviewStreakSessions, reviewTodayLabel, type ReviewArea, type ReviewScheduleRecord } from "@/lib/review-schedule";
-import { STREAK_V2_FROM, badgesOf, kstWeekDays, weekCells } from "@/lib/streak-v2";
+import { STREAK_V2_FROM, badgesOf, kstWeekDays, weekCells, type WeekCell } from "@/lib/streak-v2";
 import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullQuiz, isFullTalk } from "@/lib/streak-v2-sources";
 import { familyV2, personV2, trackV2, type TrackInput } from "@/lib/streak-v2-assemble";
 
@@ -219,7 +217,7 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
   // ── 스트릭 v2(가족 스트릭 강화 스펙) — legacy = 기존 세션 배열의 날짜, runs = 적용일부터의 "한 판" 수 ──
   // 카드·만회는 사람 단위로 한 번 정하고(아빠 = 어학 ∪ 운동) 트랙 연속에 그대로 적용한다. 헤드라인 info를 v2로 덮는다.
   // `appa`·`appaEnglish`(호환 필드)는 legacy 계산 그대로 둔다 — 헤드라인은 더 이상 읽지 않는다.
-  const v2 = (() => {
+  const buildV2 = () => {
     const runs = (fill: (m: Map<string, number>) => void) => {
       const m = new Map<string, number>();
       fill(m);
@@ -282,36 +280,39 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
         { key: "appaWorkout" as const, ...badgesOf(gymInfo) },
         { key: "family" as const, ...badgesOf(fam.info) },
       ],
+      appaPerson: appaP.info,
     };
-  })();
-  eunwoo.info = v2.eunwoo;
-  appaLanguage.info = v2.appaLanguage;
-  if (appaWorkout !== NEUTRAL_STREAK) appaWorkout = { ...appaWorkout, info: v2.appaWorkout };
-
-  const v2Body = { mom: null, family: { info: v2.family, todayLabel: null }, week: v2.week, badges: v2.badges, v2From: STREAK_V2_FROM };
+  };
+  // v2 계산이 던져도 /api/streak(모든 화면의 헤드라인)가 500이 되지 않게 — 옛 규칙 info 그대로, 가족 중립·주간 빈칸·배지 없음
+  let v2: ReturnType<typeof buildV2> | null = null;
+  try {
+    v2 = buildV2();
+  } catch (err) {
+    console.error("[streak] v2 계산 실패 — 옛 규칙으로 보낸다", err);
+  }
+  type V2Body = Pick<StreakResponse, "mom" | "family" | "week" | "badges" | "v2From" | "appaPerson">;
+  let v2Body: V2Body;
+  if (v2) {
+    eunwoo.info = v2.eunwoo;
+    appaLanguage.info = v2.appaLanguage;
+    if (appaWorkout !== NEUTRAL_STREAK) appaWorkout = { ...appaWorkout, info: v2.appaWorkout };
+    v2Body = { mom: null, family: { info: v2.family, todayLabel: null }, week: v2.week, badges: v2.badges, v2From: STREAK_V2_FROM, appaPerson: { info: v2.appaPerson, todayLabel: null } };
+  } else {
+    let days: string[] = [];
+    try {
+      days = kstWeekDays(today);
+    } catch {
+      days = [];
+    }
+    const none = days.map((): WeekCell => "none");
+    v2Body = {
+      mom: null,
+      family: { info: { current: 0, doneToday: false, lastDate: null, best: 0 }, todayLabel: null },
+      week: { days, rows: { eunwoo: none, appa: [...none], mom: null } },
+      badges: [],
+      v2From: STREAK_V2_FROM,
+    };
+  }
   const body: StreakResponse = { ok: true, today, ...v2Body, eunwoo, appa, appaWorkout, appaEnglish, appaLanguage };
   return body;
-}
-
-/**
- * 알림 결정용 사람 상태(가족 스트릭 강화 스펙 §6-2) — 스트릭 응답을 decidePushes 입력으로 접는다.
- * 아빠 = 사람 단위(📚 어학·💪 운동 중 하나라도 켜졌으면 오늘 함), 아직인 트랙 이름을 문구에 싣는다.
- */
-export function pushStates(r: StreakResponse): PersonState[] {
-  const s = (person: PushPerson, info: PersonStreak["info"], missing: string[] = []): PersonState => ({
-    person,
-    doneToday: info.doneToday,
-    current: info.current,
-    freezeLeft: info.freezeLeftThisMonth ?? 0,
-    pendingRepairYesterday: info.pendingRepairDay === shiftDateString(r.today, -1),
-    missingTracks: missing,
-  });
-  const appaDone = r.appaLanguage.info.doneToday || r.appaWorkout.info.doneToday;
-  const appaMissing = [!r.appaLanguage.info.doneToday ? "어학" : null, !r.appaWorkout.info.doneToday ? "운동" : null].filter((x): x is string => x !== null);
-  const out: PersonState[] = [s("eunwoo", r.eunwoo.info), { ...s("appa", r.appaLanguage.info, appaMissing), doneToday: appaDone }];
-  // 엄마 영역이 아직 없으면(mom: null) 엄마 자신의 알림은 없다 — 그래도 👪 가족 알림(은우 아직 → 엄마 폰)은 받아야 하므로
-  // "오늘 할 것 없음"(doneToday: true) 칸으로 넣는다(오늘 아직·마지막·만회·콕은 나가지 않는다).
-  if (r.mom) out.push(s("mom", r.mom.info));
-  else out.push({ person: "mom", doneToday: true, current: 0, freezeLeft: 0, pendingRepairYesterday: false, missingTracks: [] });
-  return out;
 }

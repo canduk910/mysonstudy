@@ -22,8 +22,9 @@
  *   영어 모바일 상단바(sticky top-0)가 이 높이만큼 내려가 겹치지 않는다(globals.css·english-nav.module.css).
  * - 2026-10 스트릭 v2(가족 스트릭 강화): 맨 앞에 **👪 가족 칸**(`family` — 오늘 모두 한 판 이상이면 켜진다)을 둔다.
  *   오늘 아직인 칸엔 이모지 앞에 **작은 점**(`data-pending-dot`, aria-hidden — 폰에서도 보이는 신호, 글자는 "오늘 아직"이 sr에 남는다).
- *   **만회 대기**(`info.pendingRepairDay` — 어제를 놓쳤고 오늘 두 판이면 돌아온다)이고 오늘 아직이면 "오늘 아직" 자리에
- *   "오늘 두 판이면 어제 🔥가 돌아와요"(sm 이상, 폰은 sr-only).
+ *   **만회 대기**(`info.pendingRepairDay` — 어제를 놓쳤고 오늘 두 판이면 돌아온다)이고 판이 모자라면(`repairHintText` — 한 판을
+ *   해서 doneToday가 켜졌어도) "오늘 두 판이면 어제 🔥가 돌아와요"/"한 판 더 하면 어제 🔥가 돌아와요"(sm 이상, 폰은 sr-only).
+ *   아빠는 사람 단위(`appaPerson`)로 한 번 — 트랙 칸이 아니라 아빠 묶음 끝에 보인다.
  *   배지 축하 토스트(`StreakCelebrate`)를 헤드라인 옆에 마운트한다 — 모든 화면에서 한 번 보인다.
  */
 
@@ -31,6 +32,7 @@ import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { STREAK_REFRESH_EVENT } from "@/lib/streak";
 import type { PersonStreak, StreakResponse } from "@/lib/streak-contract";
+import { repairHintText } from "@/lib/streak-v2";
 import StreakCelebrate from "@/components/streak-celebrate";
 
 /**
@@ -40,12 +42,11 @@ import StreakCelebrate from "@/components/streak-celebrate";
  */
 const COMPACT_FROM_DAYS = 10;
 
-/** 만회 대기(어제 놓침 — 오늘 두 판이면 돌아온다)일 때 "오늘 아직" 자리에 쓰는 말 */
-const REPAIR_PENDING_LABEL = "오늘 두 판이면 어제 🔥가 돌아와요";
-
 function Person({ emoji, name, p, compact }: { emoji: string; name: string; p: PersonStreak | undefined; compact: boolean }) {
   const loaded = p != null;
-  const done = p?.info.doneToday ?? false;
+  // 만회 대기에 판이 모자라면(한 판만 했어도) 다 한 게 아니다 — 자정에 어제가 끊긴다(needsMoreToday)
+  const hint = p ? repairHintText(p.info) : null;
+  const done = (p?.info.doneToday ?? false) && hint === null;
   const days = p?.info.current ?? 0;
   return (
     <div className={`flex items-center gap-1 whitespace-nowrap sm:gap-1.5 ${loaded && !done ? "opacity-55" : ""}`}>
@@ -58,7 +59,7 @@ function Person({ emoji, name, p, compact }: { emoji: string; name: string; p: P
         🔥{loaded ? days : "··"}
         <span className="max-sm:hidden">일</span>
       </span>
-      {loaded && !done && <span className="t-caption text-ink-3 max-sm:sr-only">{p?.info.pendingRepairDay ? REPAIR_PENDING_LABEL : "오늘 아직"}</span>}
+      {loaded && !done && <span className="t-caption text-ink-3 max-sm:sr-only">{hint ?? "오늘 아직"}</span>}
       {loaded && done && p?.todayLabel && <span className="t-caption text-ink-3 max-sm:sr-only">· {p.todayLabel}</span>}
     </div>
   );
@@ -79,7 +80,7 @@ function Track({ emoji, name, p }: { emoji: string; name: string; p: PersonStrea
         🔥{loaded ? days : "··"}
         <span className="max-sm:hidden">일</span>
       </span>
-      {loaded && !done && <span className="t-caption text-ink-3 max-sm:sr-only">{p?.info.pendingRepairDay ? REPAIR_PENDING_LABEL : "오늘 아직"}</span>}
+      {loaded && !done && <span className="t-caption text-ink-3 max-sm:sr-only">오늘 아직</span>}
       {loaded && done && p?.todayLabel && (
         // 긴 단어장 제목은 말줄임 — 전체는 title로. 폰에선 스크린리더에만(🔥가 한 화면에 들어오게)
         <span className="t-caption inline-block max-w-[11rem] truncate text-ink-3 max-sm:sr-only" title={p.todayLabel}>
@@ -119,6 +120,9 @@ export default function StreakHeadline() {
 
   if (pathname === "/unlock") return null; // 잠금 화면엔 학습 현황을 보이지 않는다
 
+  // 아빠 만회 안내는 사람 단위 한 번(어학 + 운동 합친 판 수 — 트랙 값은 한 트랙만 센다). v2 실패 응답엔 appaPerson이 없다
+  const appaHint = data ? repairHintText((data.appaPerson ?? data.appaLanguage).info) : null;
+
   const compact =
     data != null && [data.family, data.eunwoo, data.appaLanguage, data.appaWorkout].some((p) => (p?.info.current ?? 0) >= COMPACT_FROM_DAYS);
 
@@ -138,6 +142,7 @@ export default function StreakHeadline() {
         <span aria-hidden className="h-5 w-px shrink-0 bg-line" />
         <div role="group" aria-label="아빠" className={`flex shrink-0 items-center ${compact ? "gap-1.5" : "gap-2"} whitespace-nowrap sm:gap-2.5`}>
           <span className="flex items-center gap-1 sm:gap-1.5">
+            {appaHint && <span data-pending-dot aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
             <span aria-hidden className={compact ? "max-sm:hidden" : undefined}>
               🧑
             </span>
@@ -146,6 +151,7 @@ export default function StreakHeadline() {
           {/* 일본어 + 영어(토익) 합집합 — 둘 중 하나만 해도 켜진다(§17-10) */}
           <Track emoji="📚" name="어학" p={data?.appaLanguage} />
           <Track emoji="💪" name="운동" p={data?.appaWorkout} />
+          {appaHint && <span className="t-caption text-ink-3 max-sm:sr-only">{appaHint}</span>}
         </div>
       </div>
       {/* 배지 축하 — 이 기기에서 아직 축하하지 않은 얻은 배지 하나(가족 스트릭 강화 §4-1) */}

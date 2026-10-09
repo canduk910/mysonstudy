@@ -10,10 +10,10 @@
 import { NextResponse } from "next/server";
 import { kstTodayString } from "@/lib/kst";
 import { isPushPerson } from "@/lib/push-contract";
-import { POKE_DAILY_MAX, PUSH_DAILY_MAX, isQuietHHMM, kstHHMM, pushText } from "@/lib/push-decide";
+import { POKE_DAILY_MAX, PUSH_DAILY_MAX, isQuietHHMM, kstHHMM, pushStates, pushText } from "@/lib/push-decide";
 import { deliver, pushConfigured } from "@/lib/push-send";
 import { getStore } from "@/lib/store";
-import { computeStreakResponse, pushStates } from "@/lib/streak-server";
+import { computeStreakResponse } from "@/lib/streak-server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

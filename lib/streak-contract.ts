@@ -51,6 +51,11 @@ export interface StreakResponse {
    * 토익 기록을 못 읽으면 일본어 + 토익 복습만으로 계산한다.
    */
   appaLanguage: PersonStreak;
+  /**
+   * 아빠 **사람 단위** v2 값(어학 ∪ 운동 — 가족 스트릭 강화 §4-2). 만회 대기(`pendingRepairDay`)·오늘 판 수(`runsToday`)·연속은
+   * 트랙이 아니라 이 값으로 본다(트랙의 runsToday는 한 트랙만 센다). todayLabel은 null. v2 계산이 실패하면 없다(옛 클라이언트도 무시).
+   */
+  appaPerson?: PersonStreak;
   /** 👩 엄마 트랙 — 엄마 영역(②) 전에는 null */
   mom: PersonStreak | null;
   /** 👪 가족 연속일(가족 스트릭 강화 스펙 §3-2) — 그날 참여자(첫 기록일 이후인 사람) 전원이 지킨 날(켜짐·🧊·🔁·만회 대기)이 이어진 수 */

@@ -37,10 +37,11 @@ import {
 } from "../lib/test-status";
 import { templateSessionsForPart } from "../lib/toeic-guide-view";
 import { reviewFullDays, reviewStreakSessions, reviewTodayLabel } from "../lib/review-schedule";
-import { FREEZES_PER_MONTH, STREAK_BADGES, badgesOf, decideBridges, kstWeekDays, litDaysOf, streakFromStatus, weekCells } from "../lib/streak-v2";
+import { FREEZES_PER_MONTH, STREAK_BADGES, badgesOf, decideBridges, doneForPush, kstWeekDays, litDaysOf, needsMoreToday, repairHintText, streakFromStatus, weekCells } from "../lib/streak-v2";
 import { familyV2, personV2, trackV2 } from "../lib/streak-v2-assemble";
 import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullQuiz, isFullTalk } from "../lib/streak-v2-sources";
-import { decidePushes, isQuietHHMM, kstHalfHourHHMM, PUSH_DAILY_MAX } from "../lib/push-decide";
+import { decidePushes, isQuietHHMM, kstHalfHourHHMM, pushStates, PUSH_DAILY_MAX, TICK_SKEW_MS } from "../lib/push-decide";
+import type { PersonStreak, StreakResponse } from "../lib/streak-contract";
 import { DEFAULT_PUSH_PREFS } from "../lib/push-contract";
 
 interface CheckResult {
@@ -920,10 +921,121 @@ const TODAY = "2026-09-21";
     add(B, "틱 시각 kstHalfHourHHMM: 00:05→00:00·08:44→08:30·21:59→21:30", got.join() === "00:00,08:30,21:30", got.join());
   }
   {
+    // 스케줄러 지터 — 22:28:30 KST(13:28:30Z)에 불려도 2분 여유로 "22:30"(마지막 알림 칸), 08:01은 그대로 "08:00". 여유 없으면 "22:00"
+    const late = kstHalfHourHHMM(new Date("2026-10-09T13:28:30.000Z"), TICK_SKEW_MS);
+    const early = kstHalfHourHHMM(new Date("2026-10-09T23:01:00.000Z"), TICK_SKEW_MS);
+    const raw = kstHalfHourHHMM(new Date("2026-10-09T13:28:30.000Z"));
+    const tick = readFileSync(new URL("../app/api/push/tick/route.ts", import.meta.url), "utf-8");
+    add(B, "틱 시각 여유 2분: 22:28:30→22:30·08:01→08:00(여유 없으면 22:00) · 틱 라우트가 TICK_SKEW_MS를 넘긴다", late === "22:30" && early === "08:00" && raw === "22:00" && /kstHalfHourHHMM\(now, TICK_SKEW_MS\)/.test(tick), `${late},${early},${raw}`);
+  }
+  {
     // 조용한 시간 단일 정의처(틱·콕 찌르기 공용) — 22:30까지는 보내고 22:31부터 07:59까지는 조용
     const q = ["22:30", "22:31", "07:59", "08:00"].map((t) => `${t}=${isQuietHHMM(t)}`);
     add(B, "조용한 시간 isQuietHHMM: 22:30 아님·22:31 조용·07:59 조용·08:00 아님", q.join() === "22:30=false,22:31=true,07:59=true,08:00=false", q.join());
   }
+}
+
+// ---------------------------------------------------------------------------
+// 묶음 16 — 만회 대기 한 판 뒤(최종 리뷰 Important): 어제 놓침·카드 없음에서 오늘 한 판만 하면 doneToday는 켜지지만
+//   두 판 전에는 자정에 어제가 끊긴다 → 헤드라인·보드는 "한 판 더" 안내, 알림은 "오늘 다 함"으로 보지 않는다(needsMoreToday 단일 판정).
+//   아빠는 사람 단위(appaPerson — 어학 ∪ 운동) 값으로 본다. v2 계산이 던지면 옛 규칙으로 폴백(500 아님).
+{
+  const B = "만회 대기 한 판 뒤";
+  const FROM = "2026-10-10";
+  const T = (runs: Record<string, number>) => ({ legacyDays: new Set<string>(), runs: new Map(Object.entries(runs)) });
+  const base = { "2026-10-10": 1, "2026-10-12": 1, "2026-10-14": 1 };
+  const p0 = personV2([T(base)], "2026-10-16", FROM).info;
+  const p1 = personV2([T({ ...base, "2026-10-16": 1 })], "2026-10-16", FROM).info;
+  const p2 = personV2([T({ ...base, "2026-10-16": 2 })], "2026-10-16", FROM).info;
+  const plain = personV2([T({ "2026-10-15": 1, "2026-10-16": 1 })], "2026-10-16", FROM).info;
+  add(
+    B,
+    "needsMoreToday: 대기·0판 true · 대기·1판(doneToday) true · 2판(만회됨) false · 대기 없음 false",
+    needsMoreToday(p0) && p1.doneToday && p1.pendingRepairDay === "2026-10-15" && needsMoreToday(p1) && !needsMoreToday(p2) && p2.pendingRepairDay === null && !needsMoreToday(plain),
+    `p1=${JSON.stringify({ d: p1.doneToday, pend: p1.pendingRepairDay, r: p1.runsToday })} p2=${JSON.stringify({ pend: p2.pendingRepairDay, r: p2.runsToday })}`,
+  );
+  add(
+    B,
+    "needsMoreToday 직접 값: pending+runs 1 true · runs 2 false · pending null false",
+    needsMoreToday({ pendingRepairDay: "2026-10-15", runsToday: 1 }) && !needsMoreToday({ pendingRepairDay: "2026-10-15", runsToday: 2 }) && !needsMoreToday({ pendingRepairDay: null, runsToday: 1 }),
+    "",
+  );
+  add(
+    B,
+    "안내 문구: 0판 '오늘 두 판이면' · 1판 '한 판 더' · 2판 null · doneForPush(1판)=false·(2판)=true",
+    repairHintText(p0) === "오늘 두 판이면 어제 🔥가 돌아와요" && repairHintText(p1) === "한 판 더 하면 어제 🔥가 돌아와요" && repairHintText(p2) === null && !doneForPush(p1) && doneForPush(p2),
+    String(repairHintText(p1)),
+  );
+
+  // 응답 → pushStates → decidePushes(21:00). 은우: 대기·1판(doneToday) / 아빠: 어학 1판 켜짐·운동 아직, 사람 단위 대기·1판·연속 12
+  const neutral = { current: 0, doneToday: false, lastDate: null, best: 0 };
+  const ps = (info: PersonStreak["info"]): PersonStreak => ({ info, todayLabel: null });
+  const resp = (appaRuns: number, appaTrackRuns = 1): StreakResponse => ({
+    ok: true,
+    today: "2026-10-16",
+    eunwoo: ps(p1),
+    appa: ps(neutral),
+    appaEnglish: ps(neutral),
+    appaLanguage: ps({ current: 3, doneToday: true, lastDate: "2026-10-16", best: 3, pendingRepairDay: "2026-10-15", runsToday: appaTrackRuns }),
+    appaWorkout: ps({ current: 40, doneToday: false, lastDate: "2026-10-14", best: 40, pendingRepairDay: "2026-10-15", runsToday: 0 }),
+    appaPerson: ps({ current: 12, doneToday: true, lastDate: "2026-10-16", best: 40, pendingRepairDay: appaRuns >= 2 ? null : "2026-10-15", runsToday: appaRuns }),
+    mom: null,
+    family: ps(neutral),
+    week: { days: [], rows: { eunwoo: [], appa: [], mom: null } },
+    badges: [],
+    v2From: FROM,
+  });
+  const st1 = pushStates(resp(1));
+  const kinds = (now: string, r: StreakResponse) => decidePushes({ nowHHMM: now, states: pushStates(r), prefs: DEFAULT_PUSH_PREFS, sentToday: [] }).map((x) => `${x.person}:${x.kind}`);
+  const at2100 = kinds("21:00", resp(1));
+  add(
+    B,
+    "pushStates: 대기·1판은 doneToday=false·만회 어제 → 21:00 은우·아빠 알림이 나간다(만회 + 오늘)",
+    st1.find((x) => x.person === "eunwoo")?.doneToday === false && st1.find((x) => x.person === "appa")?.pendingRepairYesterday === true && at2100.includes("eunwoo:repair") && at2100.includes("eunwoo:today") && at2100.includes("appa:repair") && at2100.includes("appa:today"),
+    at2100.join(),
+  );
+  // 아빠 사람 단위: 트랙 판 수가 2여도(어학만) 사람 값이 1이면 알림 · 사람 값 2(만회됨)면 아빠 알림 없음 · 숫자는 사람 단위 12(📚 3·💪 40 아님)
+  const appaTrack2 = kinds("21:00", resp(1, 2));
+  const appaDone = kinds("21:00", resp(2));
+  const appaCur = st1.find((x) => x.person === "appa")?.current;
+  add(
+    B,
+    "아빠는 사람 단위(appaPerson): 판 수·대기·연속 숫자(12) — 사람 2판이면 아빠 알림 없음",
+    appaTrack2.includes("appa:today") && !appaDone.some((k) => k.startsWith("appa:")) && appaCur === 12,
+    `track2=${appaTrack2.join()} done=${appaDone.join()} cur=${appaCur}`,
+  );
+  // 운동만 이어 온 아빠(어학·운동 모두 오늘 아직) — 알림 숫자는 사람 단위
+  const workoutOnly: StreakResponse = { ...resp(0), appaLanguage: ps({ current: 0, doneToday: false, lastDate: null, best: 0 }), appaWorkout: ps({ current: 40, doneToday: false, lastDate: "2026-10-15", best: 40 }), appaPerson: ps({ current: 40, doneToday: false, lastDate: "2026-10-15", best: 40, pendingRepairDay: null, runsToday: 0 }) };
+  const wo = decidePushes({ nowHHMM: "21:00", states: pushStates(workoutOnly), prefs: DEFAULT_PUSH_PREFS, sentToday: [] }).find((x) => x.person === "appa" && x.kind === "today");
+  add(B, "운동만 이어 온 아빠의 오늘 알림 숫자 = 사람 단위 🔥 40일(📚 0일 아님)", !!wo && wo.body.includes("🔥 40일"), wo?.body ?? "없음");
+
+  // 정적 배선 — 헤드라인·보드·알림이 같은 판정, 아빠는 appaPerson, v2 실패 폴백
+  const head = readFileSync(new URL("../components/streak-headline.tsx", import.meta.url), "utf-8");
+  const board = readFileSync(new URL("../components/family-board.tsx", import.meta.url), "utf-8");
+  const push = readFileSync(new URL("../lib/push-decide.ts", import.meta.url), "utf-8");
+  const route = readFileSync(new URL("../lib/streak-server.ts", import.meta.url), "utf-8");
+  add(
+    B,
+    "배선: 헤드라인·보드 repairHintText(아빠 = appaPerson) · pushStates는 doneForPush·appaPerson",
+    /repairHintText\(p\.info\)/.test(head) &&
+      /repairHintText\(\(data\.appaPerson \?\? data\.appaLanguage\)\.info\)/.test(head) &&
+      !/pendingRepairDay \?/.test(head) &&
+      /repairHintText\(who\)/.test(board) &&
+      /person=\{data\.appaPerson\?\.info\}/.test(board) &&
+      /doneForPush\(/.test(push) &&
+      /r\.appaPerson\?\.info/.test(push) &&
+      /appaPerson: \{ info: v2\.appaPerson, todayLabel: null \}/.test(route),
+    "",
+  );
+  add(
+    B,
+    "v2 실패 폴백: buildV2를 try로 감싸고 로그 '[streak] v2 계산 실패 — 옛 규칙으로 보낸다' · 배지 [] · 주간 'none'",
+    /try \{\s*v2 = buildV2\(\);\s*\} catch \(err\) \{\s*console\.error\("\[streak\] v2 계산 실패 — 옛 규칙으로 보낸다", err\);/.test(route) &&
+      /badges: \[\],/.test(route) &&
+      /days\.map\(\(\): WeekCell => "none"\)/.test(route) &&
+      !/pushStates/.test(route.replace(/\/\*[\s\S]*?\*\//g, "")),
+    "",
+  );
 }
 
 // ---------------------------------------------------------------------------

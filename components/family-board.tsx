@@ -13,7 +13,7 @@ import { useEffect, useState } from "react";
 import { PUSH_PERSON_STORAGE_KEY, isPushPerson, type PushPerson } from "@/lib/push-contract";
 import { STREAK_REFRESH_EVENT } from "@/lib/streak";
 import type { StreakResponse, PersonStreak } from "@/lib/streak-contract";
-import type { WeekCell } from "@/lib/streak-v2";
+import { repairHintText, type WeekCell } from "@/lib/streak-v2";
 
 const CELL: Record<WeekCell, { icon: string; label: string }> = {
   lit: { icon: "🔥", label: "했음" },
@@ -37,11 +37,19 @@ const POKE_FAIL: Record<number, string> = {
 /** 409 reason "quiet" — 조용한 시간(스펙 §6-2) */
 const POKE_QUIET = "지금은 조용한 시간이에요 (밤 10시 반~아침 8시)";
 
-function Today({ name, emoji, p, onPoke }: { name: string; emoji: string; p: PersonStreak | null | undefined; onPoke?: () => Promise<string> }) {
+/**
+ * 오늘 줄 하나. `person` = 사람 단위 info(아빠 = 어학 ∪ 운동 — 만회 대기·판 수·연속은 이 값). 없으면 p.info.
+ * 만회 대기에 판이 모자라면(한 판 했어도) ✓로 보이지 않는다 — 자정에 어제가 끊기니까(needsMoreToday).
+ */
+function Today({ name, emoji, p, person, onPoke }: { name: string; emoji: string; p: PersonStreak | null | undefined; person?: PersonStreak["info"]; onPoke?: () => Promise<string> }) {
   const [pokeMsg, setPokeMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   if (!p) return null;
-  const done = p.info.doneToday;
+  const who = person ?? p.info;
+  const hint = repairHintText(who);
+  const done = p.info.doneToday && hint === null;
+  // 연속 숫자 — 오늘 한 트랙이면 그 트랙, 아무 트랙도 안 했으면 사람 단위(아빠가 운동만 이어 온 날 📚 0일로 보이지 않게)
+  const current = p.info.doneToday ? p.info.current : who.current;
   return (
     <li className="flex items-center justify-between gap-3 rounded-xl border border-line px-4 py-3">
       <span className="t-body shrink-0 font-medium">
@@ -49,8 +57,8 @@ function Today({ name, emoji, p, onPoke }: { name: string; emoji: string; p: Per
       </span>
       <span className="t-caption flex min-w-0 items-center justify-end gap-2 text-right text-ink-2">
         <span>
-          {done ? `✓ ${p.todayLabel ?? "오늘 완료"}` : p.info.pendingRepairDay ? "오늘 두 판이면 어제가 돌아와요" : "아직"}
-          {" · "}🔥{p.info.current}일
+          {hint ?? (done ? `✓ ${p.todayLabel ?? "오늘 완료"}` : "아직")}
+          {" · "}🔥{current}일
           {pokeMsg && <span role="status"> · {pokeMsg}</span>}
         </span>
         {!done && onPoke && (
@@ -134,7 +142,7 @@ export default function FamilyBoard() {
     };
   };
 
-  // 아빠 오늘 — 어학·운동 중 하나라도 했으면 ✓(둘 다면 어학 라벨). 둘 다 아직이면 어학(만회 대기 문구도 어학 기준).
+  // 아빠 오늘 — 어학·운동 중 하나라도 했으면 ✓(둘 다면 어학 라벨). 만회 안내·판 수·(둘 다 아직일 때) 숫자는 사람 단위(appaPerson).
   const appa: PersonStreak = data.appaLanguage.info.doneToday || !data.appaWorkout.info.doneToday ? data.appaLanguage : data.appaWorkout;
   const workoutNeutral = data.appaWorkout.info.current === 0 && data.appaWorkout.info.best === 0 && data.appaWorkout.todayLabel === null;
   const badges = data.badges.filter((b) => !(b.key === "appaWorkout" && workoutNeutral));
@@ -160,7 +168,7 @@ export default function FamilyBoard() {
         <h2 className="t-section-title mb-2">오늘</h2>
         <ul className="flex flex-col gap-2">
           <Today name="은우" emoji="🧒" p={data.eunwoo} onPoke={pokeFor("eunwoo")} />
-          <Today name="아빠" emoji="🧑" p={appa} onPoke={pokeFor("appa")} />
+          <Today name="아빠" emoji="🧑" p={appa} person={data.appaPerson?.info} onPoke={pokeFor("appa")} />
           <Today name="엄마" emoji="👩" p={data.mom} onPoke={pokeFor("mom")} />
         </ul>
       </section>

@@ -3,7 +3,10 @@
  * 틱이 30분마다 부르므로 "그 시각 이후 아직 안 보낸 것"을 보낸다(틱이 늦어도 놓치지 않게).
  */
 
+import { shiftDateString } from "./kst";
 import { PUSH_PERSON_KO, type PushKind, type PushPerson, type PushPrefs } from "./push-contract";
+import type { PersonStreak, StreakResponse } from "./streak-contract";
+import { doneForPush } from "./streak-v2";
 
 export const PUSH_DAILY_MAX = 3;
 export const POKE_DAILY_MAX = 2;
@@ -101,10 +104,42 @@ export function decidePushes(input: {
 /**
  * 틱의 "지금" — KST 시:분을 **30분 내림**한 0 채움 "HH:MM"(08:44 → "08:30"). decidePushes는 문자열 사전순으로 비교하므로
  * 반드시 두 자리 0 채움이어야 한다. Cloud Run(UTC)·로컬 어디서든 같은 값(+9h → getUTC*).
+ * `skewMs` — 내리기 전에 더할 여유. 스케줄러가 22:29:59에 불러도 "22:30" 칸으로 잡히게 틱은 TICK_SKEW_MS를 넘긴다.
  */
-export function kstHalfHourHHMM(now: Date): string {
-  const k = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+export function kstHalfHourHHMM(now: Date, skewMs = 0): string {
+  const k = new Date(now.getTime() + skewMs + 9 * 60 * 60 * 1000);
   const h = k.getUTCHours();
   const m = k.getUTCMinutes() < 30 ? 0 : 30;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+/** 틱 시각 여유(2분) — Cloud Scheduler가 정각 몇 초 전에 불러도 그 30분 칸으로(22:29:59 → "22:30", 08:01 → "08:00") */
+export const TICK_SKEW_MS = 2 * 60 * 1000;
+
+/**
+ * 알림 결정용 사람 상태(가족 스트릭 강화 스펙 §6-2) — 스트릭 응답을 decidePushes 입력으로 접는다. 순수(틱·콕 찌르기 공용).
+ * "오늘 다 했다" = 켜졌고 **만회 판이 모자라지 않음**(doneForPush) — 만회 대기에 한 판만 했으면 만회·오늘·마지막 알림이 그대로 나간다.
+ * 아빠 = 사람 단위(`appaPerson` — 어학 ∪ 운동): 만회 대기·판 수·연속 숫자·카드는 사람 값, 켜짐은 📚·💪 중 하나라도.
+ * 아직인 트랙 이름을 문구에 싣는다.
+ */
+export function pushStates(r: StreakResponse): PersonState[] {
+  const yesterday = shiftDateString(r.today, -1);
+  const s = (person: PushPerson, info: PersonStreak["info"], missing: string[] = [], lit: boolean = info.doneToday): PersonState => ({
+    person,
+    doneToday: doneForPush({ ...info, doneToday: lit }),
+    current: info.current,
+    freezeLeft: info.freezeLeftThisMonth ?? 0,
+    pendingRepairYesterday: info.pendingRepairDay === yesterday,
+    missingTracks: missing,
+  });
+  // v2 계산이 실패한 응답엔 appaPerson이 없다 — 그때는 옛 규칙(만회 없음)이라 어학 info로 충분하다
+  const appaInfo = r.appaPerson?.info ?? r.appaLanguage.info;
+  const appaLit = r.appaLanguage.info.doneToday || r.appaWorkout.info.doneToday;
+  const appaMissing = [!r.appaLanguage.info.doneToday ? "어학" : null, !r.appaWorkout.info.doneToday ? "운동" : null].filter((x): x is string => x !== null);
+  const out: PersonState[] = [s("eunwoo", r.eunwoo.info), s("appa", appaInfo, appaMissing, appaLit)];
+  // 엄마 영역이 아직 없으면(mom: null) 엄마 자신의 알림은 없다 — 그래도 👪 가족 알림(은우 아직 → 엄마 폰)은 받아야 하므로
+  // "오늘 할 것 없음"(doneToday: true) 칸으로 넣는다(오늘 아직·마지막·만회·콕은 나가지 않는다).
+  if (r.mom) out.push(s("mom", r.mom.info));
+  else out.push({ person: "mom", doneToday: true, current: 0, freezeLeft: 0, pendingRepairYesterday: false, missingTracks: [] });
+  return out;
 }

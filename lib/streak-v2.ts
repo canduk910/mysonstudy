@@ -160,3 +160,24 @@ export function badgesOf(info: Pick<StreakV2Info, "best" | "current" | "doneToda
   const reachedToday = info.doneToday && STREAK_BADGES.includes(info.current) ? info.current : null;
   return { earned, reachedToday };
 }
+
+/**
+ * 만회 대기인데 오늘 판이 아직 모자란가(가족 스트릭 강화 §4-3) — 헤드라인·보드·알림이 함께 쓰는 단일 판정.
+ * 만회 대기(`pendingRepairDay`)는 decideBridges가 "어제를 놓쳤고 카드가 없다"일 때만 세운다(항상 어제다).
+ * 한 판만 해도 doneToday는 켜지지만 두 판(REPAIR_MIN_RUNS) 전에는 자정에 어제가 끊긴다 — 그래서 "다 했다"로 보면 안 된다.
+ * `runsToday`는 사람 단위 값을 넣어야 한다(아빠 = 어학 + 운동 합친 판 수 — 트랙 값은 한 트랙만 센다).
+ */
+export function needsMoreToday(info: { pendingRepairDay?: string | null; runsToday?: number }): boolean {
+  return info.pendingRepairDay != null && (info.runsToday ?? 0) < REPAIR_MIN_RUNS;
+}
+
+/** 만회 안내 문구 — 아직 한 판도 안 했으면 "두 판이면", 한 판 했으면 "한 판 더". 만회 대기가 아니거나 다 채웠으면 null */
+export function repairHintText(info: { pendingRepairDay?: string | null; runsToday?: number }): string | null {
+  if (!needsMoreToday(info)) return null;
+  return (info.runsToday ?? 0) === 0 ? "오늘 두 판이면 어제 🔥가 돌아와요" : "한 판 더 하면 어제 🔥가 돌아와요";
+}
+
+/** 알림·콕 찌르기에서 "오늘 다 했다" — 켜졌고 만회 판이 모자라지 않을 때만 */
+export function doneForPush(info: { doneToday: boolean; pendingRepairDay?: string | null; runsToday?: number }): boolean {
+  return info.doneToday && !needsMoreToday(info);
+}
