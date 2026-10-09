@@ -6,6 +6,8 @@ import { MOM_IMPORT_FORMAT, momBlockHash, momImportFileSchema, isSpeakRole } fro
 import { decideMomImport, momLessonSaveSchema, momTestSaveSchema } from "../lib/mom-contract";
 import { frameWordsOf, judgeMomSpeech } from "../lib/mom-judge";
 import { momHintText, momListenScript, momShadowRepeat, momShadowScript } from "../lib/mom-lesson-script";
+import { MOM_SUMMARY_JSON_SCHEMA, momSummaryZod } from "../lib/ai/mom/schemas";
+import { MOM_SUMMARY_CALL_OPTIONS, buildMomSummaryUserMessage } from "../lib/ai/mom/prompts";
 import { buildMomWeeks, isFullMomLesson, momPickTestItems, momProgress, momStageOfWeek, momTestSize, momToday, MOM_REVIEW_WEEKS } from "../lib/mom-plan";
 
 globalThis.fetch = (() => {
@@ -204,6 +206,21 @@ export function fakeBlock(id: string, week: number, stage: 0 | 1 | 2 | 3 | 4, n 
   add(A, "저장 라우트: finishedAt null 거부·zod·멱등 저장", /finishedAt === null|finishedAt == null|!data\.finishedAt/.test(route) && /momLessonSaveSchema/.test(route) && /saveMomLesson/.test(route));
   const runner = src("../components/mom-lesson-runner.tsx");
   add(A, "러너: 넘어가기(skipped)·받아쓰기 실패 경로·완료 때만 저장·스트릭 갱신", /"skipped"/.test(runner) && /\/api\/mom\/transcribe/.test(runner) && /STREAK_REFRESH_EVENT/.test(runner) && (runner.match(/\/api\/mom\/lessons/g) ?? []).length === 1);
+}
+
+// ── 7) 주간 테스트·M1 ──
+{
+  const A = "테스트·총평";
+  add(A, "zod: 한글 1~120자 둘 다 필요", momSummaryZod.safeParse({ goodKo: "인사 틀을 잘 말했어요.", fixKo: "끝소리를 또렷하게 해 봐요." }).success && !momSummaryZod.safeParse({ goodKo: "good", fixKo: "ok" }).success && !momSummaryZod.safeParse({ goodKo: "가".repeat(121), fixKo: "나" }).success);
+  const js = MOM_SUMMARY_JSON_SCHEMA.schema as { required: string[]; additionalProperties: boolean };
+  add(A, "JSON Schema ↔ zod 필드 일치(goodKo·fixKo, 추가 필드 없음)", js.required.join() === "goodKo,fixKo" && js.additionalProperties === false);
+  add(A, "호출 옵션 call=mom_summary", MOM_SUMMARY_CALL_OPTIONS.call === "mom_summary");
+  const msg = buildMomSummaryUserMessage([{ ko: "차 주세요.", en: "Tea, please.", transcript: null, verdict: "skipped" }]);
+  add(A, "사용자 메시지: 받아쓰기 없음 표기·판정 한국어", msg.includes("없음") && msg.includes("넘어감"));
+  const sum = src("../app/api/mom/tests/[id]/summary/route.ts");
+  add(A, "총평 라우트: 저장된 총평 재사용이 키 검사보다 먼저", sum.indexOf("summaryKo") < sum.indexOf("no_api_key") && /summarizeMomTest/.test(sum));
+  add(A, "테스트 저장: 멱등·finishedAt null 거부", /saveMomTest/.test(src("../app/api/mom/tests/route.ts")) && /finishedAt/.test(src("../app/api/mom/tests/route.ts")));
+  add(A, "녹음 풀에 mom", /"mom"/.test(src("../lib/toeic-rec-store.ts")));
 }
 
 // ── 출력 ──

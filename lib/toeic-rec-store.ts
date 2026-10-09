@@ -38,13 +38,22 @@ const STORE_META = "meta";
 /** 남길 응시 수(§6-4 "최근 응시 5회분") — 풀마다 같은 값(§12-7-6) */
 export const TOEIC_REC_KEEP_ATTEMPTS = 5;
 
-/** 녹음 보관 풀 — 모의고사 응시 / 한 문제 연습 응시(§12-7-6). 응시 화면이 문서의 drillPart로 고른다. */
-export type ToeicRecPool = "mock" | "drill";
-export const TOEIC_REC_POOLS: readonly ToeicRecPool[] = ["mock", "drill"];
+/**
+ * 녹음 보관 풀 — 모의고사 응시 / 한 문제 연습 응시(§12-7-6). 응시 화면이 문서의 drillPart로 고른다.
+ * "mom"(2026-10-09, 엄마의 생활영어 주간 테스트 — 설계 §5): **기기에만** 둔다 — 서버 업로드 대기열에 넣지 않고("gone"으로 저장 →
+ * 고정되지 않아 풀마다 최근 5회분 정리를 그대로 받는다), 토익 "내 녹음" 목록·대기열 목록에도 나오지 않는다. 풀이 따로라 토익 녹음을 밀어내지 않는다.
+ */
+export type ToeicRecPool = "mock" | "drill" | "mom";
+export const TOEIC_REC_POOLS: readonly ToeicRecPool[] = ["mock", "drill", "mom"];
 
-/** 메타의 풀 — "drill"이 아니면 전부 "mock"(필드가 없는 옛 메타 = 모의고사 응시) */
+/** 메타의 풀 — "drill"·"mom"이 아니면 전부 "mock"(필드가 없는 옛 메타 = 모의고사 응시) */
 export function toeicRecPoolOf(meta: { pool?: unknown }): ToeicRecPool {
-  return meta.pool === "drill" ? "drill" : "mock";
+  return meta.pool === "drill" ? "drill" : meta.pool === "mom" ? "mom" : "mock";
+}
+
+/** 기기에만 두는 풀(서버에 올리지 않는다) */
+function isDeviceOnlyPool(meta: { pool?: unknown }): boolean {
+  return toeicRecPoolOf(meta) === "mom";
 }
 
 export interface ToeicRecordingMeta {
@@ -122,7 +131,8 @@ const memory = new Map<string, ToeicRecording>();
 
 function rememberInMemory(rec: ToeicRecording): void {
   // 다른 응시의 녹음은 비운다 — 탭 메모리에 여러 응시분 바이트를 쌓지 않는다
-  for (const [k, v] of memory) if (v.attemptId !== rec.attemptId) memory.delete(k);
+  // 엄마 풀과 토익 풀은 서로 비우지 않는다(엄마 테스트가 아직 못 올린 토익 메모리 녹음을 지우지 않게)
+  for (const [k, v] of memory) if (v.attemptId !== rec.attemptId && isDeviceOnlyPool(v) === isDeviceOnlyPool(rec)) memory.delete(k);
   memory.set(toeicRecKey(rec.attemptId, rec.q), rec);
 }
 
@@ -191,7 +201,7 @@ async function listAllMeta(db: IDBDatabase): Promise<ToeicRecordingMeta[]> {
  * 저장 뒤 풀마다 최근 5회분만 남기고 지운다(지금 응시는 늘 남긴다 — §12-7-6).
  */
 export async function saveToeicRecording(input: NewToeicRecording): Promise<"idb" | "memory"> {
-  const rec: ToeicRecording = { ...input, upload: "pending", uploadedAt: null };
+  const rec: ToeicRecording = isDeviceOnlyPool(input) ? { ...input, upload: "gone", uploadedAt: null } : { ...input, upload: "pending", uploadedAt: null };
   rememberInMemory(rec);
   if (!hasIdb()) return "memory";
   let db: IDBDatabase | null = null;
@@ -206,7 +216,7 @@ export async function saveToeicRecording(input: NewToeicRecording): Promise<"idb
       durationMs: rec.durationMs,
       size: rec.size,
       createdAt: rec.createdAt,
-      upload: "pending",
+      upload: rec.upload,
       uploadedAt: null,
       retakeId: typeof rec.retakeId === "string" && rec.retakeId !== "" ? rec.retakeId : null,
     };
@@ -278,12 +288,12 @@ export async function getToeicRecording(attemptId: string, q: number): Promise<T
 /** "pending" 녹음 메타 — 오래된 순(createdAt 오름차순). IndexedDB가 안 되면 메모리분. 던지지 않는다. */
 export async function listPendingToeicRecordings(): Promise<ToeicRecordingMeta[]> {
   const fromMemory = (): ToeicRecordingMeta[] =>
-    [...memory.values()].filter((r) => r.upload === "pending").map(({ blob: _b, ...m }) => m);
+    [...memory.values()].filter((r) => r.upload === "pending" && !isDeviceOnlyPool(r)).map(({ blob: _b, ...m }) => m);
   if (!hasIdb()) return fromMemory().sort((a, b) => a.createdAt - b.createdAt);
   let db: IDBDatabase | null = null;
   try {
     db = await openDb();
-    const metas = (await listAllMeta(db)).filter((m) => m.upload === "pending");
+    const metas = (await listAllMeta(db)).filter((m) => m.upload === "pending" && !isDeviceOnlyPool(m));
     // IndexedDB 쓰기가 실패해 메모리에만 있는 녹음을 보탠다(같은 탭)
     for (const m of fromMemory()) if (!metas.some((x) => x.attemptId === m.attemptId && x.q === m.q)) metas.push(m);
     return metas.sort((a, b) => a.createdAt - b.createdAt);
@@ -336,14 +346,14 @@ export async function setToeicRecUploadState(
 
 // ───────────────────────── 녹음 관리(§14-4) — 목록·지우기 ─────────────────────────
 
-/** 이 기기의 녹음 메타 전부(바이트 없이 — "내 녹음" 목록). 오래된 순. IndexedDB가 안 되면 메모리분. 던지지 않는다. */
+/** 이 기기의 토익 녹음 메타 전부(바이트 없이 — "내 녹음" 목록, 엄마 풀 제외). 오래된 순. IndexedDB가 안 되면 메모리분. 던지지 않는다. */
 export async function listAllToeicRecordingMetas(): Promise<ToeicRecordingMeta[]> {
-  const fromMemory = (): ToeicRecordingMeta[] => [...memory.values()].map(({ blob: _b, ...m }) => m);
+  const fromMemory = (): ToeicRecordingMeta[] => [...memory.values()].filter((r) => !isDeviceOnlyPool(r)).map(({ blob: _b, ...m }) => m);
   if (!hasIdb()) return fromMemory().sort((a, b) => a.createdAt - b.createdAt);
   let db: IDBDatabase | null = null;
   try {
     db = await openDb();
-    const metas = await listAllMeta(db);
+    const metas = (await listAllMeta(db)).filter((m) => !isDeviceOnlyPool(m));
     for (const m of fromMemory()) if (!metas.some((x) => x.attemptId === m.attemptId && x.q === m.q)) metas.push(m);
     return metas.sort((a, b) => a.createdAt - b.createdAt);
   } catch {

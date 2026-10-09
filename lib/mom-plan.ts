@@ -31,6 +31,11 @@ export function isMomVirtualWeek(week: number): boolean {
   return week > MOM_VIRTUAL_WEEK_OFFSET;
 }
 
+/** 테스트를 열 수 있는 주 번호 — 실제 주 1~52, 자동 감속 가상 복습 주 101~152. */
+export function isMomTestWeek(week: number): boolean {
+  return Number.isInteger(week) && ((week >= 1 && week <= 52) || (week > MOM_VIRTUAL_WEEK_OFFSET && week <= MOM_VIRTUAL_WEEK_OFFSET + 52));
+}
+
 function hashStr(s: string): number {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193) >>> 0;
