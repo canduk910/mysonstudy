@@ -16,7 +16,8 @@
     "eval:workout": "tsx scripts/eval-workout.ts",
     "eval:toeic": "tsx scripts/eval-toeic.ts",
     "eval:phrase": "tsx scripts/eval-phrase-helper.ts",
-    "eval:review": "tsx scripts/eval-review.ts"
+    "eval:review": "tsx scripts/eval-review.ts",
+    "eval:mom": "tsx scripts/eval-mom.ts"
   },
   "dependencies": {
     "firebase-admin": "^14.2.0",
