@@ -127,6 +127,38 @@ printf '%s' '135790' | gcloud secrets versions add app-pin --data-file=- && \
 gcloud run deploy eunwoo-bookcard --source . --region asia-northeast3
 ```
 
+### 가족 스트릭 알림(웹 푸시) 비밀값 — 같은 방식, 한 번만
+
+`VAPID_PRIVATE_KEY`·`PUSH_CRON_SECRET`은 진짜 비밀이라 APP_PIN처럼 Secret Manager에, `VAPID_PUBLIC_KEY`·`VAPID_SUBJECT`는 공개 값이라 평문 env로 붙입니다. 한 번 붙이면 GitHub Actions 재배포에도 유지됩니다(`.github/workflows/deploy.yml`은 손대지 않습니다). 붙이기 전에는 구독·틱·콕 라우트가 501/401로 안전하게 꺼집니다.
+
+```bash
+# 1) VAPID 키 생성(출력은 화면에 보이지 않게 바로 Secret Manager로)
+npx web-push generate-vapid-keys --json
+printf '%s' '<개인키>' | gcloud secrets create vapid-private-key --data-file=-
+printf '%s' '<임의의 긴 랜덤 문자열>' | gcloud secrets create push-cron-secret --data-file=-
+
+# 2) 서비스에 붙이기
+gcloud run services update eunwoo-bookcard --region asia-northeast3 \
+  --update-secrets VAPID_PRIVATE_KEY=vapid-private-key:latest,PUSH_CRON_SECRET=push-cron-secret:latest \
+  --update-env-vars VAPID_PUBLIC_KEY=<공개키>,VAPID_SUBJECT=mailto:<이메일>
+# 런타임 서비스 계정에 시크릿 읽기 권한 (openai-api-key와 같은 SA를 쓰면 이미 있을 수 있음)
+gcloud secrets add-iam-policy-binding vapid-private-key \
+  --member serviceAccount:<PROJECT_NUMBER>-compute@developer.gserviceaccount.com \
+  --role roles/secretmanager.secretAccessor
+gcloud secrets add-iam-policy-binding push-cron-secret \
+  --member serviceAccount:<PROJECT_NUMBER>-compute@developer.gserviceaccount.com \
+  --role roles/secretmanager.secretAccessor
+
+# 3) 30분 틱을 깨울 Cloud Scheduler(값은 셸 변수로, 화면에 출력하지 않기)
+gcloud scheduler jobs create http family-streak-push-tick \
+  --location=asia-northeast3 \
+  --schedule="0,30 8-22 * * *" \
+  --time-zone="Asia/Seoul" \
+  --http-method=POST \
+  --uri="https://<서비스 URL>/api/push/tick" \
+  --headers="x-push-secret=<PUSH_CRON_SECRET 값>"
+```
+
 ## 4. 프롬프트 수정 워크플로 (필수 순서)
 
 프롬프트도 코드처럼 회귀 테스트를 거칩니다(`docs/harness/english.md` §5·§6).
