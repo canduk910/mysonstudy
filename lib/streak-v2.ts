@@ -187,3 +187,40 @@ export function repairHintText(info: { pendingRepairDay?: string | null; runsTod
 export function doneForPush(info: { doneToday: boolean; pendingRepairDay?: string | null; runsToday?: number }): boolean {
   return info.doneToday && !needsMoreToday(info);
 }
+
+/**
+ * 아빠 만회 안내(QA appa-merge_1 P2-A) — APPA_BOTH_FROM부터 아빠의 판 수는 "운동을 지킨 날의 어학 판 수"라서
+ * 은우·엄마 문구("오늘 두 판이면")로는 운동이 빠진 날 엉뚱한 지시가 된다. 남은 쪽을 말한다(순수, 헤드라인·보드·만회 알림 공용).
+ * null이 되는 때는 `needsMoreToday(person)`이 거짓일 때와 같다(흐림·점·알림 판정과 어긋나지 않게).
+ * - 운동 함 : 어학 0판 "어학 두 판이면…" / 1판 "한 판 더 하면…"
+ * - 운동 아직: 어학 2판+ "운동까지 하면…" / 1판 "운동하고 어학 한 판 더 하면…" / 0판 "운동하고 어학 두 판이면…"
+ * 적용일 전 오늘(옛 규칙 — 만회 대기는 적용일 뒤에만 생기지만)은 공용 문구 그대로.
+ */
+export function appaRepairHintText(input: {
+  person: { pendingRepairDay?: string | null; runsToday?: number };
+  /** 오늘 어학 한 판 수(어학 트랙 runsToday) */
+  langRunsToday: number;
+  /** 오늘 운동을 지켰나(계획 휴식일 포함 — 운동 트랙 doneToday) */
+  gymDoneToday: boolean;
+  today: string;
+  bothFrom?: string;
+}): string | null {
+  if (!needsMoreToday(input.person)) return null;
+  if (input.today < (input.bothFrom ?? APPA_BOTH_FROM)) return repairHintText(input.person);
+  const l = Math.max(0, input.langRunsToday);
+  const tail = "어제 🔥가 돌아와요";
+  if (input.gymDoneToday) return l === 0 ? `어학 두 판이면 ${tail}` : `한 판 더 하면 ${tail}`;
+  if (l >= REPAIR_MIN_RUNS) return `운동까지 하면 ${tail}`;
+  return l === 1 ? `운동하고 어학 한 판 더 하면 ${tail}` : `운동하고 어학 두 판이면 ${tail}`;
+}
+
+/** 응답에서 아빠 만회 안내 — appaPerson이 없으면(옛 서버·폴백 실패) 어학 트랙 값으로 공용 문구 */
+export function appaRepairHintOf(r: {
+  today: string;
+  appaPerson?: { info: { pendingRepairDay?: string | null; runsToday?: number } };
+  appaLanguage: { info: { pendingRepairDay?: string | null; runsToday?: number } };
+  appaWorkout: { info: { doneToday: boolean } };
+}): string | null {
+  if (!r.appaPerson) return repairHintText(r.appaLanguage.info);
+  return appaRepairHintText({ person: r.appaPerson.info, langRunsToday: r.appaLanguage.info.runsToday ?? 0, gymDoneToday: r.appaWorkout.info.doneToday, today: r.today });
+}

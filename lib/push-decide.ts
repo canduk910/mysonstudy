@@ -6,7 +6,7 @@
 import { shiftDateString } from "./kst";
 import { PUSH_PEOPLE, PUSH_PERSON_KO, type PushKind, type PushPerson, type PushPrefs } from "./push-contract";
 import type { PersonStreak, StreakResponse } from "./streak-contract";
-import { doneForPush } from "./streak-v2";
+import { appaRepairHintOf, doneForPush } from "./streak-v2";
 
 export const PUSH_DAILY_MAX = 3;
 export const POKE_DAILY_MAX = 2;
@@ -35,6 +35,8 @@ export interface PersonState {
   pendingRepairYesterday: boolean;
   /** 아빠 — 아직인 트랙 이름("어학"·"운동") */
   missingTracks: string[];
+  /** 아빠 — 만회 안내(남은 쪽을 말한다, appaRepairHintOf). 있으면 🔁 만회 알림 본문이 이것 */
+  repairHint?: string | null;
 }
 
 export interface PushToSend {
@@ -72,7 +74,7 @@ export function pushText(person: PushPerson, kind: PushKind, s: PersonState, ext
         url: URL_OF[person],
       };
     case "repair":
-      return { title: "🔁 어제를 되살릴 수 있어요", body: "오늘 두 판 하면 어제 🔥가 돌아와요.", url: URL_OF[person] };
+      return { title: "🔁 어제를 되살릴 수 있어요", body: s.repairHint ? `${s.repairHint}.` : "오늘 두 판 하면 어제 🔥가 돌아와요.", url: URL_OF[person] };
     case "family":
       return { title: "👪 가족 알림", body: `${PUSH_PERSON_KO[extra.about ?? "eunwoo"]}가 오늘 아직이에요.`, url: "/family" };
     case "poke":
@@ -149,7 +151,8 @@ export function pushStates(r: StreakResponse): PersonState[] {
   const appaInfo = r.appaPerson?.info ?? r.appaLanguage.info;
   const appaLit = r.appaPerson ? r.appaPerson.info.doneToday : r.appaLanguage.info.doneToday || r.appaWorkout.info.doneToday;
   const appaMissing = [!r.appaLanguage.info.doneToday ? "어학" : null, !r.appaWorkout.info.doneToday ? "운동" : null].filter((x): x is string => x !== null);
-  const out: PersonState[] = [s("eunwoo", r.eunwoo.info), s("appa", appaInfo, appaMissing, appaLit)];
+  // 만회 알림 문구도 남은 쪽을 말한다(운동이 빠졌는데 "두 판 하면"은 틀린 지시 — QA appa-merge_1 P2-A)
+  const out: PersonState[] = [s("eunwoo", r.eunwoo.info), { ...s("appa", appaInfo, appaMissing, appaLit), repairHint: appaRepairHintOf(r) }];
   // 엄마 영역 데이터가 없으면(mom: null) 엄마 상태는 없다 — 엄마 자신의 알림(오늘 아직·마지막·만회)은 나가지 않는다.
   // 👪 가족 알림(은우 아직 → 엄마 폰)은 decidePushes가 설정(familyAlerts)으로 따로 고르므로 자리표시가 필요 없다(엄마 설계 §7).
   if (r.mom) out.push(s("mom", r.mom.info));

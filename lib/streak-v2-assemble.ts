@@ -77,9 +77,17 @@ export function appaPersonV2(lang: TrackInput, gym: TrackInput, today: string, f
 /**
  * 아빠 오늘 라벨(짧게) — 한 것 ✓ 먼저, 남은 것 뒤. 운동이 계획된 휴식일이면 "운동 쉬는 날"(그날은 어학만 하면 된다).
  * "어학 ✓ · 운동 ✓" / "어학 ✓ · 운동 남음" / "운동 ✓ · 어학 남음" / "어학·운동 남음" / "어학 ✓ · 운동 쉬는 날" / "운동 쉬는 날 · 어학 남음"
+ * `either`(오늘이 APPA_BOTH_FROM 전 — 옛 규칙 "둘 중 하나")면 남은 쪽을 말하지 않는다(이미 켜졌다 — QA appa-merge_1 P3-C):
+ * "어학 ✓" / "운동 ✓" / "운동 쉬는 날" / 둘 다 "어학 ✓ · 운동 ✓"·"어학 ✓ · 운동 쉬는 날" / 아무것도 안 했으면 "어학이나 운동 남음".
  */
-export function appaTodayLabel(s: { lang: boolean; gym: boolean; gymRest: boolean }): string {
+export function appaTodayLabel(s: { lang: boolean; gym: boolean; gymRest: boolean; either?: boolean }): string {
   const gymDone = s.gymRest ? "운동 쉬는 날" : "운동 ✓";
+  if (s.either) {
+    if (s.lang && (s.gym || s.gymRest)) return `어학 ✓ · ${gymDone}`;
+    if (s.lang) return "어학 ✓";
+    if (s.gym || s.gymRest) return gymDone;
+    return "어학이나 운동 남음";
+  }
   if (s.lang && (s.gym || s.gymRest)) return `어학 ✓ · ${gymDone}`;
   if (s.lang) return "어학 ✓ · 운동 남음";
   if (s.gym || s.gymRest) return `${gymDone} · 어학 남음`;

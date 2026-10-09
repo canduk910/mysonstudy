@@ -37,7 +37,7 @@ import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { STREAK_REFRESH_EVENT } from "@/lib/streak";
 import type { PersonStreak, StreakResponse } from "@/lib/streak-contract";
-import { repairHintText } from "@/lib/streak-v2";
+import { appaRepairHintOf, repairHintText } from "@/lib/streak-v2";
 import StreakCelebrate from "@/components/streak-celebrate";
 import { useExamScreen } from "@/components/use-exam-screen";
 import { EXAM_SCREEN_STREAK_H_CSS } from "@/lib/exam-screen";
@@ -55,6 +55,7 @@ function Person({
   p,
   compact,
   labelWhenPending = false,
+  repairHint,
 }: {
   emoji: string;
   name: string;
@@ -62,10 +63,12 @@ function Person({
   compact: boolean;
   /** 아빠 — 오늘 아직이어도 라벨("운동 ✓ · 어학 남음")을 "오늘 아직" 대신 보인다(무엇이 남았는지가 라벨에 있다) */
   labelWhenPending?: boolean;
+  /** 만회 안내를 밖에서 정한다(아빠 — 남은 쪽을 말하는 appaRepairHintOf). undefined면 공용 repairHintText */
+  repairHint?: string | null;
 }) {
   const loaded = p != null;
   // 만회 대기에 판이 모자라면(한 판만 했어도) 다 한 게 아니다 — 자정에 어제가 끊긴다(needsMoreToday)
-  const hint = p ? repairHintText(p.info) : null;
+  const hint = p ? (repairHint !== undefined ? repairHint : repairHintText(p.info)) : null;
   const done = (p?.info.doneToday ?? false) && hint === null;
   const days = p?.info.current ?? 0;
   return (
@@ -149,6 +152,8 @@ export default function StreakHeadline() {
   // 아빠는 사람 하나(appaPerson — APPA_BOTH_FROM부터 어학·운동 둘 다). 만회 안내·흐림·점은 Person이 이 값으로 판정한다.
   // appaPerson이 없는 응답(옛 서버·v2 폴백마저 실패)이면 어학 트랙으로 대신 보인다.
   const appaCell = data ? (data.appaPerson ?? data.appaLanguage) : undefined;
+  // 만회 안내도 남은 쪽을 말한다(운동이 빠진 날 "두 판이면"은 틀린 지시 — QA appa-merge_1 P2-A)
+  const appaHint = data ? appaRepairHintOf(data) : undefined;
 
   // 엄마 칸이 있으면 연속일과 무관하게 폰에서 늘 압축한다 — 한 자리 연속일·압축 없음이면 360px 44px·390px 14px 넘쳤다(2026-10-09 실측).
   const compact =
@@ -182,7 +187,7 @@ export default function StreakHeadline() {
         {/* 두 사람 사이 — 기존 경계선 색(line)의 얇은 세로선 */}
         <span aria-hidden className={divCls} />
         {/* 아빠 사람 하나(2026-10-09 사용자 결정) — 2026-10-10부터 어학·운동 둘 다 해야 켜진다. 라벨이 남은 것을 말한다 */}
-        <Person emoji="🧑" name="아빠" p={appaCell} compact={compact} labelWhenPending />
+        <Person emoji="🧑" name="아빠" p={appaCell} compact={compact} labelWhenPending repairHint={appaHint} />
       </div>
       {/* 배지 축하 — 이 기기에서 아직 축하하지 않은 얻은 배지 하나(가족 스트릭 강화 §4-1) */}
       {data && <StreakCelebrate badges={data.badges} />}

@@ -37,7 +37,7 @@ import {
 } from "../lib/test-status";
 import { templateSessionsForPart } from "../lib/toeic-guide-view";
 import { reviewFullDays, reviewStreakSessions, reviewTodayLabel } from "../lib/review-schedule";
-import { APPA_BOTH_FROM, FREEZES_PER_MONTH, STREAK_BADGES, STREAK_V2_FROM, badgesOf, decideBridges, doneForPush, kstWeekDays, litDaysOf, needsMoreToday, repairHintText, streakFromStatus, weekCells } from "../lib/streak-v2";
+import { APPA_BOTH_FROM, FREEZES_PER_MONTH, STREAK_BADGES, STREAK_V2_FROM, appaRepairHintOf, appaRepairHintText, badgesOf, decideBridges, doneForPush, kstWeekDays, litDaysOf, needsMoreToday, repairHintText, streakFromStatus, weekCells } from "../lib/streak-v2";
 import { appaInputV2, appaPersonV2, appaTodayLabel, familyV2, personV2, trackV2 } from "../lib/streak-v2-assemble";
 import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullMomLessonRecord, isFullQuiz, isFullTalk } from "../lib/streak-v2-sources";
 import { decidePushes, isQuietHHMM, kstHalfHourHHMM, pushStates, pushText, PUSH_DAILY_MAX, TICK_SKEW_MS } from "../lib/push-decide";
@@ -1479,6 +1479,102 @@ const TODAY = "2026-09-21";
       /const appa: PersonStreak = data\.appaPerson \?\?/.test(board) && /labelWhenPending=\{data\.appaPerson != null\}/.test(board) && /`아직 · \$\{p\.todayLabel\}`/.test(board) && /아빠 \{appa\.info\.freezeLeftThisMonth/.test(board) && /\{APPA_BOTH_FROM\}부터 어학과 운동을 둘 다/.test(board),
       "",
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 아빠 만회 안내·적용일 전 라벨·폴백(QA appa-merge_1 P2-A·P3-C·P3-A) — 남은 쪽을 말한다
+{
+  const B = "아빠 만회 안내";
+  // 10-09까지 옛 규칙으로 켜짐 → 10-10·10-11 카드, 10-12 놓침 → 10-13 만회 대기. 어학 l판·운동 g로 실제 appaPersonV2 값을 만든다
+  const T = (runs: Record<string, number>) => ({ legacyDays: new Set<string>(["2026-10-09"]), runs: new Map(Object.entries(runs)) });
+  const at = (l: number, g: boolean) => {
+    const lang = T(l > 0 ? { "2026-10-13": l } : {});
+    const gym = T(g ? { "2026-10-13": 1 } : {});
+    const p = appaPersonV2(lang, gym, "2026-10-13");
+    const hint = appaRepairHintText({ person: p.info, langRunsToday: l, gymDoneToday: g, today: "2026-10-13" });
+    return { p: p.info, hint };
+  };
+  const tail = "어제 🔥가 돌아와요";
+  const cases: [number, boolean, string | null][] = [
+    [0, false, `운동하고 어학 두 판이면 ${tail}`],
+    [1, false, `운동하고 어학 한 판 더 하면 ${tail}`],
+    [2, false, `운동까지 하면 ${tail}`],
+    [3, false, `운동까지 하면 ${tail}`],
+    [0, true, `어학 두 판이면 ${tail}`],
+    [1, true, `한 판 더 하면 ${tail}`],
+    [2, true, null],
+  ];
+  const bad: string[] = [];
+  for (const [l, g, want] of cases) {
+    const r = at(l, g);
+    const pendingOk = want === null ? r.p.pendingRepairDay === null && r.p.repairedDays.includes("2026-10-12") : r.p.pendingRepairDay === "2026-10-12";
+    // null ⇔ needsMoreToday(person) 거짓 — 흐림·점·알림 판정과 같다
+    if (r.hint !== want || !pendingOk || (r.hint === null) !== !needsMoreToday(r.p)) bad.push(`l${l}g${g}: ${r.hint} pend=${r.p.pendingRepairDay}`);
+  }
+  add(B, "만회 대기(10-13): 어학 0·1·2·3판 × 운동 유무 → 남은 쪽 문구, 어학 2 + 운동이면 만회됨(null)", bad.length === 0, bad.join(" | ") || `${cases.length}건`);
+  add(
+    B,
+    "운동이 빠진 날 안내엔 늘 '운동' · 은우·엄마 공용 문구는 그대로",
+    cases.filter(([, g, w]) => !g && w).every(([l]) => at(l, false).hint?.includes("운동")) &&
+      repairHintText({ pendingRepairDay: "x", runsToday: 0 }) === "오늘 두 판이면 어제 🔥가 돌아와요" && repairHintText({ pendingRepairDay: "x", runsToday: 1 }) === "한 판 더 하면 어제 🔥가 돌아와요",
+    "",
+  );
+  add(B, "적용일 전 오늘이면 공용 문구 · 대기 없으면 null", appaRepairHintText({ person: { pendingRepairDay: "2026-10-08", runsToday: 0 }, langRunsToday: 2, gymDoneToday: false, today: "2026-10-09" }) === `오늘 두 판이면 ${tail}` && appaRepairHintText({ person: { pendingRepairDay: null, runsToday: 0 }, langRunsToday: 0, gymDoneToday: false, today: "2026-10-13" }) === null, "");
+
+  // 응답 → 헤드라인·보드·알림이 같은 안내(appaRepairHintOf). 08:30 만회 알림 본문이 남은 쪽을 말한다
+  const ps = (info: PersonStreak["info"], todayLabel: string | null = null): PersonStreak => ({ info, todayLabel });
+  const neutral = { current: 0, doneToday: false, lastDate: null, best: 0 };
+  const resp = (l: number, g: boolean): StreakResponse => {
+    const r = at(l, g);
+    return {
+      ok: true,
+      today: "2026-10-13",
+      eunwoo: ps({ current: 5, doneToday: true, lastDate: "2026-10-13", best: 5 }),
+      appa: ps(neutral),
+      appaEnglish: ps(neutral),
+      appaLanguage: ps({ current: 1, doneToday: l > 0, lastDate: null, best: 1, runsToday: l, pendingRepairDay: r.p.pendingRepairDay }),
+      appaWorkout: ps({ current: 1, doneToday: g, lastDate: null, best: 1, runsToday: g ? 1 : 0, pendingRepairDay: r.p.pendingRepairDay }),
+      appaPerson: ps(r.p, appaTodayLabel({ lang: l > 0, gym: g, gymRest: false })),
+      mom: null,
+      family: ps(neutral),
+      week: { days: [], rows: { eunwoo: [], appa: [], mom: null } },
+      badges: [],
+      v2From: "2026-10-10",
+    };
+  };
+  const r2 = resp(2, false);
+  const push = decidePushes({ nowHHMM: "08:30", states: pushStates(r2), prefs: DEFAULT_PUSH_PREFS, sentToday: [] }).find((x) => x.person === "appa" && x.kind === "repair");
+  const st = pushStates(r2).find((x) => x.person === "appa");
+  const kidRepair = pushText("eunwoo", "repair", { person: "eunwoo", doneToday: false, current: 3, freezeLeft: 0, pendingRepairYesterday: true, missingTracks: [] }).body;
+  add(
+    B,
+    "응답(어학 2판·운동 아직): appaRepairHintOf '운동까지' · 아빠 doneToday false · 08:30 만회 알림 본문 '운동까지 하면 …' · 은우 만회 알림 문구 그대로",
+    appaRepairHintOf(r2) === `운동까지 하면 ${tail}` && st?.doneToday === false && push?.body === `운동까지 하면 ${tail}.` && kidRepair === "오늘 두 판 하면 어제 🔥가 돌아와요.",
+    `${push?.body} / ${kidRepair}`,
+  );
+  const { appaPerson: _x, ...oldR } = r2;
+  void _x;
+  // 옛 응답: 어학 트랙 값(대기·2판)으로 공용 판정 → 다 채움(null), 1판이면 공용 "한 판 더"
+  const oldOne = { ...oldR, appaLanguage: ps({ ...oldR.appaLanguage.info, runsToday: 1 }) } as StreakResponse;
+  add(B, "appaPerson 없는 응답이면 어학 트랙 값으로 공용 문구", appaRepairHintOf(oldR as StreakResponse) === null && appaRepairHintOf(oldOne) === `한 판 더 하면 ${tail}`, String(appaRepairHintOf(oldOne)));
+  const src = (f: string) => readFileSync(new URL(`../${f}`, import.meta.url), "utf8");
+  const hd = src("components/streak-headline.tsx");
+  const board = src("components/family-board.tsx");
+  add(
+    B,
+    "배선: 헤드라인·보드 아빠 칸이 appaRepairHintOf(data)를 쓴다(은우·엄마는 repairHintText)",
+    /const appaHint = data \? appaRepairHintOf\(data\) : undefined;/.test(hd) && /name="아빠" p=\{appaCell\}[^>]*repairHint=\{appaHint\}/.test(hd) && !/emoji="🧒"[^>]*repairHint/.test(hd) && !/emoji="👩"[^>]*repairHint/.test(hd) && /repairHint=\{appaRepairHintOf\(data\)\}/.test(board),
+    "",
+  );
+
+  // 적용일 전 라벨(P3-C) — 이미 켜졌으면 남은 쪽을 말하지 않는다
+  {
+    const L = (lang: boolean, gym: boolean, gymRest = false) => appaTodayLabel({ lang, gym, gymRest, either: true });
+    const got = [L(true, false), L(false, true), L(false, true, true), L(true, true), L(false, false)];
+    add(B, "적용일 전 라벨: 어학 ✓ · 운동 ✓ · 운동 쉬는 날 · 둘 다 · 아무것도 — '남음' 없음(켜진 날)", got.join("|") === "어학 ✓|운동 ✓|운동 쉬는 날|어학 ✓ · 운동 ✓|어학이나 운동 남음" && !got.slice(0, 4).some((x) => x.includes("남음")), got.join("|"));
+    const route = src("lib/streak-server.ts");
+    add(B, "라우트가 적용일 전이면 either 라벨 · 폴백도 적용일부터 교집합", (route.match(/either: today < APPA_BOTH_FROM/g) ?? []).length === 2 && /d < APPA_BOTH_FROM \|\| \(langDays\.has\(d\) && gymKept\.has\(d\)\)/.test(route), "");
   }
 }
 

@@ -13,7 +13,7 @@ import { useEffect, useState } from "react";
 import { PUSH_PERSON_STORAGE_KEY, isPushPerson, type PushPerson } from "@/lib/push-contract";
 import { STREAK_REFRESH_EVENT } from "@/lib/streak";
 import type { StreakResponse, PersonStreak } from "@/lib/streak-contract";
-import { APPA_BOTH_FROM, repairHintText, type WeekCell } from "@/lib/streak-v2";
+import { APPA_BOTH_FROM, appaRepairHintOf, repairHintText, type WeekCell } from "@/lib/streak-v2";
 
 const CELL: Record<WeekCell, { icon: string; label: string }> = {
   lit: { icon: "🔥", label: "했음" },
@@ -48,6 +48,7 @@ function Today({
   p,
   person,
   labelWhenPending = false,
+  repairHint,
   onPoke,
 }: {
   name: string;
@@ -55,13 +56,15 @@ function Today({
   p: PersonStreak | null | undefined;
   person?: PersonStreak["info"];
   labelWhenPending?: boolean;
+  /** 만회 안내를 밖에서 정한다(아빠 — appaRepairHintOf). undefined면 공용 repairHintText(who) */
+  repairHint?: string | null;
   onPoke?: () => Promise<string>;
 }) {
   const [pokeMsg, setPokeMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   if (!p) return null;
   const who = person ?? p.info;
-  const hint = repairHintText(who);
+  const hint = repairHint !== undefined ? repairHint : repairHintText(who);
   const done = p.info.doneToday && hint === null;
   // 연속 숫자 — 오늘 한 트랙이면 그 트랙, 아무 트랙도 안 했으면 사람 단위(아빠가 운동만 이어 온 날 📚 0일로 보이지 않게)
   const current = p.info.doneToday ? p.info.current : who.current;
@@ -182,7 +185,7 @@ export default function FamilyBoard() {
         <h2 className="t-section-title mb-2">오늘</h2>
         <ul className="flex flex-col gap-2">
           <Today name="은우" emoji="🧒" p={data.eunwoo} onPoke={pokeFor("eunwoo")} />
-          <Today name="아빠" emoji="🧑" p={appa} person={data.appaPerson?.info} labelWhenPending={data.appaPerson != null} onPoke={pokeFor("appa")} />
+          <Today name="아빠" emoji="🧑" p={appa} person={data.appaPerson?.info} labelWhenPending={data.appaPerson != null} repairHint={appaRepairHintOf(data)} onPoke={pokeFor("appa")} />
           <Today name="엄마" emoji="👩" p={data.mom} onPoke={pokeFor("mom")} />
         </ul>
       </section>

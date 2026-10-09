@@ -47,7 +47,7 @@ import {
 } from "@/lib/toeic-streak";
 import { workoutKeptDays, workoutStreakTodayLabel } from "@/lib/workout";
 import { reviewFullDays, reviewStreakSessions, reviewTodayLabel, type ReviewArea, type ReviewScheduleRecord } from "@/lib/review-schedule";
-import { STREAK_V2_FROM, badgesOf, kstWeekDays, weekCells, type WeekCell } from "@/lib/streak-v2";
+import { APPA_BOTH_FROM, STREAK_V2_FROM, badgesOf, kstWeekDays, weekCells, type WeekCell } from "@/lib/streak-v2";
 import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullMomLessonRecord, isFullQuiz, isFullTalk } from "@/lib/streak-v2-sources";
 import { appaPersonV2, appaTodayLabel, familyV2, personV2, trackV2, type TrackInput } from "@/lib/streak-v2-assemble";
 
@@ -323,7 +323,7 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
     const langInfo = trackV2(langT, appaP, today);
     const gymInfo = trackV2(gymT, appaP, today);
     // 아빠 오늘 라벨 — 트랙별로 한 것/남은 것(운동 계획 휴식일이면 "운동 쉬는 날")
-    const appaLabel = appaTodayLabel({ lang: langInfo.doneToday, gym: gymInfo.doneToday, gymRest: gymInfo.doneToday && /휴식/.test(appaWorkout.todayLabel ?? "") });
+    const appaLabel = appaTodayLabel({ lang: langInfo.doneToday, gym: gymInfo.doneToday, gymRest: gymInfo.doneToday && /휴식/.test(appaWorkout.todayLabel ?? ""), either: today < APPA_BOTH_FROM });
     return {
       eunwoo: eunwooP.info,
       appaLanguage: langInfo,
@@ -373,10 +373,12 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
     // 아빠 사람 하나 — 옛 규칙(어학 ∪ 운동 지킨 날)으로라도 낸다. 이것마저 던지면 없이(헤드라인은 appaLanguage로 폴백)
     let appaPerson: PersonStreak | undefined;
     try {
-      const gymKept = workoutCycles && appaWorkout !== NEUTRAL_STREAK ? workoutKeptDays(workoutCycles, today) : [];
+      // APPA_BOTH_FROM부터는 폴백도 "둘 다"(어학 날 ∩ 운동 지킨 날), 그 전은 합집합 — v2와 같은 규칙(한 판 대신 답한 문항 ≥ 1 기준, QA P3-A)
+      const gymKept = new Set(workoutCycles && appaWorkout !== NEUTRAL_STREAK ? workoutKeptDays(workoutCycles, today) : []);
+      const appaDays = new Set([...langDays, ...gymKept].filter((d) => d < APPA_BOTH_FROM || (langDays.has(d) && gymKept.has(d))));
       appaPerson = {
-        info: computeStreakFromDays(new Set([...langDays, ...gymKept]), today),
-        todayLabel: appaTodayLabel({ lang: appaLanguage.info.doneToday, gym: appaWorkout.info.doneToday, gymRest: appaWorkout.info.doneToday && /휴식/.test(appaWorkout.todayLabel ?? "") }),
+        info: computeStreakFromDays(appaDays, today),
+        todayLabel: appaTodayLabel({ lang: appaLanguage.info.doneToday, gym: appaWorkout.info.doneToday, gymRest: appaWorkout.info.doneToday && /휴식/.test(appaWorkout.todayLabel ?? ""), either: today < APPA_BOTH_FROM }),
       };
     } catch {
       appaPerson = undefined;
