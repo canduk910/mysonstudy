@@ -29,7 +29,7 @@ const transcript = z.string().max(400).nullable();
 export const momLessonSaveSchema: z.ZodType<MomLessonRecord> = z
   .object({
     id: ID,
-    lessonId: z.string().regex(/^(w\d{1,2}-d[1-4]|rw\d{1,2}-d[1-4])$/),
+    lessonId: z.string().regex(/^(w\d{1,2}-d[1-4]|rw\d{1,3}-d[1-4])$/),
     startedAt: ISO,
     finishedAt: ISO.nullable(),
     checks: z
@@ -41,7 +41,7 @@ export const momLessonSaveSchema: z.ZodType<MomLessonRecord> = z
 export const momTestSaveSchema: z.ZodType<Omit<MomTestRecord, "summaryKo">> = z
   .object({
     id: ID,
-    week: z.number().int().min(1).max(60),
+    week: z.number().int().min(1).max(160),
     startedAt: ISO,
     finishedAt: ISO.nullable(),
     items: z.array(z.object({ sentenceId: z.string().min(1).max(80), verdict: z.enum(MOM_VERDICTS), transcript, recorded: z.boolean() }).strict()).max(20),

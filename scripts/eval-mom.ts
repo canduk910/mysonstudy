@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { MOM_IMPORT_FORMAT, momBlockHash, momImportFileSchema, isSpeakRole } from "../lib/mom-content";
 import { decideMomImport, momLessonSaveSchema, momTestSaveSchema } from "../lib/mom-contract";
+import { buildMomWeeks, isFullMomLesson, momPickTestItems, momProgress, momStageOfWeek, momTestSize, momToday, MOM_REVIEW_WEEKS } from "../lib/mom-plan";
 
 globalThis.fetch = (() => {
   throw new Error("eval:mom은 네트워크를 쓰지 않는다");
@@ -73,6 +74,44 @@ export function fakeBlock(id: string, week: number, stage: 0 | 1 | 2 | 3 | 4, n 
   add(L, "레슨 id 형식(클라이언트 멱등 키) — 공백·긴 값 거부", !momLessonSaveSchema.safeParse({ ...lesson, id: "a b" }).success && !momLessonSaveSchema.safeParse({ ...lesson, id: "x".repeat(80) }).success);
   const test = { id: "t-1", week: 5, startedAt: lesson.startedAt, finishedAt: lesson.finishedAt, items: [{ sentenceId: "b1-s0", verdict: "close", transcript: "i like item", recorded: true }] };
   add(L, "테스트 저장 정상·summaryKo는 받지 않는다", momTestSaveSchema.safeParse(test).success && !momTestSaveSchema.safeParse({ ...test, summaryKo: { goodKo: "a", fixKo: "b" } }).success);
+}
+
+// ── 3) 진도 엔진 ──
+{
+  const A = "진도 엔진";
+  const blocks = [fakeBlock("b5a", 5, 1, 6), fakeBlock("b5b", 5, 1, 6), fakeBlock("b6", 6, 1, 6)];
+  add(A, "블록 0 → empty(던지지 않음)", momToday({ blocks: [], lessons: [], tests: [] }).kind === "empty");
+  const weeks = buildMomWeeks(blocks as never);
+  const w5 = weeks.find((w) => w.week === 5)!;
+  add(A, "주당 레슨 4개, 말하기 12문장을 3·3·3·3으로", w5.lessons.length === 4 && w5.lessons.every((l) => l.speakIds.length === 3), JSON.stringify(w5.lessons.map((l) => l.speakIds.length)));
+  add(A, "smalltalk·dialog는 말하기에서 빠지고 dialog는 듣기로", w5.lessons.every((l) => l.speakIds.every((id) => !id.includes("-t") && !id.includes("-d"))) && w5.lessons[0].listenIds.length === 1);
+  add(A, "단계: 1~4주 0, 5~16주 1, 17~32 2, 33~46 3, 47~52 4", [1, 4, 5, 16, 17, 32, 33, 46, 47, 52].map(momStageOfWeek).join() === "0,0,1,1,2,2,3,3,4,4");
+  add(A, "테스트 문항 수 5·5·8·10·10", [0, 1, 2, 3, 4].map((s) => momTestSize(s as 0)).join() === "5,5,8,10,10");
+  add(A, "복습 주 = 8·16·24·32·40·48", MOM_REVIEW_WEEKS.join() === "8,16,24,32,40,48");
+  const t0 = momToday({ blocks: blocks as never, lessons: [], tests: [] });
+  add(A, "처음 → w5-d1", t0.kind === "lesson" && t0.lesson.id === "w5-d1");
+  const done = (id: string, speak: string[]) => ({ id: `c-${id}`, lessonId: id, startedAt: "2026-10-10T00:00:00.000Z", finishedAt: "2026-10-10T00:05:00.000Z", checks: speak.map((s) => ({ sentenceId: s, verdict: "pass" as const, transcript: "x", hintLevel: 0 as const })) });
+  const quit = { ...done("w5-d1", w5.lessons[0].speakIds), finishedAt: null };
+  add(A, "그만둔 레슨은 완료 아님 → 여전히 w5-d1", (() => { const t = momToday({ blocks: blocks as never, lessons: [quit], tests: [] }); return t.kind === "lesson" && t.lesson.id === "w5-d1"; })());
+  add(A, "isFullMomLesson: 말하기 문장 하나라도 결과 없으면 아님", !isFullMomLesson({ finishedAt: "x", checks: done("w5-d1", w5.lessons[0].speakIds.slice(1)).checks }, w5.lessons[0]));
+  const allW5 = w5.lessons.map((l) => done(l.id, l.speakIds));
+  const t1 = momToday({ blocks: blocks as never, lessons: allW5, tests: [] });
+  add(A, "주 레슨 다 끝나면 → 그 주 테스트(5문항)", t1.kind === "test" && t1.week === 5 && t1.size === 5);
+  const test5 = (rate: number, week = 5) => ({ id: `t${week}`, week, startedAt: "2026-10-10T00:00:00.000Z", finishedAt: "2026-10-10T00:09:00.000Z", items: Array.from({ length: 10 }, (_, i) => ({ sentenceId: `x${i}`, verdict: (i < rate * 10 ? "pass" : "retry") as "pass" | "retry", transcript: null, recorded: true })), summaryKo: null });
+  const t2 = momToday({ blocks: blocks as never, lessons: allW5, tests: [test5(0.8)] });
+  add(A, "테스트 끝 → 다음 주 w6-d1", t2.kind === "lesson" && t2.lesson.id === "w6-d1");
+  const pick = momPickTestItems({ week: 5, blocks: blocks as never, lessons: [{ ...allW5[0], checks: allW5[0].checks.map((c, i) => (i === 0 ? { ...c, verdict: "retry" as const } : c)) }], size: 5 });
+  add(A, "테스트 문항: 다시였던 문장 먼저·결정적·중복 없음", pick[0] === allW5[0].checks[0].sentenceId && new Set(pick).size === 5 && JSON.stringify(pick) === JSON.stringify(momPickTestItems({ week: 5, blocks: blocks as never, lessons: [{ ...allW5[0], checks: allW5[0].checks.map((c, i) => (i === 0 ? { ...c, verdict: "retry" as const } : c)) }], size: 5 })));
+  // 자동 감속: 5·6주 테스트 모두 0.5 → 7주 앞에 가상 복습 주
+  const b7 = fakeBlock("b7", 7, 1, 6);
+  const w6 = buildMomWeeks([...blocks, b7] as never).find((w) => w.week === 6)!;
+  const allW6 = w6.lessons.map((l) => done(l.id, l.speakIds));
+  const slow = momToday({ blocks: [...blocks, b7] as never, lessons: [...allW5, ...allW6], tests: [test5(0.5, 5), test5(0.5, 6)] });
+  add(A, "2주 연속 60% 미만 → 다음 주 앞에 복습 주", slow.kind === "lesson" && slow.lesson.kind === "review", JSON.stringify(slow));
+  const fast = momToday({ blocks: [...blocks, b7] as never, lessons: [...allW5, ...allW6], tests: [test5(0.5, 5), test5(0.7, 6)] });
+  add(A, "한 주만 낮으면 감속 없음", fast.kind === "lesson" && fast.lesson.id === "w7-d1");
+  const pr = momProgress({ blocks: blocks as never, lessons: allW5, tests: [] });
+  add(A, "진도 지도: 5주 current(테스트 남음), 완료 레슨 4", pr.currentWeek === 5 && pr.doneLessons === 4 && pr.weeks.find((w) => w.week === 5)?.status === "current");
 }
 
 // ── 출력 ──
