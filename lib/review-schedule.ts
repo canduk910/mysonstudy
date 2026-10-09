@@ -532,3 +532,41 @@ export function summarizeReviewResults(results: readonly ReviewRunResult[]): Rev
   }
   return { ...out, byInterval: [...by.entries()].sort((a, b) => a[0] - b[0]).map(([days, count]) => ({ days, count })) };
 }
+
+// ---------------------------------------------------------------------------
+// 한 판 판정 — 가족 스트릭 강화 스펙 §2
+// ---------------------------------------------------------------------------
+
+/** 차례 온 기존 항목이 없는 날, 이만큼 복습하면 한 판(가족 스트릭 강화 스펙 §2-1) */
+export const REVIEW_NEW_ONLY_MIN_RUN = 5;
+
+/**
+ * 복습 "한 판"을 한 KST 일자 집합(스펙 §2-1). 그날 D에 대해:
+ * - 차례 온 기존 항목 = D 이전 마지막 이력 e의 (e.on + 간격[e.step]) ≤ D인 항목
+ * - 한 판 = 그날 복습 ≥ 1 그리고 (그날 복습 ≥ REVIEW_DAILY_CAP, 또는 차례 온 기존 항목이 있고 전부 그날 복습, 또는 차례 온 것이 없고 그날 복습 ≥ REVIEW_NEW_ONLY_MIN_RUN)
+ * 영역 분리는 호출측 책임.
+ */
+export function reviewFullDays(schedules: readonly ReviewScheduleRecord[]): Set<string> {
+  const reviewedOn = new Map<string, Set<string>>(); // day → itemKeys
+  for (const s of schedules) for (const e of s.history) {
+    if (!reviewedOn.has(e.on)) reviewedOn.set(e.on, new Set());
+    reviewedOn.get(e.on)!.add(s.itemKey);
+  }
+  const out = new Set<string>();
+  for (const [day, done] of reviewedOn) {
+    const dueBefore: string[] = [];
+    for (const s of schedules) {
+      let last: ReviewHistoryEntry | null = null;
+      for (const e of s.history) if (e.on < day && (last === null || e.on >= last.on)) last = e;
+      if (last === null) continue;
+      const step = Math.min(REVIEW_MAX_STEP, Math.max(0, last.step));
+      if (shiftDateString(last.on, REVIEW_INTERVAL_DAYS[step]) <= day) dueBefore.push(s.itemKey);
+    }
+    const n = done.size;
+    const ok =
+      n >= REVIEW_DAILY_CAP ||
+      (dueBefore.length > 0 ? dueBefore.every((k) => done.has(k)) : n >= REVIEW_NEW_ONLY_MIN_RUN);
+    if (n >= 1 && ok) out.add(day);
+  }
+  return out;
+}

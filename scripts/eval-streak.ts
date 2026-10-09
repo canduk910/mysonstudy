@@ -36,8 +36,9 @@ import {
   type TestStatusSession,
 } from "../lib/test-status";
 import { templateSessionsForPart } from "../lib/toeic-guide-view";
-import { reviewStreakSessions, reviewTodayLabel } from "../lib/review-schedule";
+import { reviewFullDays, reviewStreakSessions, reviewTodayLabel } from "../lib/review-schedule";
 import { FREEZES_PER_MONTH, STREAK_BADGES, badgesOf, decideBridges, kstWeekDays, litDaysOf, streakFromStatus, weekCells } from "../lib/streak-v2";
+import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullQuiz, isFullTalk } from "../lib/streak-v2-sources";
 
 interface CheckResult {
   book: string;
@@ -787,6 +788,38 @@ const TODAY = "2026-09-21";
   // ⑫ 배지
   const bg = badgesOf({ best: 31, current: 30, doneToday: true });
   add(B, "⑫ 배지: best 31 → 7·30, 오늘 30에 닿음", STREAK_BADGES.join() === "7,30,100,200,365" && bg.earned.join() === "7,30" && bg.reachedToday === 30, JSON.stringify(bg));
+}
+
+// ---------------------------------------------------------------------------
+// 12) 한 판 판정(가족 스트릭 강화 스펙 §2) — 그만둠·일부 답·발화 2·녹음 일부는 한 판이 아니다
+// ---------------------------------------------------------------------------
+{
+  const B = "한 판";
+  const it = (answered: boolean | null) => ({ answered });
+  add(B, "시험: 끝까지·전부 답함 → 한 판", isFullQuiz({ finishedAt: "2026-10-10T03:00:00.000Z", items: [it(true), it(true)] }), "");
+  add(B, "시험: 그만둠(finishedAt null) → 아님", !isFullQuiz({ finishedAt: null, items: [it(true)] }), "");
+  add(B, "시험: 끝났지만 답 안 한 문항 있음 → 아님", !isFullQuiz({ finishedAt: "x", items: [it(true), it(null)] }), "");
+  add(B, "시험: 문항 0 → 아님", !isFullQuiz({ finishedAt: "x", items: [] }), "");
+  const ans = (q: number, recorded: boolean) => ({ q, recorded });
+  add(B, "응시: 범위 문항 전부 녹음 → 한 판", isFullAttempt({ finishedAt: "x", questions: [3, 4], answers: [ans(3, true), ans(4, true)] }), "");
+  add(B, "응시: 일부만 녹음 → 아님", !isFullAttempt({ finishedAt: "x", questions: [3, 4], answers: [ans(3, true), ans(4, false)] }), "");
+  add(B, "응시: 그만둠 → 아님", !isFullAttempt({ finishedAt: null, questions: [3], answers: [ans(3, true)] }), "");
+  add(B, "틀 말하기: 결과 전부 + 말한 문항 ≥ 1 → 한 판", isFullFrameDrill({ items: [{ outcome: "spoken" }, { outcome: "no_speech" }] }), "");
+  add(B, "틀 말하기: 말한 문항 0 → 아님", !isFullFrameDrill({ items: [{ outcome: "no_speech" }] }), "");
+  add(B, "자유대화: 발화 3 → 한 판, 2 → 아님", isFullTalk({ childTurnCount: 3 }) && !isFullTalk({ childTurnCount: 2 }) && !isFullTalk({ childTurnCount: Number.NaN }), "");
+  const m = new Map<string, number>();
+  addRuns(m, ["2026-10-09T15:30:00.000Z", "2026-10-10T03:00:00.000Z"]); // 둘 다 KST 10-10
+  addDays(m, ["2026-10-10", "2026-10-11"]);
+  add(B, "판 수 접기: KST 일자로 더한다", m.get("2026-10-10") === 3 && m.get("2026-10-11") === 1, JSON.stringify([...m]));
+  // 복습 한 판 — 차례가 온 기존 항목을 모두 했거나, 20개 이상, 차례 온 것이 없는 날은 5개 이상
+  const h = (on: string, step: number) => ({ on, at: `${on}T03:00:00.000Z`, hintLevel: 0, judge: "got", step });
+  const rv = (key: string, hist: ReturnType<typeof h>[]) => ({ id: key, area: "english", kind: "en-word", itemKey: key, step: 0, dueOn: "2099-01-01", streak: 0, lastJudge: null, lastHintLevel: null, lastReviewedOn: null, reviewCount: hist.length, history: hist, createdAt: "", updatedAt: "" });
+  // a·b: 10-09에 step 0(간격 1일) → 10-10에 차례. a만 10-10에 복습 → 미완, 둘 다 → 완
+  const part = reviewFullDays([rv("en-word:a", [h("2026-10-09", 0), h("2026-10-10", 1)]), rv("en-word:b", [h("2026-10-09", 0)])] as never);
+  const full = reviewFullDays([rv("en-word:a", [h("2026-10-09", 0), h("2026-10-10", 1)]), rv("en-word:b", [h("2026-10-09", 0), h("2026-10-10", 1)])] as never);
+  add(B, "복습: 차례 온 2개 중 1개 → 아님, 2개 → 한 판", !part.has("2026-10-10") && full.has("2026-10-10"), `part=${[...part]} full=${[...full]}`);
+  const newOnly = (n: number) => reviewFullDays(Array.from({ length: n }, (_, i) => rv(`en-word:n${i}`, [h("2026-10-12", 0)])) as never);
+  add(B, "복습: 차례 온 것 없는 날 — 4개 아님, 5개 한 판", !newOnly(4).has("2026-10-12") && newOnly(5).has("2026-10-12"), "");
 }
 
 // ---------------------------------------------------------------------------
