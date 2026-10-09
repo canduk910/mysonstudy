@@ -31,7 +31,9 @@ export interface MomJudge {
 const PLACEHOLDER_RE = /^(~+|…+|\.\.\.+)[?.!,]*$/;
 
 /** 내용 비교에서 빼는 군말(덧붙여도 감점 없음) */
-export const MOM_FILLER_WORDS: ReadonlySet<string> = new Set(["um", "uh", "er", "ah", "oh", "please", "okay", "ok"]);
+export const MOM_FILLER_WORDS: ReadonlySet<string> = new Set([
+  "um", "uh", "er", "ah", "oh", "please", "okay", "ok", "yes", "no", "sure", "well", "so", "hmm", "right",
+]);
 
 /**
  * 틀 글자의 슬래시 대안을 펼친 낱말열들.
@@ -69,12 +71,29 @@ function applicableFrames(alts: string[][], target: string[]): string[][] {
   return app.filter((a) => !app.some((b) => b.length > a.length && inOrder(a, b, (x, y) => x === y)));
 }
 
-/** "~"·"…" 자리 표시를 뺀 틀 낱말(정규화). `en`을 주면 그 문장에 맞는 대안, 아니면 첫 대안 */
+/**
+ * 안전장치 — 어느 대안도 문장에 순서대로 들어 있지 않을 때(대안 길이가 고르지 않은 빗금 등) 틀 검사가 조용히 꺼지지 않게,
+ * 문장 낱말 중 틀 글자의 낱말 집합(빗금 양쪽 모두)에 드는 것을 문장 순서대로 틀 낱말로 쓴다. 비면 틀 검사는 통과.
+ */
+function derivedFrameWords(alts: string[][], target: string[]): string[] {
+  const set = alts.flat();
+  return target.filter((w) => set.some((f) => sameLoose(f, w)));
+}
+
+/** 문장에 맞춰 검사할 틀 낱말열들 — 적용 대안이 있으면 그것들, 없으면 안전장치 낱말열(비면 빈 목록 = 검사 통과) */
+function frameChecksFor(alts: string[][], target: string[]): string[][] {
+  const app = applicableFrames(alts, target);
+  if (app.length > 0) return app;
+  const derived = derivedFrameWords(alts, target);
+  return derived.length > 0 ? [derived] : [];
+}
+
+/** "~"·"…" 자리 표시를 뺀 틀 낱말(정규화). `en`을 주면 그 문장에 맞춰 검사할 낱말열(안전장치 포함), 아니면 첫 대안 */
 export function frameWordsOf(frameText: string, en?: string): string[] {
   const alts = frameAlternativesOf(frameText);
   if (en !== undefined) {
-    const app = applicableFrames(alts, normalizeTemplateWords(en));
-    if (app.length > 0) return app[0];
+    const checks = frameChecksFor(alts, normalizeTemplateWords(en));
+    if (checks.length > 0) return checks[0];
   }
   return alts[0] ?? [];
 }
@@ -95,8 +114,13 @@ const IRREGULAR_GROUPS: readonly (readonly string[])[] = [
 /** 한 낱말의 너그러운 형태들 — 원형·복수 s·-ed/-d/-ing 뗀 꼴(남는 줄기 3글자 이상) */
 function looseForms(w: string): Set<string> {
   const f = new Set<string>([w, stemS(w)]);
-  for (const suf of ["ing", "ed", "d"]) {
+  for (const suf of ["ing", "ed"]) {
     if (w.endsWith(suf) && w.length - suf.length >= 3) f.add(w.slice(0, -suf.length));
+  }
+  // -d 하나는 "-ed"로 끝나고 뗀 줄기가 e(ee 아님)로 끝날 때만 — liked→like, used→use (need·feed·seed는 그대로)
+  if (w.endsWith("ed")) {
+    const stem = w.slice(0, -1);
+    if (stem.endsWith("e") && !stem.endsWith("ee")) f.add(stem);
   }
   return f;
 }
@@ -135,8 +159,8 @@ export function judgeMomSpeech(input: { en: string; frameText: string; transcrip
     return { verdict: "retry", frameOk: false, contentRate: 0, missing: [], extras: [], noSpeech: true, noteKo: null };
   }
 
-  // 문장 자체가 어느 틀 대안도 순서대로 담지 않으면(틀과 다른 변형 문장) 틀 검사는 통과로 본다
-  const applicable = applicableFrames(alts, target);
+  // 적용 대안(없으면 안전장치 낱말열) 중 하나라도 들은 말에 순서대로 있으면 틀 통과. 검사할 낱말이 전혀 없을 때만 기본 통과
+  const applicable = frameChecksFor(alts, target);
   const frameOk = applicable.length === 0 || applicable.some((a) => inOrder(a, heard, sameLoose));
 
   const isFrameWord = (w: string) => allFrameWords.some((f) => sameLoose(f, w));

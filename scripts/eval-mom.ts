@@ -169,6 +169,14 @@ export function fakeBlock(id: string, week: number, stage: 0 | 1 | 2 | 3 | 4, n 
   add(A, "시제 차이(불규칙 go/went) → pass", judgeMomSpeech({ en: "I go to school.", frameText: "I go to ~", transcript: "I went to school" }).verdict === "pass");
   add(A, "시제 차이(-ed) → pass", judgeMomSpeech({ en: "I walk to school.", frameText: "I walk to ~", transcript: "I walked to school" }).verdict === "pass");
   add(A, "다른 낱말(like/lie)은 시제 관용 아님 → pass 아님", judgeMomSpeech({ en: "I would like tea.", frameText: F, transcript: "I would lie tea" }).verdict !== "pass");
+  const FU = "Can I/Could I have ~?";
+  const ju = (en: string, t: string) => judgeMomSpeech({ en, frameText: FU, transcript: t });
+  add(A, "고르지 않은 빗금 틀 — 틀 빠진 말 → pass 아님(안전장치)", ju("Can I have a glass of water?", "a glass of water please").verdict !== "pass", JSON.stringify(ju("Can I have a glass of water?", "a glass of water please")));
+  add(A, "고르지 않은 빗금 틀 — Can I have → pass", ju("Can I have a glass of water?", "Can I have a glass of water").verdict === "pass");
+  add(A, "고르지 않은 빗금 틀 — Could I have → pass", ju("Could I have a glass of water?", "Could I have a glass of water").verdict === "pass");
+  add(A, "need ≠ nee(-d 떼기 제한) → pass 아님", judgeMomSpeech({ en: "I need a pen.", frameText: "I need ~", transcript: "I nee a pen" }).verdict !== "pass");
+  add(A, "liked = like(-d 떼기) → pass", judgeMomSpeech({ en: "I like it.", frameText: "I like ~", transcript: "I liked it" }).verdict === "pass");
+  add(A, "자연스러운 첫말 yes는 덧붙임 아님 → pass", j("Yes, I would like a cup of tea").verdict === "pass");
 }
 
 // ── 출력 ──
