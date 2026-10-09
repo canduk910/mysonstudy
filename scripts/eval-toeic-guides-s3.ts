@@ -691,7 +691,7 @@ function runS3SourceChecks(): GuideCheckResult[] {
   );
 
   // 스트릭·폴더·연습 탭
-  const streak = codeOnly(read("app/api/streak/route.ts"));
+  const streak = codeOnly(read("lib/streak-server.ts"));
   add("스트릭 라벨: 응시 라벨을 toeicAttemptStreakLabel(연습이면 `공략 연습 · {유형}`)로", /toeicAttemptStreakLabel\(mock, TOEIC_DRILL_PART_KO\)/.test(streak) && !/`모의고사 · \$\{mock\.titleKo\}`/.test(streak));
   const folderPage = codeOnly(read("app/toeic/guides/[part]/page.tsx"));
   // 2026-10-02(§12-13-3): ④ 준비 접기 = 단계마다 첫 틀 + "+n"(모범답변이 고르는 목록과 같은 흐름 — buildAnswerFlow(…, { order: "flow" }))
