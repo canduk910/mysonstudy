@@ -1,5 +1,6 @@
 /**
- * scripts/eval-mom.ts — 엄마의 생활영어 오프라인 점검(실호출 0). 픽스처 문장은 지어낸 것 — 교재 문장 금지(PUBLIC 저장소).
+ * scripts/eval-mom.ts — 엄마의 생활영어 오프라인 점검(기본 실호출 0). 픽스처 문장은 지어낸 것 — 교재 문장 금지(PUBLIC 저장소).
+ * 실호출 게이트: `EVAL_MOM=1`이고 `EVAL_OFFLINE_ONLY`가 없을 때만 호출 M1 1회(지어낸 5문항) — 사용자 동의 후 오케스트레이터가 실행한다.
  */
 import { readFileSync } from "node:fs";
 import { MOM_IMPORT_FORMAT, momBlockHash, momImportFileSchema, isSpeakRole } from "../lib/mom-content";
@@ -7,17 +8,26 @@ import { decideMomImport, momLessonSaveSchema, momTestSaveSchema } from "../lib/
 import { frameWordsOf, judgeMomSpeech } from "../lib/mom-judge";
 import { momHintText, momListenScript, momShadowRepeat, momShadowScript } from "../lib/mom-lesson-script";
 import { MOM_SUMMARY_JSON_SCHEMA, momSummaryZod } from "../lib/ai/mom/schemas";
-import { MOM_SUMMARY_CALL_OPTIONS, buildMomSummaryUserMessage } from "../lib/ai/mom/prompts";
+import { MOM_SUMMARY_CALL_OPTIONS, MOM_SUMMARY_SYSTEM_PROMPT, buildMomSummaryUserMessage } from "../lib/ai/mom/prompts";
+import { summarizeMomTest } from "../lib/ai/mom/calls";
+import { MOM_CLOSE_CONTENT, MOM_PASS_CONTENT } from "../lib/mom-judge";
+import { checkSpecSync, extractSpecBlocks, printSpecSyncDetails } from "./spec-sync";
 import { buildMomWeeks, isFullMomLesson, momPickTestItems, momProgress, momStageOfWeek, momTestSize, momToday, MOM_REVIEW_WEEKS } from "../lib/mom-plan";
 
-globalThis.fetch = (() => {
-  throw new Error("eval:mom은 네트워크를 쓰지 않는다");
-}) as typeof fetch;
+/** 실호출 게이트 — 둘 다 맞을 때만 네트워크를 연다(EVAL_OFFLINE_ONLY는 2차 방어선) */
+const LIVE = process.env.EVAL_MOM === "1" && !process.env.EVAL_OFFLINE_ONLY;
+if (!LIVE) {
+  globalThis.fetch = (() => {
+    throw new Error("eval:mom은 네트워크를 쓰지 않는다");
+  }) as typeof fetch;
+}
 
 interface CheckResult { area: string; check: string; pass: boolean; detail: string }
 const results: CheckResult[] = [];
 const add = (area: string, check: string, pass: boolean, detail = "") => results.push({ area, check, pass, detail });
 export const src = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf-8");
+/** 주석을 뺀 코드 — 순서·패턴 정적 점검이 주석 속 낱말에 걸리지 않게 */
+const codeOnly = (rel: string) => src(rel).replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/[^\n]*/g, "$1");
 
 /** 지어낸 블록 — 테스트 전용 */
 export function fakeBlock(id: string, week: number, stage: 0 | 1 | 2 | 3 | 4, n = 6) {
@@ -217,20 +227,104 @@ export function fakeBlock(id: string, week: number, stage: 0 | 1 | 2 | 3 | 4, n 
   add(A, "호출 옵션 call=mom_summary", MOM_SUMMARY_CALL_OPTIONS.call === "mom_summary");
   const msg = buildMomSummaryUserMessage([{ ko: "차 주세요.", en: "Tea, please.", transcript: null, verdict: "skipped" }]);
   add(A, "사용자 메시지: 받아쓰기 없음 표기·판정 한국어", msg.includes("없음") && msg.includes("넘어감"));
-  const sum = src("../app/api/mom/tests/[id]/summary/route.ts");
-  add(A, "총평 라우트: 저장된 총평 재사용이 키 검사보다 먼저", sum.indexOf("summaryKo") < sum.indexOf("no_api_key") && /summarizeMomTest/.test(sum));
+  const sum = codeOnly("../app/api/mom/tests/[id]/summary/route.ts");
+  const order = [
+    sum.indexOf('"not_found"'),
+    sum.search(/if\s*\(\s*test\.summaryKo\s*\)/),
+    sum.indexOf("process.env.OPENAI_API_KEY"),
+    sum.indexOf("summarizeMomTest("),
+    sum.indexOf("setMomTestSummary("),
+  ];
+  add(A, "총평 라우트 순서(주석 제외): not_found < 저장된 총평 재사용 < 키 검사 < summarizeMomTest( < setMomTestSummary(", order.every((x) => x >= 0) && order.every((x, i) => i === 0 || order[i - 1] < x), JSON.stringify(order));
   add(A, "테스트 저장: 멱등·finishedAt null 거부", /saveMomTest/.test(src("../app/api/mom/tests/route.ts")) && /finishedAt/.test(src("../app/api/mom/tests/route.ts")));
-  add(A, "녹음 풀에 mom", /"mom"/.test(src("../lib/toeic-rec-store.ts")));
+
+  // 토익 녹음 보호(주석 제외 코드만) — 엄마 풀은 기기 전용: "gone"으로 저장, 토익 업로드 대기열·"내 녹음" 목록에서 빠진다
+  const rec = codeOnly("../lib/toeic-rec-store.ts");
+  const fnBody = (name: string) => {
+    const i = rec.indexOf(`function ${name}(`);
+    if (i < 0) return "";
+    const j = rec.indexOf("\nexport ", i + 1);
+    return rec.slice(i, j < 0 ? undefined : j);
+  };
+  add(A, "녹음 풀 유니온에 mom", /export type ToeicRecPool = "mock" \| "drill" \| "mom";/.test(rec) && /TOEIC_REC_POOLS[^=]*= \["mock", "drill", "mom"\]/.test(rec));
+  add(A, "기기 전용 풀 = mom만", /function isDeviceOnlyPool\([^)]*\)[^{]*\{\s*return toeicRecPoolOf\(meta\) === "mom";\s*\}/.test(rec));
+  const save = fnBody("saveToeicRecording");
+  add(A, "저장: 기기 전용 풀은 upload \"gone\", 나머지는 \"pending\"", /isDeviceOnlyPool\(input\)\s*\?\s*\{\s*\.\.\.input,\s*upload:\s*"gone"/.test(save) && /:\s*\{\s*\.\.\.input,\s*upload:\s*"pending"/.test(save));
+  const pend = fnBody("listPendingToeicRecordings");
+  add(A, "업로드 대기열 목록: 메모리·IndexedDB 둘 다 기기 전용 풀 제외", (pend.match(/upload === "pending" && !isDeviceOnlyPool\(/g) ?? []).length === 2);
+  const mine = fnBody("listAllToeicRecordingMetas");
+  add(A, "\"내 녹음\" 목록: 메모리·IndexedDB 둘 다 기기 전용 풀 제외", (mine.match(/filter\(\(\w+\) => !isDeviceOnlyPool\(\w+\)\)/g) ?? []).length === 2);
+  add(A, "메모리 폴백: 엄마 풀과 토익 풀은 서로 비우지 않는다", /isDeviceOnlyPool\(v\) === isDeviceOnlyPool\(rec\)/.test(fnBody("rememberInMemory")));
+}
+
+// ── 8) spec-sync — 원문 바이트 대조 + JSON Schema 의미 동치 + 호출 옵션 문장 + 판정 상수 ──
+const SPEC_URL = new URL("../docs/harness/mom.md", import.meta.url);
+const specSyncOutcomes = checkSpecSync(SPEC_URL, [
+  { constName: "MOM_SUMMARY_SYSTEM_PROMPT", source: "lib/ai/mom/prompts.ts", specLabel: "§2-1 M1 시스템 프롬프트", text: MOM_SUMMARY_SYSTEM_PROMPT, mode: "block-exact" },
+]);
+{
+  const A = "spec-sync";
+  for (const o of specSyncOutcomes) add(A, `${o.constName}이 mom.md 원문 그대로`, o.ok, o.summary);
+  const spec = readFileSync(SPEC_URL, "utf-8");
+  const deepEqual = (a: unknown, b: unknown): boolean => {
+    if (a === b) return true;
+    if (typeof a !== typeof b || a === null || b === null || typeof a !== "object") return false;
+    if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => deepEqual(v, b[i]));
+    const ao = a as Record<string, unknown>;
+    const bo = b as Record<string, unknown>;
+    const ak = Object.keys(ao);
+    return ak.length === Object.keys(bo).length && ak.every((k) => Object.prototype.hasOwnProperty.call(bo, k) && deepEqual(ao[k], bo[k]));
+  };
+  const schemas = extractSpecBlocks(SPEC_URL).flatMap((b) => {
+    try {
+      const j = JSON.parse(b.text) as { name?: unknown };
+      return j && typeof j === "object" && j.name === "mom_summary" ? [j] : [];
+    } catch {
+      return [];
+    }
+  });
+  add(A, "mom_summary JSON Schema ↔ §2-3 의미 동치(블록 하나)", schemas.length === 1 && deepEqual(schemas[0], MOM_SUMMARY_JSON_SCHEMA), `블록 ${schemas.length}개`);
+  const m = spec.match(/temperature ([\d.]+), maxOutputTokens (\d+), call 라벨 `([^`]+)`/);
+  add(A, "호출 옵션 == 스펙 §2-4 문장", !!m && Number(m[1]) === MOM_SUMMARY_CALL_OPTIONS.temperature && Number(m[2]) === MOM_SUMMARY_CALL_OPTIONS.maxOutputTokens && m[3] === MOM_SUMMARY_CALL_OPTIONS.call, m ? m.slice(1).join(" ") : "문장 없음");
+  add(A, `판정 상수 == 스펙 §3 표(${MOM_PASS_CONTENT}·${MOM_CLOSE_CONTENT})`, spec.includes(`| \`MOM_PASS_CONTENT\` | ${MOM_PASS_CONTENT} |`) && spec.includes(`| \`MOM_CLOSE_CONTENT\` | ${MOM_CLOSE_CONTENT} |`));
+  const n = results.length + 1; // 이 항목까지 센 총수
+  add(A, `스펙 §5의 오프라인 항목 수 = 실제(${n})`, spec.includes(`**${n}항목**`), `실제 ${n}`);
 }
 
 // ── 출력 ──
 void (async () => {
   console.log("| 결과 | 영역 | 점검 항목 | 상세 |\n|---|---|---|---|");
   for (const r of results) console.log(`| ${r.pass ? "PASS" : "FAIL"} | ${r.area} | ${r.check} | ${r.detail.replace(/\|/g, "\\|").slice(0, 160)} |`);
+  printSpecSyncDetails(specSyncOutcomes);
+  const offline = results.length;
+  let live = 0;
+  if (process.env.EVAL_MOM === "1" && process.env.EVAL_OFFLINE_ONLY) {
+    console.log("EVAL_MOM=1이지만 EVAL_OFFLINE_ONLY=1 — 실호출 점검을 건너뜁니다(네트워크 차단).");
+  } else if (LIVE) {
+    // 실호출 M1 1회 — 지어낸 5문항(교재 문장 아님)
+    const A = "실호출 M1";
+    const items = [
+      { ko: "창가 자리로 주세요.", en: "A window seat, please.", transcript: "a window seat please", verdict: "pass" as const },
+      { ko: "이거 얼마예요?", en: "How much is this?", transcript: "how much is this", verdict: "pass" as const },
+      { ko: "물 좀 더 주시겠어요?", en: "Could I get more water?", transcript: "could I get water", verdict: "close" as const },
+      { ko: "지하철역이 어디예요?", en: "Where is the subway station?", transcript: "where is", verdict: "retry" as const },
+      { ko: "계산서 주세요.", en: "Check, please.", transcript: null, verdict: "skipped" as const },
+    ];
+    try {
+      const out = await summarizeMomTest(items);
+      live = 2;
+      add(A, "zod 통과(goodKo·fixKo)", momSummaryZod.safeParse(out).success, JSON.stringify(out));
+      add(A, "두 줄 모두 한글 포함", /[가-힣]/.test(out.goodKo) && /[가-힣]/.test(out.fixKo));
+    } catch (err) {
+      live = 1;
+      add(A, "summarizeMomTest 성공", false, err instanceof Error ? err.message : String(err));
+    }
+    for (const r of results.slice(offline)) console.log(`| ${r.pass ? "PASS" : "FAIL"} | ${r.area} | ${r.check} | ${r.detail.replace(/\|/g, "\\|").slice(0, 160)} |`);
+  }
   const failed = results.filter((r) => !r.pass);
   if (failed.length > 0) {
     console.error(`FAIL — 엄마 영어 ${failed.length}개 항목 실패.`);
     process.exit(1);
   }
-  console.log(`PASS — 엄마 영어 ${results.length}개 항목 통과 (실호출 0회).`);
+  console.log(`PASS — 엄마 영어 ${offline}개 항목 통과 (실호출 ${live > 0 ? "1회" : "0회"}).`);
 })();

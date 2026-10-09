@@ -24,6 +24,7 @@
 | **수학 (수학코치)** | [`docs/harness/math.md`](./harness/math.md) | `lib/ai/math/` | `scripts/eval-math.ts` | `npm run eval:math` |
 | **일본어 (아빠의 일본어)** | [`docs/harness/japanese.md`](./harness/japanese.md) | `lib/ai/japanese/` | `scripts/eval-japanese.ts` | `npm run eval:japanese` |
 | **토익스피킹 (아빠의 영어)** | [`docs/harness/toeic.md`](./harness/toeic.md) | `lib/ai/toeic/` | `scripts/eval-toeic.ts` | `npm run eval:toeic` |
+| **엄마의 생활영어 (2026-10-09)** | [`docs/harness/mom.md`](./harness/mom.md) | `lib/ai/mom/` | `scripts/eval-mom.ts` | `npm run eval:mom` |
 | **표현 도우미 (과목 공통 — 아빠의 영어·아빠의 일본어·은우 영어)** | [`docs/harness/phrase-helper.md`](./harness/phrase-helper.md) | `lib/ai/phrase-helper/` | `scripts/eval-phrase-helper.ts` | `npm run eval:phrase` |
 
 표현 도우미(2026-10-03)는 과목이 아니라 세 영역이 **호출 하나를 모드 셋**(`toeic`·`japanese`·`english-kid`)으로 나눠 쓰는 공통 기능이라 스펙·코드·eval을 과목 중립 한 곳에 둡니다 — 진입 함수는 `lib/ai/phrase-helper/calls.ts`(토익처럼 과목 폴더, `lib/ai/client.ts`에 넣지 않는다), 모델은 전용 env `OPENAI_PHRASE_HELPER_MODEL`(빈 값이면 `gpt-6-luna`). 과목 문서에는 포인터 한 줄만 있습니다.
@@ -92,6 +93,7 @@ lib/ai/english/           # 영어 전용 프롬프트·스키마
 lib/ai/math/              # 수학 전용 프롬프트·스키마·검산 파이프라인
 lib/ai/japanese/          # 일본어 전용 프롬프트·스키마
 lib/ai/toeic/             # 토익스피킹 전용 프롬프트·스키마·후처리(호출 A~D) + 유형별 공략 가져오기 판정(guide-import.ts)
+lib/ai/mom/               # 엄마의 생활영어 호출 M1(주간 테스트 총평) 프롬프트·스키마·진입 함수(calls.ts, 서버 전용) — 받아쓰기는 토익 관문 T 재사용
 lib/ai/phrase-helper/     # 표현 도우미(과목 공통 — 모드 셋) 프롬프트·스키마·모델·진입 함수(calls.ts, 서버 전용)
 lib/phrase-helper.ts      # 표현 도우미 입력 정리·로컬 판정·결과 타입(클라이언트 안전, 런타임 import 0)
 lib/image-gen.ts          # 사진 생성 공용 코어(관문 P·자유대화 일러스트 공유) — 하네스 밖(서버 전용)
@@ -106,12 +108,14 @@ scripts/eval-english.ts   # 영어 평가 하네스
 scripts/eval-math.ts      # 수학 평가 하네스
 scripts/eval-japanese.ts  # 일본어 평가 하네스
 scripts/eval-toeic.ts     # 토익스피킹 평가 하네스
+scripts/eval-mom.ts       # 엄마의 생활영어 평가 하네스(오프라인 + 게이트 EVAL_MOM=1)
 scripts/eval-phrase-helper.ts # 표현 도우미 평가 하네스(오프라인 + 게이트 EVAL_PHRASE=1)
 scripts/eval-toeic-guides*.ts # 토익 유형별 공략 eval 조각 넷(eval-toeic.ts가 불러 한 번에 돈다)
 docs/harness/english.md   # 영어 스펙 (단일 진실 원천)
 docs/harness/math.md      # 수학 스펙
 docs/harness/japanese.md  # 일본어 스펙
 docs/harness/toeic.md     # 토익스피킹 스펙
+docs/harness/mom.md       # 엄마의 생활영어 스펙
 docs/harness/phrase-helper.md # 표현 도우미 스펙(과목 공통)
 ```
 
@@ -128,6 +132,7 @@ docs/harness/phrase-helper.md # 표현 도우미 스펙(과목 공통)
   오프라인 항목(`EVAL_OFFLINE_ONLY=1`)·일본어 eval(현재 오프라인 전용 — 실호출 게이트 `EVAL_JAPANESE`는 자리만)·
   `eval:speech`·`eval:workout`·`eval:streak`는 실호출이 없어 언제든 돌려도 된다.
   **표현 도우미 eval(`eval:phrase`)도 기본이 오프라인**(무비용 — 입력 정리·로컬 판정·모드별 zod 반례·spec-sync 원문 4·JSON Schema 2 의미 동치)이고, 실호출은 `EVAL_PHRASE=1`일 때만 모드마다 지어낸 입력 1개(3회, `EVAL_PHRASE_MODE`로 하나만)다 — 동의 후 오케스트레이터가 실행한다.
+  **엄마의 생활영어 eval(`eval:mom`)도 기본이 오프라인**(무비용 — 진도 엔진·발화 판정·가져오기 zod·라우트 배선·토익 녹음 보호·spec-sync 원문 1·JSON Schema 1 의미 동치)이고, 실호출은 `EVAL_MOM=1`일 때만 호출 M1 1회(지어낸 5문항)다 — `EVAL_OFFLINE_ONLY=1`이면 건너뛴다. 동의 후 오케스트레이터가 실행한다. 진도·판정은 AI가 없는 순수 함수(`lib/mom-plan.ts`·`lib/mom-judge.ts`)다.
   **토익스피킹 eval(`eval:toeic`)은 기본이 오프라인**(무비용 — zod 반례·후처리·시험 출제·형식표·Q1–2 대조·추정 총점·스트릭 트랙 분리·
   spec-sync 바이트 대조와 JSON Schema 8개 의미 동치)이라 언제든 돌려도 된다. 실호출은 **`EVAL_TOEIC=1`일 때만** 호출 A(사진 경로
   `EVAL_TOEIC_PHOTO`가 있을 때만)·B(표현 7개)·C(파트 하나, `EVAL_TOEIC_PART` 기본 opinion)·D(픽스처 전사문 하나)를 한 번씩 부르고,
