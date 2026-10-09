@@ -28,7 +28,7 @@ import type {
   WorkoutCycleRecord,
 } from "@/lib/store";
 import type { MomBlockRecord, MomLessonRecord, MomTestRecord } from "@/lib/mom-contract";
-import { buildMomWeeks, isFullMomTest, isMomVirtualWeek, type MomLesson } from "@/lib/mom-plan";
+import { isFullMomTest, isMomVirtualWeek } from "@/lib/mom-plan";
 import { isCountedTalkSession, talkStreakLabel, talkStreakSessions } from "@/lib/talk-streak";
 import { TOEIC_GUIDE_PART_TO_MOCK_PART, isToeicGuidePart } from "@/lib/toeic-guide";
 import { toeicMockPartLabelKo } from "@/lib/toeic-mock-contract";
@@ -45,7 +45,7 @@ import {
 import { workoutKeptDays, workoutStreakTodayLabel } from "@/lib/workout";
 import { reviewFullDays, reviewStreakSessions, reviewTodayLabel, type ReviewArea, type ReviewScheduleRecord } from "@/lib/review-schedule";
 import { STREAK_V2_FROM, badgesOf, kstWeekDays, weekCells, type WeekCell } from "@/lib/streak-v2";
-import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullMomLessonRun, isFullQuiz, isFullTalk } from "@/lib/streak-v2-sources";
+import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullMomLessonRecord, isFullQuiz, isFullTalk } from "@/lib/streak-v2-sources";
 import { familyV2, personV2, trackV2, type TrackInput } from "@/lib/streak-v2-assemble";
 
 /** 오늘(KST) 실제로 답한 세션만, 최신 먼저. */
@@ -231,16 +231,12 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
 
   // ── 👩 엄마(엄마 설계 §7): legacy 없음(새 영역), runs = 완료 레슨 + 완료 테스트 + mom 복습 한 판 ──
   // 블록이 하나도 없으면(영역을 아직 안 열었음) 엄마는 null — 헤드라인·보드에서 칸이 나타나지 않는다.
-  // 레슨 완료 = 계획(buildMomWeeks)의 그 레슨 말하기 문장을 다 체크하고 끝냄(isFullMomLesson). 자동 감속 가상 복습 주(rw101~) 레슨은 계획에 없으므로
-  // 끝냈고 체크가 하나 이상이면 완료로 본다.
+  // 레슨 한 판 = 끝냈고 체크 ≥ 1(isFullMomLessonRecord) — 지금 계획과 대조하지 않는다(내용을 다시 가져와도 지난 🔥가 소급해 바뀌지 않게).
   let momT: TrackInput | null = null;
   let momLabel: string | null = null;
   if (momBlocks && momLessons && momTests && momBlocks.length > 0) {
     try {
-      const plan = new Map<string, MomLesson>();
-      for (const w of buildMomWeeks(momBlocks)) for (const l of w.lessons) plan.set(l.id, l);
-      // 판정은 isFullMomLessonRun(계획에 있으면 isFullMomLesson, 가상 복습 주 `rw…`면 끝냄 + 체크 ≥ 1)
-      const doneLessons = momLessons.filter((rec) => isFullMomLessonRun(rec, plan.get(rec.lessonId)));
+      const doneLessons = momLessons.filter(isFullMomLessonRecord);
       const doneTests = momTests.filter(isFullMomTest);
       const runs = new Map<string, number>();
       addRuns(runs, doneLessons.map((l) => l.startedAt));
@@ -250,8 +246,6 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
       // 라벨 = 오늘 끝낸 레슨·테스트 중 가장 늦게 시작한 것(같은 시각이면 레슨), 둘 다 없으면 오늘의 복습
       const weekKo = (week: number) => (isMomVirtualWeek(week) ? "복습 주" : `${week}주차`);
       const lessonWeek = (rec: MomLessonRecord): number | null => {
-        const w = plan.get(rec.lessonId)?.week;
-        if (w !== undefined) return w;
         const m = /^r?w(\d{1,3})-d[1-4]$/.exec(rec.lessonId);
         return m ? Number(m[1]) : null;
       };

@@ -39,8 +39,8 @@ import { templateSessionsForPart } from "../lib/toeic-guide-view";
 import { reviewFullDays, reviewStreakSessions, reviewTodayLabel } from "../lib/review-schedule";
 import { FREEZES_PER_MONTH, STREAK_BADGES, badgesOf, decideBridges, doneForPush, kstWeekDays, litDaysOf, needsMoreToday, repairHintText, streakFromStatus, weekCells } from "../lib/streak-v2";
 import { familyV2, personV2, trackV2 } from "../lib/streak-v2-assemble";
-import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullMomLessonRun, isFullQuiz, isFullTalk } from "../lib/streak-v2-sources";
-import { decidePushes, isQuietHHMM, kstHalfHourHHMM, pushStates, PUSH_DAILY_MAX, TICK_SKEW_MS } from "../lib/push-decide";
+import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullMomLessonRecord, isFullQuiz, isFullTalk } from "../lib/streak-v2-sources";
+import { decidePushes, isQuietHHMM, kstHalfHourHHMM, pushStates, pushText, PUSH_DAILY_MAX, TICK_SKEW_MS } from "../lib/push-decide";
 import type { PersonStreak, StreakResponse } from "../lib/streak-contract";
 import { DEFAULT_PUSH_PREFS } from "../lib/push-contract";
 
@@ -1051,20 +1051,36 @@ const TODAY = "2026-09-21";
   add(B, "알림: 엄마 자리표시 제거·URL /mom", !/person: "mom", doneToday: true/.test(pd) && /mom: "\/mom"/.test(pd), "");
   add(B, "헤드라인 👩 칸", /emoji="👩"/.test(src("../components/streak-headline.tsx")), "");
 
-  // 레슨 한 판 판정(순수) — 계획 레슨은 말하기 문장 전부 + 끝냄, 가상 복습 주 rw1xx는 끝냄 + 체크 ≥ 1, 계획 밖 w…는 아님
+  // 레슨 한 판 판정(순수) — 기록만 본다(끝냄 + 체크 ≥ 1), w…·rw… 같다. 지금 계획과 대조하지 않는다(소급 금지)
   const ck = (id: string) => ({ sentenceId: id, verdict: "pass" as const, transcript: null, hintLevel: 0 as const });
   const L = (lessonId: string, finished: boolean, ids: string[]) => ({ lessonId, finishedAt: finished ? "2026-10-16T01:00:00.000Z" : null, checks: ids.map(ck) });
-  const plan = { speakIds: ["s1", "s2"] };
   const runs = [
-    isFullMomLessonRun(L("w1-d1", true, ["s1", "s2"]), plan),
-    !isFullMomLessonRun(L("w1-d1", true, ["s1"]), plan),
-    !isFullMomLessonRun(L("w1-d1", false, ["s1", "s2"]), plan),
-    isFullMomLessonRun(L("rw109-d2", true, ["x"]), undefined),
-    !isFullMomLessonRun(L("rw109-d2", true, []), undefined),
-    !isFullMomLessonRun(L("rw109-d2", false, ["x"]), undefined),
-    !isFullMomLessonRun(L("w9-d1", true, ["x"]), undefined),
+    isFullMomLessonRecord(L("w1-d1", true, ["s1", "s2"])),
+    isFullMomLessonRecord(L("rw109-d2", true, ["x"])),
+    !isFullMomLessonRecord(L("w1-d1", false, ["s1", "s2"])),
+    !isFullMomLessonRecord(L("rw109-d2", false, ["x"])),
+    !isFullMomLessonRecord(L("w1-d1", true, [])),
+    !isFullMomLessonRecord(L("rw109-d2", true, [])),
   ];
-  add(B, "레슨 한 판: 계획 레슨 전부+끝냄 · 가상 복습 주 끝냄+체크≥1 · 계획 밖 w… 아님", runs.every(Boolean), runs.join());
+  add(B, "레슨 한 판: 끝냄 + 체크 ≥ 1(w…·rw… 같다) · 끝내지 않음·체크 0은 아님", runs.every(Boolean), runs.join());
+  {
+    // 소급 금지 — 내용을 다시 가져와 w3-d1의 말하기 문장이 바뀌었다(옛 기록은 old-a·old-b를 체크). 그래도 지난 날 한 판으로 남는다.
+    const nowPlan = { speakIds: ["new-a", "new-b"] };
+    const old = { ...L("w3-d1", true, ["old-a", "old-b"]), startedAt: "2026-10-14T01:00:00.000Z" };
+    const stillFull = isFullMomLessonRecord(old);
+    const T = (runs: Record<string, number>) => ({ legacyDays: new Set<string>(), runs: new Map(Object.entries(runs)) });
+    const m = new Map<string, number>();
+    addRuns(m, [old].filter(isFullMomLessonRecord).map((r) => r.startedAt));
+    const mom = personV2([T(Object.fromEntries(m))], "2026-10-14", "2026-10-10");
+    const planMismatch = !nowPlan.speakIds.every((id) => old.checks.some((c) => c.sentenceId === id));
+    const ss2 = src("../lib/streak-server.ts");
+    add(
+      B,
+      "소급 금지: 지금 계획과 말하기 문장이 달라진 옛 레슨도 한 판 · 스트릭이 buildMomWeeks를 보지 않는다",
+      planMismatch && stillFull && m.get("2026-10-14") === 1 && mom.info.current === 1 && !/buildMomWeeks\(/.test(ss2) && /momLessons\.filter\(isFullMomLessonRecord\)/.test(ss2),
+      JSON.stringify(mom.info),
+    );
+  }
   // 가족 참여: 엄마는 첫 레슨 완료일부터(그 전 날은 은우·아빠만으로)
   {
     const T = (runs: Record<string, number>) => ({ legacyDays: new Set<string>(), runs: new Map(Object.entries(runs)) });
@@ -1103,6 +1119,26 @@ const TODAY = "2026-09-21";
   const withMom = pushStates({ ...r, mom: ps({ current: 2, doneToday: false, lastDate: "2026-10-15", best: 2 }) });
   const momToday = decidePushes({ nowHHMM: "21:00", states: withMom, prefs: DEFAULT_PUSH_PREFS, sentToday: [] }).find((x) => x.person === "mom" && x.kind === "today");
   add(B, "엄마 실제 상태: 오늘 아직 → today 알림·URL /mom", !!momToday && momToday.url === "/mom", JSON.stringify(momToday ?? null));
+  {
+    // 0일 문구 — "🔥 0일이 걸려 있어요"·0일인데 🧊 카드 안내 금지. 5일은 기존 문구 그대로
+    const S = (current: number, freezeLeft = 1) => ({ person: "mom" as const, doneToday: false, current, freezeLeft, pendingRepairYesterday: false, missingTracks: [] as string[] });
+    const t0 = pushText("mom", "today", S(0)).body;
+    const k0 = pushText("eunwoo", "today", { ...S(0), person: "eunwoo" }).body;
+    const l0 = pushText("mom", "last", S(0)).body;
+    const t5 = pushText("mom", "today", S(5)).body;
+    const k5 = pushText("eunwoo", "today", { ...S(5), person: "eunwoo" }).body;
+    const l5 = pushText("mom", "last", S(5)).body;
+    const l5n = pushText("mom", "last", S(5, 0)).body;
+    add(
+      B,
+      "알림 문구 0일: today '0일' 없음(어른·아이) · last '🧊' 없음 · 5일은 기존 문구",
+      !t0.includes("0일") && t0 === "오늘 한 판 해 볼까요? 🔥를 켜 봐요" && !k0.includes("0일") && k0 === "오늘 한 판 하자! 🔥를 켜 보자" &&
+        !l0.includes("🧊") && l0 === "오늘 한 판이면 🔥가 켜져요." &&
+        t5 === "🔥 5일이 걸려 있어요. 한 판만 하면 돼요!" && k5 === "🔥 5일째야. 한 판만 하자!" &&
+        l5 === "오늘 못 하면 🧊 쉬는 날 카드가 쓰여요." && l5n === "오늘 못 하면 🔥가 내일 두 판으로만 살아나요.",
+      [t0, k0, l0, t5, k5, l5, l5n].join(" | "),
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

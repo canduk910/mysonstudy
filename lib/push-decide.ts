@@ -53,13 +53,22 @@ export function pushText(person: PushPerson, kind: PushKind, s: PersonState, ext
     case "today":
       return {
         title: kid ? "은우야, 오늘 공부할 시간!" : "오늘 🔥 아직이에요",
-        body: kid ? `🔥 ${s.current}일째야. 한 판만 하자!` : `🔥 ${s.current}일이 걸려 있어요. 한 판만 하면 돼요!${s.missingTracks.length ? ` (${s.missingTracks.join("·")})` : ""}`,
+        // 0일(아직 켠 적 없음·끊김)엔 "🔥 0일이 걸려 있어요"가 어색하다 — 켜 보자는 문구로
+        body:
+          s.current === 0
+            ? kid
+              ? "오늘 한 판 하자! 🔥를 켜 보자"
+              : `오늘 한 판 해 볼까요? 🔥를 켜 봐요${s.missingTracks.length ? ` (${s.missingTracks.join("·")})` : ""}`
+            : kid
+              ? `🔥 ${s.current}일째야. 한 판만 하자!`
+              : `🔥 ${s.current}일이 걸려 있어요. 한 판만 하면 돼요!${s.missingTracks.length ? ` (${s.missingTracks.join("·")})` : ""}`,
         url: URL_OF[person],
       };
     case "last":
       return {
         title: kid ? "오늘이 곧 끝나요!" : "1시간 반 남았어요",
-        body: s.freezeLeft > 0 ? "오늘 못 하면 🧊 쉬는 날 카드가 쓰여요." : "오늘 못 하면 🔥가 내일 두 판으로만 살아나요.",
+        // 0일이면 지킬 🔥가 없다 — 카드·만회 대신 켜는 안내
+        body: s.current === 0 ? "오늘 한 판이면 🔥가 켜져요." : s.freezeLeft > 0 ? "오늘 못 하면 🧊 쉬는 날 카드가 쓰여요." : "오늘 못 하면 🔥가 내일 두 판으로만 살아나요.",
         url: URL_OF[person],
       };
     case "repair":
