@@ -112,6 +112,35 @@ export function fakeBlock(id: string, week: number, stage: 0 | 1 | 2 | 3 | 4, n 
   add(A, "한 주만 낮으면 감속 없음", fast.kind === "lesson" && fast.lesson.id === "w7-d1");
   const pr = momProgress({ blocks: blocks as never, lessons: allW5, tests: [] });
   add(A, "진도 지도: 5주 current(테스트 남음), 완료 레슨 4", pr.currentWeek === 5 && pr.doneLessons === 4 && pr.weeks.find((w) => w.week === 5)?.status === "current");
+
+  // 완료 순서대로 끝까지 밀어 보는 도우미 — 레슨은 모두 맞음, 테스트는 주별 비율(기본 0.9). 지나간 오늘 항목 id를 돌려준다.
+  type Rec = ReturnType<typeof done>;
+  type TRec = ReturnType<typeof test5>;
+  const runUntil = (bl: unknown[], rates: Record<number, number>, stopAt: string) => {
+    const ls: Rec[] = [];
+    const ts: TRec[] = [];
+    const trace: string[] = [];
+    for (let i = 0; i < 80; i++) {
+      const t = momToday({ blocks: bl as never, lessons: ls, tests: ts });
+      const key = t.kind === "lesson" ? t.lesson.id : t.kind === "test" ? `test${t.week}` : t.kind;
+      trace.push(key);
+      if (key === stopAt || t.kind === "done" || t.kind === "empty") break;
+      if (t.kind === "lesson") ls.push(done(t.lesson.id, t.lesson.speakIds));
+      else if (t.kind === "test") ts.push(test5(rates[t.week] ?? 0.9, t.week));
+    }
+    return { trace, ls, ts };
+  };
+  const bb = (weeks: number[]) => weeks.map((w) => fakeBlock(`k${w}`, w, 1, 6));
+  const r67 = runUntil(bb([6, 7, 9]), { 6: 0.5, 7: 0.5, 8: 0.9 }, "w9-d1");
+  add(A, "6·7주 낮음 → 8주(실제 복습 주)로 충족, 가상 주 없음 → 다음은 w9-d1", r67.trace.includes("rw8-d1") && r67.trace.at(-1) === "w9-d1" && !r67.trace.some((k) => /^rw1\d\d-/.test(k)), r67.trace.join(" "));
+  const r567 = runUntil(bb([5, 6, 7, 9]), { 5: 0.5, 6: 0.5, 7: 0.5 }, "w9-d1");
+  const virt = [...new Set(r567.trace.filter((k) => /^rw1\d\d-/.test(k)).map((k) => k.split("-")[0]))];
+  add(A, "5·6·7주 모두 낮음 → 가상 복습 주는 한 번만(7주 앞), 8주 다음 w9-d1", virt.join() === "rw107" && r567.trace.indexOf("rw107-d1") < r567.trace.indexOf("w7-d1") && r567.trace.indexOf("rw8-d1") < r567.trace.indexOf("w9-d1") && r567.trace.at(-1) === "w9-d1", r567.trace.join(" "));
+  const prv = momProgress({ blocks: [...blocks, b7] as never, lessons: [...allW5, ...allW6], tests: [test5(0.5, 5), test5(0.5, 6)] });
+  add(A, "가상 복습 주 진행 중: currentWeek = 원래 7주·currentIsReview·7주 current", prv.currentWeek === 7 && prv.currentIsReview && prv.weeks.find((w) => w.week === 7)?.status === "current" && prv.weeks.every((w) => w.week < 100), JSON.stringify(prv));
+  add(A, "말하기 문장 없는 블록만 → empty(done 아님)", momToday({ blocks: [fakeBlock("bz", 5, 1, 0)] as never, lessons: [], tests: [] }).kind === "empty");
+  const span = buildMomWeeks([fakeBlock("ba", 10, 1, 2), fakeBlock("bc", 10, 1, 7)] as never).find((w) => w.week === 10)!;
+  add(A, "두 블록에 걸친 레슨의 듣기 = 두 블록 dialog 모두(블록 순서)", JSON.stringify(span.lessons[0].listenIds) === JSON.stringify(["ba-d0", "bc-d0"]), JSON.stringify(span.lessons.map((l) => [l.speakIds.length, l.listenIds])));
 }
 
 // ── 출력 ──

@@ -95,7 +95,9 @@ export function buildMomWeeks(blocks: readonly MomBlock[]): MomWeekPlan[] {
       .map((day) => {
         const part = speak.slice((day - 1) * per, day * per);
         const blockId = part[0]?.blockId ?? null;
-        const block = wb.find((b) => b.id === blockId);
+        // 듣기 = 이 레슨 말하기 문장이 나온 모든 블록의 dialog 문장(블록 순서, 중복 없음)
+        const fromBlocks = new Set(part.map((p) => p.blockId));
+        const listenIds = [...new Set(wb.filter((b) => fromBlocks.has(b.id)).flatMap((b) => b.sentences.filter((s) => s.role === "dialog").map((s) => s.id)))];
         return {
           id: `w${week}-d${day}`,
           week,
@@ -103,7 +105,7 @@ export function buildMomWeeks(blocks: readonly MomBlock[]): MomWeekPlan[] {
           kind: "new" as const,
           blockId,
           speakIds: part.map((p) => p.id),
-          listenIds: block ? block.sentences.filter((s) => s.role === "dialog").map((s) => s.id) : [],
+          listenIds,
         };
       })
       .filter((l) => l.speakIds.length > 0);
@@ -164,8 +166,11 @@ export type MomTodayItem =
   | { kind: "done" };
 
 export interface MomProgress {
+  /** 현재 주. 가상 복습 주가 현재면 그 가상 주가 앞선 원래 주 N. */
   currentWeek: number;
   stage: Stage;
+  /** 지금 복습 주(실제 8·16… 또는 자동 감속 가상 주)를 하는 중인가 */
+  currentIsReview: boolean;
   doneLessons: number;
   totalLessons: number;
   weeks: { week: number; kind: "new" | "review"; status: "done" | "current" | "todo" }[];
@@ -185,15 +190,17 @@ function latestFullTest(tests: readonly MomTestRecord[], week: number): MomTestR
 
 interface Walk {
   /** 걸은 순서대로의 주(가상 복습 주 포함) */
-  seq: { plan: MomWeekPlan; virtual: boolean; complete: boolean; lessonsDone: boolean[] }[];
+  /** forWeek = 가상 주가 앞선 원래 주(실제 주는 자기 주) */
+  seq: { plan: MomWeekPlan; virtual: boolean; forWeek: number; complete: boolean; lessonsDone: boolean[] }[];
   today: MomTodayItem;
   currentIdx: number;
 }
 
 /**
  * 완료 순서로 걷는다. 멈춘 주(현재) 이후로는 가상 복습 주를 끼우지 않는다(아직 테스트가 없으므로).
- * 자동 감속: 새 주 N에 들어가기 직전, 걸어온 실제 새 주(복습 주 제외) 중 가장 최근 두 주의 완료 테스트가 둘 다 0.6 미만이면
- * N 앞에 가상 복습 주(N+100)를 끼운다. N마다 한 번만 판정하므로 같은 쌍으로 다시 걸리지 않는다.
+ * 자동 감속: 새 주 N에 들어가기 직전, 마지막 복습 주 이후 걸어온 새 주 중 가장 최근 두 주의 완료 테스트가 둘 다 0.6 미만이면
+ * N 앞에 가상 복습 주(N+100)를 끼운다. 복습 주(실제·가상)를 걸을 때마다 비율 창을 비우므로 — 다음 주가 이미 실제 복습 주면
+ * 그것으로 충족되고(가상 주 없음), 낮은 한 쌍은 복습 주를 많아야 하나 부르며, 한 주가 두 쌍에 쓰이지 않는다.
  */
 function walk(input: PlanInput): Walk {
   const sorted = sortBlocks(input.blocks);
@@ -203,18 +210,19 @@ function walk(input: PlanInput): Walk {
   let currentIdx = -1;
   const recentNewRates: number[] = [];
 
-  const visit = (wp: MomWeekPlan, virtual: boolean) => {
+  const visit = (wp: MomWeekPlan, virtual: boolean, forWeek: number) => {
     const lessonsDone = wp.lessons.map((l) => input.lessons.some((r) => r.lessonId === l.id && isFullMomLesson(r, l)));
     const test = latestFullTest(input.tests, wp.week);
     const complete = lessonsDone.every(Boolean) && test !== null;
-    seq.push({ plan: wp, virtual, complete, lessonsDone });
+    seq.push({ plan: wp, virtual, forWeek, complete, lessonsDone });
     if (currentIdx === -1 && !complete) {
       currentIdx = seq.length - 1;
       const next = lessonsDone.indexOf(false);
       if (next >= 0) today = { kind: "lesson", lesson: wp.lessons[next], stage: wp.stage, minutesHint: momMinutesHint(wp.stage) };
       else today = { kind: "test", week: wp.week, stage: wp.stage, size: momTestSize(wp.stage) };
     }
-    if (complete && !virtual && wp.kind === "new" && test) recentNewRates.push(momTestPassRate(test));
+    if (wp.kind === "review") recentNewRates.length = 0; // 복습 주(실제·가상)를 걸으면 창을 비운다 — 한 쌍은 복습 주 하나로 충족, 주를 다른 쌍에 다시 쓰지 않음
+    else if (complete && test) recentNewRates.push(momTestPassRate(test));
   };
 
   for (const wp of plan) {
@@ -223,21 +231,23 @@ function walk(input: PlanInput): Walk {
       if (a < MOM_SLOWDOWN_THRESHOLD && b < MOM_SLOWDOWN_THRESHOLD) {
         const vw = wp.week + MOM_VIRTUAL_WEEK_OFFSET;
         const lessons = reviewLessons(vw, `rw${vw}`, reviewPool(sorted, wp.week));
-        if (lessons.length > 0) visit({ week: vw, stage: momStageOfWeek(wp.week), kind: "review", lessons }, true);
+        if (lessons.length > 0) visit({ week: vw, stage: momStageOfWeek(wp.week), kind: "review", lessons }, true, wp.week);
       }
     }
-    visit(wp, false);
+    visit(wp, false, wp.week);
   }
   return { seq, today, currentIdx };
 }
 
 export function momToday(input: PlanInput): MomTodayItem {
   if (input.blocks.length === 0) return { kind: "empty" };
-  return walk(input).today;
+  const w = walk(input);
+  if (w.seq.length === 0) return { kind: "empty" }; // 블록은 있지만 말하기 문장이 없어 레슨이 0
+  return w.today;
 }
 
 export function momProgress(input: PlanInput): MomProgress {
-  if (input.blocks.length === 0) return { currentWeek: 0, stage: 0, doneLessons: 0, totalLessons: 0, weeks: [] };
+  if (input.blocks.length === 0) return { currentWeek: 0, stage: 0, currentIsReview: false, doneLessons: 0, totalLessons: 0, weeks: [] };
   const { seq, currentIdx } = walk(input);
   const cur = currentIdx >= 0 ? seq[currentIdx] : seq[seq.length - 1];
   const doneLessons = seq.reduce((n, s) => n + s.lessonsDone.filter(Boolean).length, 0);
@@ -248,7 +258,15 @@ export function momProgress(input: PlanInput): MomProgress {
     .map(({ s, i }) => ({
       week: s.plan.week,
       kind: s.plan.kind,
-      status: (currentIdx === -1 || i < currentIdx ? "done" : i === currentIdx ? "current" : "todo") as "done" | "current" | "todo",
+      // 가상 주가 현재면 그 가상 주가 앞선 원래 주 N을 current로
+      status: (currentIdx === -1 || i < currentIdx ? "done" : i === currentIdx || (cur?.virtual && s.plan.week === cur.forWeek) ? "current" : "todo") as "done" | "current" | "todo",
     }));
-  return { currentWeek: cur ? cur.plan.week : 0, stage: cur ? cur.plan.stage : 0, doneLessons, totalLessons, weeks };
+  return {
+    currentWeek: cur ? cur.forWeek : 0,
+    stage: cur ? cur.plan.stage : 0,
+    currentIsReview: currentIdx >= 0 && cur.plan.kind === "review",
+    doneLessons,
+    totalLessons,
+    weeks,
+  };
 }
