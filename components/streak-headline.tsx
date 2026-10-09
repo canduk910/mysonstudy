@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * 학습 스트릭 헤드라인 (SPEC §17-4·§17-7) — 모든 화면 상단 고정. **은우와 아빠를 나란히** 대조해 습관을 자극한다.
+ * 학습 스트릭 헤드라인 (SPEC §17-4·§17-7) — 모든 화면 상단 고정. **가족 → 은우 → (엄마) → 아빠**를 나란히 대조해 습관을 자극한다.
  *
  * - 아빠 칸은 **두 트랙** `📚 어학` · `💪 운동` — 트랙마다 따로 흐리게/"오늘 아직"/짧은 라벨(§17-7).
  *   2026-10-08(§17-10, 사용자 요청): 일본어·영어(토익스피킹)를 **📚 어학 하나로 합쳤다** — 둘 중 하나만 해도 켜진다(`appaLanguage`).
@@ -20,10 +20,11 @@
  *   두 자리까지는 예전 모습 그대로다(압축은 필요할 때만). 실측(2026-09-26, 360px): 세 자리 전부(123·234·345·456, 999×4)
  *   넘침 22·24px → 0, 네 자리(1234…) 53px → 0. 수치는 _workspace/build_app-builder_toeic-p2fix_report.md.
  *   영어 모바일 상단바(sticky top-0)가 이 높이만큼 내려가 겹치지 않는다(globals.css·english-nav.module.css).
- * - 2026-10-09 엄마의 생활영어(엄마 설계 §7): 아빠 묶음 뒤에 **👩 엄마 칸**(`mom` — 엄마 영역에 블록이 하나라도 있을 때만, null이면 칸 없음).
+ * - 2026-10-09 엄마의 생활영어(엄마 설계 §7): **👩 엄마 칸**(`mom` — 엄마 영역에 블록이 하나라도 있을 때만, null이면 칸 없음).
  *   만회 안내·오늘 아직 점은 은우 칸과 같은 `Person`(repairHintText·needsMoreToday 그대로).
- *   폰에선 엄마 이름을 sr-only로(`phoneNameSr` — 👩 이모지는 compact여도 남긴다). 실측(2026-10-09, 두 자리 23·34·56·78·45, 모두 오늘 아직):
- *   이름을 보일 때 360px 35px·390px 5px 넘침 → sr-only로 아래 수치(task-10 리포트).
+ *   같은 날 사용자 요청: 순서는 **가족 → 은우 → 엄마 → 아빠**, 엄마도 은우와 **똑같이** 이름 글자를 보이고 👩는 compact 규칙으로
+ *   숨긴다(🧒·🧑와 같다 — 예전에 폰에서 엄마 이름만 스크린리더로 돌리던 예외는 걷었다). 엄마 칸이 있으면 폰에서 칸 사이를 한 단계 더 좁히고
+ *   세로선을 뺀다. 실측 수치는 _workspace/build_app-builder_common-headline-order_report.md.
  * - 2026-10 스트릭 v2(가족 스트릭 강화): 맨 앞에 **👪 가족 칸**(`family` — 오늘 모두 한 판 이상이면 켜진다)을 둔다.
  *   오늘 아직인 칸엔 이모지 앞에 **작은 점**(`data-pending-dot`, aria-hidden — 폰에서도 보이는 신호, 글자는 "오늘 아직"이 sr에 남는다).
  *   **만회 대기**(`info.pendingRepairDay` — 어제를 놓쳤고 오늘 두 판이면 돌아온다)이고 판이 모자라면(`repairHintText` — 한 판을
@@ -48,20 +49,26 @@ import { EXAM_SCREEN_STREAK_H_CSS } from "@/lib/exam-screen";
  */
 const COMPACT_FROM_DAYS = 10;
 
-function Person({ emoji, name, p, compact, phoneNameSr = false }: { emoji: string; name: string; p: PersonStreak | undefined; compact: boolean; phoneNameSr?: boolean }) {
+/**
+ * 사람이 넷(엄마 칸)일 때 폰에서만 칸 안(점·이모지·이름·🔥) 간격을 4 → 2px로 — sm 이상은 그대로.
+ * 실측(360px, 두 자리·모두 오늘 아직 + 아빠 만회 안내 점): 칸 사이 간격만 좁혔을 때 4px 넘침 → 0.
+ */
+const TIGHT_INNER = "max-sm:gap-0.5";
+
+function Person({ emoji, name, p, compact, tight = false }: { emoji: string; name: string; p: PersonStreak | undefined; compact: boolean; tight?: boolean }) {
   const loaded = p != null;
   // 만회 대기에 판이 모자라면(한 판만 했어도) 다 한 게 아니다 — 자정에 어제가 끊긴다(needsMoreToday)
   const hint = p ? repairHintText(p.info) : null;
   const done = (p?.info.doneToday ?? false) && hint === null;
   const days = p?.info.current ?? 0;
   return (
-    <div className={`flex items-center gap-1 whitespace-nowrap sm:gap-1.5 ${loaded && !done ? "opacity-55" : ""}`}>
+    <div className={`flex items-center gap-1 whitespace-nowrap sm:gap-1.5 ${tight ? TIGHT_INNER : ""} ${loaded && !done ? "opacity-55" : ""}`}>
       {loaded && !done && <span data-pending-dot aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
-      {/* phoneNameSr(엄마 칸): 폰에선 이름을 스크린리더에만 두고 이모지(👩)가 사람을 가른다 — compact여도 이모지는 남긴다 */}
-      <span aria-hidden className={compact && !phoneNameSr ? "max-sm:hidden" : undefined}>
+      {/* 사람 이모지(🧒·👩)는 장식 — compact면 폰에서 숨기고 이름 글자가 사람을 가른다(아빠 🧑와 같은 규칙) */}
+      <span aria-hidden className={compact ? "max-sm:hidden" : undefined}>
         {emoji}
       </span>
-      <span className={`t-caption font-medium text-ink ${phoneNameSr ? "max-sm:sr-only" : ""}`}>{name}</span>
+      <span className="t-caption font-medium text-ink">{name}</span>
       <span className="t-caption font-bold text-ink" role={loaded ? "img" : undefined} aria-label={loaded ? `${name} ${days}일 연속` : undefined}>
         🔥{loaded ? days : "··"}
         <span className="max-sm:hidden">일</span>
@@ -73,12 +80,12 @@ function Person({ emoji, name, p, compact, phoneNameSr = false }: { emoji: strin
 }
 
 /** 아빠의 한 트랙 — 흐림·"오늘 아직"·라벨이 트랙마다 따로다(일본어는 했고 운동은 아직일 수 있다) */
-function Track({ emoji, name, p }: { emoji: string; name: string; p: PersonStreak | undefined }) {
+function Track({ emoji, name, p, tight = false }: { emoji: string; name: string; p: PersonStreak | undefined; tight?: boolean }) {
   const loaded = p != null;
   const done = p?.info.doneToday ?? false;
   const days = p?.info.current ?? 0;
   return (
-    <div className={`flex shrink-0 items-center gap-1 whitespace-nowrap ${loaded && !done ? "opacity-55" : ""}`}>
+    <div className={`flex shrink-0 items-center gap-1 whitespace-nowrap ${tight ? TIGHT_INNER : ""} ${loaded && !done ? "opacity-55" : ""}`}>
       {loaded && !done && <span data-pending-dot aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
       <span aria-hidden>{emoji}</span>
       {/* 폰에선 이모지(📚·💪)가 트랙을 가른다 — 이름은 스크린리더에만 */}
@@ -139,11 +146,11 @@ export default function StreakHeadline() {
   const compact =
     data != null &&
     (data.mom != null || [data.family, data.eunwoo, data.appaLanguage, data.appaWorkout].some((p) => (p?.info.current ?? 0) >= COMPACT_FROM_DAYS));
-  // 엄마 칸이 있으면 폰 칸 사이를 한 단계 더 좁히고(gap 6 → 4px) 칸 사이 세로선도 뺀다(점·이모지·🔥가 칸을 가른다, sm 이상은 그대로).
-  //   실측(360px, 두 자리·모두 오늘 아직): 엄마 이름 sr-only만 28px → gap 4px 12px → 세로선 빼면 0.
-  const tightMom = compact && data?.mom != null;
-  const gapCls = compact ? (tightMom ? "gap-1" : "gap-1.5") : "gap-2";
-  const divCls = `h-5 w-px shrink-0 bg-line${tightMom ? " max-sm:hidden" : ""}`;
+  // 사람이 넷(엄마 칸)이면 폰 칸 사이를 한 단계 더 좁히고(gap 6 → 2px) 칸 사이 세로선도 빼며, 칸 안 간격도 좁힌다(TIGHT_INNER).
+  //   점·이름·🔥가 칸을 가른다. sm 이상은 그대로. 실측 수치는 _workspace/build_app-builder_common-headline-order_report.md.
+  const fourPeople = compact && data?.mom != null;
+  const gapCls = compact ? (fourPeople ? "gap-0.5" : "gap-1.5") : "gap-2";
+  const divCls = `h-5 w-px shrink-0 bg-line${fourPeople ? " max-sm:hidden" : ""}`;
 
   return (
     <>
@@ -151,16 +158,23 @@ export default function StreakHeadline() {
         className={`print-hide sticky top-0 z-[15] flex items-center ${gapCls} overflow-x-auto overflow-y-hidden border-b border-line bg-bg px-2 [scrollbar-width:none] sm:gap-3 sm:px-3 [&::-webkit-scrollbar]:hidden`}
         style={{ height: "var(--streak-h)" }}
         role="group"
-        aria-label={`학습 스트릭 — 가족, 은우, 아빠(어학·운동)${data?.mom ? ", 엄마" : ""}`}
+        aria-label={data?.mom ? "학습 스트릭 — 가족, 은우, 엄마, 아빠(어학·운동)" : "학습 스트릭 — 가족, 은우, 아빠(어학·운동)"}
       >
         {/* 가족 — 오늘 모두 한 판 이상이면 켜진다(v2) */}
-        <Track emoji="👪" name="가족" p={data?.family} />
+        <Track emoji="👪" name="가족" p={data?.family} tight={fourPeople} />
         <span aria-hidden className={divCls} />
-        <Person emoji="🧒" name="은우" p={data?.eunwoo} compact={compact} />
+        <Person emoji="🧒" name="은우" p={data?.eunwoo} compact={compact} tight={fourPeople} />
+        {/* 엄마(엄마의 생활영어 — 엄마 설계 §7) — 은우 다음. 엄마 영역 데이터가 없으면(mom: null) 칸·세로선 모두 그리지 않는다 */}
+        {data?.mom && (
+          <>
+            <span aria-hidden className={divCls} />
+            <Person emoji="👩" name="엄마" p={data.mom} compact={compact} tight={fourPeople} />
+          </>
+        )}
         {/* 두 사람 사이 — 기존 경계선 색(line)의 얇은 세로선 */}
         <span aria-hidden className={divCls} />
         <div role="group" aria-label="아빠" className={`flex shrink-0 items-center ${gapCls} whitespace-nowrap sm:gap-2.5`}>
-          <span className="flex items-center gap-1 sm:gap-1.5">
+          <span className={`flex items-center gap-1 sm:gap-1.5 ${fourPeople ? TIGHT_INNER : ""}`}>
             {appaHint && <span data-pending-dot aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
             <span aria-hidden className={compact ? "max-sm:hidden" : undefined}>
               🧑
@@ -168,17 +182,10 @@ export default function StreakHeadline() {
             <span className="t-caption font-medium text-ink">아빠</span>
           </span>
           {/* 일본어 + 영어(토익) 합집합 — 둘 중 하나만 해도 켜진다(§17-10) */}
-          <Track emoji="📚" name="어학" p={data?.appaLanguage} />
-          <Track emoji="💪" name="운동" p={data?.appaWorkout} />
+          <Track emoji="📚" name="어학" p={data?.appaLanguage} tight={fourPeople} />
+          <Track emoji="💪" name="운동" p={data?.appaWorkout} tight={fourPeople} />
           {appaHint && <span className="t-caption text-ink-3 max-sm:sr-only">{appaHint}</span>}
         </div>
-        {/* 엄마(엄마의 생활영어 — 엄마 설계 §7) — 엄마 영역 데이터가 없으면(mom: null) 칸 자체를 그리지 않는다 */}
-        {data?.mom && (
-          <>
-            <span aria-hidden className={divCls} />
-            <Person emoji="👩" name="엄마" p={data.mom} compact={compact} phoneNameSr />
-          </>
-        )}
       </div>
       {/* 배지 축하 — 이 기기에서 아직 축하하지 않은 얻은 배지 하나(가족 스트릭 강화 §4-1) */}
       {data && <StreakCelebrate badges={data.badges} />}

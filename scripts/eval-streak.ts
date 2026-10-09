@@ -749,7 +749,7 @@ const TODAY = "2026-09-21";
   add(B, "/api/streak 배선: 일본어∪영어 날짜 · 은우·운동 무혼합 · 토익 읽기 실패면 토익 복습만 · 라벨 접두 · 응답에 appaLanguage", wired && noLeak && fallback && label && inBody, `배선=${wired} 무혼합=${noLeak} 폴백=${fallback} 라벨=${label} 응답=${inBody}`);
 
   const head = readFileSync(new URL("../components/streak-headline.tsx", import.meta.url), "utf-8");
-  const one = /<Track emoji="📚" name="어학" p=\{data\?\.appaLanguage\} \/>/.test(head) && !/p=\{data\?\.appa\}/.test(head) && !/p=\{data\?\.appaEnglish\}/.test(head) && /p=\{data\?\.appaWorkout\}/.test(head);
+  const one = /<Track emoji="📚" name="어학" p=\{data\?\.appaLanguage\}(?: tight=\{fourPeople\})? \/>/.test(head) && !/p=\{data\?\.appa\}/.test(head) && !/p=\{data\?\.appaEnglish\}/.test(head) && /p=\{data\?\.appaWorkout\}/.test(head);
   add(B, "헤드라인: 아빠 칸 = 📚 어학 + 💪 운동(🗾·🎙️ 칸 없음)", one, "");
 }
 
@@ -896,7 +896,7 @@ const TODAY = "2026-09-21";
 {
   const B = "v2 화면";
   const head = readFileSync(new URL("../components/streak-headline.tsx", import.meta.url), "utf-8");
-  add(B, "헤드라인: 👪 가족 칸이 family를 읽고 맨 앞", /<Track emoji="👪" name="가족" p=\{data\?\.family\} \/>/.test(head) && head.indexOf('name="가족"') < head.indexOf('name="은우"'), "");
+  add(B, "헤드라인: 👪 가족 칸이 family를 읽고 맨 앞", /<Track emoji="👪" name="가족" p=\{data\?\.family\}(?: tight=\{fourPeople\})? \/>/.test(head) && head.indexOf('name="가족"') < head.indexOf('name="은우"'), "");
   add(B, "헤드라인: 오늘 아직 점(aria-hidden) — Track·Person 둘 다", (head.match(/data-pending-dot/g) ?? []).length >= 2, "");
   const files = ["vocab-quiz-view", "vocab-speak-quiz-runner", "ja-quiz-runner", "ja-kanji-quiz-runner", "toeic-quiz-runner", "toeic-template-quiz", "toeic-template-test", "toeic-frame-drill-runner", "toeic-take-view"];
   const missing = files.filter((f) => !/<StreakFinishHint /.test(readFileSync(new URL(`../components/${f}.tsx`, import.meta.url), "utf-8")));
@@ -1069,6 +1069,28 @@ const TODAY = "2026-09-21";
   const pd = src("../lib/push-decide.ts");
   add(B, "알림: 엄마 자리표시 제거·URL /mom", !/person: "mom", doneToday: true/.test(pd) && /mom: "\/mom"/.test(pd), "");
   add(B, "헤드라인 👩 칸", /emoji="👩"/.test(src("../components/streak-headline.tsx")), "");
+  {
+    // 2026-10-09 사용자 요청: 순서 가족 → 은우 → 엄마 → 아빠, 엄마도 은우처럼 이름 글자(이름 숨김 예외 없음)
+    const hd = src("../components/streak-headline.tsx");
+    const iE = hd.indexOf('name="은우"'), iM = hd.indexOf('name="엄마"'), iA = hd.indexOf(">아빠</span>");
+    add(B, "헤드라인 순서: 은우 → 엄마 → 아빠(JSX 위치)", iE > 0 && iM > iE && iA > iM, `은우=${iE} 엄마=${iM} 아빠=${iA}`);
+    const momTag = hd.match(/<Person emoji="👩"[^>]*\/>/)?.[0] ?? "";
+    const kidTag = hd.match(/<Person emoji="🧒"[^>]*\/>/)?.[0] ?? "";
+    // emoji·name·p를 뺀 나머지 소품이 은우 칸과 같아야 한다(엄마만의 예외 소품 금지)
+    const rest = (t: string) => t.replace(/ (emoji|name)="[^"]*"/g, "").replace(/ p=\{[^}]*\}/, "");
+    add(
+      B,
+      "엄마 칸 = 은우 칸과 같은 Person 소품(이름 숨김 소품 없음 — Person 이름은 늘 보이는 글자)",
+      momTag !== "" && rest(momTag) === rest(kidTag) && !/phoneNameSr|NameSr|hideName/.test(hd) && /<span className="t-caption font-medium text-ink">\{name\}<\/span>/.test(hd),
+      momTag,
+    );
+    add(
+      B,
+      "헤드라인 aria-label: 엄마 있으면 '가족, 은우, 엄마, 아빠(어학·운동)', 없으면 기존 문구",
+      hd.includes('"학습 스트릭 — 가족, 은우, 엄마, 아빠(어학·운동)"') && hd.includes('"학습 스트릭 — 가족, 은우, 아빠(어학·운동)"'),
+      "",
+    );
+  }
 
   // 레슨 한 판 판정(순수) — 기록만 본다(끝냄 + 체크 ≥ 1), w…·rw… 같다. 지금 계획과 대조하지 않는다(소급 금지)
   const ck = (id: string) => ({ sentenceId: id, verdict: "pass" as const, transcript: null, hintLevel: 0 as const });
