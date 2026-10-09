@@ -24,12 +24,14 @@
  *   오늘 아직인 칸엔 이모지 앞에 **작은 점**(`data-pending-dot`, aria-hidden — 폰에서도 보이는 신호, 글자는 "오늘 아직"이 sr에 남는다).
  *   **만회 대기**(`info.pendingRepairDay` — 어제를 놓쳤고 오늘 두 판이면 돌아온다)이고 오늘 아직이면 "오늘 아직" 자리에
  *   "오늘 두 판이면 어제 🔥가 돌아와요"(sm 이상, 폰은 sr-only).
+ *   배지 축하 토스트(`StreakCelebrate`)를 헤드라인 옆에 마운트한다 — 모든 화면에서 한 번 보인다.
  */
 
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { STREAK_REFRESH_EVENT } from "@/lib/streak";
 import type { PersonStreak, StreakResponse } from "@/lib/streak-contract";
+import StreakCelebrate from "@/components/streak-celebrate";
 
 /**
  * 폰 압축 한 단계 더 — 연속일이 이 값 이상인 칸이 하나라도 있을 때(🔥 숫자 폭이 늘어나는 만큼 장식을 덜어 낸다).
@@ -121,29 +123,33 @@ export default function StreakHeadline() {
     data != null && [data.family, data.eunwoo, data.appaLanguage, data.appaWorkout].some((p) => (p?.info.current ?? 0) >= COMPACT_FROM_DAYS);
 
   return (
-    <div
-      className={`print-hide sticky top-0 z-[15] flex items-center ${compact ? "gap-1.5" : "gap-2"} overflow-x-auto overflow-y-hidden border-b border-line bg-bg px-2 [scrollbar-width:none] sm:gap-3 sm:px-3 [&::-webkit-scrollbar]:hidden`}
-      style={{ height: "var(--streak-h)" }}
-      role="group"
-      aria-label="학습 스트릭 — 가족, 은우, 아빠(어학·운동)"
-    >
-      {/* 가족 — 오늘 모두 한 판 이상이면 켜진다(v2) */}
-      <Track emoji="👪" name="가족" p={data?.family} />
-      <span aria-hidden className="h-5 w-px shrink-0 bg-line" />
-      <Person emoji="🧒" name="은우" p={data?.eunwoo} compact={compact} />
-      {/* 두 사람 사이 — 기존 경계선 색(line)의 얇은 세로선 */}
-      <span aria-hidden className="h-5 w-px shrink-0 bg-line" />
-      <div role="group" aria-label="아빠" className={`flex shrink-0 items-center ${compact ? "gap-1.5" : "gap-2"} whitespace-nowrap sm:gap-2.5`}>
-        <span className="flex items-center gap-1 sm:gap-1.5">
-          <span aria-hidden className={compact ? "max-sm:hidden" : undefined}>
-            🧑
+    <>
+      <div
+        className={`print-hide sticky top-0 z-[15] flex items-center ${compact ? "gap-1.5" : "gap-2"} overflow-x-auto overflow-y-hidden border-b border-line bg-bg px-2 [scrollbar-width:none] sm:gap-3 sm:px-3 [&::-webkit-scrollbar]:hidden`}
+        style={{ height: "var(--streak-h)" }}
+        role="group"
+        aria-label="학습 스트릭 — 가족, 은우, 아빠(어학·운동)"
+      >
+        {/* 가족 — 오늘 모두 한 판 이상이면 켜진다(v2) */}
+        <Track emoji="👪" name="가족" p={data?.family} />
+        <span aria-hidden className="h-5 w-px shrink-0 bg-line" />
+        <Person emoji="🧒" name="은우" p={data?.eunwoo} compact={compact} />
+        {/* 두 사람 사이 — 기존 경계선 색(line)의 얇은 세로선 */}
+        <span aria-hidden className="h-5 w-px shrink-0 bg-line" />
+        <div role="group" aria-label="아빠" className={`flex shrink-0 items-center ${compact ? "gap-1.5" : "gap-2"} whitespace-nowrap sm:gap-2.5`}>
+          <span className="flex items-center gap-1 sm:gap-1.5">
+            <span aria-hidden className={compact ? "max-sm:hidden" : undefined}>
+              🧑
+            </span>
+            <span className="t-caption font-medium text-ink">아빠</span>
           </span>
-          <span className="t-caption font-medium text-ink">아빠</span>
-        </span>
-        {/* 일본어 + 영어(토익) 합집합 — 둘 중 하나만 해도 켜진다(§17-10) */}
-        <Track emoji="📚" name="어학" p={data?.appaLanguage} />
-        <Track emoji="💪" name="운동" p={data?.appaWorkout} />
+          {/* 일본어 + 영어(토익) 합집합 — 둘 중 하나만 해도 켜진다(§17-10) */}
+          <Track emoji="📚" name="어학" p={data?.appaLanguage} />
+          <Track emoji="💪" name="운동" p={data?.appaWorkout} />
+        </div>
       </div>
-    </div>
+      {/* 배지 축하 — 이 기기에서 아직 축하하지 않은 얻은 배지 하나(가족 스트릭 강화 §4-1) */}
+      {data && <StreakCelebrate badges={data.badges} />}
+    </>
   );
 }
