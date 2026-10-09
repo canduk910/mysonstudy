@@ -27,6 +27,8 @@ import type {
   ToeicQuizRecord,
   WorkoutCycleRecord,
 } from "@/lib/store";
+import type { MomBlockRecord, MomLessonRecord, MomTestRecord } from "@/lib/mom-contract";
+import { buildMomWeeks, isFullMomTest, isMomVirtualWeek, type MomLesson } from "@/lib/mom-plan";
 import { isCountedTalkSession, talkStreakLabel, talkStreakSessions } from "@/lib/talk-streak";
 import { TOEIC_GUIDE_PART_TO_MOCK_PART, isToeicGuidePart } from "@/lib/toeic-guide";
 import { toeicMockPartLabelKo } from "@/lib/toeic-mock-contract";
@@ -43,7 +45,7 @@ import {
 import { workoutKeptDays, workoutStreakTodayLabel } from "@/lib/workout";
 import { reviewFullDays, reviewStreakSessions, reviewTodayLabel, type ReviewArea, type ReviewScheduleRecord } from "@/lib/review-schedule";
 import { STREAK_V2_FROM, badgesOf, kstWeekDays, weekCells, type WeekCell } from "@/lib/streak-v2";
-import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullQuiz, isFullTalk } from "@/lib/streak-v2-sources";
+import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullMomLessonRun, isFullQuiz, isFullTalk } from "@/lib/streak-v2-sources";
 import { familyV2, personV2, trackV2, type TrackInput } from "@/lib/streak-v2-assemble";
 
 /** 오늘(KST) 실제로 답한 세션만, 최신 먼저. */
@@ -72,7 +74,7 @@ const NEUTRAL_STREAK: PersonStreak = { info: { current: 0, doneToday: false, las
 
 export async function computeStreakResponse(store: StudyStore, today: string): Promise<StreakResponse> {
 
-  const [vocab, jaVocab, jaKanji, workoutCycles, toeicQuizzes, toeicAttempts, talkSessions, toeicFrameDrills, reviewSchedules] = await Promise.all([
+  const [vocab, jaVocab, jaKanji, workoutCycles, toeicQuizzes, toeicAttempts, talkSessions, toeicFrameDrills, reviewSchedules, momBlocks, momLessons, momTests] = await Promise.all([
     store.listAllVocabQuizzes(),
     store.listAllJaQuizzes(),
     store.listJaKanjiQuizzes(),
@@ -103,6 +105,19 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
     // 📅 오늘의 복습(SPEC §23-9) — 복습 1개 이상 끝낸 날을 각 영역 트랙에 센다. 못 읽으면 복습만 빼고 계산한다
     store.listReviewSchedules().catch((err: unknown): ReviewScheduleRecord[] | null => {
       console.error("[streak] 복습 일정을 읽지 못했다 — 복습만 빼고 계산한다", err);
+      return null;
+    }),
+    // 👩 엄마의 생활영어(엄마 설계 §7) — 셋 중 하나라도 못 읽으면 엄마만 null(다른 사람·라우트는 그대로 200)
+    store.listMomBlocks().catch((err: unknown): MomBlockRecord[] | null => {
+      console.error("[streak] 엄마 블록을 읽지 못했다 — 엄마 트랙만 뺀다", err);
+      return null;
+    }),
+    store.listMomLessons().catch((err: unknown): MomLessonRecord[] | null => {
+      console.error("[streak] 엄마 레슨 기록을 읽지 못했다 — 엄마 트랙만 뺀다", err);
+      return null;
+    }),
+    store.listMomTests().catch((err: unknown): MomTestRecord[] | null => {
+      console.error("[streak] 엄마 주간 테스트를 읽지 못했다 — 엄마 트랙만 뺀다", err);
       return null;
     }),
   ]);
@@ -214,6 +229,51 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
     appaLanguage.todayLabel = jaLabel ?? enLabel;
   }
 
+  // ── 👩 엄마(엄마 설계 §7): legacy 없음(새 영역), runs = 완료 레슨 + 완료 테스트 + mom 복습 한 판 ──
+  // 블록이 하나도 없으면(영역을 아직 안 열었음) 엄마는 null — 헤드라인·보드에서 칸이 나타나지 않는다.
+  // 레슨 완료 = 계획(buildMomWeeks)의 그 레슨 말하기 문장을 다 체크하고 끝냄(isFullMomLesson). 자동 감속 가상 복습 주(rw101~) 레슨은 계획에 없으므로
+  // 끝냈고 체크가 하나 이상이면 완료로 본다.
+  let momT: TrackInput | null = null;
+  let momLabel: string | null = null;
+  if (momBlocks && momLessons && momTests && momBlocks.length > 0) {
+    try {
+      const plan = new Map<string, MomLesson>();
+      for (const w of buildMomWeeks(momBlocks)) for (const l of w.lessons) plan.set(l.id, l);
+      // 판정은 isFullMomLessonRun(계획에 있으면 isFullMomLesson, 가상 복습 주 `rw…`면 끝냄 + 체크 ≥ 1)
+      const doneLessons = momLessons.filter((rec) => isFullMomLessonRun(rec, plan.get(rec.lessonId)));
+      const doneTests = momTests.filter(isFullMomTest);
+      const runs = new Map<string, number>();
+      addRuns(runs, doneLessons.map((l) => l.startedAt));
+      addRuns(runs, doneTests.map((t) => t.startedAt));
+      addDays(runs, reviewFullDays(reviewsOf("mom")));
+      momT = { legacyDays: new Set<string>(), runs };
+      // 라벨 = 오늘 끝낸 레슨·테스트 중 가장 늦게 시작한 것(같은 시각이면 레슨), 둘 다 없으면 오늘의 복습
+      const weekKo = (week: number) => (isMomVirtualWeek(week) ? "복습 주" : `${week}주차`);
+      const lessonWeek = (rec: MomLessonRecord): number | null => {
+        const w = plan.get(rec.lessonId)?.week;
+        if (w !== undefined) return w;
+        const m = /^r?w(\d{1,3})-d[1-4]$/.exec(rec.lessonId);
+        return m ? Number(m[1]) : null;
+      };
+      const latest = <T extends { startedAt: string }>(xs: T[]): T | undefined =>
+        xs.filter((x) => kstDateString(x.startedAt) === today).sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0))[0];
+      const lToday = latest(doneLessons);
+      const tToday = latest(doneTests);
+      if (lToday && (!tToday || lToday.startedAt >= tToday.startedAt)) {
+        const w = lessonWeek(lToday);
+        momLabel = w === null ? "레슨" : `레슨 · ${weekKo(w)}`;
+      } else if (tToday) {
+        momLabel = `주간 테스트 · ${weekKo(tToday.week)}`;
+      } else {
+        momLabel = reviewTodayLabel(reviewsOf("mom"), today);
+      }
+    } catch (err) {
+      console.error("[streak] 엄마 트랙 계산 실패 — 엄마만 뺀다", err);
+      momT = null;
+      momLabel = null;
+    }
+  }
+
   // ── 스트릭 v2(가족 스트릭 강화 스펙) — legacy = 기존 세션 배열의 날짜, runs = 적용일부터의 "한 판" 수 ──
   // 카드·만회는 사람 단위로 한 번 정하고(아빠 = 어학 ∪ 운동) 트랙 연속에 그대로 적용한다. 헤드라인 info를 v2로 덮는다.
   // `appa`·`appaEnglish`(호환 필드)는 legacy 계산 그대로 둔다 — 헤드라인은 더 이상 읽지 않는다.
@@ -257,7 +317,8 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
 
     const eunwooP = personV2([eunwooT], today);
     const appaP = personV2([langT, gymT], today);
-    const fam = familyV2([eunwooP, appaP, null], today);
+    const momP = momT ? personV2([momT], today) : null;
+    const fam = familyV2([eunwooP, appaP, momP], today);
     const week = kstWeekDays(today);
     const langInfo = trackV2(langT, appaP, today);
     const gymInfo = trackV2(gymT, appaP, today);
@@ -271,16 +332,18 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
         rows: {
           eunwoo: weekCells({ info: eunwooP.info, litDays: eunwooP.litDays, weekDays: week, today, startDay: eunwooP.startDay }),
           appa: weekCells({ info: appaP.info, litDays: appaP.litDays, weekDays: week, today, startDay: appaP.startDay }),
-          mom: null,
+          mom: momP ? weekCells({ info: momP.info, litDays: momP.litDays, weekDays: week, today, startDay: momP.startDay }) : null,
         },
       },
       badges: [
         { key: "eunwoo" as const, ...badgesOf(eunwooP.info) },
         { key: "appaLanguage" as const, ...badgesOf(langInfo) },
         { key: "appaWorkout" as const, ...badgesOf(gymInfo) },
+        ...(momP ? [{ key: "mom" as const, ...badgesOf(momP.info) }] : []),
         { key: "family" as const, ...badgesOf(fam.info) },
       ],
       appaPerson: appaP.info,
+      mom: momP ? momP.info : null,
     };
   };
   // v2 계산이 던져도 /api/streak(모든 화면의 헤드라인)가 500이 되지 않게 — 옛 규칙 info 그대로, 가족 중립·주간 빈칸·배지 없음
@@ -296,7 +359,7 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
     eunwoo.info = v2.eunwoo;
     appaLanguage.info = v2.appaLanguage;
     if (appaWorkout !== NEUTRAL_STREAK) appaWorkout = { ...appaWorkout, info: v2.appaWorkout };
-    v2Body = { mom: null, family: { info: v2.family, todayLabel: null }, week: v2.week, badges: v2.badges, v2From: STREAK_V2_FROM, appaPerson: { info: v2.appaPerson, todayLabel: null } };
+    v2Body = { mom: v2.mom ? { info: v2.mom, todayLabel: momLabel } : null, family: { info: v2.family, todayLabel: null }, week: v2.week, badges: v2.badges, v2From: STREAK_V2_FROM, appaPerson: { info: v2.appaPerson, todayLabel: null } };
   } else {
     let days: string[] = [];
     try {

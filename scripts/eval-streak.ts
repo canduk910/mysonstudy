@@ -39,7 +39,7 @@ import { templateSessionsForPart } from "../lib/toeic-guide-view";
 import { reviewFullDays, reviewStreakSessions, reviewTodayLabel } from "../lib/review-schedule";
 import { FREEZES_PER_MONTH, STREAK_BADGES, badgesOf, decideBridges, doneForPush, kstWeekDays, litDaysOf, needsMoreToday, repairHintText, streakFromStatus, weekCells } from "../lib/streak-v2";
 import { familyV2, personV2, trackV2 } from "../lib/streak-v2-assemble";
-import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullQuiz, isFullTalk } from "../lib/streak-v2-sources";
+import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullMomLessonRun, isFullQuiz, isFullTalk } from "../lib/streak-v2-sources";
 import { decidePushes, isQuietHHMM, kstHalfHourHHMM, pushStates, PUSH_DAILY_MAX, TICK_SKEW_MS } from "../lib/push-decide";
 import type { PersonStreak, StreakResponse } from "../lib/streak-contract";
 import { DEFAULT_PUSH_PREFS } from "../lib/push-contract";
@@ -871,7 +871,7 @@ const TODAY = "2026-09-21";
   const wiredV2 =
     /personV2\(\[eunwooT\], today\)/.test(route) &&
     /personV2\(\[langT, gymT\], today\)/.test(route) &&
-    /familyV2\(\[eunwooP, appaP, null\], today\)/.test(route) &&
+    /familyV2\(\[eunwooP, appaP, momP\], today\)/.test(route) &&
     /vocab\.filter\(isFullQuiz\)/.test(route) &&
     /talks\.filter\(isFullTalk\)/.test(route) &&
     /toeicAttempts\.filter\(isFullAttempt\)/.test(route) &&
@@ -1036,6 +1036,73 @@ const TODAY = "2026-09-21";
       !/pushStates/.test(route.replace(/\/\*[\s\S]*?\*\//g, "")),
     "",
   );
+}
+
+// ---------------------------------------------------------------------------
+// 17) 엄마 트랙(엄마의 생활영어 설계 §7)
+{
+  const B = "엄마 트랙";
+  const src = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf-8");
+  const ss = src("../lib/streak-server.ts");
+  add(B, "가족 조립에 엄마 사람(momP) — null 아님", /familyV2\(\[eunwooP, appaP, momP\]/.test(ss), "");
+  add(B, "엄마 runs = 완료 레슨 + 완료 테스트 + mom 복습 한 판", /isFullMomLesson/.test(ss) && /isFullMomTest/.test(ss) && /reviewFullDays\(reviewsOf\("mom"\)\)/.test(ss), "");
+  add(B, "엄마 기록 읽기 실패는 엄마만 null(라우트 200)", /listMomLessons\(\)\.catch/.test(ss), "");
+  const pd = src("../lib/push-decide.ts");
+  add(B, "알림: 엄마 자리표시 제거·URL /mom", !/person: "mom", doneToday: true/.test(pd) && /mom: "\/mom"/.test(pd), "");
+  add(B, "헤드라인 👩 칸", /emoji="👩"/.test(src("../components/streak-headline.tsx")), "");
+
+  // 레슨 한 판 판정(순수) — 계획 레슨은 말하기 문장 전부 + 끝냄, 가상 복습 주 rw1xx는 끝냄 + 체크 ≥ 1, 계획 밖 w…는 아님
+  const ck = (id: string) => ({ sentenceId: id, verdict: "pass" as const, transcript: null, hintLevel: 0 as const });
+  const L = (lessonId: string, finished: boolean, ids: string[]) => ({ lessonId, finishedAt: finished ? "2026-10-16T01:00:00.000Z" : null, checks: ids.map(ck) });
+  const plan = { speakIds: ["s1", "s2"] };
+  const runs = [
+    isFullMomLessonRun(L("w1-d1", true, ["s1", "s2"]), plan),
+    !isFullMomLessonRun(L("w1-d1", true, ["s1"]), plan),
+    !isFullMomLessonRun(L("w1-d1", false, ["s1", "s2"]), plan),
+    isFullMomLessonRun(L("rw109-d2", true, ["x"]), undefined),
+    !isFullMomLessonRun(L("rw109-d2", true, []), undefined),
+    !isFullMomLessonRun(L("rw109-d2", false, ["x"]), undefined),
+    !isFullMomLessonRun(L("w9-d1", true, ["x"]), undefined),
+  ];
+  add(B, "레슨 한 판: 계획 레슨 전부+끝냄 · 가상 복습 주 끝냄+체크≥1 · 계획 밖 w… 아님", runs.every(Boolean), runs.join());
+  // 가족 참여: 엄마는 첫 레슨 완료일부터(그 전 날은 은우·아빠만으로)
+  {
+    const T = (runs: Record<string, number>) => ({ legacyDays: new Set<string>(), runs: new Map(Object.entries(runs)) });
+    const eun = personV2([T({ "2026-10-14": 1, "2026-10-15": 1, "2026-10-16": 1 })], "2026-10-16", "2026-10-10");
+    const ap = personV2([T({ "2026-10-14": 1, "2026-10-15": 1, "2026-10-16": 1 })], "2026-10-16", "2026-10-10");
+    const mom = personV2([T({ "2026-10-16": 1 })], "2026-10-16", "2026-10-10");
+    const momNot = personV2([T({ "2026-10-15": 1 })], "2026-10-16", "2026-10-10");
+    const f1 = familyV2([eun, ap, mom], "2026-10-16").info;
+    const f2 = familyV2([eun, ap, momNot], "2026-10-16").info;
+    add(B, "가족: 엄마 첫날 전은 은우·아빠만 → 3일 · 오늘 엄마 아직이면 가족 오늘 아직", f1.current === 3 && f1.doneToday && !f2.doneToday, `${JSON.stringify(f1)} ${JSON.stringify(f2)}`);
+  }
+
+  // pushStates 순수: mom null → 엄마 state 없음. 그래도 prefs.mom.familyAlerts면 21:00 가족 알림은 엄마 폰에 간다
+  const neutral = { current: 0, doneToday: false, lastDate: null, best: 0 };
+  const ps = (info: PersonStreak["info"]): PersonStreak => ({ info, todayLabel: null });
+  const r: StreakResponse = {
+    ok: true,
+    today: "2026-10-16",
+    eunwoo: ps({ current: 5, doneToday: false, lastDate: "2026-10-15", best: 5 }),
+    appa: ps(neutral),
+    appaEnglish: ps(neutral),
+    appaLanguage: ps({ current: 3, doneToday: true, lastDate: "2026-10-16", best: 3 }),
+    appaWorkout: ps(neutral),
+    mom: null,
+    family: ps(neutral),
+    week: { days: [], rows: { eunwoo: [], appa: [], mom: null } },
+    badges: [],
+    v2From: "2026-10-10",
+  };
+  const states = pushStates(r);
+  const fam = decidePushes({ nowHHMM: "21:00", states, prefs: DEFAULT_PUSH_PREFS, sentToday: [] }).filter((x) => x.kind === "family").map((x) => x.person);
+  add(B, "pushStates(mom null): 엄마 state 없음 · 21:00 가족 알림은 엄마에게도(familyAlerts)", !states.some((s) => s.person === "mom") && DEFAULT_PUSH_PREFS.mom.familyAlerts && fam.includes("mom"), fam.join());
+  const capped = decidePushes({ nowHHMM: "21:00", states, prefs: DEFAULT_PUSH_PREFS, sentToday: [{ person: "mom", kind: "poke" }, { person: "mom", kind: "poke" }, { person: "mom", kind: "today" }] }).filter((x) => x.person === "mom");
+  add(B, "state 없는 엄마도 하루 상한은 sentCount로", capped.length === 0, JSON.stringify(capped));
+  // mom 있음 → 실제 상태(오늘 아직이면 today 알림, URL /mom)
+  const withMom = pushStates({ ...r, mom: ps({ current: 2, doneToday: false, lastDate: "2026-10-15", best: 2 }) });
+  const momToday = decidePushes({ nowHHMM: "21:00", states: withMom, prefs: DEFAULT_PUSH_PREFS, sentToday: [] }).find((x) => x.person === "mom" && x.kind === "today");
+  add(B, "엄마 실제 상태: 오늘 아직 → today 알림·URL /mom", !!momToday && momToday.url === "/mom", JSON.stringify(momToday ?? null));
 }
 
 // ---------------------------------------------------------------------------

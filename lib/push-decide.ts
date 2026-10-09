@@ -4,7 +4,7 @@
  */
 
 import { shiftDateString } from "./kst";
-import { PUSH_PERSON_KO, type PushKind, type PushPerson, type PushPrefs } from "./push-contract";
+import { PUSH_PEOPLE, PUSH_PERSON_KO, type PushKind, type PushPerson, type PushPrefs } from "./push-contract";
 import type { PersonStreak, StreakResponse } from "./streak-contract";
 import { doneForPush } from "./streak-v2";
 
@@ -45,7 +45,7 @@ export interface PushToSend {
   url: string;
 }
 
-const URL_OF: Record<PushPerson, string> = { eunwoo: "/english", appa: "/", mom: "/" };
+const URL_OF: Record<PushPerson, string> = { eunwoo: "/english", appa: "/", mom: "/mom" };
 
 export function pushText(person: PushPerson, kind: PushKind, s: PersonState, extra: { from?: PushPerson; about?: PushPerson } = {}): { title: string; body: string; url: string } {
   const kid = person === "eunwoo";
@@ -92,10 +92,14 @@ export function decidePushes(input: {
     if (now >= LAST_AT) push(s, "last");
     else if (now >= input.prefs[s.person].remindAt) push(s, "today");
   }
+  // 👪 가족 알림 — 받는 사람은 states가 아니라 설정(familyAlerts)으로 고른다. 자기 상태가 없는 사람(엄마 영역 데이터가 아직 없음)도
+  // 21:00 "은우가 아직이에요"는 받는다 — 그때 하루 상한은 이미 보낸 수(sentCount)로만 센다(push가 같은 계산을 한다).
   const kid = input.states.find((s) => s.person === "eunwoo");
   if (kid && !kid.doneToday && now >= FAMILY_AT) {
-    for (const s of input.states) {
-      if (s.person !== "eunwoo" && input.prefs[s.person].familyAlerts) push(s, "family", { about: "eunwoo" });
+    for (const p of PUSH_PEOPLE) {
+      if (p === "eunwoo" || !input.prefs[p].familyAlerts) continue;
+      const s = input.states.find((x) => x.person === p) ?? { person: p, doneToday: true, current: 0, freezeLeft: 0, pendingRepairYesterday: false, missingTracks: [] };
+      push(s, "family", { about: "eunwoo" });
     }
   }
   return out;
@@ -137,9 +141,8 @@ export function pushStates(r: StreakResponse): PersonState[] {
   const appaLit = r.appaLanguage.info.doneToday || r.appaWorkout.info.doneToday;
   const appaMissing = [!r.appaLanguage.info.doneToday ? "어학" : null, !r.appaWorkout.info.doneToday ? "운동" : null].filter((x): x is string => x !== null);
   const out: PersonState[] = [s("eunwoo", r.eunwoo.info), s("appa", appaInfo, appaMissing, appaLit)];
-  // 엄마 영역이 아직 없으면(mom: null) 엄마 자신의 알림은 없다 — 그래도 👪 가족 알림(은우 아직 → 엄마 폰)은 받아야 하므로
-  // "오늘 할 것 없음"(doneToday: true) 칸으로 넣는다(오늘 아직·마지막·만회·콕은 나가지 않는다).
+  // 엄마 영역 데이터가 없으면(mom: null) 엄마 상태는 없다 — 엄마 자신의 알림(오늘 아직·마지막·만회)은 나가지 않는다.
+  // 👪 가족 알림(은우 아직 → 엄마 폰)은 decidePushes가 설정(familyAlerts)으로 따로 고르므로 자리표시가 필요 없다(엄마 설계 §7).
   if (r.mom) out.push(s("mom", r.mom.info));
-  else out.push({ person: "mom", doneToday: true, current: 0, freezeLeft: 0, pendingRepairYesterday: false, missingTracks: [] });
   return out;
 }

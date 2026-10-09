@@ -3,6 +3,8 @@
  */
 
 import { kstDateString } from "./kst";
+import type { MomLessonRecord } from "./mom-contract";
+import { isFullMomLesson, type MomLesson } from "./mom-plan";
 
 /** 자유대화 한 판 — 은우 발화 수 하한(1학년에게 높으면 이 값만 낮춘다) */
 export const TALK_STREAK_MIN_CHILD_TURNS = 3;
@@ -36,4 +38,17 @@ export function addRuns(into: Map<string, number>, startedAts: readonly string[]
 /** 날짜 단위 한 판(복습·운동 지킨 날) → 그날 +1 */
 export function addDays(into: Map<string, number>, days: Iterable<string>): void {
   for (const d of days) into.set(d, (into.get(d) ?? 0) + 1);
+}
+
+/**
+ * 엄마 레슨 한 판(엄마 설계 §7) — 계획(buildMomWeeks)에 있는 레슨이면 isFullMomLesson(말하기 문장 전부 체크 + 끝냄).
+ * 계획에 없는 레슨은 자동 감속 가상 복습 주(`rw101-d1`…, 진도 걷기에서만 생긴다)일 때만 — 끝냈고 체크가 하나 이상이면 한 판.
+ * 그 밖(계획에 없는 `w…` — 블록이 빠졌거나 바뀐 주)은 판정할 기준이 없어 한 판이 아니다.
+ */
+export function isFullMomLessonRun(
+  rec: Pick<MomLessonRecord, "lessonId" | "finishedAt" | "checks">,
+  planned: Pick<MomLesson, "speakIds"> | undefined,
+): boolean {
+  if (planned) return isFullMomLesson(rec, planned);
+  return /^rw\d{1,3}-d[1-4]$/.test(rec.lessonId) && rec.finishedAt !== null && rec.checks.length >= 1;
 }
