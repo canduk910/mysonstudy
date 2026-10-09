@@ -9,7 +9,8 @@ self.addEventListener("notificationclick", (event) => {
   const url = (event.notification.data && event.notification.data.url) || "/";
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
-      for (const c of list) if ("focus" in c) { c.navigate(url); return c.focus(); }
+      // navigate는 제어하지 않는 창에서 거부된다 — 그때는 그 창에 포커스만
+      for (const c of list) if ("focus" in c) return c.navigate(url).then((w) => (w || c).focus()).catch(() => c.focus());
       return self.clients.openWindow(url);
     }),
   );

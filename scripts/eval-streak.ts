@@ -40,7 +40,7 @@ import { reviewFullDays, reviewStreakSessions, reviewTodayLabel } from "../lib/r
 import { FREEZES_PER_MONTH, STREAK_BADGES, badgesOf, decideBridges, kstWeekDays, litDaysOf, streakFromStatus, weekCells } from "../lib/streak-v2";
 import { familyV2, personV2, trackV2 } from "../lib/streak-v2-assemble";
 import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullQuiz, isFullTalk } from "../lib/streak-v2-sources";
-import { decidePushes, kstHalfHourHHMM, PUSH_DAILY_MAX } from "../lib/push-decide";
+import { decidePushes, isQuietHHMM, kstHalfHourHHMM, PUSH_DAILY_MAX } from "../lib/push-decide";
 import { DEFAULT_PUSH_PREFS } from "../lib/push-contract";
 
 interface CheckResult {
@@ -918,6 +918,11 @@ const TODAY = "2026-09-21";
     // 틱의 지금 — KST 30분 내림·0 채움(UTC 입력). 15:05Z = KST 00:05, 23:44Z = KST 08:44, 12:59Z = KST 21:59
     const got = ["2026-10-09T15:05:00.000Z", "2026-10-09T23:44:00.000Z", "2026-10-09T12:59:00.000Z"].map((t) => kstHalfHourHHMM(new Date(t)));
     add(B, "틱 시각 kstHalfHourHHMM: 00:05→00:00·08:44→08:30·21:59→21:30", got.join() === "00:00,08:30,21:30", got.join());
+  }
+  {
+    // 조용한 시간 단일 정의처(틱·콕 찌르기 공용) — 22:30까지는 보내고 22:31부터 07:59까지는 조용
+    const q = ["22:30", "22:31", "07:59", "08:00"].map((t) => `${t}=${isQuietHHMM(t)}`);
+    add(B, "조용한 시간 isQuietHHMM: 22:30 아님·22:31 조용·07:59 조용·08:00 아님", q.join() === "22:30=false,22:31=true,07:59=true,08:00=false", q.join());
   }
 }
 

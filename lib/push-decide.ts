@@ -13,6 +13,17 @@ export const LAST_AT = "22:30";
 export const REPAIR_AT = "08:30";
 export const FAMILY_AT = "21:00";
 
+/** 조용한 시간 — 22:30 초과부터 08:00 전까지(0 채움 "HH:MM" 사전순 비교). 틱·콕 찌르기 공용 단일 정의처 */
+export function isQuietHHMM(hhmm: string): boolean {
+  return hhmm > QUIET_FROM || hhmm < QUIET_UNTIL;
+}
+
+/** 지금 KST "HH:MM"(분 그대로, 0 채움) — 콕 찌르기의 조용한 시간 판정용 */
+export function kstHHMM(now: Date): string {
+  const k = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  return `${String(k.getUTCHours()).padStart(2, "0")}:${String(k.getUTCMinutes()).padStart(2, "0")}`;
+}
+
 export interface PersonState {
   person: PushPerson;
   doneToday: boolean;
@@ -64,7 +75,7 @@ export function decidePushes(input: {
   sentToday: readonly { person: PushPerson; kind: PushKind }[];
 }): PushToSend[] {
   const now = input.nowHHMM;
-  if (now > QUIET_FROM || now < QUIET_UNTIL) return [];
+  if (isQuietHHMM(now)) return [];
   const sentCount = (p: PushPerson) => input.sentToday.filter((s) => s.person === p).length;
   const was = (p: PushPerson, k: PushKind) => input.sentToday.some((s) => s.person === p && s.kind === k);
   const out: PushToSend[] = [];

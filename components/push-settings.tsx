@@ -3,7 +3,7 @@
 /**
  * 🔔 알림 설정(가족 스트릭 강화 스펙 §6-1) — "나는 누구" + 이 기기 알림 켜기/끄기 + 시각·가족 알림.
  * - iPhone·iPad는 홈 화면에 추가한 앱(standalone)에서만 웹 푸시가 된다(iOS 16.4+) — 미설치면 설치 방법만 보이고 켜기 버튼을 숨긴다.
- * - 권한 요청은 반드시 버튼 탭 안에서(iOS는 사용자 동작 없이 부르면 거부한다).
+ * - 권한 요청은 반드시 버튼 탭 안에서, 어떤 await보다 먼저(iOS는 사용자 동작 맥락을 잃으면 거부한다) — 그다음 SW 등록·구독.
  * - 서버에 VAPID 키가 없으면(공개키 null·501) "아직 알림 준비 중이에요" 한 줄.
  * - localStorage는 기기별 편의(사람·설정 기억)라 실패해도 화면은 돈다.
  */
@@ -116,15 +116,17 @@ export default function PushSettings() {
 
   const turnOn = async () => {
     if (!person || !prefs || !publicKey) return;
+    // 권한 요청을 **await보다 먼저**, 탭 처리 안에서 동기로 시작한다 — iOS WebKit은 await 뒤로 사용자 동작 맥락을 잃어 조용히 거부할 수 있다
+    const permP = Notification.requestPermission();
     setBusy(true);
     setMsg(null);
     try {
-      const reg = await navigator.serviceWorker.register("/sw.js");
-      const perm = await Notification.requestPermission();
+      const perm = await permP;
       if (perm !== "granted") {
         setMsg("알림이 허용되지 않았어요. 설정에서 이 앱의 알림을 켜 주세요.");
         return;
       }
+      const reg = await navigator.serviceWorker.register("/sw.js");
       await navigator.serviceWorker.ready;
       const s = (await reg.pushManager.getSubscription()) ?? (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToUint8Array(publicKey) }));
       if (await save(s, person, prefs)) {

@@ -34,6 +34,9 @@ const POKE_FAIL: Record<number, string> = {
   501: "아직 알림 준비 중이에요",
 };
 
+/** 409 reason "quiet" — 조용한 시간(스펙 §6-2) */
+const POKE_QUIET = "지금은 조용한 시간이에요 (밤 10시 반~아침 8시)";
+
 function Today({ name, emoji, p, onPoke }: { name: string; emoji: string; p: PersonStreak | null | undefined; onPoke?: () => Promise<string> }) {
   const [pokeMsg, setPokeMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -122,6 +125,8 @@ export default function FamilyBoard() {
       try {
         const res = await fetch("/api/push/poke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ from: me, to }) });
         if (res.ok) return "콕 찔렀어요!";
+        const j = (await res.json().catch(() => null)) as { reason?: string } | null;
+        if (res.status === 409 && j?.reason === "quiet") return POKE_QUIET;
         return POKE_FAIL[res.status] ?? "보내지 못했어요";
       } catch {
         return "보내지 못했어요";
