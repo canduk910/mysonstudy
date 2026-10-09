@@ -5,9 +5,12 @@
  * 오늘 · 이번 주 · 기록 세 블록을 그린다. 보조 화면이라 실패는 조용히.
  * - 아빠 오늘 줄: 어학·운동 중 하나라도 했으면 ✓(둘 다면 어학 라벨).
  * - 아빠 운동 배지 줄: 운동 기록이 없으면(중립값) 숨긴다.
+ * - 🔔 알림 설정 링크(머리)·👉 콕(오늘 아직인 사람 옆, 서버에 알림 키가 있을 때만 — 스펙 §6-2). 보낸 사람 = 이 기기의 "나는 누구".
  */
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
+import { PUSH_PERSON_STORAGE_KEY, isPushPerson, type PushPerson } from "@/lib/push-contract";
 import { STREAK_REFRESH_EVENT } from "@/lib/streak";
 import type { StreakResponse, PersonStreak } from "@/lib/streak-contract";
 import type { WeekCell } from "@/lib/streak-v2";
@@ -24,7 +27,16 @@ const CELL: Record<WeekCell, { icon: string; label: string }> = {
 const DOW = ["월", "화", "수", "목", "금", "토", "일"];
 const BADGE_NAME = { eunwoo: "은우", appaLanguage: "아빠 어학", appaWorkout: "아빠 운동", mom: "엄마", family: "가족" } as const;
 
-function Today({ name, emoji, p }: { name: string; emoji: string; p: PersonStreak | null | undefined }) {
+const POKE_FAIL: Record<number, string> = {
+  404: "그 폰은 알림이 꺼져 있어요",
+  409: "벌써 했어요!",
+  429: "오늘은 더 못 찔러요",
+  501: "아직 알림 준비 중이에요",
+};
+
+function Today({ name, emoji, p, onPoke }: { name: string; emoji: string; p: PersonStreak | null | undefined; onPoke?: () => Promise<string> }) {
+  const [pokeMsg, setPokeMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   if (!p) return null;
   const done = p.info.doneToday;
   return (
@@ -32,9 +44,26 @@ function Today({ name, emoji, p }: { name: string; emoji: string; p: PersonStrea
       <span className="t-body shrink-0 font-medium">
         {emoji} {name}
       </span>
-      <span className="t-caption min-w-0 text-right text-ink-2">
-        {done ? `✓ ${p.todayLabel ?? "오늘 완료"}` : p.info.pendingRepairDay ? "오늘 두 판이면 어제가 돌아와요" : "아직"}
-        {" · "}🔥{p.info.current}일
+      <span className="t-caption flex min-w-0 items-center justify-end gap-2 text-right text-ink-2">
+        <span>
+          {done ? `✓ ${p.todayLabel ?? "오늘 완료"}` : p.info.pendingRepairDay ? "오늘 두 판이면 어제가 돌아와요" : "아직"}
+          {" · "}🔥{p.info.current}일
+          {pokeMsg && <span role="status"> · {pokeMsg}</span>}
+        </span>
+        {!done && onPoke && (
+          <button
+            type="button"
+            className="u-chip shrink-0"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              setPokeMsg(await onPoke());
+              setBusy(false);
+            }}
+          >
+            👉 콕
+          </button>
+        )}
       </span>
     </li>
   );
@@ -42,6 +71,25 @@ function Today({ name, emoji, p }: { name: string; emoji: string; p: PersonStrea
 
 export default function FamilyBoard() {
   const [data, setData] = useState<StreakResponse | null>(null);
+  /** 서버에 알림 키가 있을 때만 콕 버튼 */
+  const [pushReady, setPushReady] = useState(false);
+  const [me, setMe] = useState<PushPerson | null>(null);
+  useEffect(() => {
+    try {
+      const v = window.localStorage.getItem(PUSH_PERSON_STORAGE_KEY);
+      if (isPushPerson(v)) setMe(v);
+    } catch {
+      /* 기기 편의 — 조용히 */
+    }
+    let alive = true;
+    fetch("/api/push/subscribe", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: { publicKey?: string | null } | null) => alive && setPushReady(!!j?.publicKey))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
   useEffect(() => {
     let alive = true;
     let seq = 0;
@@ -66,6 +114,21 @@ export default function FamilyBoard() {
   }, []);
   if (!data) return <p className="t-body text-ink-3">불러오는 중…</p>;
 
+  /** 콕 찌르기 — 결과 문구를 돌려준다(그 줄에 짧게 보인다). 자기 자신 줄에는 버튼이 없다 */
+  const pokeFor = (to: PushPerson): (() => Promise<string>) | undefined => {
+    if (!pushReady || me === to) return undefined;
+    return async () => {
+      if (!me) return "🔔 알림 설정에서 '나는 누구'를 먼저 골라요";
+      try {
+        const res = await fetch("/api/push/poke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ from: me, to }) });
+        if (res.ok) return "콕 찔렀어요!";
+        return POKE_FAIL[res.status] ?? "보내지 못했어요";
+      } catch {
+        return "보내지 못했어요";
+      }
+    };
+  };
+
   // 아빠 오늘 — 어학·운동 중 하나라도 했으면 ✓(둘 다면 어학 라벨). 둘 다 아직이면 어학(만회 대기 문구도 어학 기준).
   const appa: PersonStreak = data.appaLanguage.info.doneToday || !data.appaWorkout.info.doneToday ? data.appaLanguage : data.appaWorkout;
   const workoutNeutral = data.appaWorkout.info.current === 0 && data.appaWorkout.info.best === 0 && data.appaWorkout.todayLabel === null;
@@ -78,7 +141,12 @@ export default function FamilyBoard() {
   return (
     <div className="flex flex-col gap-6">
       <header>
-        <h1 className="t-book-title">👪 가족 보드</h1>
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="t-book-title">👪 가족 보드</h1>
+          <Link href="/family/settings" className="u-navbtn shrink-0">
+            🔔 알림 설정
+          </Link>
+        </div>
         <p className="t-body mt-1 text-ink-2">
           가족 🔥 {data.family.info.current}일 · 최고 {data.family.info.best}일
         </p>
@@ -86,9 +154,9 @@ export default function FamilyBoard() {
       <section aria-label="오늘">
         <h2 className="t-section-title mb-2">오늘</h2>
         <ul className="flex flex-col gap-2">
-          <Today name="은우" emoji="🧒" p={data.eunwoo} />
-          <Today name="아빠" emoji="🧑" p={appa} />
-          <Today name="엄마" emoji="👩" p={data.mom} />
+          <Today name="은우" emoji="🧒" p={data.eunwoo} onPoke={pokeFor("eunwoo")} />
+          <Today name="아빠" emoji="🧑" p={appa} onPoke={pokeFor("appa")} />
+          <Today name="엄마" emoji="👩" p={data.mom} onPoke={pokeFor("mom")} />
         </ul>
       </section>
       <section aria-label="이번 주">

@@ -86,3 +86,14 @@ export function decidePushes(input: {
   }
   return out;
 }
+
+/**
+ * 틱의 "지금" — KST 시:분을 **30분 내림**한 0 채움 "HH:MM"(08:44 → "08:30"). decidePushes는 문자열 사전순으로 비교하므로
+ * 반드시 두 자리 0 채움이어야 한다. Cloud Run(UTC)·로컬 어디서든 같은 값(+9h → getUTC*).
+ */
+export function kstHalfHourHHMM(now: Date): string {
+  const k = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const h = k.getUTCHours();
+  const m = k.getUTCMinutes() < 30 ? 0 : 30;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}

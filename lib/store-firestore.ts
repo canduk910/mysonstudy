@@ -20,6 +20,7 @@
 
 import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
 import {
+  FieldPath,
   getFirestore,
   Timestamp,
   type CollectionReference,
@@ -119,7 +120,10 @@ import {
   type TalkImageRecord,
   type TalkSessionRecord,
   type ImportToeicFrameDrillResult,
+  type PushSubscriptionRecord,
+  parsePushLogId,
 } from "./store";
+import { isPushPerson, parsePushPrefs, type PushKind, type PushPerson } from "./push-contract";
 import { islandEntryData, normalizeToeicIslandEntry, sortIslandEntries, type ToeicIslandEntry } from "./toeic-island";
 import {
   decideReview,
@@ -717,6 +721,13 @@ export class FirestoreStore implements StudyStore {
   // 📅 오늘의 복습(SPEC §23) — 문서 id = reviewDocId(영역, 항목 키). 세 영역이 한 컬렉션을 쓰고 area 필드로 가른다
   private reviewSchedules(): CollectionReference {
     return getDb().collection("reviewSchedules");
+  }
+  // 🔔 폰 알림(가족 스트릭 §6) — 구독(문서 id = endpoint 해시)·발송 기록(문서 id = day:person:kind:n)
+  private pushSubscriptions(): CollectionReference {
+    return getDb().collection("pushSubscriptions");
+  }
+  private pushLog(): CollectionReference {
+    return getDb().collection("pushLog");
   }
   // 은우 자유대화(english.md §12-4·§12-6) — 은우 단어장 컬렉션과 섞지 않는다
   private talkSessions(): CollectionReference {
@@ -2189,6 +2200,73 @@ export class FirestoreStore implements StudyStore {
       return decision;
     });
   }
+
+  // ---- 🔔 폰 알림 (가족 스트릭 §6) ----
+  // 발송 기록은 `create`(이미 있으면 ALREADY_EXISTS → false — 확인과 생성이 원자적, 토익 ref.create() 멱등 관용구).
+  // 그날 기록은 문서 id 접두 범위(`day:` 이상 `day;` 미만 — ';'는 ':' 다음 글자)로 읽는다(필드 색인 불필요).
+
+  async upsertPushSubscription(rec: Omit<PushSubscriptionRecord, "createdAt" | "lastOkAt">): Promise<void> {
+    const ref = this.pushSubscriptions().doc(rec.id);
+    await getDb().runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const cur = snap.exists ? toPushSubscription(rec.id, snap.data()) : null;
+      const data = { person: rec.person, endpoint: rec.endpoint, keys: rec.keys, prefs: rec.prefs };
+      tx.set(ref, frameFirestoreData({ ...data, createdAt: cur?.createdAt ?? new Date().toISOString(), lastOkAt: cur?.lastOkAt ?? null }));
+    });
+  }
+
+  async deletePushSubscription(id: string): Promise<void> {
+    assertDestructiveAllowed("push-subscription-delete");
+    await this.pushSubscriptions().doc(id).delete();
+  }
+
+  async listPushSubscriptions(): Promise<PushSubscriptionRecord[]> {
+    const snap = await this.pushSubscriptions().get();
+    return snap.docs.map((d) => toPushSubscription(d.id, d.data())).filter((r): r is PushSubscriptionRecord => r !== null);
+  }
+
+  async markPushOk(id: string, at: string): Promise<void> {
+    try {
+      await this.pushSubscriptions().doc(id).update({ lastOkAt: at });
+    } catch (err) {
+      // 없는 문서(NOT_FOUND = 5)는 조용히 — 발송과 해제가 겹친 경우
+      if ((err as { code?: unknown } | null)?.code !== 5) throw err;
+    }
+  }
+
+  async claimPushLog(id: string, at: string): Promise<boolean> {
+    try {
+      await this.pushLog().doc(id).create({ sentAt: at });
+      return true;
+    } catch (err) {
+      if ((err as { code?: unknown } | null)?.code !== GRPC_ALREADY_EXISTS) throw err;
+      return false;
+    }
+  }
+
+  async listPushLog(day: string): Promise<{ id: string; person: PushPerson; kind: PushKind }[]> {
+    const snap = await this.pushLog()
+      .where(FieldPath.documentId(), ">=", `${day}:`)
+      .where(FieldPath.documentId(), "<", `${day};`)
+      .get();
+    return snap.docs.map((d) => parsePushLogId(d.id)).filter((x): x is { id: string; person: PushPerson; kind: PushKind } => x !== null);
+  }
+}
+
+/** 구독 문서 → 레코드. 필수 필드가 깨졌으면 null(목록에서 뺀다) */
+function toPushSubscription(id: string, d: DocumentData | undefined): PushSubscriptionRecord | null {
+  if (!d || !isPushPerson(d.person) || typeof d.endpoint !== "string") return null;
+  const keys = d.keys as { p256dh?: unknown; auth?: unknown } | undefined;
+  if (!keys || typeof keys.p256dh !== "string" || typeof keys.auth !== "string") return null;
+  return {
+    id,
+    person: d.person,
+    endpoint: d.endpoint,
+    keys: { p256dh: keys.p256dh, auth: keys.auth },
+    prefs: parsePushPrefs(d.prefs, d.person),
+    createdAt: typeof d.createdAt === "string" ? d.createdAt : "",
+    lastOkAt: typeof d.lastOkAt === "string" ? d.lastOkAt : null,
+  };
 }
 
 /** 소재별 틀 말하기 문서 본문 — 정규화된 값을 JSON 왕복으로 한 번 더 걸러 undefined를 남기지 않는다(Firestore 거부) */

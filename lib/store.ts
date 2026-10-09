@@ -26,7 +26,7 @@
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { resolveStoreBackend, type StoreBackend } from "./store-backend";
 import type { Card, Chapter, SceneDigestItem, SceneSourceKind } from "./ai/english/schemas";
 // 수학 설명 기록(M4)이 통째로 안는 타입들 — **전부 `import type`이다.**
@@ -169,6 +169,34 @@ import {
 } from "./toeic-frame-drill-record";
 import { islandEntryData, normalizeToeicIslandEntry, sortIslandEntries, type ToeicIslandEntry } from "./toeic-island";
 import { decideReview, normalizeReviewSchedule, type DecideReviewInput, type DecideReviewResult, type ReviewArea, type ReviewScheduleRecord } from "./review-schedule";
+import { isPushPerson, type PushKind, type PushPerson, type PushPrefs } from "./push-contract";
+
+/**
+ * 폰 알림 구독 하나(가족 스트릭 강화 스펙 §6-1) — 컬렉션 `pushSubscriptions`. id = endpoint의 sha256 hex 앞 32자
+ * (pushSubscriptionId — 같은 기기를 다시 켜면 같은 문서를 덮는다). keys는 브라우저가 준 공개 값(비밀 아님).
+ */
+export interface PushSubscriptionRecord {
+  id: string;
+  person: PushPerson;
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+  prefs: PushPrefs;
+  createdAt: string;
+  lastOkAt: string | null;
+}
+
+/** 구독 문서 id — endpoint의 sha256 hex 앞 32자(두 백엔드·라우트 공용) */
+export function pushSubscriptionId(endpoint: string): string {
+  return createHash("sha256").update(endpoint).digest("hex").slice(0, 32);
+}
+
+/** 발송 기록 문서 id `${day}:${person}:${kind}:${n}`을 가른다. 모양이 틀리면 null */
+export function parsePushLogId(id: string): { id: string; person: PushPerson; kind: PushKind } | null {
+  const [, person, kind] = id.split(":");
+  const kinds: readonly string[] = ["today", "last", "repair", "family", "poke"] satisfies PushKind[];
+  if (!isPushPerson(person) || !kinds.includes(kind ?? "")) return null;
+  return { id, person, kind: kind as PushKind };
+}
 
 /** 오늘의 복습(SPEC §23) — 일정 레코드 타입의 단일 정의처는 순수 엔진 lib/review-schedule.ts(store → 엔진 한 방향) */
 export type { DecideReviewInput, DecideReviewResult, ReviewArea, ReviewScheduleRecord };
@@ -1485,6 +1513,19 @@ export interface StudyStore {
    * `already_today`(아무것도 쓰지 않는다). 문서 id = reviewDocId(area, itemKey). 삭제가 아니라 prod-guard 대상이 아니다.
    */
   applyReviewOutcome(input: DecideReviewInput): Promise<DecideReviewResult>;
+
+  // ---- 🔔 폰 알림 — 컬렉션 `pushSubscriptions`·`pushLog` (가족 스트릭 강화 스펙 §6) ----
+  /** 구독 저장 — 같은 id(같은 endpoint)면 person·keys·prefs를 덮고 createdAt·lastOkAt은 지킨다. 생성·수정이라 prod-guard 무관 */
+  upsertPushSubscription(rec: Omit<PushSubscriptionRecord, "createdAt" | "lastOkAt">): Promise<void>;
+  /** 구독 삭제(해제·사라진 기기). **삭제라 prod-guard**(push-subscription-delete, Firestore만). 없는 id도 조용히 ok */
+  deletePushSubscription(id: string): Promise<void>;
+  listPushSubscriptions(): Promise<PushSubscriptionRecord[]>;
+  /** 발송 성공 시각을 적는다. 없는 id면 아무것도 안 한다 */
+  markPushOk(id: string, at: string): Promise<void>;
+  /** 문서 id = `${day}:${person}:${kind}:${n}` — 이미 있으면 false(멱등) */
+  claimPushLog(id: string, at: string): Promise<boolean>;
+  /** 그날(`day:` 접두) 보낸 기록 */
+  listPushLog(day: string): Promise<{ id: string; person: PushPerson; kind: PushKind }[]>;
 }
 
 /** 가져오기 결과 — ok면 병합 결과(은행 포함), too_large면 아무것도 쓰지 않았다 */
@@ -1535,6 +1576,10 @@ export interface DbShape {
   toeicIsland: ToeicIslandEntry[];
   /** 📅 오늘의 복습 일정(SPEC §23) — 이 키가 없던 db.json은 빈 배열 */
   reviewSchedules: ReviewScheduleRecord[];
+  /** 🔔 알림 구독(가족 스트릭 §6-1) — id → 레코드 맵. 이 키가 없던 db.json은 빈 맵 */
+  pushSubscriptions: Record<string, PushSubscriptionRecord>;
+  /** 🔔 발송 기록 — 문서 id(`day:person:kind:n`) → 보낸 시각. 이 키가 없던 db.json은 빈 맵 */
+  pushLog: Record<string, { sentAt: string }>;
 }
 
 /** 파일 백엔드의 은행·통계 문서(모양이 달라 원본으로 두고 id로 골라 정규화한다) */
@@ -1551,6 +1596,8 @@ function emptyDb(): DbShape {
     toeicFrameBank: [], toeicFrameDrills: [],
     toeicIsland: [],
     reviewSchedules: [],
+    pushSubscriptions: {},
+    pushLog: {},
   };
 }
 
@@ -1645,11 +1692,19 @@ async function readDb(): Promise<DbShape> {
         .filter((d): d is ToeicIslandEntry => d !== null),
       // 📅 오늘의 복습(§23) 이전 db.json엔 이 키가 없다 — 같은 하위호환. 깨진 일정은 정규화가 뺀다(그 항목은 처음 들어오는 항목으로 다시 계산)
       reviewSchedules: (parsed.reviewSchedules ?? []).map((d) => normalizeReviewSchedule(d)).filter((d): d is ReviewScheduleRecord => d !== null),
+      // 🔔 알림(가족 스트릭 §6) 이전 db.json엔 이 두 키가 없다 — 빈 맵
+      pushSubscriptions: isPlainMap(parsed.pushSubscriptions) ? parsed.pushSubscriptions : {},
+      pushLog: isPlainMap(parsed.pushLog) ? parsed.pushLog : {},
     };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyDb();
     throw err;
   }
+}
+
+/** 맵 모양 키(배열·null 아님) 확인 */
+function isPlainMap<T>(v: Record<string, T> | undefined): v is Record<string, T> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
 async function writeDb(db: DbShape): Promise<void> {
@@ -3312,6 +3367,50 @@ class JsonFileStore implements BookCardStore {
       return true;
     });
   }
+
+  // ---- 🔔 폰 알림 (가족 스트릭 §6) — 쓰기는 mutate 안에서(큐 직렬화 — claimPushLog의 확인과 생성이 한 단위) ----
+
+  async upsertPushSubscription(rec: Omit<PushSubscriptionRecord, "createdAt" | "lastOkAt">): Promise<void> {
+    await this.mutate((db) => {
+      const cur = db.pushSubscriptions[rec.id];
+      db.pushSubscriptions[rec.id] = { ...rec, createdAt: cur?.createdAt ?? new Date().toISOString(), lastOkAt: cur?.lastOkAt ?? null };
+    });
+  }
+
+  async deletePushSubscription(id: string): Promise<void> {
+    // 파일 백엔드는 로컬 데이터라 prod-guard 무관(다른 삭제와 같은 규약 — 가드는 Firestore 쪽)
+    await this.mutate((db) => {
+      delete db.pushSubscriptions[id];
+    });
+  }
+
+  async listPushSubscriptions(): Promise<PushSubscriptionRecord[]> {
+    const db = await readDb();
+    return Object.values(db.pushSubscriptions);
+  }
+
+  async markPushOk(id: string, at: string): Promise<void> {
+    await this.mutate((db) => {
+      const cur = db.pushSubscriptions[id];
+      if (cur) db.pushSubscriptions[id] = { ...cur, lastOkAt: at };
+    });
+  }
+
+  async claimPushLog(id: string, at: string): Promise<boolean> {
+    return this.mutate((db) => {
+      if (db.pushLog[id]) return false;
+      db.pushLog[id] = { sentAt: at };
+      return true;
+    });
+  }
+
+  async listPushLog(day: string): Promise<{ id: string; person: PushPerson; kind: PushKind }[]> {
+    const db = await readDb();
+    return Object.keys(db.pushLog)
+      .filter((id) => id.startsWith(`${day}:`))
+      .map(parsePushLogId)
+      .filter((x): x is { id: string; person: PushPerson; kind: PushKind } => x !== null);
+  }
 }
 
 /** 파일 백엔드 — 은행·통계 문서 하나를 id로 바꿔 끼운다(없으면 더한다) */
@@ -3464,5 +3563,8 @@ export async function mergeDbForSeed(seed: DbShape): Promise<void> {
     toeicIsland: mergeById(cur.toeicIsland, seed.toeicIsland),
     // 📅 오늘의 복습 일정 — 같은 이유로 반드시 mergeById(시드가 복습 간격을 지우지 않게). 시드는 빈 배열이다.
     reviewSchedules: mergeById(cur.reviewSchedules, seed.reviewSchedules),
+    // 🔔 알림 구독·발송 기록 — 같은 이유로 기존 것을 지키는 머지(시드는 빈 맵이다)
+    pushSubscriptions: { ...cur.pushSubscriptions, ...seed.pushSubscriptions },
+    pushLog: { ...cur.pushLog, ...seed.pushLog },
   });
 }

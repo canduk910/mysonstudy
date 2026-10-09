@@ -40,7 +40,7 @@ import { reviewFullDays, reviewStreakSessions, reviewTodayLabel } from "../lib/r
 import { FREEZES_PER_MONTH, STREAK_BADGES, badgesOf, decideBridges, kstWeekDays, litDaysOf, streakFromStatus, weekCells } from "../lib/streak-v2";
 import { familyV2, personV2, trackV2 } from "../lib/streak-v2-assemble";
 import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullQuiz, isFullTalk } from "../lib/streak-v2-sources";
-import { decidePushes, PUSH_DAILY_MAX } from "../lib/push-decide";
+import { decidePushes, kstHalfHourHHMM, PUSH_DAILY_MAX } from "../lib/push-decide";
 import { DEFAULT_PUSH_PREFS } from "../lib/push-contract";
 
 interface CheckResult {
@@ -388,7 +388,7 @@ const TODAY = "2026-09-21";
 
   // ⑥ 라우트 배선(정적) — /api/streak가 영어 트랙을 **토익 두 컬렉션만으로** 계산하고, 은우·일본어 계산식은 그대로인가.
   //    누가 영어 날짜를 일본어·은우 계산에 섞거나(한 집합), 영어 트랙에 은우 vocabQuizzes를 넣으면 여기서 걸린다.
-  const route = readFileSync(new URL("../app/api/streak/route.ts", import.meta.url), "utf-8");
+  const route = readFileSync(new URL("../lib/streak-server.ts", import.meta.url), "utf-8");
   // 2026-10-03 소재별 틀 말하기(toeic.md §20-9) — 셋째 인자 frameDrills(토익 컬렉션 toeicFrameDrills)만 더해졌다
   //    2026-10-08(§17-10) — 세션을 변수(toeicSessions·jaSessions)로 받아 어학 합집합에도 쓰게 했다. 식 자체는 같다.
   const wiredEnglish = /const toeicSessions: StreakSession\[\] = \[\.\.\.toeicStreakSessions\(toeicQuizzes, toeicAttempts, frameDrills\), \.\.\.reviewStreakSessions\(reviewsOf\("toeic"\)\)\];/.test(route) && /info: computeStreak\(toeicSessions, today\)/.test(route) && /const frameDrills = toeicFrameDrills \?\? \[\];/.test(route);
@@ -540,7 +540,7 @@ const TODAY = "2026-09-21";
 
   // ⑥ 라우트 배선(정적) — 은우 = 단어장 시험 + 대화, 대화 읽기 실패는 null → [](단어장만), 대화가 아빠 계산식에 들어가지 않는다,
   //    라벨은 가장 늦게 시작한 것(isCountedTalkSession 거른 오늘 대화 vs 오늘 시험)
-  const route = readFileSync(new URL("../app/api/streak/route.ts", import.meta.url), "utf-8");
+  const route = readFileSync(new URL("../lib/streak-server.ts", import.meta.url), "utf-8");
   const wired = /computeStreak\(\[\.\.\.vocab, \.\.\.talkStreakSessions\(talks\), \.\.\.reviewStreakSessions\(reviewsOf\("english"\)\)\], today\)/.test(route);
   const fallback = /listAllTalkSessions\(\)\.catch\(/.test(route) && /const talks = talkSessions \?\? \[\];/.test(route);
   const noLeakToAppa =
@@ -695,7 +695,7 @@ const TODAY = "2026-09-21";
   const mixed = computeStreak([...reviewStreakSessions(en as never), ...reviewStreakSessions(ja as never)], TODAY9);
   add(B, "복습만 한 날도 그 영역 트랙에 센다(은우 2일 연속) · 트랙을 섞으면 달라진다(반례 — 라우트는 영역별로 가른다)", enInfo.current === 2 && enInfo.doneToday && mixed.current === 3, `en=${enInfo.current} mixed=${mixed.current}`);
   add(B, "라벨 `오늘의 복습 · n개`(오늘 복습한 항목 수) · 오늘 안 했으면 null", reviewTodayLabel(en as never, TODAY9) === "오늘의 복습 · 1개" && reviewTodayLabel(ja as never, TODAY9) === null, String(reviewTodayLabel(en as never, TODAY9)));
-  const route = readFileSync(new URL("../app/api/streak/route.ts", import.meta.url), "utf-8");
+  const route = readFileSync(new URL("../lib/streak-server.ts", import.meta.url), "utf-8");
   add(
     B,
     "/api/streak 배선: 영역별 reviewsOf로 은우·일본어·영어 트랙에 각각 · 복습 일정을 못 읽으면 복습만 빼고 · 라벨은 그 트랙에 다른 기록이 없을 때만",
@@ -730,7 +730,7 @@ const TODAY = "2026-09-21";
   add(B, "답한 문항 0 세션은 합집합에도 안 들어간다", !unanswered.doneToday && unanswered.current === 0, JSON.stringify(unanswered));
   add(B, "streakDays ∘ computeStreakFromDays = computeStreak(같은 결과)", JSON.stringify(computeStreakFromDays(streakDays(ja), TODAY10)) === JSON.stringify(computeStreak(ja, TODAY10)), "");
 
-  const route = readFileSync(new URL("../app/api/streak/route.ts", import.meta.url), "utf-8");
+  const route = readFileSync(new URL("../lib/streak-server.ts", import.meta.url), "utf-8");
   const wired = /computeStreakFromDays\(new Set\(\[\.\.\.streakDays\(jaSessions\), \.\.\.streakDays\(enSessions\)\]\), today\)/.test(route);
   // streakDays는 일본어·영어 세션(어학 합집합 — legacy와 v2 어학 트랙)과 v2 은우 트랙의 은우 세션 배열에만
   const sdCount = (needle: string) => route.split(needle).length - 1;
@@ -859,7 +859,7 @@ const TODAY = "2026-09-21";
   const momLate = personV2([T([], { "2026-10-11": 1 })], "2026-10-12", FROM);
   const fam4 = familyV2([eun, appa, momLate], "2026-10-12");
   add(B, "가족: 오늘 엄마 아직 → 가족 오늘 아직(어제까지 10-09~11 = 3)", !fam4.info.doneToday && fam4.info.current === 3, JSON.stringify(fam4.info));
-  const route = readFileSync(new URL("../app/api/streak/route.ts", import.meta.url), "utf-8");
+  const route = readFileSync(new URL("../lib/streak-server.ts", import.meta.url), "utf-8");
   // 은우 복습 한 판은 은우 트랙에만 — 라우트에 한 번만 나오고 어학 트랙(langT) 정의보다 앞에 있어야 한다
   const enReview = 'reviewFullDays(reviewsOf("english"))';
   const enReviewAt = route.indexOf(enReview);
@@ -914,6 +914,11 @@ const TODAY = "2026-09-21";
   add(B, "08:30 만회 기회", run("08:30", [st("mom", { pendingRepairYesterday: true })]).some((p) => p.kind === "repair"), "");
   add(B, "21:00 가족 — 은우 아직이면 엄마에게", run("21:00", [st("eunwoo"), st("mom", { doneToday: true })], [{ person: "eunwoo", kind: "today" }]).some((p) => p.person === "mom" && p.kind === "family"), "");
   add(B, `하루 상한 ${PUSH_DAILY_MAX}건(콕 포함)`, run("22:30", [st("appa")], [{ person: "appa", kind: "today" }, { person: "appa", kind: "poke" }, { person: "appa", kind: "poke" }]).length === 0, "");
+  {
+    // 틱의 지금 — KST 30분 내림·0 채움(UTC 입력). 15:05Z = KST 00:05, 23:44Z = KST 08:44, 12:59Z = KST 21:59
+    const got = ["2026-10-09T15:05:00.000Z", "2026-10-09T23:44:00.000Z", "2026-10-09T12:59:00.000Z"].map((t) => kstHalfHourHHMM(new Date(t)));
+    add(B, "틱 시각 kstHalfHourHHMM: 00:05→00:00·08:44→08:30·21:59→21:30", got.join() === "00:00,08:30,21:30", got.join());
+  }
 }
 
 // ---------------------------------------------------------------------------

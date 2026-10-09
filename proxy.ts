@@ -22,8 +22,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { UNLOCK_COOKIE, gateMode, getAppPin, verifyUnlockToken } from "@/lib/auth";
 
-/** 게이트 예외 — 잠금 화면 자체와 그 API */
-const PUBLIC_PATHS = new Set(["/unlock", "/api/unlock"]);
+/**
+ * 게이트 예외 — 잠금 화면 자체와 그 API, 그리고 알림 틱.
+ * `/api/push/tick`: 라우트가 x-push-secret으로 검사(PIN 대신) — Cloud Scheduler는 잠금 쿠키가 없다.
+ */
+const PUBLIC_PATHS = new Set(["/unlock", "/api/unlock", "/api/push/tick"]);
 
 /** 정적 자산 확장자 — public/ 에 파일을 두게 되어도 잠금과 무관하게 서빙된다 */
 const STATIC_FILE = /\.(?:ico|png|jpg|jpeg|gif|webp|avif|svg|css|js|mjs|map|txt|xml|json|webmanifest|woff2?)$/i;

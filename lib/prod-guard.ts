@@ -43,7 +43,9 @@ export type DestructiveOp =
   // 은우 자유대화(docs/harness/english.md §12-4·§12-6) — 대화 기록 하나(스크립트·설명) + 딸린 주제 일러스트(talkImages) 연쇄 삭제
   | "deleteTalkSession"
   // 🏝️ 나만의 답변 섬(docs/harness/toeic.md §21) — 담은 문장 하나(딸린 것 없음)
-  | "deleteToeicIslandEntry";
+  | "deleteToeicIslandEntry"
+  // 🔔 폰 알림 구독(가족 스트릭 강화 스펙 §6-1) — 기기 하나의 구독(해제·사라진 기기 정리)
+  | "push-subscription-delete";
 
 export class ProdGuardError extends Error {
   readonly code = "prod_guard";

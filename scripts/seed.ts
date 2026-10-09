@@ -695,6 +695,9 @@ async function main() {
     toeicIsland: [],
     // 📅 오늘의 복습 일정(SPEC §23)도 빈 배열 — mergeById라 기존 일정은 그대로 남는다.
     reviewSchedules: [],
+    // 🔔 알림 구독·발송 기록(가족 스트릭 §6)도 빈 맵 — 기기에서 켜는 것이다.
+    pushSubscriptions: {},
+    pushLog: {},
   };
 
   await mergeDbForSeed(db);

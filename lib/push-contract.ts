@@ -3,6 +3,9 @@
 export const PUSH_PEOPLE = ["eunwoo", "appa", "mom"] as const;
 export type PushPerson = (typeof PUSH_PEOPLE)[number];
 export type PushKind = "today" | "last" | "repair" | "family" | "poke";
+/** 이 기기의 "나는 누구" — localStorage 키(알림 설정·콕 찌르기 보낸 사람) */
+export const PUSH_PERSON_STORAGE_KEY = "push-person";
+
 export const PUSH_PERSON_KO: Record<PushPerson, string> = { eunwoo: "은우", appa: "아빠", mom: "엄마" };
 
 export interface PushPrefs {
