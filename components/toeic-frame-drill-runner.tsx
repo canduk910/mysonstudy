@@ -29,6 +29,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
+import StreakFinishHint from "@/components/streak-finish-hint";
 import { useToeicWakeLock } from "@/components/use-toeic-wake-lock";
 import {
   MIC_CHECK_GUM_TIMEOUT_MS,
@@ -583,6 +584,8 @@ export default function ToeicFrameDrillRunner({
   if (stage === "unsaved") {
     return (
       <section className={s.stage}>
+        {/* 판이 끝났는데 기록할 말한 문항이 0 — 이 판은 한 판으로 세지 않는다 */}
+        <StreakFinishHint partial={stage === "unsaved"} />
         <p className={s.status}>
           {unsavedWhy === "norec" ? "녹음 없이 연습해서 기록·판정은 남기지 않았어요." : "모범 영어까지 본 문항이 없어 기록을 남기지 않았어요."}
         </p>

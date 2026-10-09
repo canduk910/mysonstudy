@@ -861,6 +861,10 @@ const TODAY = "2026-09-21";
   // 은우 복습 한 판은 은우 트랙에만 — 라우트에 한 번만 나오고 어학 트랙(langT) 정의보다 앞에 있어야 한다
   const enReview = 'reviewFullDays(reviewsOf("english"))';
   const enReviewAt = route.indexOf(enReview);
+  const onceBefore = (needle: string, limit: number) => {
+    const at = route.indexOf(needle);
+    return route.split(needle).length - 1 === 1 && at >= 0 && limit >= 0 && at < limit;
+  };
   const wiredV2 =
     /personV2\(\[eunwooT\], today\)/.test(route) &&
     /personV2\(\[langT, gymT\], today\)/.test(route) &&
@@ -871,8 +875,26 @@ const TODAY = "2026-09-21";
     /reviewFullDays\(reviewsOf\("english"\)\)/.test(route) &&
     route.split(enReview).length - 1 === 1 &&
     enReviewAt >= 0 &&
-    enReviewAt < route.indexOf("const langT");
+    enReviewAt < route.indexOf("const langT") &&
+    // 은우 한 판 출처도 은우 트랙에만 — 한 번만, langT 앞. 토익 응시는 어학 트랙(langT 뒤)
+    onceBefore("vocab.filter(isFullQuiz)", route.indexOf("const langT")) &&
+    onceBefore("talks.filter(isFullTalk)", route.indexOf("const langT")) &&
+    route.indexOf("toeicAttempts.filter(isFullAttempt)") > route.indexOf("const langT") &&
+    // 토익 기록 하나가 이상해도 라우트가 500이 되지 않게(토익 한 판만 뺀다)
+    route.includes("v2 토익 판정 실패");
   add(B, "/api/streak v2 배선: 사람·트랙·가족 조립, 한 판 판정 적용, 은우 복습은 은우에만", wiredV2, "");
+}
+
+// ---------------------------------------------------------------------------
+// 묶음 14 — v2 화면(정적 배선): 헤드라인 👪 가족 칸·오늘 아직 점, 그만둔 판의 "한 판을 끝내야" 안내
+{
+  const B = "v2 화면";
+  const head = readFileSync(new URL("../components/streak-headline.tsx", import.meta.url), "utf-8");
+  add(B, "헤드라인: 👪 가족 칸이 family를 읽고 맨 앞", /<Track emoji="👪" name="가족" p=\{data\?\.family\} \/>/.test(head) && head.indexOf('name="가족"') < head.indexOf('name="은우"'), "");
+  add(B, "헤드라인: 오늘 아직 점(aria-hidden) — Track·Person 둘 다", (head.match(/data-pending-dot/g) ?? []).length >= 2, "");
+  const files = ["vocab-quiz-view", "vocab-speak-quiz-runner", "ja-quiz-runner", "ja-kanji-quiz-runner", "toeic-quiz-runner", "toeic-template-quiz", "toeic-template-test", "toeic-frame-drill-runner", "toeic-take-view"];
+  const missing = files.filter((f) => !/<StreakFinishHint /.test(readFileSync(new URL(`../components/${f}.tsx`, import.meta.url), "utf-8")));
+  add(B, "그만둠 화면 9곳에 '한 판을 끝내야' 안내", missing.length === 0, `빠짐=${missing.join(",")}`);
 }
 
 // ---------------------------------------------------------------------------

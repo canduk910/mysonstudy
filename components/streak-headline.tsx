@@ -20,6 +20,10 @@
  *   두 자리까지는 예전 모습 그대로다(압축은 필요할 때만). 실측(2026-09-26, 360px): 세 자리 전부(123·234·345·456, 999×4)
  *   넘침 22·24px → 0, 네 자리(1234…) 53px → 0. 수치는 _workspace/build_app-builder_toeic-p2fix_report.md.
  *   영어 모바일 상단바(sticky top-0)가 이 높이만큼 내려가 겹치지 않는다(globals.css·english-nav.module.css).
+ * - 2026-10 스트릭 v2(가족 스트릭 강화): 맨 앞에 **👪 가족 칸**(`family` — 오늘 모두 한 판 이상이면 켜진다)을 둔다.
+ *   오늘 아직인 칸엔 이모지 앞에 **작은 점**(`data-pending-dot`, aria-hidden — 폰에서도 보이는 신호, 글자는 "오늘 아직"이 sr에 남는다).
+ *   **만회 대기**(`info.pendingRepairDay` — 어제를 놓쳤고 오늘 두 판이면 돌아온다)이고 오늘 아직이면 "오늘 아직" 자리에
+ *   "오늘 두 판이면 어제 🔥가 돌아와요"(sm 이상, 폰은 sr-only).
  */
 
 import { useEffect, useState } from "react";
@@ -27,8 +31,15 @@ import { usePathname } from "next/navigation";
 import { STREAK_REFRESH_EVENT } from "@/lib/streak";
 import type { PersonStreak, StreakResponse } from "@/lib/streak-contract";
 
-/** 폰 압축 한 단계 더 — 연속일이 세 자리 이상인 칸이 하나라도 있을 때(🔥 숫자 폭이 늘어나는 만큼 장식을 덜어 낸다) */
-const COMPACT_FROM_DAYS = 100;
+/**
+ * 폰 압축 한 단계 더 — 연속일이 이 값 이상인 칸이 하나라도 있을 때(🔥 숫자 폭이 늘어나는 만큼 장식을 덜어 낸다).
+ * 2026-10(v2): 👪 칸과 오늘 아직 점이 늘어 100 → 10. 실측(360px, 두 자리 12·34·56·78 + 가족 23, 모두 오늘 아직):
+ * 100일 때 넘침 21px → 10일 때 0. 390px은 둘 다 0. 세 자리도 0, 네 자리(1234…)는 360px에서 26px(가로 스크롤로 남는다).
+ */
+const COMPACT_FROM_DAYS = 10;
+
+/** 만회 대기(어제 놓침 — 오늘 두 판이면 돌아온다)일 때 "오늘 아직" 자리에 쓰는 말 */
+const REPAIR_PENDING_LABEL = "오늘 두 판이면 어제 🔥가 돌아와요";
 
 function Person({ emoji, name, p, compact }: { emoji: string; name: string; p: PersonStreak | undefined; compact: boolean }) {
   const loaded = p != null;
@@ -36,6 +47,7 @@ function Person({ emoji, name, p, compact }: { emoji: string; name: string; p: P
   const days = p?.info.current ?? 0;
   return (
     <div className={`flex items-center gap-1 whitespace-nowrap sm:gap-1.5 ${loaded && !done ? "opacity-55" : ""}`}>
+      {loaded && !done && <span data-pending-dot aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
       <span aria-hidden className={compact ? "max-sm:hidden" : undefined}>
         {emoji}
       </span>
@@ -44,7 +56,7 @@ function Person({ emoji, name, p, compact }: { emoji: string; name: string; p: P
         🔥{loaded ? days : "··"}
         <span className="max-sm:hidden">일</span>
       </span>
-      {loaded && !done && <span className="t-caption text-ink-3 max-sm:sr-only">오늘 아직</span>}
+      {loaded && !done && <span className="t-caption text-ink-3 max-sm:sr-only">{p?.info.pendingRepairDay ? REPAIR_PENDING_LABEL : "오늘 아직"}</span>}
       {loaded && done && p?.todayLabel && <span className="t-caption text-ink-3 max-sm:sr-only">· {p.todayLabel}</span>}
     </div>
   );
@@ -57,6 +69,7 @@ function Track({ emoji, name, p }: { emoji: string; name: string; p: PersonStrea
   const days = p?.info.current ?? 0;
   return (
     <div className={`flex shrink-0 items-center gap-1 whitespace-nowrap ${loaded && !done ? "opacity-55" : ""}`}>
+      {loaded && !done && <span data-pending-dot aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
       <span aria-hidden>{emoji}</span>
       {/* 폰에선 이모지(📚·💪)가 트랙을 가른다 — 이름은 스크린리더에만 */}
       <span className="t-caption text-ink-2 max-sm:sr-only">{name}</span>
@@ -64,7 +77,7 @@ function Track({ emoji, name, p }: { emoji: string; name: string; p: PersonStrea
         🔥{loaded ? days : "··"}
         <span className="max-sm:hidden">일</span>
       </span>
-      {loaded && !done && <span className="t-caption text-ink-3 max-sm:sr-only">오늘 아직</span>}
+      {loaded && !done && <span className="t-caption text-ink-3 max-sm:sr-only">{p?.info.pendingRepairDay ? REPAIR_PENDING_LABEL : "오늘 아직"}</span>}
       {loaded && done && p?.todayLabel && (
         // 긴 단어장 제목은 말줄임 — 전체는 title로. 폰에선 스크린리더에만(🔥가 한 화면에 들어오게)
         <span className="t-caption inline-block max-w-[11rem] truncate text-ink-3 max-sm:sr-only" title={p.todayLabel}>
@@ -105,15 +118,18 @@ export default function StreakHeadline() {
   if (pathname === "/unlock") return null; // 잠금 화면엔 학습 현황을 보이지 않는다
 
   const compact =
-    data != null && [data.eunwoo, data.appaLanguage, data.appaWorkout].some((p) => (p?.info.current ?? 0) >= COMPACT_FROM_DAYS);
+    data != null && [data.family, data.eunwoo, data.appaLanguage, data.appaWorkout].some((p) => (p?.info.current ?? 0) >= COMPACT_FROM_DAYS);
 
   return (
     <div
       className={`print-hide sticky top-0 z-[15] flex items-center ${compact ? "gap-1.5" : "gap-2"} overflow-x-auto overflow-y-hidden border-b border-line bg-bg px-2 [scrollbar-width:none] sm:gap-3 sm:px-3 [&::-webkit-scrollbar]:hidden`}
       style={{ height: "var(--streak-h)" }}
       role="group"
-      aria-label="학습 스트릭 — 은우, 아빠(어학·운동)"
+      aria-label="학습 스트릭 — 가족, 은우, 아빠(어학·운동)"
     >
+      {/* 가족 — 오늘 모두 한 판 이상이면 켜진다(v2) */}
+      <Track emoji="👪" name="가족" p={data?.family} />
+      <span aria-hidden className="h-5 w-px shrink-0 bg-line" />
       <Person emoji="🧒" name="은우" p={data?.eunwoo} compact={compact} />
       {/* 두 사람 사이 — 기존 경계선 색(line)의 얇은 세로선 */}
       <span aria-hidden className="h-5 w-px shrink-0 bg-line" />

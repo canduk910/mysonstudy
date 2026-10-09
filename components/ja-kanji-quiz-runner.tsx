@@ -19,6 +19,7 @@ import {
   type JaKanjiQuizSubmitResponse,
 } from "@/lib/japanese-kanji-contract";
 import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
+import StreakFinishHint from "@/components/streak-finish-hint";
 import s from "./ja-quiz-runner.module.css";
 
 /** 피드백에 보여줄 한자 정보(조회용). */
@@ -158,6 +159,7 @@ export default function JaKanjiQuizRunner({
     return (
       <div className={s.wrap}>
         <div className={s.results}>
+          <StreakFinishHint partial={!completed} />
           <p className="t-caption">{completed ? "시험 끝!" : "여기까지 풀었어요"}</p>
           <p className={s.scoreBig}>
             {correctCount} <span className={s.scoreSlash}>/</span> {answeredCount}

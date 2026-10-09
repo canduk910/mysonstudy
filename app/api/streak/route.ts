@@ -241,9 +241,14 @@ export async function GET() {
         addRuns(m, [...jaVocab, ...jaKanji].filter(isFullQuiz).map((q) => q.startedAt));
         addDays(m, reviewFullDays(reviewsOf("japanese")));
         addDays(m, reviewFullDays(reviewsOf("toeic")));
-        if (toeicQuizzes) addRuns(m, toeicQuizzes.filter(isFullQuiz).map((q) => q.startedAt));
-        if (toeicAttempts) addRuns(m, toeicAttempts.filter(isFullAttempt).map((a) => a.startedAt));
-        if (toeicFrameDrills) addRuns(m, toeicFrameDrills.filter(isFullFrameDrill).map((d) => d.startedAt));
+        // 토익 기록 하나가 이상해도 라우트 전체가 500이 되지 않게 — 토익 한 판만 빼고 계산한다(읽기 실패와 같은 원칙)
+        try {
+          if (toeicQuizzes) addRuns(m, toeicQuizzes.filter(isFullQuiz).map((q) => q.startedAt));
+          if (toeicAttempts) addRuns(m, toeicAttempts.filter(isFullAttempt).map((a) => a.startedAt));
+          if (toeicFrameDrills) addRuns(m, toeicFrameDrills.filter(isFullFrameDrill).map((d) => d.startedAt));
+        } catch (err) {
+          console.error("[streak] v2 토익 판정 실패 — 토익 한 판만 빼고 계산한다", err);
+        }
       }),
     };
     let gymDays: string[] = [];

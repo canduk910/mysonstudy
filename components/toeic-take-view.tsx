@@ -128,6 +128,7 @@ import { useToeicRecUploadStates } from "@/components/use-toeic-rec-uploads";
 import { TTS_TEXT_MAX_CHARS } from "@/lib/tts-shared";
 import { splitForTts } from "@/lib/tts-split";
 import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
+import StreakFinishHint from "@/components/streak-finish-hint";
 import s from "./toeic-take-view.module.css";
 
 /**
@@ -1689,6 +1690,8 @@ export default function ToeicTakeView({
         <div className={s.inner}>
           <p className={s.kicker}>{scopeLabelKo}</p>
           <h1 className={s.title}>{retake ? (completed ? "↻ 다시 풀기 끝" : "다시 풀기를 그만뒀어요") : completed ? "🎉 끝났어요" : "그만뒀어요"}</h1>
+          {/* 응시 한 판 = 끝까지 + 모든 문항 녹음(isFullAttempt). 다시 풀기는 새 판이 아니라 원래 응시에 합쳐지므로 안내하지 않는다 */}
+          <StreakFinishHint partial={!retake && (!completed || recordedCount < qs.length)} />
           <p className={s.lead} data-testid={retake ? "retake-done-lead" : undefined}>
             {retake
               ? retakeLead()

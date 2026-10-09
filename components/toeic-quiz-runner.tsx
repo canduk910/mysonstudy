@@ -36,6 +36,7 @@ import type {
 } from "@/lib/toeic-quiz-contract";
 import { TOEIC_QUIZ_MODE_LABELS_KO, splitToeicItemsByMode, type ToeicAnsweredItem } from "@/lib/toeic-quiz";
 import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
+import StreakFinishHint from "@/components/streak-finish-hint";
 import s from "./toeic-quiz.module.css";
 
 /** 러너 피드백이 쓰는 표현 정보(서버가 entries에서 줄여 내린다) */
@@ -182,6 +183,7 @@ function ResultsView({
   return (
     <div className={s.wrap}>
       <div className={s.results}>
+        <StreakFinishHint partial={!completed} />
         <p className="t-caption">{completed ? (isReview ? "복습 끝!" : "시험 끝!") : "여기까지 풀었어요"}</p>
         <p className={s.scoreBig}>
           {correct} <span className={s.scoreSlash}>/</span> {answered}

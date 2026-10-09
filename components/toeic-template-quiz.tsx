@@ -33,6 +33,7 @@ import { TTS_TEXT_MAX_CHARS } from "@/lib/tts-shared";
 import { splitForTts } from "@/lib/tts-split";
 import { TOEIC_TEMPLATE_CHOICE_MODE_SHORT_KO } from "./toeic-template-quiz-tab";
 import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
+import StreakFinishHint from "@/components/streak-finish-hint";
 import q from "./toeic-quiz.module.css";
 import s from "./toeic-template-quiz.module.css";
 
@@ -282,6 +283,7 @@ export default function ToeicTemplateQuiz({
     return (
       <div className={q.wrap} data-testid="tpl-quiz-done">
         <div className={q.results}>
+          <StreakFinishHint partial={!completed} />
           <p className="t-caption">{completed ? "틀 시험 끝!" : "여기까지 풀었어요"}</p>
           <p className={q.scoreBig}>
             {correct} <span className={q.scoreSlash}>/</span> {answered.length}

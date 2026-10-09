@@ -92,6 +92,7 @@ import {
   type ToeicTemplateVerdict,
 } from "@/lib/toeic-template-test-view";
 import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
+import StreakFinishHint from "@/components/streak-finish-hint";
 import s from "./toeic-template-test.module.css";
 
 /** 서버가 넘기는 문항 하나(필요한 칸만 — 다른 예문·다른 테스트 채움은 넘기지 않는다) */
@@ -685,6 +686,7 @@ export default function ToeicTemplateTest({
     const busy = saveState === "saving";
     return (
       <section className={s.done} aria-label="틀 테스트 결과">
+        <StreakFinishHint partial={sum.answered !== total} />
         <p className="t-caption">{sum.answered === total ? "테스트 끝!" : "여기까지 했어요"}</p>
         <p className={s.scoreBig}>
           ○ {sum.correct} <span className={s.scoreSlash}>/</span> {sum.answered}

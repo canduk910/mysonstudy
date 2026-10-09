@@ -29,6 +29,7 @@ import {
 } from "@/lib/japanese-vocab-contract";
 import type { JaQuizSubmitResponse } from "@/lib/japanese-vocab-contract";
 import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
+import StreakFinishHint from "@/components/streak-finish-hint";
 import s from "./ja-quiz-runner.module.css";
 
 function speakJa(text: string) {
@@ -188,6 +189,7 @@ export default function JaQuizRunner({
     return (
       <div className={s.wrap}>
         <div className={s.results}>
+          <StreakFinishHint partial={!completed} />
           <p className="t-caption">{completed ? (isReview ? "복습 끝!" : "시험 끝!") : "여기까지 풀었어요"}</p>
           <p className={s.scoreBig}>
             {correctCount} <span className={s.scoreSlash}>/</span> {answeredCount}

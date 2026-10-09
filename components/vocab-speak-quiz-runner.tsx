@@ -59,6 +59,7 @@ import { STREAK_REFRESH_EVENT } from "@/lib/streak";
 import type { VocabQuizItem } from "@/lib/store";
 import type { VocabQuizSubmitRequest, VocabQuizSubmitResponse } from "@/lib/vocab-quiz-contract";
 import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
+import StreakFinishHint from "@/components/streak-finish-hint";
 import s from "./vocab-speak-quiz-runner.module.css";
 
 interface VocabSpeakQuizRunnerProps {
@@ -551,6 +552,7 @@ export default function VocabSpeakQuizRunner({ id, titleKo, dayLabel, pool, stat
     return (
       <div className={s.wrap}>
         <div className={s.results}>
+          <StreakFinishHint partial={!completed} />
           <p className="t-caption">{completed ? "다 했어요!" : "여기까지 했어요"}</p>
           <p className={s.scoreBig}>
             {goodCount} <span className={s.scoreSlash}>/</span> {answeredCount}
