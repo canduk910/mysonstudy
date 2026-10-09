@@ -892,8 +892,21 @@ async function runAppChecks(): Promise<CheckResult[]> {
   const helperPages = pages.filter((f) => phraseHelperModeForPath(routeOf(f)) !== null);
   const noHelper = pages.filter((f) => phraseHelperModeForPath(routeOf(f)) === null).map(routeOf);
   add(
-    "도우미가 없는 페이지 = 홈·수학·운동·잠금 화면뿐",
-    noHelper.every((r) => r === "/" || r.startsWith("/math") || r === "/workout" || r === "/unlock") && helperPages.length > 30,
+    "도우미가 없는 페이지 = 홈·사람 고르기(은우·엄마·아빠)·가족 보드·수학·운동·엄마의 생활영어·잠금 화면뿐",
+    noHelper.every(
+      (r) =>
+        r === "/" ||
+        r === "/eunwoo" ||
+        r === "/mama" ||
+        r === "/appa" ||
+        r === "/family" ||
+        r.startsWith("/family/") ||
+        r.startsWith("/math") ||
+        r === "/workout" ||
+        r === "/mom" ||
+        r.startsWith("/mom/") ||
+        r === "/unlock",
+    ) && helperPages.length > 30,
     noHelper.join(", "),
   );
 

@@ -199,7 +199,7 @@ export function fakeBlock(id: string, week: number, stage: 0 | 1 | 2 | 3 | 4, n 
   const A = "배선";
   const tr = src("../app/api/mom/transcribe/route.ts");
   add(A, "받아쓰기: 키 검사가 formData보다 먼저·기대 문장 미전송", tr.indexOf("no_api_key") < tr.indexOf("formData()") && /transcribeAnswer\(/.test(tr) && !/prompt|expected|answer\s*:/.test(tr.replace(/transcribeAnswer/g, "")));
-  add(A, "홈 진입 카드 /mom", /href="\/mom"/.test(src("../app/page.tsx")));
+  add(A, "진입: 첫 화면 → 엄마(/mama) → 생활영어(/mom)", /href="\/mama"/.test(src("../app/page.tsx")) && /href="\/mom"/.test(src("../app/mama/page.tsx")));
 }
 
 // ── 6) 레슨 대본·저장 ──
