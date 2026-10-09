@@ -93,7 +93,8 @@ export default function SubjectPickerPage() {
           <span className="u-entry-desc">오늘 누가 했는지, 이번 주 불꽃과 쉬는 날 카드, 가족 연속일을 한눈에 봐요.</span>
         </Link>
 
-        <Link href="/mom" className="u-entry u-entry-secondary">
+        {/* 엄마 — 한 줄 전체(sm:col-span-2) — 넓은 화면에서 반 칸이 비지 않게 */}
+        <Link href="/mom" className="u-entry u-entry-secondary sm:col-span-2">
           <span className="u-entry-icon" aria-hidden>👩</span>
           <span className="u-entry-title">엄마의 생활영어</span>
           <span className="u-entry-desc">하루 5분부터 — 소리 블록 틀로 듣고 따라 하고 말해 봐요.</span>

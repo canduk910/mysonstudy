@@ -37,12 +37,12 @@ export const REVIEW_HISTORY_MAX = 60;
 /** 항목 키 길이 상한(종류 접두어 포함) */
 export const REVIEW_ITEM_KEY_MAX = 300;
 
-/** 영역 — 스트릭 트랙과 같은 가름(은우 영어 / 아빠 일본어 / 아빠 영어(토익)) */
-export const REVIEW_AREAS = ["english", "japanese", "toeic"] as const;
+/** 영역 — 은우 영어 / 아빠 일본어 / 아빠 영어(토익) / 엄마의 생활영어(mom) */
+export const REVIEW_AREAS = ["english", "japanese", "toeic", "mom"] as const;
 export type ReviewArea = (typeof REVIEW_AREAS)[number];
 
 /** 항목 종류 — 새 출처는 여기 한 줄 + REVIEW_KIND_AREA·REVIEW_KIND_LABEL_KO 한 줄 + 서버 등록부 한 줄 */
-export const REVIEW_KINDS = ["en-word", "ja-word", "ja-kanji", "toeic-expr", "toeic-template", "toeic-island"] as const;
+export const REVIEW_KINDS = ["en-word", "ja-word", "ja-kanji", "toeic-expr", "toeic-template", "toeic-island", "mom-sentence"] as const;
 export type ReviewKind = (typeof REVIEW_KINDS)[number];
 
 export const REVIEW_KIND_AREA: Readonly<Record<ReviewKind, ReviewArea>> = {
@@ -52,6 +52,7 @@ export const REVIEW_KIND_AREA: Readonly<Record<ReviewKind, ReviewArea>> = {
   "toeic-expr": "toeic",
   "toeic-template": "toeic",
   "toeic-island": "toeic",
+  "mom-sentence": "mom",
 };
 
 export const REVIEW_KIND_LABEL_KO: Readonly<Record<ReviewKind, string>> = {
@@ -61,6 +62,7 @@ export const REVIEW_KIND_LABEL_KO: Readonly<Record<ReviewKind, string>> = {
   "toeic-expr": "표현",
   "toeic-template": "틀",
   "toeic-island": "내 답변",
+  "mom-sentence": "엄마 문장",
 };
 
 /** 영역 → 화면 경로(러너) */
@@ -68,6 +70,7 @@ export const REVIEW_AREA_PATH: Readonly<Record<ReviewArea, string>> = {
   english: "/english/review",
   japanese: "/japanese/review",
   toeic: "/toeic/review",
+  mom: "/mom/review",
 };
 
 /**

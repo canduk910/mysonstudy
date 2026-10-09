@@ -3,11 +3,13 @@
  *
  * - 자료 없음 → 안내 + 📥 가져오기
  * - 오늘 카드 → 레슨(시작하기) · 주간 테스트 · 1회차 끝
+ * - 오늘의 복습 카드(SPEC §23 — 레슨에서 말해 본 문장, 끝낸 다음 날부터)
  * - 진도 지도 → 1~52주 칸(가상 복습 주는 칸이 없다 — "복습 주"로만 말한다), 단계 경계마다 이름표
  * 교재 문장은 여기 없다 — 화면은 주·일·개수만 보여 준다.
  */
 import Link from "next/link";
 import MomImportButton from "@/components/mom-import-button";
+import ReviewTodayCard from "@/components/review-today-card";
 import { isMomVirtualWeek, MOM_REVIEW_WEEKS, type MomProgress, type MomTodayItem } from "@/lib/mom-plan";
 
 const MOM_TOTAL_WEEKS = 52;
@@ -43,9 +45,9 @@ function TodayCard({ today }: { today: MomTodayItem }) {
   if (today.kind === "test") {
     return (
       <section className="u-card mt-6 p-5">
-        <p className="t-caption text-ink-3">{isMomVirtualWeek(today.week) ? "복습 주 테스트" : `${today.week}주차 테스트`}</p>
+        <p className="t-caption text-ink-3">{isMomVirtualWeek(today.week) ? "복습 주 테스트" : MOM_REVIEW_WEEKS.includes(today.week) ? `${today.week}주차 · 복습 주 테스트` : `${today.week}주차 테스트`}</p>
         <p className="t-section-title mt-1">이번 주 테스트 · {today.size}문제</p>
-        <p className="t-body mt-1 text-ink-2">레슨 4개를 다 했어요. 배운 문장을 말해 봐요.</p>
+        <p className="t-body mt-1 text-ink-2">이번 주 레슨을 다 했어요. 배운 문장을 말해 봐요.</p>
         <Link href={`/mom/test/${today.week}`} className="u-btn u-btn-primary mt-4 w-full text-lg" style={{ minHeight: 56 }}>
           테스트 보기
         </Link>
@@ -130,6 +132,9 @@ export default function MomHome({ today, progress, hasContent }: { today: MomTod
   return (
     <>
       <TodayCard today={today} />
+      <div className="mt-4">
+        <ReviewTodayCard area="mom" tone="adult" />
+      </div>
       <ProgressMap progress={progress} />
       <div className="mt-10 border-t border-line pt-4">
         <MomImportButton label="📥 자료 다시 가져오기" />

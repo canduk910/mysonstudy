@@ -19,7 +19,10 @@
  *
  * 단서에 정답 글자가 그대로 들어 있으면(영영 정의 속 표제어 등) 밑줄로 가린다 — 단서가 곧 정답이 되지 않게.
  *
- * ⚠️ 서버·eval에서만 부른다(카드는 서버가 만들어 props로 내린다). 런타임 import: ./review-schedule·./toeic-text·./toeic-template.
+ * - 엄마 문장(mom-sentence): 단서 = 한국어 뜻(+ 틀) · 힌트1 = 첫 글자 · 힌트2 = 첫 덩어리 + " …". **레슨에서 결과가 난 말하기 문장만**
+ *   (넘어감 포함) — 첫 복습일 = 그 문장이 든 레슨을 처음 끝낸 날(KST) + 1(섬과 같은 "담은 다음 날부터").
+ *
+ * ⚠️ 서버·eval에서만 부른다(카드는 서버가 만들어 props로 내린다). 런타임 import: ./review-schedule·./toeic-text·./toeic-template·./kst·./mom-content.
  */
 
 import { reviewItemKey, type ReviewKind, type ReviewQueueCandidate } from "./review-schedule";
@@ -27,6 +30,7 @@ import { expressionKey } from "./toeic-text";
 import { frameToExpression, templateRunSpans } from "./toeic-template";
 import { kstDateString, shiftDateString } from "./kst";
 import type { TtsLang } from "./tts-shared";
+import { isSpeakRole, type MomRole } from "./mom-content";
 
 // ---------------------------------------------------------------------------
 // 카드 모양 — 화면(lib/review-contract.ts가 type 재수출)이 그대로 그린다
@@ -617,6 +621,84 @@ export function toeicIslandItems(entries: readonly ToeicIslandLike[], frames: re
       stats: { attempts: 0, wrongCount: 0, lastTestedAt: null, // 담은 시각이 깨졌으면 이미 담긴 것으로 보고 바로 들인다(빠뜨리지 않게)
         firstDueOn: /^\d{4}-\d{2}-\d{2}$/.test(created) ? shiftDateString(created, 1) : "2000-01-01" },
     });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// 엄마의 생활영어 문장 (mom-sentence)
+// ---------------------------------------------------------------------------
+
+export interface MomBlockLike {
+  id: string;
+  week: number;
+  frame: { text: string };
+  sentences: readonly { id: string; role: MomRole; en: string; ko: string; chunks: readonly string[] }[];
+}
+export interface MomLessonLike {
+  startedAt: string;
+  finishedAt: string | null;
+  checks: readonly { sentenceId: string; verdict: string }[];
+}
+export interface MomTestLike {
+  startedAt: string;
+  items: readonly { sentenceId: string; verdict: string }[];
+}
+
+/**
+ * 엄마 문장 — 말하기 역할(core·expand·situation) 문장 중 **끝낸 레슨에서 결과가 한 번이라도 난 것**만(넘어감 포함).
+ * 통계 = 레슨 checks + 주간 테스트 items(맞음 = pass, 틀림 = close·retry·skipped). 첫 복습일 = 그 문장이 든 레슨을 처음 끝낸 날(KST) + 1.
+ */
+export function momSentenceItems(blocks: readonly MomBlockLike[], lessons: readonly MomLessonLike[], tests: readonly MomTestLike[]): ReviewSourceItem[] {
+  const toSession = (startedAt: string, rows: readonly { sentenceId: string; verdict: string }[]): QuizSessionLike => ({
+    startedAt,
+    items: rows.map((r) => ({ word: r.sentenceId, correct: r.verdict === "pass", answered: true })),
+  });
+  const stats = aggregateReviewStats(
+    [...lessons.map((l) => toSession(l.startedAt, l.checks)), ...tests.map((t) => toSession(t.startedAt, t.items))],
+    (id) => id.trim() || null,
+  );
+  // 문장 → 처음 끝낸 레슨의 KST 날짜
+  const firstDone = new Map<string, string>();
+  for (const l of lessons) {
+    if (!l.finishedAt) continue;
+    const day = kstDateString(l.finishedAt);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+    for (const c of l.checks) {
+      const k = c.sentenceId.trim();
+      const cur = firstDone.get(k);
+      if (cur === undefined || day < cur) firstDone.set(k, day);
+    }
+  }
+  const out: ReviewSourceItem[] = [];
+  const seen = new Set<string>();
+  for (const b of blocks) {
+    for (const s of b.sentences) {
+      const id = s.id.trim();
+      const en = s.en.trim().replace(/\s+/g, " ");
+      if (id === "" || en === "" || seen.has(id) || !isSpeakRole(s.role)) continue;
+      const day = firstDone.get(id);
+      const st = stats.get(id);
+      if (day === undefined || !st) continue;
+      seen.add(id);
+      const ko = s.ko.trim();
+      const frame = b.frame.text.trim() || null;
+      const chunk0 = s.chunks.map((c) => c.trim()).find((c) => c !== "") ?? (en.split(" ")[0] ?? "");
+      out.push({
+        card: {
+          itemKey: reviewItemKey("mom-sentence", id),
+          kind: "mom-sentence",
+          cue: { emoji: "👩", main: ko, sub: frame, lang: "ko" },
+          hint1: firstLetterHint(en),
+          hint2: `${chunk0} …`,
+          hint2Note: null,
+          answer: { main: en, sub: ko, ruby: null },
+          speak: { text: en, lang: "en-US" },
+          sourceKo: `엄마의 생활영어 · ${b.week}주차`,
+        },
+        stats: { ...st, firstDueOn: shiftDateString(day, 1) },
+      });
+    }
   }
   return out;
 }

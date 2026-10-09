@@ -47,6 +47,7 @@ import {
   toeicExpressionItems,
   toeicTemplateItems,
   toeicIslandItems,
+  momSentenceItems,
   islandFrameSkeleton,
   wordUnderscores,
   type QuizSessionLike,
@@ -516,7 +517,7 @@ async function recordChecks(): Promise<void> {
   add(A, "Firestore: runTransaction 안에서 tx.get 뒤 decideReview → applied일 때만 tx.set · 문서 id = reviewDocId · 읽기는 area where 하나", /async applyReviewOutcome[\s\S]{0,200}reviewDocId\(input\.area, input\.itemKey\)[\s\S]{0,120}runTransaction[\s\S]{0,200}tx\.get\(ref\)[\s\S]{0,200}decideReview\(prev, input\)[\s\S]{0,80}if \(decision\.kind === "applied"\) tx\.set/.test(fs) && /where\("area", "==", area\)\.get\(\)/.test(fs) && !/reviewSchedules\(\)[^;]*orderBy/.test(fs));
   const streak = src("../lib/streak-server.ts");
   add(A, "스트릭 라우트: 세 트랙에 각자 영역 복습만(english→은우·japanese→일본어·toeic→영어) · 못 읽으면 복습만 빼고 · 라벨은 다른 기록이 없을 때만", /listReviewSchedules\(\)\.catch/.test(streak) && /\.\.\.talkStreakSessions\(talks\), \.\.\.reviewStreakSessions\(reviewsOf\("english"\)\)/.test(streak) && /\.\.\.jaKanji, \.\.\.reviewStreakSessions\(reviewsOf\("japanese"\)\)/.test(streak) && /reviewStreakSessions\(reviewsOf\("toeic"\)\)/.test(streak) && /if \(eunwoo\.todayLabel === null\) eunwoo\.todayLabel = reviewTodayLabel\(reviewsOf\("english"\)/.test(streak) && !/reviewsOf\("japanese"\)[^\n]*eunwoo/.test(streak));
-  const examRows: [string, boolean][] = [["/english/review", true], ["/japanese/review", true], ["/toeic/review", true], ["/toeic/review?x=1", true], ["/english/reviews", false], ["/english/review/x", false]];
+  const examRows: [string, boolean][] = [["/english/review", true], ["/japanese/review", true], ["/toeic/review", true], ["/toeic/review?x=1", true], ["/mom/review", true], ["/english/reviews", false], ["/english/review/x", false]];
   add(A, "표현 도우미: 러너 경로 세 곳은 시험 경로(막힘) — 비슷한 경로는 아님", examRows.every(([p, b]) => isPhraseHelperExamPath(p) === b) && PHRASE_HELPER_EXAM_PATHS.some((x) => x.re.source.includes("review")));
   const runner = src("../components/review-runner.tsx");
   const card = src("../components/review-today-card.tsx");
@@ -562,6 +563,18 @@ async function recordChecks(): Promise<void> {
   const b = run();
   add(A, "10일 시뮬레이션 두 번 → 같은 큐·같은 일정", a.log === b.log && a.state === b.state, a.log.slice(0, 80));
   add(A, "시뮬레이션: 매일 상한 20 이하 · 첫날 40개 중 20개", a.log.split("|").every((x) => Number(x.split(":")[1]) <= 20) && a.log.startsWith(`${TODAY}:20:40`), a.log.slice(0, 40));
+}
+
+// ---------------------------------------------------------------------------
+// 13) 엄마의 생활영어(mom-sentence) — 레슨에서 결과가 난 말하기 문장만, 끝낸 다음 날부터
+// ---------------------------------------------------------------------------
+{
+  {
+    const blocks = [{ id: "b1", week: 5, frame: { text: "I would like ~", slots: [] }, sentences: [{ id: "b1-s0", role: "core", en: "I would like tea.", ko: "차 주세요.", chunks: ["I would like", "tea."] }, { id: "b1-d0", role: "dialog", en: "Here.", ko: "여기요.", chunks: ["Here."] }] }];
+    const lessons = [{ id: "c1", lessonId: "w5-d1", startedAt: "2026-10-10T03:00:00.000Z", finishedAt: "2026-10-10T03:05:00.000Z", checks: [{ sentenceId: "b1-s0", verdict: "retry", transcript: "x", hintLevel: 0 }] }];
+    const items = momSentenceItems(blocks as never, lessons as never, []);
+    add("엄마", "끝낸 말하기 문장만·dialog 제외·다음 날부터·틀림 1", items.length === 1 && items[0].card.itemKey === "mom-sentence:b1-s0" && items[0].stats.firstDueOn === "2026-10-11" && items[0].stats.wrongCount === 1, JSON.stringify(items[0]?.stats));
+  }
 }
 
 // ---------------------------------------------------------------------------

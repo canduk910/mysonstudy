@@ -4,7 +4,7 @@
  * - `REVIEW_SOURCES` — 영역마다 출처를 **한 곳에 등록**한다. 출처 = 종류 + store에서 읽어 순수 어댑터(lib/review-sources)로 넘기는 함수.
  *   새 출처는 ① lib/review-schedule `REVIEW_KINDS` 등 세 표에 종류 한 줄,
  *   ② 어댑터 함수, ③ 여기 한 줄이면 큐·러너·스트릭이 따라온다. 은우 그림 보고 말하기는 새 종류 없이 en-word에 합쳐지고(같은 단어 한 항목),
- *   토익 나만의 답변 섬은 toeic-island(담은 날 기준 입장)로 들어온다(2026-10-03 연결 회차).
+ *   토익 나만의 답변 섬은 toeic-island(담은 날 기준 입장)로 들어온다(2026-10-03 연결 회차). 엄마의 생활영어는 mom-sentence(끝낸 레슨 기준 입장).
  * - `loadReviewQueue(area, todayKst)` — 출처 전부 → 카드 + 시험 기록 요약 → 일정과 합쳐 오늘 큐(상한 적용). 출처 하나가 실패해도
  *   나머지는 나온다(`failedSources`).
  * - `recordReview(area, itemKey, outcome)` — 외부(다른 화면·라우트)에서 복습 결과를 기록하는 공개 함수. 항목 키 모양·영역만 보고
@@ -33,6 +33,7 @@ import {
   toeicExpressionItems,
   toeicTemplateItems,
   toeicIslandItems,
+  momSentenceItems,
   type ReviewCard,
   type ReviewSourceItem,
 } from "./review-sources";
@@ -117,6 +118,16 @@ export const REVIEW_SOURCES: Readonly<Record<ReviewArea, readonly ReviewSourceRe
         const bankFrames = (Array.isArray(g?.items) ? g.items : []).filter(isRenderableToeicTemplate) as unknown as { key: string; frameEn: string; frameKo: string }[];
         const frames = [...(drillBank?.frames ?? []).map((f) => ({ key: f.key, frameEn: f.frameEn, frameKo: f.frameKo })), ...bankFrames.map((t) => ({ key: `tpl:${t.key}`, frameEn: t.frameEn, frameKo: t.frameKo }))];
         return toeicIslandItems(entries, frames);
+      },
+    },
+  ],
+  mom: [
+    {
+      // 엄마의 생활영어 — 레슨에서 결과가 난 말하기 문장, 처음 끝낸 다음 날부터(lib/review-sources momSentenceItems)
+      kind: "mom-sentence",
+      collect: async (store) => {
+        const [blocks, lessons, tests] = await Promise.all([store.listMomBlocks(), store.listMomLessons(), store.listMomTests()]);
+        return momSentenceItems(blocks, lessons, tests);
       },
     },
   ],
