@@ -7,7 +7,7 @@
  *   2026-10-08(§17-10, 사용자 요청): 일본어·영어(토익스피킹)를 **📚 어학 하나로 합쳤다** — 둘 중 하나만 해도 켜진다(`appaLanguage`).
  *   운동은 여전히 따로다. 은우 칸 내용은 그대로(폰 축약만 공통).
  * - `sticky top-0` + z는 10~19(카드 오버레이 z:20이 몰입 화면에서 덮는 게 의도). `print-hide`.
- * - `/unlock`에선 숨긴다. 데이터는 클라이언트가 `/api/streak`로 가져온다(초기 렌더는 중립 → 마운트 후 채움, hydration 안전).
+ * - `/unlock`에선 숨긴다. **시험 화면**(useExamScreen — lib/exam-screen.ts)에서도 숨기고 `--streak-h`를 0으로 내린다(2026-10-09). 데이터는 클라이언트가 `/api/streak`로 가져온다(초기 렌더는 중립 → 마운트 후 채움, hydration 안전).
  * - 시험 저장·운동 기록/취소/사이클 시작 성공 시 STREAK_REFRESH_EVENT로 즉시 갱신(성취감).
  * - 높이는 `--streak-h` 고정·한 줄 — 넘치면 가로 스크롤, 긴 라벨은 말줄임.
  * - **폰(<640px)은 `이모지 (사람 이름) 🔥N`만**(§17-7 폰 표시) — 360px 한 화면에 은우·일본어·영어·운동 🔥가 다 보이게.
@@ -38,6 +38,8 @@ import { STREAK_REFRESH_EVENT } from "@/lib/streak";
 import type { PersonStreak, StreakResponse } from "@/lib/streak-contract";
 import { repairHintText } from "@/lib/streak-v2";
 import StreakCelebrate from "@/components/streak-celebrate";
+import { useExamScreen } from "@/components/use-exam-screen";
+import { EXAM_SCREEN_STREAK_H_CSS } from "@/lib/exam-screen";
 
 /**
  * 폰 압축 한 단계 더 — 연속일이 이 값 이상인 칸이 하나라도 있을 때(🔥 숫자 폭이 늘어나는 만큼 장식을 덜어 낸다).
@@ -98,6 +100,7 @@ function Track({ emoji, name, p }: { emoji: string; name: string; p: PersonStrea
 
 export default function StreakHeadline() {
   const pathname = usePathname();
+  const exam = useExamScreen();
   const [data, setData] = useState<StreakResponse | null>(null);
 
   useEffect(() => {
@@ -124,6 +127,10 @@ export default function StreakHeadline() {
   }, []);
 
   if (pathname === "/unlock") return null; // 잠금 화면엔 학습 현황을 보이지 않는다
+  // 시험 화면(lib/exam-screen.ts)에선 헤드라인을 내리고 `--streak-h`를 0으로 — sticky 요소가 빈 칸 없이 맨 위에 붙는다.
+  // 컴포넌트는 마운트된 채라 시험 저장 뒤 STREAK_REFRESH_EVENT 갱신을 그대로 받는다(돌아오면 새 숫자). <style>은 시험을
+  // 벗어나면(경로 이동·블록 해제) 렌더에서 빠져 변수가 40px로 돌아온다 — 되돌리는 정리 코드가 따로 없다.
+  if (exam) return <style data-exam-screen>{EXAM_SCREEN_STREAK_H_CSS}</style>;
 
   // 아빠 만회 안내는 사람 단위 한 번(어학 + 운동 합친 판 수 — 트랙 값은 한 트랙만 센다). v2 실패 응답엔 appaPerson이 없다
   const appaHint = data ? repairHintText((data.appaPerson ?? data.appaLanguage).info) : null;

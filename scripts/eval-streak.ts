@@ -45,6 +45,7 @@ import type { PersonStreak, StreakResponse } from "../lib/streak-contract";
 import { DEFAULT_PUSH_PREFS } from "../lib/push-contract";
 import { MOM_REVIEW_WEEKS, momStreakWeekKo } from "../lib/mom-plan";
 import { PERSON_HUB_HREF, personOfPath } from "../lib/person-area";
+import { EXAM_SCREEN_EXTRA_PATHS, EXAM_SCREEN_STREAK_H_CSS, isExamScreen, isExamScreenPath } from "../lib/exam-screen";
 
 interface CheckResult {
   book: string;
@@ -1202,6 +1203,48 @@ const TODAY = "2026-09-21";
   ];
   const badBack = backs.filter(([f, href]) => !src(f).includes(`href="${href}"`) || src(f).includes('href="/"'));
   add(B, "과목 첫 화면 '← 과목 선택'이 그 사람 허브로 간다(6곳, href=\"/\" 없음)", badBack.length === 0, badBack.length === 0 ? "6곳" : badBack.map(([f]) => f).join(", "));
+}
+
+// ---------------------------------------------------------------------------
+// 시험 화면 숨김 — 시험 중엔 상단 스트릭 헤드라인·"누구 습관" 표시줄을 내린다(lib/exam-screen.ts, 2026-10-09).
+{
+  const B = "시험 화면 숨김";
+  const exams = [
+    "/toeic/mocks/m1/take",
+    "/toeic/attempts/a1/retake",
+    "/toeic/sets/s1/quiz",
+    "/toeic/guides/q5_7/templates/quiz",
+    "/toeic/guides/q5_7/templates/test",
+    "/toeic/guides/q5_7/frame-drill/take",
+    "/japanese/vocab/v1/quiz",
+    "/japanese/kanji/quiz",
+    "/english/vocab/v1/quiz?mode=wrong",
+    "/english/vocab/v1/speak/",
+    "/english/review",
+    "/japanese/review",
+    "/toeic/review",
+    "/mom/review",
+    "/mom/test/3",
+    "/mom/test/107",
+  ];
+  const badExam = exams.filter((p) => !isExamScreenPath(p) || !isExamScreen({ pathname: p, blockCount: 0 }));
+  add(B, "시험·응시·복습 경로는 숨김(쿼리·끝 슬래시 무관, 엄마 주간 테스트 포함)", badExam.length === 0, badExam.length === 0 ? `${exams.length}건` : badExam.join(", "));
+  const normals = ["/", "/eunwoo", "/appa", "/mama", "/family", "/english", "/english/vocab/v1", "/english/talk", "/japanese", "/japanese/vocab/v1", "/toeic", "/toeic/sets/s1", "/toeic/mocks/m1", "/toeic/guides/q5_7/frame-drill/fd-1", "/mom", "/mom/lesson/l1", "/workout", "/math", "/mom/test", "/mom/test/3/x", null, undefined];
+  const badNormal = normals.filter((p) => isExamScreen({ pathname: p, blockCount: 0 }));
+  add(B, "보통 화면(허브·목록·상세·엄마 오늘의 레슨·운동)은 보인다", badNormal.length === 0, badNormal.length === 0 ? `${normals.length}건` : badNormal.map(String).join(", "));
+  add(B, "블록이 걸리면(경로로 못 가르는 통화 오버레이 등) 보통 경로도 숨김", isExamScreen({ pathname: "/english/talk", blockCount: 1 }) && !isExamScreen({ pathname: "/english/talk", blockCount: 0 }), "");
+  add(B, "추가 시험 경로 정규식은 ^…$로 닫혔다", EXAM_SCREEN_EXTRA_PATHS.every((x) => x.re.source.startsWith("^") && x.re.source.endsWith("$")), `${EXAM_SCREEN_EXTRA_PATHS.length}개`);
+  add(B, "숨김 CSS가 --streak-h를 0으로 내린다", /--streak-h:\s*0(px)?\b/.test(EXAM_SCREEN_STREAK_H_CSS), EXAM_SCREEN_STREAK_H_CSS);
+  const src = (f: string) => readFileSync(new URL(`../${f}`, import.meta.url), "utf8");
+  const users = ["components/streak-headline.tsx", "components/person-bar.tsx"];
+  const badUse = users.filter((f) => !/import \{ useExamScreen \} from "@\/components\/use-exam-screen"/.test(src(f)) || !/useExamScreen\(\)/.test(src(f)) || /isPhraseHelperExamPath|PHRASE_HELPER_EXAM_PATHS/.test(src(f)));
+  add(B, "헤드라인·표시줄이 같은 판정(useExamScreen) 하나를 쓴다(시험 목록을 따로 두지 않는다)", badUse.length === 0, badUse.length === 0 ? users.join(" ") : badUse.join(", "));
+  const hook = src("components/use-exam-screen.ts");
+  add(B, "훅이 isExamScreen + 블록 카운터 구독(서버 snapshot 0)을 쓴다", hook.includes("isExamScreen(") && hook.includes("useSyncExternalStore(subscribePhraseHelperBlock, getPhraseHelperBlockCount, () => 0)"), "");
+  const head = src("components/streak-headline.tsx");
+  add(B, "헤드라인은 숨겨도 마운트된 채 STREAK_REFRESH_EVENT를 듣는다(훅이 숨김 분기보다 앞)", head.indexOf("useExamScreen()") < head.indexOf("if (exam)") && head.indexOf("STREAK_REFRESH_EVENT, onRefresh") < head.indexOf("if (exam)") && head.includes("EXAM_SCREEN_STREAK_H_CSS"), "");
+  const scope = src("lib/phrase-helper-scope.ts");
+  add(B, "표현 도우미 시험 목록은 넓히지 않았다(엄마 테스트는 exam-screen 쪽에만)", !scope.includes("/mom\\/test") && !scope.includes("mom\\/test"), "");
 }
 
 // ---------------------------------------------------------------------------
