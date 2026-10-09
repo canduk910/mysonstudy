@@ -159,6 +159,16 @@ export function fakeBlock(id: string, week: number, stage: 0 | 1 | 2 | 3 | 4, n 
   add(A, "엉뚱한 말 → retry", j("good morning everyone").verdict === "retry");
   add(A, "무응답·한 낱말 → retry + noSpeech", j("").noSpeech && j("tea").verdict === "retry");
   add(A, "문장에 틀이 없으면 틀 검사 통과로", judgeMomSpeech({ en: "Where is the exit?", frameText: F, transcript: "where is the exit" }).verdict === "pass");
+  add(A, "다른 말에 목표 낱말이 섞임(덧붙임 많음) → close", j("I would like a cup of coffee and a tea cake").verdict === "close", JSON.stringify(j("I would like a cup of coffee and a tea cake")));
+  add(A, "군말(um·please)은 덧붙임 아님 → pass", j("Um, I would like a cup of tea please").verdict === "pass");
+  const FS = "What time/When ~?";
+  const js = (en: string, t: string) => judgeMomSpeech({ en, frameText: FS, transcript: t });
+  add(A, "빗금 틀 — 틀 빠진 말 → pass 아님", js("What time does it start?", "does it start").verdict !== "pass", JSON.stringify(js("What time does it start?", "does it start")));
+  add(A, "빗금 틀 — 구절 대안(When) → pass", js("When does it start?", "When does it start").verdict === "pass");
+  add(A, "빗금 틀 — 문장에 맞는 대안의 틀 낱말", frameWordsOf(FS, "When does it start?").join(" ") === "when" && frameWordsOf(FS, "What time does it start?").join(" ") === "what time");
+  add(A, "시제 차이(불규칙 go/went) → pass", judgeMomSpeech({ en: "I go to school.", frameText: "I go to ~", transcript: "I went to school" }).verdict === "pass");
+  add(A, "시제 차이(-ed) → pass", judgeMomSpeech({ en: "I walk to school.", frameText: "I walk to ~", transcript: "I walked to school" }).verdict === "pass");
+  add(A, "다른 낱말(like/lie)은 시제 관용 아님 → pass 아님", judgeMomSpeech({ en: "I would like tea.", frameText: F, transcript: "I would lie tea" }).verdict !== "pass");
 }
 
 // ── 출력 ──
