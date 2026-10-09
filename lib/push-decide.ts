@@ -132,8 +132,8 @@ export const TICK_SKEW_MS = 2 * 60 * 1000;
 /**
  * 알림 결정용 사람 상태(가족 스트릭 강화 스펙 §6-2) — 스트릭 응답을 decidePushes 입력으로 접는다. 순수(틱·콕 찌르기 공용).
  * "오늘 다 했다" = 켜졌고 **만회 판이 모자라지 않음**(doneForPush) — 만회 대기에 한 판만 했으면 만회·오늘·마지막 알림이 그대로 나간다.
- * 아빠 = 사람 단위(`appaPerson` — 어학 ∪ 운동): 만회 대기·판 수·연속 숫자·카드는 사람 값, 켜짐은 📚·💪 중 하나라도.
- * 아직인 트랙 이름을 문구에 싣는다.
+ * 아빠 = 사람 하나(`appaPerson` — appaPersonV2): 켜짐·만회 대기·판 수·연속 숫자·카드 모두 사람 값. APPA_BOTH_FROM(2026-10-10)부터
+ * 켜짐은 📚·💪 **둘 다**(그 전 날짜는 둘 중 하나 — 서버가 이미 판정해 doneToday에 담는다). 아직인 트랙 이름을 문구에 싣는다.
  */
 export function pushStates(r: StreakResponse): PersonState[] {
   const yesterday = shiftDateString(r.today, -1);
@@ -145,9 +145,9 @@ export function pushStates(r: StreakResponse): PersonState[] {
     pendingRepairYesterday: info.pendingRepairDay === yesterday,
     missingTracks: missing,
   });
-  // v2 계산이 실패한 응답엔 appaPerson이 없다 — 그때는 옛 규칙(만회 없음)이라 어학 info로 충분하다
+  // appaPerson이 없는 응답(옛 서버·폴백마저 실패)은 옛 규칙(만회 없음·둘 중 하나)으로 — 어학 info + 어학 ∨ 운동
   const appaInfo = r.appaPerson?.info ?? r.appaLanguage.info;
-  const appaLit = r.appaLanguage.info.doneToday || r.appaWorkout.info.doneToday;
+  const appaLit = r.appaPerson ? r.appaPerson.info.doneToday : r.appaLanguage.info.doneToday || r.appaWorkout.info.doneToday;
   const appaMissing = [!r.appaLanguage.info.doneToday ? "어학" : null, !r.appaWorkout.info.doneToday ? "운동" : null].filter((x): x is string => x !== null);
   const out: PersonState[] = [s("eunwoo", r.eunwoo.info), s("appa", appaInfo, appaMissing, appaLit)];
   // 엄마 영역 데이터가 없으면(mom: null) 엄마 상태는 없다 — 엄마 자신의 알림(오늘 아직·마지막·만회)은 나가지 않는다.

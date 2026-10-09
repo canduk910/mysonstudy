@@ -11,6 +11,9 @@
  * 일본어·운동·영어는 각자 계산하고(`appa`·`appaEnglish` — 호환·라벨용으로 그대로 낸다), 헤드라인은 2026-10-08부터 일본어+영어를
  *   **하나의 📚 어학 트랙**(`appaLanguage` — 두 트랙의 날짜를 합집합으로, 둘 중 하나만 해도 그날이 켜진다, SPEC §17-10)으로 보인다.
  *   운동은 여전히 따로다. 수학·읽음·대화·생성·발화 포인트는 제외.
+ * 2026-10-09 사용자 결정(아빠 스트릭 하나로): 헤드라인·보드·가족·알림의 아빠는 **사람 하나**(`appaPerson` — appaPersonV2).
+ *   APPA_BOTH_FROM(2026-10-10)부터는 어학·운동 **둘 다** 해야 켜지고, 그 전 날짜는 옛 규칙(둘 중 하나) 그대로다.
+ *   `appaLanguage`·`appaWorkout`은 호환용으로 계속 낸다(화면은 칸으로 그리지 않는다). 배지는 아빠 하나(`appa`).
  * 새 레코드 없이 기존 기록에서 파생(§17-5) — 전체를 읽어 메모리에서 접는다(복합 인덱스 회피).
  * 캐시 헤더·PIN 게이트는 라우트(app/api/streak/route.ts) 몫.
  */
@@ -46,7 +49,7 @@ import { workoutKeptDays, workoutStreakTodayLabel } from "@/lib/workout";
 import { reviewFullDays, reviewStreakSessions, reviewTodayLabel, type ReviewArea, type ReviewScheduleRecord } from "@/lib/review-schedule";
 import { STREAK_V2_FROM, badgesOf, kstWeekDays, weekCells, type WeekCell } from "@/lib/streak-v2";
 import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullMomLessonRecord, isFullQuiz, isFullTalk } from "@/lib/streak-v2-sources";
-import { familyV2, personV2, trackV2, type TrackInput } from "@/lib/streak-v2-assemble";
+import { appaPersonV2, appaTodayLabel, familyV2, personV2, trackV2, type TrackInput } from "@/lib/streak-v2-assemble";
 
 /** 오늘(KST) 실제로 답한 세션만, 최신 먼저. */
 function todaysAnswered<T extends StreakSession>(sessions: T[], today: string): T[] {
@@ -217,8 +220,10 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
 
   // ── 아빠 · 📚 어학(SPEC §17-10, 2026-10-08): 일본어 + 영어 날짜의 합집합 → 둘 중 하나만 해도 그날이 켜진다 ──
   // 라벨 = 오늘 한 것 중 가장 늦게 시작한 쪽에 "일본어 · "/"영어 · "를 붙인다(시각을 모르는 복습뿐이면 기록 있는 쪽 → 일본어 먼저).
+  /** 어학 날짜(일본어 ∪ 영어) — 옛 규칙 어학 트랙·v2 어학 legacy·v2 실패 시 아빠 사람이 같이 쓴다 */
+  const langDays = new Set([...streakDays(jaSessions), ...streakDays(enSessions)]);
   const appaLanguage: PersonStreak = {
-    info: computeStreakFromDays(new Set([...streakDays(jaSessions), ...streakDays(enSessions)]), today),
+    info: computeStreakFromDays(langDays, today),
     todayLabel: null,
   };
   const jaLabel = appa.todayLabel ? `일본어 · ${appa.todayLabel}` : null;
@@ -270,7 +275,7 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
   }
 
   // ── 스트릭 v2(가족 스트릭 강화 스펙) — legacy = 기존 세션 배열의 날짜, runs = 적용일부터의 "한 판" 수 ──
-  // 카드·만회는 사람 단위로 한 번 정하고(아빠 = 어학 ∪ 운동) 트랙 연속에 그대로 적용한다. 헤드라인 info를 v2로 덮는다.
+  // 카드·만회는 사람 단위로 한 번 정하고(아빠 = appaPersonV2 — APPA_BOTH_FROM부터 어학·운동 둘 다) 트랙 연속에 그대로 적용한다. 헤드라인 info를 v2로 덮는다.
   // `appa`·`appaEnglish`(호환 필드)는 legacy 계산 그대로 둔다 — 헤드라인은 더 이상 읽지 않는다.
   const buildV2 = () => {
     const runs = (fill: (m: Map<string, number>) => void) => {
@@ -287,7 +292,7 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
       }),
     };
     const langT: TrackInput = {
-      legacyDays: new Set([...streakDays(jaSessions), ...streakDays(enSessions)]),
+      legacyDays: langDays,
       runs: runs((m) => {
         addRuns(m, [...jaVocab, ...jaKanji].filter(isFullQuiz).map((q) => q.startedAt));
         addDays(m, reviewFullDays(reviewsOf("japanese")));
@@ -311,12 +316,14 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
     const gymT: TrackInput = { legacyDays: new Set(gymDays), runs: runs((m) => addDays(m, gymDays)) };
 
     const eunwooP = personV2([eunwooT], today);
-    const appaP = personV2([langT, gymT], today);
+    const appaP = appaPersonV2(langT, gymT, today);
     const momP = momT ? personV2([momT], today) : null;
     const fam = familyV2([eunwooP, appaP, momP], today);
     const week = kstWeekDays(today);
     const langInfo = trackV2(langT, appaP, today);
     const gymInfo = trackV2(gymT, appaP, today);
+    // 아빠 오늘 라벨 — 트랙별로 한 것/남은 것(운동 계획 휴식일이면 "운동 쉬는 날")
+    const appaLabel = appaTodayLabel({ lang: langInfo.doneToday, gym: gymInfo.doneToday, gymRest: gymInfo.doneToday && /휴식/.test(appaWorkout.todayLabel ?? "") });
     return {
       eunwoo: eunwooP.info,
       appaLanguage: langInfo,
@@ -332,12 +339,12 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
       },
       badges: [
         { key: "eunwoo" as const, ...badgesOf(eunwooP.info) },
-        { key: "appaLanguage" as const, ...badgesOf(langInfo) },
-        { key: "appaWorkout" as const, ...badgesOf(gymInfo) },
+        { key: "appa" as const, ...badgesOf(appaP.info) },
         ...(momP ? [{ key: "mom" as const, ...badgesOf(momP.info) }] : []),
         { key: "family" as const, ...badgesOf(fam.info) },
       ],
       appaPerson: appaP.info,
+      appaLabel,
       mom: momP ? momP.info : null,
     };
   };
@@ -354,7 +361,7 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
     eunwoo.info = v2.eunwoo;
     appaLanguage.info = v2.appaLanguage;
     if (appaWorkout !== NEUTRAL_STREAK) appaWorkout = { ...appaWorkout, info: v2.appaWorkout };
-    v2Body = { mom: v2.mom ? { info: v2.mom, todayLabel: momLabel } : null, family: { info: v2.family, todayLabel: null }, week: v2.week, badges: v2.badges, v2From: STREAK_V2_FROM, appaPerson: { info: v2.appaPerson, todayLabel: null } };
+    v2Body = { mom: v2.mom ? { info: v2.mom, todayLabel: momLabel } : null, family: { info: v2.family, todayLabel: null }, week: v2.week, badges: v2.badges, v2From: STREAK_V2_FROM, appaPerson: { info: v2.appaPerson, todayLabel: v2.appaLabel } };
   } else {
     let days: string[] = [];
     try {
@@ -363,7 +370,19 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
       days = [];
     }
     const none = days.map((): WeekCell => "none");
+    // 아빠 사람 하나 — 옛 규칙(어학 ∪ 운동 지킨 날)으로라도 낸다. 이것마저 던지면 없이(헤드라인은 appaLanguage로 폴백)
+    let appaPerson: PersonStreak | undefined;
+    try {
+      const gymKept = workoutCycles && appaWorkout !== NEUTRAL_STREAK ? workoutKeptDays(workoutCycles, today) : [];
+      appaPerson = {
+        info: computeStreakFromDays(new Set([...langDays, ...gymKept]), today),
+        todayLabel: appaTodayLabel({ lang: appaLanguage.info.doneToday, gym: appaWorkout.info.doneToday, gymRest: appaWorkout.info.doneToday && /휴식/.test(appaWorkout.todayLabel ?? "") }),
+      };
+    } catch {
+      appaPerson = undefined;
+    }
     v2Body = {
+      appaPerson,
       mom: null,
       family: { info: { current: 0, doneToday: false, lastDate: null, best: 0 }, todayLabel: null },
       week: { days, rows: { eunwoo: none, appa: [...none], mom: null } },

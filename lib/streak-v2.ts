@@ -10,6 +10,12 @@ import { diffDateStrings, shiftDateString } from "./kst";
 
 /** 새 규칙 적용일(KST). 첫 배포일로 박는다 — 바꾸면 지난 판정이 바뀐다(배포 뒤 고정). */
 export const STREAK_V2_FROM = "2026-10-10";
+/**
+ * 아빠 스트릭 하나로 — 이날(KST)부터 아빠의 하루는 📚 어학과 💪 운동을 **둘 다** 해야 켜진다(2026-10-09 사용자 결정, 옵션 1).
+ * 이날 전(오늘 2026-10-09까지)은 옛 규칙(둘 중 하나) 그대로 — 지금 이어 온 연속이 그대로 넘어간다(소급 없음, STREAK_V2_FROM과 같은 원칙).
+ * 배포 뒤 고정 — 바꾸면 지난 판정이 바뀐다. 조립은 lib/streak-v2-assemble.ts `appaPersonV2`.
+ */
+export const APPA_BOTH_FROM = "2026-10-10";
 export const FREEZES_PER_MONTH = 2;
 export const REPAIR_MIN_RUNS = 2;
 export const STREAK_BADGES: readonly number[] = [7, 30, 100, 200, 365];
@@ -165,7 +171,7 @@ export function badgesOf(info: Pick<StreakV2Info, "best" | "current" | "doneToda
  * 만회 대기인데 오늘 판이 아직 모자란가(가족 스트릭 강화 §4-3) — 헤드라인·보드·알림이 함께 쓰는 단일 판정.
  * 만회 대기(`pendingRepairDay`)는 decideBridges가 "어제를 놓쳤고 카드가 없다"일 때만 세운다(항상 어제다).
  * 한 판만 해도 doneToday는 켜지지만 두 판(REPAIR_MIN_RUNS) 전에는 자정에 어제가 끊긴다 — 그래서 "다 했다"로 보면 안 된다.
- * `runsToday`는 사람 단위 값을 넣어야 한다(아빠 = 어학 + 운동 합친 판 수 — 트랙 값은 한 트랙만 센다).
+ * `runsToday`는 사람 단위 값을 넣어야 한다(아빠 = appaPersonV2의 판 수 — APPA_BOTH_FROM부터는 운동도 한 날의 어학 판 수, 트랙 값은 한 트랙만 센다).
  */
 export function needsMoreToday(info: { pendingRepairDay?: string | null; runsToday?: number }): boolean {
   return info.pendingRepairDay != null && (info.runsToday ?? 0) < REPAIR_MIN_RUNS;

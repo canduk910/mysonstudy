@@ -37,8 +37,8 @@ import {
 } from "../lib/test-status";
 import { templateSessionsForPart } from "../lib/toeic-guide-view";
 import { reviewFullDays, reviewStreakSessions, reviewTodayLabel } from "../lib/review-schedule";
-import { FREEZES_PER_MONTH, STREAK_BADGES, badgesOf, decideBridges, doneForPush, kstWeekDays, litDaysOf, needsMoreToday, repairHintText, streakFromStatus, weekCells } from "../lib/streak-v2";
-import { familyV2, personV2, trackV2 } from "../lib/streak-v2-assemble";
+import { APPA_BOTH_FROM, FREEZES_PER_MONTH, STREAK_BADGES, STREAK_V2_FROM, badgesOf, decideBridges, doneForPush, kstWeekDays, litDaysOf, needsMoreToday, repairHintText, streakFromStatus, weekCells } from "../lib/streak-v2";
+import { appaInputV2, appaPersonV2, appaTodayLabel, familyV2, personV2, trackV2 } from "../lib/streak-v2-assemble";
 import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullMomLessonRecord, isFullQuiz, isFullTalk } from "../lib/streak-v2-sources";
 import { decidePushes, isQuietHHMM, kstHalfHourHHMM, pushStates, pushText, PUSH_DAILY_MAX, TICK_SKEW_MS } from "../lib/push-decide";
 import type { PersonStreak, StreakResponse } from "../lib/streak-contract";
@@ -735,22 +735,30 @@ const TODAY = "2026-09-21";
   add(B, "streakDays ∘ computeStreakFromDays = computeStreak(같은 결과)", JSON.stringify(computeStreakFromDays(streakDays(ja), TODAY10)) === JSON.stringify(computeStreak(ja, TODAY10)), "");
 
   const route = readFileSync(new URL("../lib/streak-server.ts", import.meta.url), "utf-8");
-  const wired = /computeStreakFromDays\(new Set\(\[\.\.\.streakDays\(jaSessions\), \.\.\.streakDays\(enSessions\)\]\), today\)/.test(route);
+  const wired =
+    /const langDays = new Set\(\[\.\.\.streakDays\(jaSessions\), \.\.\.streakDays\(enSessions\)\]\);/.test(route) &&
+    /computeStreakFromDays\(langDays, today\)/.test(route) &&
+    /legacyDays: langDays,/.test(route);
   // streakDays는 일본어·영어 세션(어학 합집합 — legacy와 v2 어학 트랙)과 v2 은우 트랙의 은우 세션 배열에만
   const sdCount = (needle: string) => route.split(needle).length - 1;
   const noLeak =
     !/streakDays\((?:vocab|talks|workoutCycles)/.test(route) &&
     sdCount("streakDays(") === sdCount("streakDays(jaSessions)") + sdCount("streakDays(enSessions)") + sdCount("streakDays([...vocab, ...talkStreakSessions(talks)") &&
-    sdCount("streakDays(jaSessions)") === 2 &&
-    sdCount("streakDays(enSessions)") === 2;
+    sdCount("streakDays(jaSessions)") === 1 &&
+    sdCount("streakDays(enSessions)") === 1;
   const fallback = /let enSessions: StreakSession\[\] = reviewStreakSessions\(reviewsOf\("toeic"\)\);/.test(route);
   const label = /`일본어 · \$\{appa\.todayLabel\}`/.test(route) && /`영어 · \$\{appaEnglish\.todayLabel\}`/.test(route);
   const inBody = /appaWorkout, appaEnglish, appaLanguage \}/.test(route);
   add(B, "/api/streak 배선: 일본어∪영어 날짜 · 은우·운동 무혼합 · 토익 읽기 실패면 토익 복습만 · 라벨 접두 · 응답에 appaLanguage", wired && noLeak && fallback && label && inBody, `배선=${wired} 무혼합=${noLeak} 폴백=${fallback} 라벨=${label} 응답=${inBody}`);
 
   const head = readFileSync(new URL("../components/streak-headline.tsx", import.meta.url), "utf-8");
-  const one = /<Track emoji="📚" name="어학" p=\{data\?\.appaLanguage\}(?: tight=\{fourPeople\})? \/>/.test(head) && !/p=\{data\?\.appa\}/.test(head) && !/p=\{data\?\.appaEnglish\}/.test(head) && /p=\{data\?\.appaWorkout\}/.test(head);
-  add(B, "헤드라인: 아빠 칸 = 📚 어학 + 💪 운동(🗾·🎙️ 칸 없음)", one, "");
+  // 2026-10-09 사용자 결정: 아빠 칸은 사람 하나(appaPerson — 없으면 appaLanguage로 대신). 📚·💪·🗾·🎙️ 트랙 칸 없음
+  const one =
+    /<Person emoji="🧑" name="아빠" p=\{appaCell\}[^>]*\/>/.test(head) &&
+    /const appaCell = data \? \(data\.appaPerson \?\? data\.appaLanguage\) : undefined;/.test(head) &&
+    !/emoji="📚"|emoji="💪"|emoji="🗾"|emoji="🎙️"/.test(head) &&
+    !/p=\{data\?\.(?:appa|appaEnglish|appaWorkout|appaLanguage)\}/.test(head);
+  add(B, "헤드라인: 아빠 칸 = 사람 하나(appaPerson) — 📚·💪·🗾·🎙️ 트랙 칸 없음", one, "");
 }
 
 // ---------------------------------------------------------------------------
@@ -846,8 +854,11 @@ const TODAY = "2026-09-21";
   const T = (legacy: string[], runs: Record<string, number>) => ({ legacyDays: new Set(legacy), runs: new Map(Object.entries(runs)) });
   const lang = T([], { "2026-10-10": 1, "2026-10-12": 1 });
   const gym = T([], { "2026-10-11": 1, "2026-10-12": 1 });
-  const appa = personV2([lang, gym], "2026-10-12", FROM);
-  add(B, "아빠 사람: 어학·운동 중 하나면 그날 지킴 → 3일, 카드 0", appa.info.current === 3 && appa.info.freezeDays.length === 0, JSON.stringify(appa.info));
+  // 옛 규칙(둘 중 하나)을 보려고 bothFrom을 먼 미래로 — 실제 APPA_BOTH_FROM부터의 "둘 다"는 아래 묶음 "아빠 합침"
+  const appa = appaPersonV2(lang, gym, "2026-10-12", FROM, "2099-01-01");
+  add(B, "아빠 사람(bothFrom 전 = 옛 규칙): 어학·운동 중 하나면 그날 지킴 → 3일, 카드 0", appa.info.current === 3 && appa.info.freezeDays.length === 0, JSON.stringify(appa.info));
+  const appaBoth = appaPersonV2(lang, gym, "2026-10-12", FROM, FROM);
+  add(B, "아빠 사람(bothFrom부터): 같은 기록이면 둘 다 한 10-12만 켜짐 → 1일", appaBoth.info.current === 1 && [...appaBoth.litDays].join() === "2026-10-12", JSON.stringify(appaBoth.info));
   const langInfo = trackV2(lang, appa, "2026-10-12", FROM);
   add(B, "어학 트랙: 10-11(운동만) 놓침 — 사람은 안 놓쳐 카드 없음 → current 1", langInfo.current === 1, JSON.stringify(langInfo));
   const off = T([], { "2026-10-10": 1, "2026-10-12": 1 });
@@ -873,7 +884,8 @@ const TODAY = "2026-09-21";
   };
   const wiredV2 =
     /personV2\(\[eunwooT\], today\)/.test(route) &&
-    /personV2\(\[langT, gymT\], today\)/.test(route) &&
+    /appaPersonV2\(langT, gymT, today\)/.test(route) &&
+    !/personV2\(\[langT, gymT\]/.test(route) &&
     /familyV2\(\[eunwooP, appaP, momP\], today\)/.test(route) &&
     /vocab\.filter\(isFullQuiz\)/.test(route) &&
     /talks\.filter\(isFullTalk\)/.test(route) &&
@@ -1019,15 +1031,16 @@ const TODAY = "2026-09-21";
   const route = readFileSync(new URL("../lib/streak-server.ts", import.meta.url), "utf-8");
   add(
     B,
-    "배선: 헤드라인·보드 repairHintText(아빠 = appaPerson) · pushStates는 doneForPush·appaPerson",
+    "배선: 헤드라인 Person·보드 repairHintText(아빠 = appaPerson 칸 하나) · pushStates는 doneForPush·appaPerson",
     /repairHintText\(p\.info\)/.test(head) &&
-      /repairHintText\(\(data\.appaPerson \?\? data\.appaLanguage\)\.info\)/.test(head) &&
+      /const appaCell = data \? \(data\.appaPerson \?\? data\.appaLanguage\) : undefined;/.test(head) &&
+      /<Person emoji="🧑" name="아빠" p=\{appaCell\}/.test(head) &&
       !/pendingRepairDay \?/.test(head) &&
       /repairHintText\(who\)/.test(board) &&
       /person=\{data\.appaPerson\?\.info\}/.test(board) &&
       /doneForPush\(/.test(push) &&
       /r\.appaPerson\?\.info/.test(push) &&
-      /appaPerson: \{ info: v2\.appaPerson, todayLabel: null \}/.test(route),
+      /appaPerson: \{ info: v2\.appaPerson, todayLabel: v2\.appaLabel \}/.test(route),
     "",
   );
   add(
@@ -1072,7 +1085,7 @@ const TODAY = "2026-09-21";
   {
     // 2026-10-09 사용자 요청: 순서 가족 → 은우 → 엄마 → 아빠, 엄마도 은우처럼 이름 글자(이름 숨김 예외 없음)
     const hd = src("../components/streak-headline.tsx");
-    const iE = hd.indexOf('name="은우"'), iM = hd.indexOf('name="엄마"'), iA = hd.indexOf(">아빠</span>");
+    const iE = hd.indexOf('name="은우"'), iM = hd.indexOf('name="엄마"'), iA = hd.indexOf('name="아빠"');
     add(B, "헤드라인 순서: 은우 → 엄마 → 아빠(JSX 위치)", iE > 0 && iM > iE && iA > iM, `은우=${iE} 엄마=${iM} 아빠=${iA}`);
     const momTag = hd.match(/<Person emoji="👩"[^>]*\/>/)?.[0] ?? "";
     const kidTag = hd.match(/<Person emoji="🧒"[^>]*\/>/)?.[0] ?? "";
@@ -1086,8 +1099,8 @@ const TODAY = "2026-09-21";
     );
     add(
       B,
-      "헤드라인 aria-label: 엄마 있으면 '가족, 은우, 엄마, 아빠(어학·운동)', 없으면 기존 문구",
-      hd.includes('"학습 스트릭 — 가족, 은우, 엄마, 아빠(어학·운동)"') && hd.includes('"학습 스트릭 — 가족, 은우, 아빠(어학·운동)"'),
+      "헤드라인 aria-label: 엄마 있으면 '가족, 은우, 엄마, 아빠', 없으면 '가족, 은우, 아빠'(아빠 사람 하나 — 트랙 괄호 없음)",
+      hd.includes('"학습 스트릭 — 가족, 은우, 엄마, 아빠"') && hd.includes('"학습 스트릭 — 가족, 은우, 아빠"') && !hd.includes("아빠(어학·운동)"),
       "",
     );
   }
@@ -1267,6 +1280,206 @@ const TODAY = "2026-09-21";
   add(B, "헤드라인은 숨겨도 마운트된 채 STREAK_REFRESH_EVENT를 듣는다(훅이 숨김 분기보다 앞)", head.indexOf("useExamScreen()") < head.indexOf("if (exam)") && head.indexOf("STREAK_REFRESH_EVENT, onRefresh") < head.indexOf("if (exam)") && head.includes("EXAM_SCREEN_STREAK_H_CSS"), "");
   const scope = src("lib/phrase-helper-scope.ts");
   add(B, "표현 도우미 시험 목록은 넓히지 않았다(엄마 테스트는 exam-screen 쪽에만)", !scope.includes("/mom\\/test") && !scope.includes("mom\\/test"), "");
+}
+
+// ---------------------------------------------------------------------------
+// 아빠 합침(2026-10-09 사용자 결정, 옵션 1) — 헤드라인·보드·가족·알림의 아빠는 사람 하나(appaPersonV2).
+//   APPA_BOTH_FROM(2026-10-10)부터는 📚 어학 한 판 ≥ 1 **그리고** 💪 운동을 지킨 날만 켜진다. 그 전 날짜는 옛 규칙(둘 중 하나) — 소급 없음.
+{
+  const B = "아빠 합침";
+  const T = (legacy: string[], runs: Record<string, number>) => ({ legacyDays: new Set(legacy), runs: new Map(Object.entries(runs)) });
+  add(B, "상수: APPA_BOTH_FROM = 2026-10-10(결정 다음 날) · STREAK_V2_FROM 이후", APPA_BOTH_FROM === "2026-10-10" && APPA_BOTH_FROM >= STREAK_V2_FROM, APPA_BOTH_FROM);
+
+  // (a) 적용일 전 — 둘 중 하나만 해도 켜진다(legacy 기간 · runs 기간 둘 다)
+  {
+    const lang = T(["2026-10-07", "2026-10-09"], {});
+    const gym = T(["2026-10-08", "2026-10-09"], {});
+    const p = appaPersonV2(lang, gym, "2026-10-09");
+    // runs 기간에서도(from을 앞당겨 bothFrom 전 날짜를 runs로 판정) 하나면 켜진다
+    const lang2 = T([], { "2026-10-05": 1, "2026-10-07": 1 });
+    const gym2 = T([], { "2026-10-06": 1, "2026-10-07": 1 });
+    const p2 = appaPersonV2(lang2, gym2, "2026-10-07", "2026-10-05", "2026-10-10");
+    add(B, "(a) 적용일 전: 어학만·운동만·둘 다 모두 켜짐(legacy 3일 · runs 3일)", p.info.current === 3 && p.info.doneToday && p2.info.current === 3 && p2.info.doneToday, `${JSON.stringify(p.info)} ${JSON.stringify(p2.info)}`);
+  }
+  // (b) 적용일부터 — 둘 다만 켜진다
+  {
+    const lang = T([], { "2026-10-10": 1, "2026-10-11": 2 });
+    const gym = T([], { "2026-10-10": 1, "2026-10-12": 1 });
+    const p = appaPersonV2(lang, gym, "2026-10-12");
+    add(B, "(b) 적용일부터: 10-10 둘 다만 켜짐 · 10-11 어학만·10-12 운동만은 아님", [...p.litDays].join() === "2026-10-10" && !p.info.doneToday, JSON.stringify([...p.litDays]));
+  }
+  // (c) 연속이 적용일을 넘어 이어진다 — 하나만 한 3일 + 적용일 둘 다 → 4
+  const pre = { lang: ["2026-10-07", "2026-10-09"], gym: ["2026-10-08"] };
+  {
+    const p = appaPersonV2(T(pre.lang, { "2026-10-10": 1 }), T(pre.gym, { "2026-10-10": 1 }), "2026-10-10");
+    add(B, "(c) 10-07 어학·10-08 운동·10-09 어학(옛 규칙) + 10-10 둘 다 → current 4", p.info.current === 4 && p.info.doneToday, JSON.stringify(p.info));
+  }
+  // (d) 적용일에 운동만 → 안 켜짐, 연속은 어제까지, 오늘 아직 점 · 라벨 "운동 ✓ · 어학 남음"
+  {
+    const p = appaPersonV2(T(pre.lang, {}), T(pre.gym, { "2026-10-10": 1 }), "2026-10-10");
+    const head = readFileSync(new URL("../components/streak-headline.tsx", import.meta.url), "utf-8");
+    const dot = /\{loaded && !done && <span data-pending-dot aria-hidden/.test(head);
+    add(
+      B,
+      "(d) 적용일 운동만: doneToday false · current 3(어제까지) · 오늘 아직 점(Person !done) · 라벨 '운동 ✓ · 어학 남음'",
+      !p.info.doneToday && p.info.current === 3 && p.info.runsToday === 0 && dot && appaTodayLabel({ lang: false, gym: true, gymRest: false }) === "운동 ✓ · 어학 남음",
+      JSON.stringify(p.info),
+    );
+  }
+  // 오늘(2026-10-09, 적용일 전)의 숫자는 바뀌지 않는다 — 무작위 기록 300개로 옛 조립(personV2([lang, gym]))과 같은지
+  {
+    let seed = 7;
+    const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    // 기록은 오늘(10-09)까지만 있을 수 있다(미래 날짜 기록 없음) — 09-01 ~ 10-09. 적용일 뒤 비교용으로 10-10~10-20 기록을 따로 붙인다
+    const days = Array.from({ length: 39 }, (_, i) => shiftDateString("2026-09-01", i));
+    const later = Array.from({ length: 11 }, (_, i) => shiftDateString("2026-10-10", i));
+    let bad = 0;
+    let badFuture = 0;
+    for (let k = 0; k < 300; k++) {
+      const mk = () => {
+        const legacy: string[] = [];
+        const runs: Record<string, number> = {};
+        for (const d of days) {
+          if (rnd() < 0.55) legacy.push(d);
+          if (rnd() < 0.5) runs[d] = 1 + Math.floor(rnd() * 3);
+        }
+        return T(legacy, runs);
+      };
+      const lang = mk();
+      const gym = mk();
+      for (const today of ["2026-10-05", "2026-10-09"]) {
+        const a = appaPersonV2(lang, gym, today);
+        const b = personV2([lang, gym], today);
+        if (JSON.stringify(a.info) !== JSON.stringify(b.info) || a.startDay !== b.startDay) bad++;
+      }
+      // 적용일 뒤 오늘에도 적용일 전 날짜의 켜짐은 같다(앞으로의 날만 다르다)
+      for (const d of later) {
+        if (rnd() < 0.6) lang.runs.set(d, 1 + Math.floor(rnd() * 2));
+        if (rnd() < 0.6) gym.runs.set(d, 1);
+      }
+      const a = appaPersonV2(lang, gym, "2026-10-20");
+      const b = personV2([lang, gym], "2026-10-20");
+      const before = (s: Set<string>) => [...s].filter((d) => d < APPA_BOTH_FROM).sort().join();
+      if (before(a.litDays) !== before(b.litDays)) badFuture++;
+    }
+    add(B, "오늘(10-09)·그 전 오늘의 아빠 info·startDay = 옛 조립 그대로(무작위 300×2) · 적용일 뒤에도 지난 날 켜짐 불변", bad === 0 && badFuture === 0, `다름=${bad} 지난날=${badFuture}`);
+  }
+  // (e) 만회 — 적용일부터는 둘 다 + 어학 두 판
+  {
+    // 10-11·10-13 카드(10월 2장 다 씀), 10-15 놓침 → 10-16에 만회 여부
+    const lit = { "2026-10-10": 1, "2026-10-12": 1, "2026-10-14": 1 };
+    const L = (extra: Record<string, number>) => T([], { ...lit, ...extra });
+    const G = (extra: Record<string, number>) => T([], { ...lit, ...extra });
+    const ok = appaPersonV2(L({ "2026-10-16": 2 }), G({ "2026-10-16": 1 }), "2026-10-16").info;
+    const noGym = appaPersonV2(L({ "2026-10-16": 2 }), G({}), "2026-10-16").info;
+    const oneLang = appaPersonV2(L({ "2026-10-16": 1 }), G({ "2026-10-16": 1 }), "2026-10-16").info;
+    const noGymNext = appaPersonV2(L({ "2026-10-16": 2 }), G({}), "2026-10-17").info;
+    const legacyRepair = personV2([L({ "2026-10-16": 1 }), G({ "2026-10-16": 1 })], "2026-10-16").info; // 옛 합(어학 1 + 운동 1 = 2)
+    add(
+      B,
+      "(e) 만회: 어학 2판 + 운동 → 🔁 · 어학 2판만 → 대기(오늘 판 0) · 어학 1판 + 운동 → 대기(한 판 더) · 운동 없이 지나면 끊김",
+      ok.repairedDays.includes("2026-10-15") && ok.pendingRepairDay === null && ok.current === 5 &&
+        noGym.pendingRepairDay === "2026-10-15" && !noGym.doneToday && noGym.runsToday === 0 && needsMoreToday(noGym) &&
+        oneLang.pendingRepairDay === "2026-10-15" && oneLang.doneToday && oneLang.runsToday === 1 && repairHintText(oneLang) === "한 판 더 하면 어제 🔥가 돌아와요" &&
+        noGymNext.current === 0 && noGymNext.repairedDays.length === 0 &&
+        legacyRepair.repairedDays.includes("2026-10-15"),
+      `ok=${JSON.stringify(ok)} noGym=${JSON.stringify(noGym)} one=${JSON.stringify(oneLang)}`,
+    );
+  }
+  // 입력 접기 순수 확인 — bothFrom 전 = 합, 부터 = 둘 다일 때 어학 판 수
+  {
+    const m = appaInputV2(T(["2026-10-09"], { "2026-10-09": 1, "2026-10-10": 3, "2026-10-11": 2 }), T(["2026-10-08"], { "2026-10-09": 1, "2026-10-10": 1, "2026-10-12": 1 }), "2026-10-10");
+    add(B, "appaInputV2: 10-09 합 2 · 10-10 둘 다 → 어학 3 · 10-11·10-12 한쪽만 → 없음 · legacy 합집합(전)", m.runs.get("2026-10-09") === 2 && m.runs.get("2026-10-10") === 3 && !m.runs.has("2026-10-11") && !m.runs.has("2026-10-12") && [...m.legacyDays].sort().join() === "2026-10-08,2026-10-09", JSON.stringify([...m.runs]));
+  }
+  // 운동 계획 휴식일(workoutKeptDays에 든다)은 운동을 지킨 날 → 어학만으로 켜진다
+  {
+    const p = appaPersonV2(T([], { "2026-10-11": 1 }), T([], { "2026-10-11": 1 /* 휴식 슬롯 */ }), "2026-10-11");
+    add(B, "운동 쉬는 날(지킨 날) + 어학 한 판 → 켜짐", p.info.doneToday, JSON.stringify(p.info));
+  }
+  // 라벨
+  {
+    const L = (lang: boolean, gym: boolean, gymRest = false) => appaTodayLabel({ lang, gym, gymRest });
+    const got = [L(true, true), L(true, false), L(false, true), L(false, false), L(true, true, true), L(false, true, true)];
+    add(B, "라벨 6가지(짧게)", got.join("|") === "어학 ✓ · 운동 ✓|어학 ✓ · 운동 남음|운동 ✓ · 어학 남음|어학·운동 남음|어학 ✓ · 운동 쉬는 날|운동 쉬는 날 · 어학 남음", got.join("|"));
+  }
+  // (f) 가족 — 아빠는 합친 사람
+  {
+    const eun = personV2([T(["2026-10-09"], { "2026-10-10": 1, "2026-10-11": 1, "2026-10-12": 1 })], "2026-10-12");
+    const lang = T(["2026-10-09"], { "2026-10-10": 1, "2026-10-11": 1, "2026-10-12": 1 });
+    const gym = T([], { "2026-10-10": 1, "2026-10-11": 1 }); // 10-12(오늘) 운동 아직
+    const famNew = familyV2([eun, appaPersonV2(lang, gym, "2026-10-12"), null], "2026-10-12").info;
+    const famOld = familyV2([eun, personV2([lang, gym], "2026-10-12"), null], "2026-10-12").info;
+    const route = readFileSync(new URL("../lib/streak-server.ts", import.meta.url), "utf-8");
+    add(
+      B,
+      "(f) 가족: 오늘 아빠 어학만 → 가족 오늘 아직(옛 조립이면 켜짐) · 어제까지 4 · 라우트가 appaP = appaPersonV2를 가족·주간에 쓴다",
+      !famNew.doneToday && famNew.current === 3 && famOld.doneToday && /const appaP = appaPersonV2\(langT, gymT, today\);/.test(route) && /familyV2\(\[eunwooP, appaP, momP\], today\)/.test(route) && /appa: weekCells\(\{ info: appaP\.info, litDays: appaP\.litDays/.test(route),
+      `new=${JSON.stringify(famNew)} old=${JSON.stringify(famOld)}`,
+    );
+  }
+  // (g) 알림 — 적용일부터 운동만 한 날은 오늘·마지막 알림이 나가고 남은 것 = ["어학"]
+  {
+    const neutral = { current: 0, doneToday: false, lastDate: null, best: 0 };
+    const ps = (info: PersonStreak["info"], todayLabel: string | null = null): PersonStreak => ({ info, todayLabel });
+    const r: StreakResponse = {
+      ok: true,
+      today: "2026-10-10",
+      eunwoo: ps({ current: 5, doneToday: true, lastDate: "2026-10-10", best: 5 }),
+      appa: ps(neutral),
+      appaEnglish: ps(neutral),
+      appaLanguage: ps({ current: 3, doneToday: false, lastDate: "2026-10-09", best: 3 }),
+      appaWorkout: ps({ current: 2, doneToday: true, lastDate: "2026-10-10", best: 2 }),
+      appaPerson: ps({ current: 3, doneToday: false, lastDate: "2026-10-09", best: 3, pendingRepairDay: null, runsToday: 0, freezeLeftThisMonth: 2 }, "운동 ✓ · 어학 남음"),
+      mom: null,
+      family: ps(neutral),
+      week: { days: [], rows: { eunwoo: [], appa: [], mom: null } },
+      badges: [],
+      v2From: "2026-10-10",
+    };
+    const st = pushStates(r).find((x) => x.person === "appa");
+    const at21 = decidePushes({ nowHHMM: "21:00", states: pushStates(r), prefs: DEFAULT_PUSH_PREFS, sentToday: [] }).find((x) => x.person === "appa");
+    const at2230 = decidePushes({ nowHHMM: "22:30", states: pushStates(r), prefs: DEFAULT_PUSH_PREFS, sentToday: [{ person: "appa", kind: "today" }] }).find((x) => x.person === "appa");
+    // 옛 응답(appaPerson 없음)은 옛 규칙 — 운동만 해도 켜짐
+    const { appaPerson: _drop, ...old } = r;
+    void _drop;
+    const stOld = pushStates(old as StreakResponse).find((x) => x.person === "appa");
+    add(
+      B,
+      "(g) 알림: 운동만 한 날(적용일) → doneToday false · missingTracks ['어학'] · 21:00 today '(어학)' · 22:30 last · 옛 응답은 둘 중 하나",
+      st?.doneToday === false && JSON.stringify(st.missingTracks) === '["어학"]' && at21?.kind === "today" && at21.body.includes("(어학)") && at2230?.kind === "last" && stOld?.doneToday === true,
+      `${JSON.stringify(st)} ${at21?.body} ${at2230?.kind}`,
+    );
+    const both: StreakResponse = { ...r, appaLanguage: ps({ ...r.appaLanguage.info, doneToday: true }), appaPerson: ps({ ...r.appaPerson!.info, doneToday: true, runsToday: 1 }) };
+    add(B, "(g') 둘 다 하면 아빠 알림 없음", !decidePushes({ nowHHMM: "21:00", states: pushStates(both), prefs: DEFAULT_PUSH_PREFS, sentToday: [] }).some((x) => x.person === "appa"), "");
+  }
+  // (h) 정적 — 헤드라인 아빠 칸 하나·순서·배지 아빠 하나
+  {
+    const src = (f: string) => readFileSync(new URL(`../${f}`, import.meta.url), "utf8");
+    const hd = src("components/streak-headline.tsx");
+    const iF = hd.indexOf('name="가족"'), iE = hd.indexOf('name="은우"'), iM = hd.indexOf('name="엄마"'), iA = hd.indexOf('name="아빠"');
+    add(
+      B,
+      "(h) 헤드라인: 아빠 Person 하나(📚·💪 Track 없음) · 순서 가족 → 은우 → 엄마 → 아빠 · 아빠 라벨은 아직일 때도",
+      (hd.match(/<Track /g) ?? []).length === 1 && !/emoji="📚"|emoji="💪"/.test(hd) && (hd.match(/name="아빠"/g) ?? []).length === 1 && iF < iE && iE < iM && iM < iA && /name="아빠" p=\{appaCell\}[^>]*labelWhenPending/.test(hd),
+      `${iF},${iE},${iM},${iA}`,
+    );
+    const route = src("lib/streak-server.ts");
+    const board = src("components/family-board.tsx");
+    const cel = src("components/streak-celebrate.tsx");
+    add(
+      B,
+      "(h) 배지: 라우트는 아빠 하나(key 'appa' = appaP.info) · 트랙 배지 없음 · 보드·축하가 '아빠' 이름 · 축하는 옛 트랙 키로 본 숫자를 다시 띄우지 않음",
+      /\{ key: "appa" as const, \.\.\.badgesOf\(appaP\.info\) \}/.test(route) && !/key: "appaLanguage"|key: "appaWorkout"/.test(route) &&
+        /appa: "아빠"/.test(board) && !/workoutNeutral/.test(board) && /appa: "아빠"/.test(cel) && /appa: \["appaLanguage", "appaWorkout"\]/.test(cel),
+      "",
+    );
+    add(
+      B,
+      "(h) 보드: 아빠 줄 = appaPerson(아직이면 '아직 · 라벨') · 카드 수도 사람 값 · 안내에 APPA_BOTH_FROM",
+      /const appa: PersonStreak = data\.appaPerson \?\?/.test(board) && /labelWhenPending=\{data\.appaPerson != null\}/.test(board) && /`아직 · \$\{p\.todayLabel\}`/.test(board) && /아빠 \{appa\.info\.freezeLeftThisMonth/.test(board) && /\{APPA_BOTH_FROM\}부터 어학과 운동을 둘 다/.test(board),
+      "",
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

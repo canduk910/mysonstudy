@@ -21,6 +21,8 @@ export interface PersonStreak {
   todayLabel: string | null;
 }
 
+export type StreakBadgeKey = "eunwoo" | "appa" | "appaLanguage" | "appaWorkout" | "mom" | "family";
+
 export interface StreakResponse {
   ok: true;
   /** 서버가 계산한 KST 오늘 일자 YYYY-MM-DD */
@@ -46,14 +48,17 @@ export interface StreakResponse {
   appaEnglish: PersonStreak;
   /**
    * 아빠 · 📚 어학 트랙(SPEC §17-10, 2026-10-08 사용자 요청) — 일본어(`appa`)와 영어(`appaEnglish`)의 날짜 **합집합**.
-   * 둘 중 하나만 해도 그날이 켜진다. 헤드라인은 이 트랙 하나만 보인다(일본어·영어 칸을 대신한다).
+   * 둘 중 하나만 해도 그날이 켜진다. 2026-10-09부터 헤드라인·보드는 칸으로 그리지 않는다(아빠는 `appaPerson` 하나) — 호환·라벨용.
    * todayLabel은 오늘 가장 늦게 한 쪽의 라벨에 "일본어 · "/"영어 · "를 붙인 것(복습만이면 기록 있는 쪽, 일본어 먼저).
    * 토익 기록을 못 읽으면 일본어 + 토익 복습만으로 계산한다.
    */
   appaLanguage: PersonStreak;
   /**
-   * 아빠 **사람 단위** v2 값(어학 ∪ 운동 — 가족 스트릭 강화 §4-2). 만회 대기(`pendingRepairDay`)·오늘 판 수(`runsToday`)·연속은
-   * 트랙이 아니라 이 값으로 본다(트랙의 runsToday는 한 트랙만 센다). todayLabel은 null. v2 계산이 실패하면 없다(옛 클라이언트도 무시).
+   * 🧑 아빠 **사람 하나**(2026-10-09 사용자 결정 — 헤드라인·보드·가족·알림이 아빠로 보는 값). `appaPersonV2`:
+   * APPA_BOTH_FROM(2026-10-10)부터는 📚 어학·💪 운동 **둘 다** 해야 그날이 켜지고(운동 계획 휴식일은 어학만), 그 전 날짜는 옛 규칙(둘 중 하나).
+   * 만회 대기(`pendingRepairDay`)·오늘 판 수(`runsToday`)·연속·🧊 카드는 이 값으로 본다(트랙 값은 한 트랙만 센다).
+   * todayLabel은 트랙별 한 것/남은 것 — "어학 ✓ · 운동 ✓"·"어학 ✓ · 운동 남음"·"운동 ✓ · 어학 남음"·"어학·운동 남음"·
+   * "어학 ✓ · 운동 쉬는 날"·"운동 쉬는 날 · 어학 남음". v2 계산이 실패하면 옛 규칙(어학 ∪ 운동 지킨 날)으로 내고, 그것마저 실패하면 없다.
    */
   appaPerson?: PersonStreak;
   /** 👩 엄마 트랙 — 엄마 영역(②) 전에는 null */
@@ -62,8 +67,11 @@ export interface StreakResponse {
   family: PersonStreak;
   /** 이번 주(월~일, KST) 사람별 칸 — lit·freeze·repaired·pending(만회 대기)·missed·future·none(첫 기록 전) */
   week: { days: string[]; rows: { eunwoo: WeekCell[]; appa: WeekCell[]; mom: WeekCell[] | null } };
-  /** 배지(스펙 §4-1) — 최고 기록으로 얻은 배지, 오늘 막 도달한 배지(없으면 null) */
-  badges: { key: "eunwoo" | "appaLanguage" | "appaWorkout" | "mom" | "family"; earned: number[]; reachedToday: number | null }[];
+  /**
+   * 배지(스펙 §4-1) — 최고 기록으로 얻은 배지, 오늘 막 도달한 배지(없으면 null). 아빠는 2026-10-09부터 사람 하나(`appa` — appaPerson의 best).
+   * `appaLanguage`·`appaWorkout` 키는 옛 응답 호환으로만 타입에 남는다(서버는 더 내지 않는다).
+   */
+  badges: { key: StreakBadgeKey; earned: number[]; reachedToday: number | null }[];
   /** 새 규칙(한 판·카드·만회) 적용일 — 보드 안내용 */
   v2From: string;
 }

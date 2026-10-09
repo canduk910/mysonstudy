@@ -7,11 +7,15 @@
  * - 한 번 불러올 때 토스트는 최대 하나(새로 얻은 숫자 중 가장 큰 것). 보여 준 뒤 **지금 얻은 배지 전부**를 축하함으로 적어
  *   처음 여는 기기가 이후에 옛 배지 토스트를 줄줄이 보지 않게 한다.
  * - 기록은 기기 localStorage `streak-celebrated:<key>:<n>` — 접근이 막히면 다시 보일 뿐이다(try/catch).
+ * - 2026-10-09 아빠 배지는 사람 하나(`appa`)로 — 이 기기가 옛 트랙 배지(`appaLanguage`·`appaWorkout`)로 같은 숫자를 이미 축하했으면
+ *   다시 띄우지 않는다(같은 아빠의 같은 숫자다).
  */
 
 import { useEffect, useState } from "react";
 
-const NAME = { eunwoo: "은우", appaLanguage: "아빠 어학", appaWorkout: "아빠 운동", mom: "엄마", family: "가족" } as const;
+const NAME = { eunwoo: "은우", appa: "아빠", appaLanguage: "아빠 어학", appaWorkout: "아빠 운동", mom: "엄마", family: "가족" } as const;
+/** 같은 숫자를 이미 축하한 것으로 보는 옛 키(아빠 사람 하나로 합치기 전 트랙 배지) */
+const SAME_AS: Partial<Record<keyof typeof NAME, readonly (keyof typeof NAME)[]>> = { appa: ["appaLanguage", "appaWorkout"] };
 type Badge = { key: keyof typeof NAME; earned: readonly number[] };
 
 const storageKey = (key: string, n: number) => `streak-celebrated:${key}:${n}`;
@@ -38,7 +42,8 @@ export default function StreakCelebrate({ badges }: { badges: readonly Badge[] }
     let best: { key: Badge["key"]; n: number } | null = null;
     for (const b of badges) {
       for (const n of b.earned) {
-        if (!seen(storageKey(b.key, n)) && (best === null || n > best.n)) best = { key: b.key, n };
+        const already = seen(storageKey(b.key, n)) || (SAME_AS[b.key] ?? []).some((k) => seen(storageKey(k, n)));
+        if (!already && (best === null || n > best.n)) best = { key: b.key, n };
       }
     }
     if (!best) return;
