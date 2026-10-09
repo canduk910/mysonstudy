@@ -6,6 +6,11 @@
 #   수동 전용 회귀 테스트다 (docs/harness/english.md §5). 프롬프트 수정 시 로컬에서 돌리고 커밋할 것.
 # 서비스의 env·secret(OPENAI_MODEL, OPENAI_API_KEY 등)은 최초 배포 때 설정된 값이
 #   재배포에도 유지되므로 여기서 다시 지정하지 않는다.
+# 예외: 가족 스트릭 알림(VAPID_*·PUSH_CRON_SECRET)은 GitHub Secrets에서 매 배포마다
+#   --update-env-vars로 넘긴다(README의 --update-secrets APP_PIN과 같은 "병합" 계열 —
+#   --set-env-vars는 지정하지 않은 기존 env를 전부 지워서 쓸 수 없다). GitHub Secrets가
+#   아직 없으면 빈 문자열이 되어 해당 env가 빈 값으로 설정되는데, 알림 기능은 그 네 값이
+#   비거나 없으면 501/401로 안전하게 꺼지도록 만들어져 있다(배포 자체는 그대로 성공).
 
 name: CI/CD
 
@@ -44,11 +49,17 @@ jobs:
           service_account: github-deployer@eunwoo-bookcard.iam.gserviceaccount.com
       - uses: google-github-actions/setup-gcloud@v2
       - name: Deploy to Cloud Run (source)
+        env:
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+          PUSH_CRON_SECRET: ${{ secrets.PUSH_CRON_SECRET }}
         run: |
           gcloud run deploy eunwoo-bookcard \
             --source . \
             --region asia-northeast3 \
             --project eunwoo-bookcard \
+            --update-env-vars "VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY},VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY},VAPID_SUBJECT=${VAPID_SUBJECT},PUSH_CRON_SECRET=${PUSH_CRON_SECRET}" \
             --quiet
 
       # Hosting CDN 퍼지 — 이 단계가 없어서 배포한 화면이 안 보이는 사고가 났다(2026-08-20).

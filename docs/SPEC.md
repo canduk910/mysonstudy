@@ -644,6 +644,16 @@ interface StreakInfo {
 - **응답**(`lib/streak-contract.ts`) — 기존 필드 유지. `eunwoo`·`appaLanguage`·`appaWorkout`의 `info`는 v2 값(선택 필드 `freezeDays`·`repairedDays`·`pendingRepairDay`·`freezeLeftThisMonth`·`runsToday`가 더 온다; 운동 읽기 실패면 운동 트랙은 중립값 그대로). `appa`·`appaEnglish`(호환)는 옛 계산 그대로. 새 필드 `mom`(null)·`family`·`week`(이번 주 월~일 KST, 사람별 칸 `lit`·`freeze`·`repaired`·`pending`(만회 대기)·`missed`·`future`·`none`(첫 기록 전))·`badges`·`v2From`.
 - eval: `eval:streak` "v2 코어"(카드·만회·연속·주간·배지)·"한 판"(판정)·"v2 조립" 7항목(아빠 사람 단위 카드·트랙 적용·가족 참여자·엄마 null·오늘 아직·라우트 배선 — 은우 복습은 은우 트랙에만). 합계 116항목.
 
+**알림(가족 스트릭)** — PWA(웹 푸시)로 한 판·콕 찌르기를 알린다.
+
+- **설치 전제**: iPhone은 iOS 16.4 이상, Safari에서 **홈 화면에 추가**(앱 아이콘으로 열어야 웹 푸시 권한을 받을 수 있다 — 사파리 탭으로 열면 못 받는다). `app/manifest.ts`·`public/sw.js`.
+- **"나는 누구" 등록** — `/family/settings`에서 기기마다 가족 중 한 명을 고르고 알림을 켠다(브라우저 권한 창 → 구독 저장, `components/push-settings.tsx`·`app/api/push/subscribe/route.ts`). 기기 하나당 한 사람, 사람은 여러 기기를 가질 수 있다.
+- **30분 틱** — Cloud Scheduler가 08:00~22:30(KST) 사이 30분마다 `POST /api/push/tick`을 `x-push-secret` 헤더로 호출한다(`PUSH_CRON_SECRET` 불일치·누락은 401). 그 시각 상태로 보낼 알림을 순수 함수(`lib/push-decide.ts` `decidePushes`)가 정해 실제로 보낸다(`lib/push-send.ts`).
+- **알림 종류·제한**(§6-2) — 그날 한 판을 하면 그 사람의 그날 남은 알림은 오지 않는다. 22:30 이후·08:00 이전은 (콕 찌르기 포함) 아무 알림도 없다. 콕 찌르기(`/api/push/poke`)는 사람당 하루 3개(보내는 쪽 한도)까지, 받는 사람 기준 하루 2회까지만 도착한다 — 조용한 시간에 누르면 409.
+- **env**(값은 비밀값 — `.env.example`에 이름만): `VAPID_PUBLIC_KEY`·`VAPID_PRIVATE_KEY`·`VAPID_SUBJECT`·`PUSH_CRON_SECRET`. 비어 있거나 없으면 구독·틱·채점 라우트가 501/401로 안전하게 꺼진다(기능 off, 배포 자체는 그대로 성공).
+- eval: `eval:streak` 129항목(위 "v2" 116 + 구독·틱·콕·조용한 시간 판정 등 알림 관련 13).
+- **실기기 확인**: (배포 뒤 기록)
+
 ## 18. 대화 해설 낭독 — 한국어 해설까지 이어 읽기 (2026-09)
 
 ### 18-0. 무엇을 위한 것인가
