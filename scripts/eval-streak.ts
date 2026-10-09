@@ -38,6 +38,7 @@ import {
 import { templateSessionsForPart } from "../lib/toeic-guide-view";
 import { reviewFullDays, reviewStreakSessions, reviewTodayLabel } from "../lib/review-schedule";
 import { FREEZES_PER_MONTH, STREAK_BADGES, badgesOf, decideBridges, kstWeekDays, litDaysOf, streakFromStatus, weekCells } from "../lib/streak-v2";
+import { familyV2, personV2, trackV2 } from "../lib/streak-v2-assemble";
 import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullQuiz, isFullTalk } from "../lib/streak-v2-sources";
 
 interface CheckResult {
@@ -544,7 +545,9 @@ const TODAY = "2026-09-21";
     !/computeStreak\(\[\.\.\.jaVocab[^\]]*talk/i.test(route) &&
     !/toeicStreakSessions\([^)]*talk/i.test(route) &&
     !/workoutKeptDays\([^)]*talk/i.test(route) &&
-    (route.match(/talkStreakSessions\(/g) ?? []).length === 1;
+    // 대화는 은우 세션 배열에만 — legacy 은우 계산과 v2 은우 트랙(legacyDays)이 같은 배열을 쓴다(그 밖의 talkStreakSessions 호출 0)
+    (route.match(/talkStreakSessions\(/g) ?? []).length ===
+      route.split('[...vocab, ...talkStreakSessions(talks), ...reviewStreakSessions(reviewsOf("english"))]').length - 1;
   const label = /isCountedTalkSession\(t\)/.test(route) && /talkStreakLabel\(tToday\)/.test(route);
   add(
     "자유대화",
@@ -727,7 +730,13 @@ const TODAY = "2026-09-21";
 
   const route = readFileSync(new URL("../app/api/streak/route.ts", import.meta.url), "utf-8");
   const wired = /computeStreakFromDays\(new Set\(\[\.\.\.streakDays\(jaSessions\), \.\.\.streakDays\(enSessions\)\]\), today\)/.test(route);
-  const noLeak = !/streakDays\((?:vocab|talks|workoutCycles)/.test(route) && (route.match(/streakDays\(/g) ?? []).length === 2;
+  // streakDays는 일본어·영어 세션(어학 합집합 — legacy와 v2 어학 트랙)과 v2 은우 트랙의 은우 세션 배열에만
+  const sdCount = (needle: string) => route.split(needle).length - 1;
+  const noLeak =
+    !/streakDays\((?:vocab|talks|workoutCycles)/.test(route) &&
+    sdCount("streakDays(") === sdCount("streakDays(jaSessions)") + sdCount("streakDays(enSessions)") + sdCount("streakDays([...vocab, ...talkStreakSessions(talks)") &&
+    sdCount("streakDays(jaSessions)") === 2 &&
+    sdCount("streakDays(enSessions)") === 2;
   const fallback = /let enSessions: StreakSession\[\] = reviewStreakSessions\(reviewsOf\("toeic"\)\);/.test(route);
   const label = /`일본어 · \$\{appa\.todayLabel\}`/.test(route) && /`영어 · \$\{appaEnglish\.todayLabel\}`/.test(route);
   const inBody = /appaWorkout, appaEnglish, appaLanguage \}/.test(route);
@@ -820,6 +829,50 @@ const TODAY = "2026-09-21";
   add(B, "복습: 차례 온 2개 중 1개 → 아님, 2개 → 한 판", !part.has("2026-10-10") && full.has("2026-10-10"), `part=${[...part]} full=${[...full]}`);
   const newOnly = (n: number) => reviewFullDays(Array.from({ length: n }, (_, i) => rv(`en-word:n${i}`, [h("2026-10-12", 0)])) as never);
   add(B, "복습: 차례 온 것 없는 날 — 4개 아님, 5개 한 판", !newOnly(4).has("2026-10-12") && newOnly(5).has("2026-10-12"), "");
+}
+
+// ---------------------------------------------------------------------------
+// 13) 조립(스펙 §3·§4-2) — 아빠 사람 단위 카드, 가족 = 참여자 전원, 엄마 없음
+// ---------------------------------------------------------------------------
+{
+  const B = "v2 조립";
+  const FROM = "2026-10-10";
+  const T = (legacy: string[], runs: Record<string, number>) => ({ legacyDays: new Set(legacy), runs: new Map(Object.entries(runs)) });
+  const lang = T([], { "2026-10-10": 1, "2026-10-12": 1 });
+  const gym = T([], { "2026-10-11": 1, "2026-10-12": 1 });
+  const appa = personV2([lang, gym], "2026-10-12", FROM);
+  add(B, "아빠 사람: 어학·운동 중 하나면 그날 지킴 → 3일, 카드 0", appa.info.current === 3 && appa.info.freezeDays.length === 0, JSON.stringify(appa.info));
+  const langInfo = trackV2(lang, appa, "2026-10-12", FROM);
+  add(B, "어학 트랙: 10-11(운동만) 놓침 — 사람은 안 놓쳐 카드 없음 → current 1", langInfo.current === 1, JSON.stringify(langInfo));
+  const off = T([], { "2026-10-10": 1, "2026-10-12": 1 });
+  const p2 = personV2([off], "2026-10-12", FROM);
+  const t2 = trackV2(off, p2, "2026-10-12", FROM);
+  add(B, "사람이 놓친 날 카드는 트랙에도 적용(10-11 🧊)", t2.current === 2 && t2.freezeDays.includes("2026-10-11"), JSON.stringify(t2));
+  const eun = personV2([T(["2026-10-09"], { "2026-10-10": 1, "2026-10-11": 1, "2026-10-12": 1 })], "2026-10-12", FROM);
+  const fam2 = familyV2([eun, appa, null], "2026-10-12");
+  add(B, "가족: 엄마 null이어도 은우·아빠로 계산(10-09는 은우만 참여자 → 10-09~12 = 4)", fam2.info.current === 4, JSON.stringify(fam2.info));
+  const momP = personV2([T([], { "2026-10-12": 1 })], "2026-10-12", FROM);
+  const fam3 = familyV2([eun, appa, momP], "2026-10-12");
+  add(B, "가족: 엄마는 첫날(10-12)부터 참여 — 그 전은 은우·아빠 기준 → 4", momP.startDay === "2026-10-12" && fam3.info.current === 4, JSON.stringify(fam3.info));
+  const momLate = personV2([T([], { "2026-10-11": 1 })], "2026-10-12", FROM);
+  const fam4 = familyV2([eun, appa, momLate], "2026-10-12");
+  add(B, "가족: 오늘 엄마 아직 → 가족 오늘 아직(어제까지 10-09~11 = 3)", !fam4.info.doneToday && fam4.info.current === 3, JSON.stringify(fam4.info));
+  const route = readFileSync(new URL("../app/api/streak/route.ts", import.meta.url), "utf-8");
+  // 은우 복습 한 판은 은우 트랙에만 — 라우트에 한 번만 나오고 어학 트랙(langT) 정의보다 앞에 있어야 한다
+  const enReview = 'reviewFullDays(reviewsOf("english"))';
+  const enReviewAt = route.indexOf(enReview);
+  const wiredV2 =
+    /personV2\(\[eunwooT\], today\)/.test(route) &&
+    /personV2\(\[langT, gymT\], today\)/.test(route) &&
+    /familyV2\(\[eunwooP, appaP, null\], today\)/.test(route) &&
+    /vocab\.filter\(isFullQuiz\)/.test(route) &&
+    /talks\.filter\(isFullTalk\)/.test(route) &&
+    /toeicAttempts\.filter\(isFullAttempt\)/.test(route) &&
+    /reviewFullDays\(reviewsOf\("english"\)\)/.test(route) &&
+    route.split(enReview).length - 1 === 1 &&
+    enReviewAt >= 0 &&
+    enReviewAt < route.indexOf("const langT");
+  add(B, "/api/streak v2 배선: 사람·트랙·가족 조립, 한 판 판정 적용, 은우 복습은 은우에만", wiredV2, "");
 }
 
 // ---------------------------------------------------------------------------

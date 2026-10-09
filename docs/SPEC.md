@@ -631,6 +631,19 @@ interface StreakInfo {
 - `appa`·`appaEnglish`는 계산·응답에 그대로 남는다(호환·라벨 재료). 토익 기록을 못 읽으면 영어 쪽은 토익 복습만으로 합집합에 들어간다(응답 200 그대로).
 - eval: `eval:streak` "어학 트랙" 7항목 — 번갈아 해도 이어짐·영어만 한 날·같은 날 접기·답 0 세션 제외·`streakDays` 동치·라우트 배선(은우·운동 무혼합)·헤드라인 칸. 합계 84항목.
 
+### 17-11. 스트릭 v2 — 한 판·가족·카드·만회 (2026-10-09)
+
+사용자 요청(2026-10-09): "세 가족 모두 미루지 못하게 스트릭을 강화해 줘." 설계 원본은 `docs/superpowers/specs/2026-10-09-family-streak-design.md`(§2~§5). 새 저장 없이 기존 기록에서 파생한다(§17-5 그대로).
+
+- **적용일** — 배포일(상수 `STREAK_V2_FROM`, `lib/streak-v2.ts`, KST). 그 **이전 날짜는 옛 규칙**(§17-1·§17-9·§23-9 "답한 문항 ≥ 1"), **그날부터 새 규칙**. 🧊·🔁도 적용일부터만 계산한다 — 지금 이어지던 🔥가 규칙 변경으로 소급해 끊기지 않는다. 배포 뒤 바꾸지 않는다(바꾸면 지난 판정이 바뀐다).
+- **한 판**(`lib/streak-v2-sources.ts`) — 그날 하나라도 **끝까지** 해야 그 트랙의 그날이 켜진다. 시험(`isFullQuiz` — `finishedAt ≠ null`·문항 ≥ 1·모든 문항 answered: 은우 단어장, 일본어 단어·한자, 토익 표현·틀 시험·틀 테스트) / 토익 응시(`isFullAttempt` — 범위 문항 전부 녹음) / 틀 말하기(`isFullFrameDrill` — 말한 문항 ≥ 1) / 자유대화(`isFullTalk` — 은우 발화 ≥ `TALK_STREAK_MIN_CHILD_TURNS` 3) / 오늘의 복습(`lib/review-schedule.ts` `reviewFullDays` — 그날 복습 ≥ 1이고, 20개 이상 또는 차례 온 기존 항목을 전부 또는 차례 온 것이 없으면 5개 이상) / 운동(§17-7 지킨 날 그대로).
+- **🧊 쉬는 날 카드** — 사람마다 KST 달마다 2장(`FREEZES_PER_MONTH`), 이월 없음. 이어지던 연속에서 놓친 날(오늘 제외)에 자동으로 쓴다. 연속은 잇되 숫자는 올리지 않는다. **아빠는 사람 단위**(어학 ∪ 운동으로 한 번 정하고, 그 카드·만회를 📚·💪 트랙 연속에 그대로 적용 — `lib/streak-v2-assemble.ts` `personV2`·`trackV2`).
+- **🔁 만회** — 그 달 카드가 바닥났을 때만. 놓친 날 D의 다음 날 두 판(`REPAIR_MIN_RUNS`)이면 D가 살아난다(숫자 +1). D+1이 오늘이면 D는 **만회 대기**(`pendingRepairDay` — 연속은 살아 보인다).
+- **👪 가족 연속일**(`familyV2`) — 그날 **참여자**(첫 기록일 `startDay` 이후인 사람) 전원이 지킨 날(켜짐·🧊·🔁·만회 대기)이 이어진 수. 아빠는 📚 또는 💪 하나면 그날을 지킨 것. 엄마는 엄마 영역 전이라 `null`(참여자 아님). 오늘 참여자 중 아직인 사람이 있으면 가족 `doneToday = false`(어제까지로 센다).
+- **배지** — 트랙별(은우·📚·💪)과 가족에 7·30·100·200·365일(`STREAK_BADGES`). `best`가 그 수 이상이면 받은 것, 오늘 연속이 그 수에 닿았으면 `reachedToday`.
+- **응답**(`lib/streak-contract.ts`) — 기존 필드 유지. `eunwoo`·`appaLanguage`·`appaWorkout`의 `info`는 v2 값(선택 필드 `freezeDays`·`repairedDays`·`pendingRepairDay`·`freezeLeftThisMonth`·`runsToday`가 더 온다; 운동 읽기 실패면 운동 트랙은 중립값 그대로). `appa`·`appaEnglish`(호환)는 옛 계산 그대로. 새 필드 `mom`(null)·`family`·`week`(이번 주 월~일 KST, 사람별 칸 `lit`·`freeze`·`repaired`·`pending`(만회 대기)·`missed`·`future`·`none`(첫 기록 전))·`badges`·`v2From`.
+- eval: `eval:streak` "v2 코어"(카드·만회·연속·주간·배지)·"한 판"(판정)·"v2 조립" 7항목(아빠 사람 단위 카드·트랙 적용·가족 참여자·엄마 null·오늘 아직·라우트 배선 — 은우 복습은 은우 트랙에만). 합계 116항목.
+
 ## 18. 대화 해설 낭독 — 한국어 해설까지 이어 읽기 (2026-09)
 
 ### 18-0. 무엇을 위한 것인가

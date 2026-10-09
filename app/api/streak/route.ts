@@ -40,7 +40,10 @@ import {
   type ToeicQuizLabelNames,
 } from "@/lib/toeic-streak";
 import { workoutKeptDays, workoutStreakTodayLabel } from "@/lib/workout";
-import { reviewStreakSessions, reviewTodayLabel, type ReviewArea, type ReviewScheduleRecord } from "@/lib/review-schedule";
+import { reviewFullDays, reviewStreakSessions, reviewTodayLabel, type ReviewArea, type ReviewScheduleRecord } from "@/lib/review-schedule";
+import { STREAK_V2_FROM, badgesOf, kstWeekDays, weekCells } from "@/lib/streak-v2";
+import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullQuiz, isFullTalk } from "@/lib/streak-v2-sources";
+import { familyV2, personV2, trackV2, type TrackInput } from "@/lib/streak-v2-assemble";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -215,6 +218,74 @@ export async function GET() {
     appaLanguage.todayLabel = jaLabel ?? enLabel;
   }
 
-  const body: StreakResponse = { ok: true, today, eunwoo, appa, appaWorkout, appaEnglish, appaLanguage };
+  // ── 스트릭 v2(가족 스트릭 강화 스펙) — legacy = 기존 세션 배열의 날짜, runs = 적용일부터의 "한 판" 수 ──
+  // 카드·만회는 사람 단위로 한 번 정하고(아빠 = 어학 ∪ 운동) 트랙 연속에 그대로 적용한다. 헤드라인 info를 v2로 덮는다.
+  // `appa`·`appaEnglish`(호환 필드)는 legacy 계산 그대로 둔다 — 헤드라인은 더 이상 읽지 않는다.
+  const v2 = (() => {
+    const runs = (fill: (m: Map<string, number>) => void) => {
+      const m = new Map<string, number>();
+      fill(m);
+      return m;
+    };
+    const eunwooT: TrackInput = {
+      legacyDays: streakDays([...vocab, ...talkStreakSessions(talks), ...reviewStreakSessions(reviewsOf("english"))]),
+      runs: runs((m) => {
+        addRuns(m, vocab.filter(isFullQuiz).map((q) => q.startedAt));
+        addRuns(m, talks.filter(isFullTalk).map((t) => t.startedAt));
+        addDays(m, reviewFullDays(reviewsOf("english")));
+      }),
+    };
+    const langT: TrackInput = {
+      legacyDays: new Set([...streakDays(jaSessions), ...streakDays(enSessions)]),
+      runs: runs((m) => {
+        addRuns(m, [...jaVocab, ...jaKanji].filter(isFullQuiz).map((q) => q.startedAt));
+        addDays(m, reviewFullDays(reviewsOf("japanese")));
+        addDays(m, reviewFullDays(reviewsOf("toeic")));
+        if (toeicQuizzes) addRuns(m, toeicQuizzes.filter(isFullQuiz).map((q) => q.startedAt));
+        if (toeicAttempts) addRuns(m, toeicAttempts.filter(isFullAttempt).map((a) => a.startedAt));
+        if (toeicFrameDrills) addRuns(m, toeicFrameDrills.filter(isFullFrameDrill).map((d) => d.startedAt));
+      }),
+    };
+    let gymDays: string[] = [];
+    try {
+      if (workoutCycles) gymDays = workoutKeptDays(workoutCycles, today);
+    } catch {
+      gymDays = [];
+    }
+    const gymT: TrackInput = { legacyDays: new Set(gymDays), runs: runs((m) => addDays(m, gymDays)) };
+
+    const eunwooP = personV2([eunwooT], today);
+    const appaP = personV2([langT, gymT], today);
+    const fam = familyV2([eunwooP, appaP, null], today);
+    const week = kstWeekDays(today);
+    const langInfo = trackV2(langT, appaP, today);
+    const gymInfo = trackV2(gymT, appaP, today);
+    return {
+      eunwoo: eunwooP.info,
+      appaLanguage: langInfo,
+      appaWorkout: gymInfo,
+      family: fam.info,
+      week: {
+        days: week,
+        rows: {
+          eunwoo: weekCells({ info: eunwooP.info, litDays: eunwooP.litDays, weekDays: week, today, startDay: eunwooP.startDay }),
+          appa: weekCells({ info: appaP.info, litDays: appaP.litDays, weekDays: week, today, startDay: appaP.startDay }),
+          mom: null,
+        },
+      },
+      badges: [
+        { key: "eunwoo" as const, ...badgesOf(eunwooP.info) },
+        { key: "appaLanguage" as const, ...badgesOf(langInfo) },
+        { key: "appaWorkout" as const, ...badgesOf(gymInfo) },
+        { key: "family" as const, ...badgesOf(fam.info) },
+      ],
+    };
+  })();
+  eunwoo.info = v2.eunwoo;
+  appaLanguage.info = v2.appaLanguage;
+  if (appaWorkout !== NEUTRAL_STREAK) appaWorkout = { ...appaWorkout, info: v2.appaWorkout };
+
+  const v2Body = { mom: null, family: { info: v2.family, todayLabel: null }, week: v2.week, badges: v2.badges, v2From: STREAK_V2_FROM };
+  const body: StreakResponse = { ok: true, today, ...v2Body, eunwoo, appa, appaWorkout, appaEnglish, appaLanguage };
   return NextResponse.json(body, { headers: { "cache-control": "no-store" } });
 }

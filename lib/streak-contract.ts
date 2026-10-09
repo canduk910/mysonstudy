@@ -4,10 +4,12 @@
  */
 
 import type { StreakInfo } from "./streak";
+import type { StreakV2Info, WeekCell } from "./streak-v2";
 export type { StreakInfo };
 
 export interface PersonStreak {
-  info: StreakInfo;
+  /** 연속 정보. 스트릭 v2(가족 스트릭 강화) 트랙은 카드·만회 필드(freezeDays·repairedDays·pendingRepairDay·freezeLeftThisMonth·runsToday)가 더 온다 */
+  info: StreakInfo & Partial<Omit<StreakV2Info, keyof StreakInfo>>;
   /**
    * 오늘 한 과목·주제(짧게). 오늘 안 했으면 null.
    * 은우 "영어 단어장 · DAY 08"·"자유대화 · {주제}"(오늘 가장 늦게 시작한 것 — §17-9) /
@@ -49,4 +51,14 @@ export interface StreakResponse {
    * 토익 기록을 못 읽으면 일본어 + 토익 복습만으로 계산한다.
    */
   appaLanguage: PersonStreak;
+  /** 👩 엄마 트랙 — 엄마 영역(②) 전에는 null */
+  mom: PersonStreak | null;
+  /** 👪 가족 연속일(가족 스트릭 강화 스펙 §3-2) — 그날 참여자(첫 기록일 이후인 사람) 전원이 지킨 날(켜짐·🧊·🔁·만회 대기)이 이어진 수 */
+  family: PersonStreak;
+  /** 이번 주(월~일, KST) 사람별 칸 — lit·freeze·repaired·pending(만회 대기)·missed·future·none(첫 기록 전) */
+  week: { days: string[]; rows: { eunwoo: WeekCell[]; appa: WeekCell[]; mom: WeekCell[] | null } };
+  /** 배지(스펙 §4-1) — 최고 기록으로 얻은 배지, 오늘 막 도달한 배지(없으면 null) */
+  badges: { key: "eunwoo" | "appaLanguage" | "appaWorkout" | "mom" | "family"; earned: number[]; reachedToday: number | null }[];
+  /** 새 규칙(한 판·카드·만회) 적용일 — 보드 안내용 */
+  v2From: string;
 }

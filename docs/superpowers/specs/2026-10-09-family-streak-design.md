@@ -42,7 +42,12 @@
 | 👩 엄마 | 오늘의 레슨 1개 완료 | ② 엄마의 생활영어 스펙에서 정의(레슨 기록 `finishedAt` + 발화 체크까지) |
 
 ### 2-1. 오늘의 복습 한 판
-그날 그 영역의 **복습 큐를 끝까지** 처리했으면 한 판이다. 큐는 `buildReviewQueue`가 결정적으로 만드므로, 그날 D의 큐를 **D 이전 기록으로 재구성**해 크기 `q`를 얻고, D에 복습한 항목 수가 `q` 이상이면 한 판(큐 상한 `REVIEW_DAILY_CAP` 20 그대로). `q = 0`인 날은 복습으로 켤 수 없다. 재구성 함수는 `lib/review-schedule.ts`에 순수 함수로 둔다.
+그날 D에 그 영역 복습을 **1개 이상** 하고, 다음 중 하나면 한 판이다(`lib/review-schedule.ts` `reviewFullDays` — 순수, 영역 분리는 호출측):
+- 그날 복습한 항목 수 ≥ `REVIEW_DAILY_CAP`(20), 또는
+- **차례 온 기존 항목**(D 이전 마지막 이력 e의 `e.on + 간격[e.step] ≤ D`인 항목)이 있으면 그것을 **전부** D에 복습했다, 또는
+- 차례 온 기존 항목이 없는 날은 D에 `REVIEW_NEW_ONLY_MIN_RUN`(5)개 이상 복습했다.
+
+큐 크기를 재구성하지 않고 이력만으로 판정한다 — 같은 기록 → 같은 결과.
 
 ### 2-2. 화면
 - 시험·훈련을 중간에 나가면 한 줄 안내: **"한 판을 끝내야 🔥가 켜져요."**(그만둠 확인 창이 있는 곳은 그 창에, 없는 곳은 결과 화면에)
@@ -90,7 +95,7 @@
 
 `GET /api/streak` 응답을 넓힌다(기존 필드 유지·호환):
 - 각 `PersonStreak.info`에 `freezeDays`·`repairedDays`·`pendingRepairDay`·`freezeLeftThisMonth`(선택 필드 — 옛 클라이언트는 무시).
-- 새 필드 `mom: PersonStreak | null`(엄마 영역 전 = null), `family: PersonStreak`, `week: { days: string[]; rows: Record<"eunwoo"|"appa"|"mom", ("lit"|"freeze"|"repaired"|"missed"|"future"|"none")[]> }`, `badges`.
+- 새 필드 `mom: PersonStreak | null`(엄마 영역 전 = null), `family: PersonStreak`, `week: { days: string[]; rows: Record<"eunwoo"|"appa"|"mom", ("lit"|"freeze"|"repaired"|"pending"|"missed"|"future"|"none")[]> }` — `pending` = 만회 대기(§4-3, 오늘 두 판이면 살아나는 어제), `badges`.
 - 읽기 실패 규약(트랙만 중립값) 그대로.
 
 ## 6. 폰 알림
