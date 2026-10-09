@@ -112,15 +112,21 @@ const IRREGULAR_GROUPS: readonly (readonly string[])[] = [
 ];
 
 /** 한 낱말의 너그러운 형태들 — 원형·복수 s·-ed/-d/-ing 뗀 꼴(남는 줄기 3글자 이상) */
+/** 떼어 낸 결과로 만들지 않는 꼴 — 대명사·기능어(shed→she, wed→we 같은 오인 방지). 불규칙 표(went→go 등)와는 무관 */
+const STRIP_BLOCKED: ReadonlySet<string> = new Set([
+  ...MOM_FUNCTION_WORDS, "he", "she", "we", "me", "you", "they", "it", "i", "be", "see", "so", "no", "do", "go",
+]);
+
 function looseForms(w: string): Set<string> {
   const f = new Set<string>([w, stemS(w)]);
+  const addStripped = (x: string) => { if (!STRIP_BLOCKED.has(x)) f.add(x); };
   for (const suf of ["ing", "ed"]) {
-    if (w.endsWith(suf) && w.length - suf.length >= 3) f.add(w.slice(0, -suf.length));
+    if (w.endsWith(suf) && w.length - suf.length >= 3) addStripped(w.slice(0, -suf.length));
   }
-  // -d 하나는 "-ed"로 끝나고 뗀 줄기가 e(ee 아님)로 끝날 때만 — liked→like, used→use (need·feed·seed는 그대로)
+  // -d 하나는 "-ed"로 끝나고 뗀 줄기가 3글자 이상·e(ee 아님)로 끝날 때만 — liked→like, used→use (need·feed·seed는 그대로)
   if (w.endsWith("ed")) {
     const stem = w.slice(0, -1);
-    if (stem.endsWith("e") && !stem.endsWith("ee")) f.add(stem);
+    if (stem.length >= 3 && stem.endsWith("e") && !stem.endsWith("ee")) addStripped(stem);
   }
   return f;
 }

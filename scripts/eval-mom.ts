@@ -177,6 +177,8 @@ export function fakeBlock(id: string, week: number, stage: 0 | 1 | 2 | 3 | 4, n 
   add(A, "need ≠ nee(-d 떼기 제한) → pass 아님", judgeMomSpeech({ en: "I need a pen.", frameText: "I need ~", transcript: "I nee a pen" }).verdict !== "pass");
   add(A, "liked = like(-d 떼기) → pass", judgeMomSpeech({ en: "I like it.", frameText: "I like ~", transcript: "I liked it" }).verdict === "pass");
   add(A, "자연스러운 첫말 yes는 덧붙임 아님 → pass", j("Yes, I would like a cup of tea").verdict === "pass");
+  const jh = (en: string, t: string) => judgeMomSpeech({ en, frameText: "~ will go home", transcript: t }).verdict;
+  add(A, "짧은 낱말 -d 떼기 금지(we/wed·she/shed → pass 아님, used/use는 pass)", jh("We will go home.", "Wed will go home") !== "pass" && jh("She will go home.", "Shed will go home") !== "pass" && judgeMomSpeech({ en: "I use it.", frameText: "I use ~", transcript: "I used it" }).verdict === "pass");
 }
 
 // ── 출력 ──
