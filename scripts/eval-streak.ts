@@ -37,6 +37,7 @@ import {
 } from "../lib/test-status";
 import { templateSessionsForPart } from "../lib/toeic-guide-view";
 import { reviewStreakSessions, reviewTodayLabel } from "../lib/review-schedule";
+import { FREEZES_PER_MONTH, STREAK_BADGES, badgesOf, decideBridges, kstWeekDays, litDaysOf, streakFromStatus, weekCells } from "../lib/streak-v2";
 
 interface CheckResult {
   book: string;
@@ -734,6 +735,58 @@ const TODAY = "2026-09-21";
   const head = readFileSync(new URL("../components/streak-headline.tsx", import.meta.url), "utf-8");
   const one = /<Track emoji="📚" name="어학" p=\{data\?\.appaLanguage\} \/>/.test(head) && !/p=\{data\?\.appa\}/.test(head) && !/p=\{data\?\.appaEnglish\}/.test(head) && /p=\{data\?\.appaWorkout\}/.test(head);
   add(B, "헤드라인: 아빠 칸 = 📚 어학 + 💪 운동(🗾·🎙️ 칸 없음)", one, "");
+}
+
+// ---------------------------------------------------------------------------
+// 11) 스트릭 v2 코어(가족 스트릭 강화 스펙 §4) — 카드·만회·연속·주간·배지. from을 인자로 넘겨 상수와 무관하게 잠근다.
+// ---------------------------------------------------------------------------
+{
+  const B = "v2 코어";
+  const FROM = "2026-10-10";
+  const runsOf = (o: Record<string, number>) => new Map(Object.entries(o));
+  const calc = (legacy: string[], runs: Record<string, number>, today: string) => {
+    const input = { legacyDays: new Set(legacy), runs: runsOf(runs), from: FROM };
+    const lit = litDaysOf(input);
+    const bridges = decideBridges({ ...input, today });
+    return streakFromStatus({ litDays: lit, bridges, today, runsToday: runs[today] ?? 0 });
+  };
+  // ① 적용일 경계 — 전날까지 legacy로 이어 오던 연속이 적용일에도 이어진다
+  const a = calc(["2026-10-08", "2026-10-09"], { "2026-10-10": 1 }, "2026-10-10");
+  add(B, "① 적용일 당일 한 판 → legacy 2일 + 1 = 3", a.current === 3 && a.doneToday, JSON.stringify(a));
+  // ② legacy는 적용일 이후 날짜를 무시한다(새 규칙만)
+  const b = calc(["2026-10-10"], {}, "2026-10-10");
+  add(B, "② 적용일 이후 legacy 날짜는 무시(오늘 아직)", !b.doneToday && b.current === 0, JSON.stringify(b));
+  // ③ 카드 자동 사용 — 놓친 하루를 잇되 숫자는 안 오른다
+  const c = calc(["2026-10-09"], { "2026-10-10": 1, "2026-10-12": 1 }, "2026-10-12");
+  add(B, "③ 10-11 놓침 → 🧊 자동, current = 3(카드 날 제외)", c.current === 3 && c.freezeDays.includes("2026-10-11") && c.freezeLeftThisMonth === FREEZES_PER_MONTH - 1, JSON.stringify(c));
+  // ④ 월 2장 — 같은 달 세 번째 놓침은 카드 없음 → 다음 날 한 판이면 끊김
+  const d = calc([], { "2026-10-10": 1, "2026-10-12": 1, "2026-10-14": 1, "2026-10-16": 1, "2026-10-17": 1 }, "2026-10-17");
+  add(B, "④ 10-11·10-13 카드, 10-15 카드 없음 + 10-16 한 판 → 끊김(current 2)", d.current === 2 && d.freezeDays.length === 2 && d.repairedDays.length === 0, JSON.stringify(d));
+  // ⑤ 만회 — 카드 없을 때 다음 날 두 판이면 살아나고 숫자 +1
+  const e = calc([], { "2026-10-10": 1, "2026-10-12": 1, "2026-10-14": 1, "2026-10-16": 2 }, "2026-10-16");
+  add(B, "⑤ 10-15 놓침·카드 없음 → 10-16 두 판으로 만회(🔁)", e.repairedDays.includes("2026-10-15") && e.current === 5, JSON.stringify(e));
+  // ⑥ 만회 대기 — 어제 놓침·카드 없음·오늘 한 판 0~1 → 대기(연속 살아 있음)
+  const f0 = calc([], { "2026-10-10": 1, "2026-10-12": 1, "2026-10-14": 1 }, "2026-10-16");
+  const f1 = calc([], { "2026-10-10": 1, "2026-10-12": 1, "2026-10-14": 1, "2026-10-16": 1 }, "2026-10-16");
+  add(B, "⑥ 어제 놓침·카드 없음 → pendingRepairDay=어제, 오늘 한 판 1개면 아직 대기", f0.pendingRepairDay === "2026-10-15" && f0.current === 3 && f1.pendingRepairDay === "2026-10-15" && f1.doneToday, `f0=${JSON.stringify(f0)} f1=${JSON.stringify(f1)}`);
+  // ⑦ 월 경계 이월 없음 — 10월 1장 남겨도 11월은 2장
+  const g = calc([], { "2026-10-30": 1, "2026-11-01": 1, "2026-11-03": 1, "2026-11-05": 1 }, "2026-11-05");
+  add(B, "⑦ 10-31(10월 카드)·11-02·11-04(11월 2장) 모두 🧊, 11월 남은 카드 0", g.freezeDays.length === 3 && g.freezeLeftThisMonth === 0 && g.current === 4, JSON.stringify(g));
+  // ⑧ 이미 끊긴 뒤에는 카드를 쓰지 않는다
+  const h = calc([], { "2026-10-10": 1, "2026-10-20": 1 }, "2026-10-20");
+  add(B, "⑧ 긴 공백: 처음 2일만 카드, 이후 끊김 — 카드 2장 이상 쓰지 않음", h.freezeDays.length === 2 && h.current === 1, JSON.stringify(h));
+  // ⑨ 오늘에는 카드를 쓰지 않는다(오늘 아직)
+  const i = calc([], { "2026-10-10": 1 }, "2026-10-11");
+  add(B, "⑨ 오늘 아직 → 카드 미사용, current 1(어제까지)", i.freezeDays.length === 0 && i.current === 1 && !i.doneToday, JSON.stringify(i));
+  // ⑩ best는 카드로 이은 구간을 하나로 본다
+  add(B, "⑩ best = 카드로 이은 켜진 날 수", c.best === 3, JSON.stringify(c));
+  // ⑪ 주간 칸
+  const week = kstWeekDays("2026-10-16"); // 금요일
+  const cells = weekCells({ info: e, litDays: litDaysOf({ legacyDays: new Set(), runs: runsOf({ "2026-10-14": 1, "2026-10-16": 2 }), from: FROM }), weekDays: week, today: "2026-10-16", startDay: "2026-10-10" });
+  add(B, "⑪ 주간(10-12 월요일 시작): 수 10-14 lit, 목 10-15 repaired, 금 10-16 lit, 토·일 future", week[0] === "2026-10-12" && week[6] === "2026-10-18" && cells[2] === "lit" && cells[3] === "repaired" && cells[4] === "lit" && cells[5] === "future" && cells[6] === "future", JSON.stringify(cells));
+  // ⑫ 배지
+  const bg = badgesOf({ best: 31, current: 30, doneToday: true });
+  add(B, "⑫ 배지: best 31 → 7·30, 오늘 30에 닿음", STREAK_BADGES.join() === "7,30,100,200,365" && bg.earned.join() === "7,30" && bg.reachedToday === 30, JSON.stringify(bg));
 }
 
 // ---------------------------------------------------------------------------
