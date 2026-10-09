@@ -14,7 +14,7 @@ export default function FamilyPage() {
     <main className="mx-auto max-w-2xl px-4 py-6">
       <div className="mb-4">
         <Link href="/" className="u-navbtn">
-          ← 과목 선택
+          ← 처음으로
         </Link>
       </div>
       <FamilyBoard />

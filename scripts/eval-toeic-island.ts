@@ -313,6 +313,23 @@ function runWiringChecks(): IslandCheckResult[] {
   add("클라이언트 경계: 순수 모듈·계약·화면이 lib/ai·store·zod·openai 값을 import하지 않는다(타입만)", ![lib, contract, view, save].some((src) => runtimeBad.test(src)));
   add("🔊는 탭할 때만 — 섬 화면·담기 버튼에 prefetchSpeech·자동 재생 없음", !/prefetchSpeech|speakQueue|autoPlay/.test(view + save) && /onClick=\{\(\) => speak\(/.test(view));
   add("정규식 lookbehind 없음(구형 iOS Safari)", !/\(\?<[=!]/.test(lib));
+  // 채점 직후 담기 버튼(QA island-part 1) — island는 서버가 렌더 때 만든다. 채점 큐가 다 끝난 뒤 한 번만 새로 고친다(문항마다 하지 않는다)
+  const attemptView = readFileSync(path.join(ROOT, "components/toeic-attempt-view.tsx"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
+  const scoreOneSrc = /const scoreOne = useCallback\(([\s\S]*?)\n {2}\);/.exec(attemptView)?.[1] ?? "";
+  const runScoringSrc = /const runScoring = useCallback\(([\s\S]*?)\n {2}\);/.exec(attemptView)?.[1] ?? "";
+  const successBranch = /if \(data\?\.ok\) \{([\s\S]*?)\n {6}\}/.exec(scoreOneSrc)?.[1] ?? "";
+  add(
+    "채점 직후 섬 버튼: runScoring이 큐(Promise.all) 뒤·setRunning(false) 뒤에 성공분이 있을 때 한 번 router.refresh()",
+    /await Promise\.all\([\s\S]*setRunning\(false\);[\s\S]*if \(scored > 0\) router\.refresh\(\);/.test(runScoringSrc) &&
+      (runScoringSrc.match(/router\.refresh\(\)/g) ?? []).length === 1 &&
+      /if \(await scoreOne\(q\)\) scored \+= 1;/.test(runScoringSrc),
+  );
+  add(
+    "채점 직후 섬 버튼: 문항 성공 갈래(scoreOne의 data.ok)에는 refresh 없음 · 성공만 true",
+    successBranch.length > 0 && !/router\.refresh/.test(successBranch) && /return true;/.test(successBranch) && (scoreOneSrc.match(/return true;/g) ?? []).length === 1,
+  );
   return results;
 }
 

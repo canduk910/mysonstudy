@@ -685,7 +685,7 @@ export default function ToeicAttemptView({
   }, []);
 
   const scoreOne = useCallback(
-    async (q: number) => {
+    async (q: number): Promise<boolean> => {
       // 소리 출처(§13-8): 이 기기 사본 → 서버 사본(내려받은 Blob — 다른 기기 채점). 채점 라우트 계약은 그대로(WAV 정규화 → multipart)
       const local = recsRef.current.get(q);
       let rec: { blob: Blob; mimeType: string; durationMs: number; size: number };
@@ -695,13 +695,13 @@ export default function ToeicAttemptView({
         const meta = serverRecsRef.current.get(q);
         if (!meta) {
           setJob(q, { phase: "failed", message: "녹음이 이 기기에도 서버에도 없어 채점할 수 없어요.", retriable: false });
-          return;
+          return false;
         }
         setJob(q, { phase: "normalizing" });
         const clip = await ensureServerClip(id, q);
         if (clip.status !== "ready") {
           setJob(q, { phase: "failed", message: clip.status === "error" ? clip.message : "서버 사본을 받지 못했어요.", retriable: true });
-          return;
+          return false;
         }
         rec = { blob: clip.blob, mimeType: meta.mimeType, durationMs: meta.durationMs, size: meta.size };
       }
@@ -724,12 +724,12 @@ export default function ToeicAttemptView({
       if (upload.size > TOEIC_SCORE_AUDIO_MAX_BYTES) {
         setJob(q, { phase: "failed", message: "녹음 파일이 너무 커서 올릴 수 없어요.", retriable: false });
         patchDiag(q, { transcribe: "failed", error: "too_large" });
-        return;
+        return false;
       }
       if (!isAcceptedToeicAudioType(type)) {
         setJob(q, { phase: "failed", message: `이 녹음 형식(${type || "알 수 없음"})은 채점에 올릴 수 없어요.`, retriable: false });
         patchDiag(q, { transcribe: "failed", error: "unsupported_type" });
-        return;
+        return false;
       }
       setJob(q, { phase: "uploading" });
       const fd = new FormData();
@@ -744,13 +744,13 @@ export default function ToeicAttemptView({
       } catch {
         setJob(q, { phase: "failed", message: "네트워크 문제로 채점하지 못했어요. 다시 시도해 주세요.", retriable: true });
         patchDiag(q, { transcribe: "failed", error: "network" });
-        return;
+        return false;
       }
       if (data?.ok) {
         setAnswers((prev) => ({ ...prev, [q]: data.answer }));
         setJob(q, { phase: "done" });
         patchDiag(q, { transcribe: data.noResponse ? "no_response" : data.transcriptSource === "stored" ? "stored" : "ok", error: null });
-        return;
+        return true;
       }
       if (data && !data.ok) {
         if (data.answer) setAnswers((prev) => ({ ...prev, [q]: data.answer! }));
@@ -762,10 +762,11 @@ export default function ToeicAttemptView({
         if (data.error === "answer_changed") router.refresh();
         setJob(q, { phase: "failed", message: data.messageKo, retriable: data.retriable === true || data.error === "client_closed" });
         patchDiag(q, { transcribe: "failed", error: `${status} ${data.error}` });
-        return;
+        return false;
       }
       setJob(q, { phase: "failed", message: `채점 응답을 받지 못했어요(${status || "연결 끊김"}). 다시 시도해 주세요.`, retriable: true });
       patchDiag(q, { transcribe: "failed", error: `${status} 본문 없음` });
+      return false;
     },
     [id, patchDiag, setJob, ensureServerClip, router],
   );
@@ -783,10 +784,11 @@ export default function ToeicAttemptView({
         return next;
       });
       const queue = [...targets];
+      let scored = 0;
       const worker = async () => {
         while (queue.length > 0 && !stopAllRef.current) {
           const q = queue.shift()!;
-          await scoreOne(q);
+          if (await scoreOne(q)) scored += 1;
         }
       };
       await Promise.all(Array.from({ length: Math.min(TOEIC_SCORE_CONCURRENCY, targets.length) }, () => worker()));
@@ -799,8 +801,11 @@ export default function ToeicAttemptView({
       }
       runningRef.current = false;
       setRunning(false);
+      // 큐가 다 끝난 뒤 한 번만 서버 값을 다시 읽는다 — 서버가 만드는 🏝️ 섬 자료(island)가 방금 채점한 피드백을 보게.
+      // 문항마다 하면 병렬 채점 중 옛 서버 값이 방금 받은 피드백을 덮을 수 있다(QA island-part 1)
+      if (scored > 0) router.refresh();
     },
-    [scoreOne],
+    [scoreOne, router],
   );
 
   const qs = questions.map((v) => v.q);
