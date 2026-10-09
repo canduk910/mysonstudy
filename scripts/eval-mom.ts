@@ -3,6 +3,7 @@
  */
 import { readFileSync } from "node:fs";
 import { MOM_IMPORT_FORMAT, momBlockHash, momImportFileSchema, isSpeakRole } from "../lib/mom-content";
+import { decideMomImport, momLessonSaveSchema, momTestSaveSchema } from "../lib/mom-contract";
 
 globalThis.fetch = (() => {
   throw new Error("eval:mom은 네트워크를 쓰지 않는다");
@@ -49,6 +50,29 @@ export function fakeBlock(id: string, week: number, stage: 0 | 1 | 2 | 3 | 4, n 
   const b2 = structuredClone(b);
   b2.explainKo = "바뀐 설명";
   add(A, "블록 해시: 같은 내용 같은 값, 다르면 다른 값", momBlockHash(b) === momBlockHash(structuredClone(b)) && momBlockHash(b) !== momBlockHash(b2));
+}
+
+// ── 2) 가져오기 결정·저장 계약 ──
+{
+  const A = "가져오기 결정";
+  const file = { format: MOM_IMPORT_FORMAT, presetKey: "mom-v1", blocks: [fakeBlock("b1", 5, 1), fakeBlock("b2", 6, 1)] } as never;
+  const first = decideMomImport(file, [], "2026-10-10T00:00:00.000Z");
+  add(A, "처음 → 모두 created", first.result.created.length === 2 && first.writes.length === 2);
+  const again = decideMomImport(file, first.writes, "2026-10-11T00:00:00.000Z");
+  add(A, "같은 파일 재반입 → unchanged, 쓰기 0", again.result.unchanged.length === 2 && again.writes.length === 0);
+  const changed = structuredClone(file) as { blocks: { explainKo: string }[] };
+  changed.blocks[0].explainKo = "다른 설명";
+  const upd = decideMomImport(changed as never, first.writes, "2026-10-11T00:00:00.000Z");
+  add(A, "내용 바뀐 블록만 updated(importedAt 갱신), 나머지 unchanged", upd.result.updated.join() === "b1" && upd.result.unchanged.join() === "b2" && upd.writes.length === 1);
+  add(A, "파일에 없는 기존 블록은 지우지 않는다(writes에 삭제 없음)", decideMomImport({ ...(file as object), blocks: [fakeBlock("b1", 5, 1)] } as never, first.writes, "x").writes.every((w) => w.id === "b1"));
+
+  const L = "저장 계약";
+  const lesson = { id: "c-1", lessonId: "w5-d1", startedAt: "2026-10-10T00:00:00.000Z", finishedAt: "2026-10-10T00:05:00.000Z", checks: [{ sentenceId: "b1-s0", verdict: "pass", transcript: "i would like item 0", hintLevel: 0 }] };
+  add(L, "레슨 저장 정상", momLessonSaveSchema.safeParse(lesson).success);
+  add(L, "레슨 verdict 밖 거부", !momLessonSaveSchema.safeParse({ ...lesson, checks: [{ ...lesson.checks[0], verdict: "great" }] }).success);
+  add(L, "레슨 id 형식(클라이언트 멱등 키) — 공백·긴 값 거부", !momLessonSaveSchema.safeParse({ ...lesson, id: "a b" }).success && !momLessonSaveSchema.safeParse({ ...lesson, id: "x".repeat(80) }).success);
+  const test = { id: "t-1", week: 5, startedAt: lesson.startedAt, finishedAt: lesson.finishedAt, items: [{ sentenceId: "b1-s0", verdict: "close", transcript: "i like item", recorded: true }] };
+  add(L, "테스트 저장 정상·summaryKo는 받지 않는다", momTestSaveSchema.safeParse(test).success && !momTestSaveSchema.safeParse({ ...test, summaryKo: { goodKo: "a", fixKo: "b" } }).success);
 }
 
 // ── 출력 ──

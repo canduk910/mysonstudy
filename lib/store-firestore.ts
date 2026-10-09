@@ -125,6 +125,9 @@ import {
 } from "./store";
 import { isPushPerson, parsePushPrefs, type PushKind, type PushPerson } from "./push-contract";
 import { islandEntryData, normalizeToeicIslandEntry, sortIslandEntries, type ToeicIslandEntry } from "./toeic-island";
+// 엄마의 생활영어(설계 §6) — 결정은 순수 모듈(두 백엔드가 같은 함수를 부른다)
+import { decideMomImport, type MomBlockRecord, type MomImportResult, type MomLessonRecord, type MomTestRecord } from "./mom-contract";
+import type { MomImportFile } from "./mom-content";
 import {
   decideReview,
   normalizeReviewSchedule,
@@ -721,6 +724,16 @@ export class FirestoreStore implements StudyStore {
   // 📅 오늘의 복습(SPEC §23) — 문서 id = reviewDocId(영역, 항목 키). 세 영역이 한 컬렉션을 쓰고 area 필드로 가른다
   private reviewSchedules(): CollectionReference {
     return getDb().collection("reviewSchedules");
+  }
+  // 👩 엄마의 생활영어(설계 §6-2) — 블록(문서 id = 블록 id)·레슨 기록·주간 테스트(문서 id = 클라이언트 멱등 키)
+  private momContent(): CollectionReference {
+    return getDb().collection("momContent");
+  }
+  private momLessons(): CollectionReference {
+    return getDb().collection("momLessons");
+  }
+  private momTests(): CollectionReference {
+    return getDb().collection("momTests");
   }
   // 🔔 폰 알림(가족 스트릭 §6) — 구독(문서 id = endpoint 해시)·발송 기록(문서 id = day:person:kind:n)
   private pushSubscriptions(): CollectionReference {
@@ -2198,6 +2211,81 @@ export class FirestoreStore implements StudyStore {
       const decision = decideReview(prev, input);
       if (decision.kind === "applied") tx.set(ref, frameFirestoreData(reviewScheduleData(decision.record)));
       return decision;
+    });
+  }
+
+  // ---- 👩 엄마의 생활영어 (설계 §6-2) ----
+  // 가져오기는 runTransaction — 파일의 블록 id를 전부 읽은 뒤(읽기 먼저) decideMomImport로 판정하고 바뀐 것만 쓴다.
+  // 블록 400개 상한(momImportFileSchema)이라 트랜잭션 쓰기 500 한도 안. 비교는 저장된 hash 필드로만(문서를 다시 해시하지 않는다).
+  // 레슨·테스트 저장은 ref.create() 멱등(토익 섬 관용구) — 이미 있으면 기존 문서를 그대로 돌려준다. 삭제 경로 없음(prod-guard 무관).
+
+  async importMomContent(file: MomImportFile, nowIso: string): Promise<MomImportResult> {
+    const refs = file.blocks.map((b) => this.momContent().doc(b.id));
+    return getDb().runTransaction(async (tx): Promise<MomImportResult> => {
+      const snaps = refs.length > 0 ? await tx.getAll(...refs) : [];
+      const existing = snaps.filter((sn) => sn.exists).map((sn) => ({ ...(sn.data() as MomBlockRecord), id: sn.id }));
+      const { result, writes } = decideMomImport(file, existing, nowIso);
+      for (const w of writes) tx.set(this.momContent().doc(w.id), frameFirestoreData(w));
+      return result;
+    });
+  }
+
+  async listMomBlocks(): Promise<MomBlockRecord[]> {
+    const snap = await this.momContent().get();
+    return snap.docs.map((d) => ({ ...(d.data() as MomBlockRecord), id: d.id }));
+  }
+
+  async listMomLessons(): Promise<MomLessonRecord[]> {
+    // 전체를 읽어 메모리 정렬(가족 규모 — orderBy는 필드 없는 문서를 뺀다)
+    const snap = await this.momLessons().get();
+    return snap.docs.map((d) => ({ ...(d.data() as MomLessonRecord), id: d.id })).sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+  }
+
+  async saveMomLesson(rec: MomLessonRecord): Promise<{ record: MomLessonRecord; reused: boolean }> {
+    const ref = this.momLessons().doc(rec.id);
+    try {
+      await ref.create(frameFirestoreData(rec));
+      return { record: rec, reused: false };
+    } catch (err) {
+      if ((err as { code?: unknown } | null)?.code !== GRPC_ALREADY_EXISTS) throw err;
+      const snap = await ref.get();
+      return { record: snap.exists ? { ...(snap.data() as MomLessonRecord), id: rec.id } : rec, reused: true };
+    }
+  }
+
+  async listMomTests(): Promise<MomTestRecord[]> {
+    const snap = await this.momTests().get();
+    return snap.docs
+      .map((d) => {
+        const data = d.data() as MomTestRecord;
+        return { ...data, id: d.id, summaryKo: data.summaryKo ?? null };
+      })
+      .sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+  }
+
+  async saveMomTest(rec: Omit<MomTestRecord, "summaryKo">): Promise<{ record: MomTestRecord; reused: boolean }> {
+    const ref = this.momTests().doc(rec.id);
+    const full: MomTestRecord = { ...rec, summaryKo: null };
+    try {
+      await ref.create(frameFirestoreData(full));
+      return { record: full, reused: false };
+    } catch (err) {
+      if ((err as { code?: unknown } | null)?.code !== GRPC_ALREADY_EXISTS) throw err;
+      const snap = await ref.get();
+      if (!snap.exists) return { record: full, reused: true };
+      const data = snap.data() as MomTestRecord;
+      return { record: { ...data, id: rec.id, summaryKo: data.summaryKo ?? null }, reused: true };
+    }
+  }
+
+  async setMomTestSummary(id: string, summary: { goodKo: string; fixKo: string }): Promise<MomTestRecord | null> {
+    const ref = this.momTests().doc(id);
+    return getDb().runTransaction(async (tx): Promise<MomTestRecord | null> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      const data = snap.data() as MomTestRecord;
+      tx.update(ref, { summaryKo: frameFirestoreData(summary) });
+      return { ...data, id, summaryKo: summary };
     });
   }
 

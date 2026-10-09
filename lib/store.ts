@@ -170,6 +170,10 @@ import {
 import { islandEntryData, normalizeToeicIslandEntry, sortIslandEntries, type ToeicIslandEntry } from "./toeic-island";
 import { decideReview, normalizeReviewSchedule, type DecideReviewInput, type DecideReviewResult, type ReviewArea, type ReviewScheduleRecord } from "./review-schedule";
 import { isPushPerson, type PushKind, type PushPerson, type PushPrefs } from "./push-contract";
+// 엄마의 생활영어(설계 §6) — 계약·결정의 단일 정의처는 순수 모듈 lib/mom-contract.ts(store → 계약 한 방향)
+import type { MomBlockRecord, MomImportResult, MomLessonRecord, MomTestRecord } from "./mom-contract";
+import { decideMomImport } from "./mom-contract";
+import type { MomImportFile } from "./mom-content";
 
 /**
  * 폰 알림 구독 하나(가족 스트릭 강화 스펙 §6-1) — 컬렉션 `pushSubscriptions`. id = endpoint의 sha256 hex 앞 32자
@@ -1514,6 +1518,21 @@ export interface StudyStore {
    */
   applyReviewOutcome(input: DecideReviewInput): Promise<DecideReviewResult>;
 
+  // ---- 👩 엄마의 생활영어 — 컬렉션 `momContent`·`momLessons`·`momTests` (설계 §6-2) ----
+  /** 가져오기 — 블록 id upsert(decideMomImport). 해시 같으면 그대로, 파일에 없는 블록은 지우지 않는다. 판정과 쓰기가 한 원자 단위 */
+  importMomContent(file: MomImportFile, nowIso: string): Promise<MomImportResult>;
+  listMomBlocks(): Promise<MomBlockRecord[]>;
+  /** startedAt 오름차순 */
+  listMomLessons(): Promise<MomLessonRecord[]>;
+  /** id 멱등: 같은 id가 있으면 쓰지 않고 그대로 반환(reused:true). 생성이라 prod-guard 무관 */
+  saveMomLesson(rec: MomLessonRecord): Promise<{ record: MomLessonRecord; reused: boolean }>;
+  /** startedAt 오름차순 */
+  listMomTests(): Promise<MomTestRecord[]>;
+  /** id 멱등(saveMomLesson과 같다). summaryKo는 null로 시작 */
+  saveMomTest(rec: Omit<MomTestRecord, "summaryKo">): Promise<{ record: MomTestRecord; reused: boolean }>;
+  /** 요약 붙이기 — 없는 id면 null */
+  setMomTestSummary(id: string, summary: { goodKo: string; fixKo: string }): Promise<MomTestRecord | null>;
+
   // ---- 🔔 폰 알림 — 컬렉션 `pushSubscriptions`·`pushLog` (가족 스트릭 강화 스펙 §6) ----
   /** 구독 저장 — 같은 id(같은 endpoint)면 person·keys·prefs를 덮고 createdAt·lastOkAt은 지킨다. 생성·수정이라 prod-guard 무관 */
   upsertPushSubscription(rec: Omit<PushSubscriptionRecord, "createdAt" | "lastOkAt">): Promise<void>;
@@ -1576,6 +1595,10 @@ export interface DbShape {
   toeicIsland: ToeicIslandEntry[];
   /** 📅 오늘의 복습 일정(SPEC §23) — 이 키가 없던 db.json은 빈 배열 */
   reviewSchedules: ReviewScheduleRecord[];
+  /** 👩 엄마의 생활영어(설계 §6-2) — 이 키가 없던 db.json은 빈 배열 */
+  momContent: MomBlockRecord[];
+  momLessons: MomLessonRecord[];
+  momTests: MomTestRecord[];
   /** 🔔 알림 구독(가족 스트릭 §6-1) — id → 레코드 맵. 이 키가 없던 db.json은 빈 맵 */
   pushSubscriptions: Record<string, PushSubscriptionRecord>;
   /** 🔔 발송 기록 — 문서 id(`day:person:kind:n`) → 보낸 시각. 이 키가 없던 db.json은 빈 맵 */
@@ -1596,6 +1619,7 @@ function emptyDb(): DbShape {
     toeicFrameBank: [], toeicFrameDrills: [],
     toeicIsland: [],
     reviewSchedules: [],
+    momContent: [], momLessons: [], momTests: [],
     pushSubscriptions: {},
     pushLog: {},
   };
@@ -1692,6 +1716,10 @@ async function readDb(): Promise<DbShape> {
         .filter((d): d is ToeicIslandEntry => d !== null),
       // 📅 오늘의 복습(§23) 이전 db.json엔 이 키가 없다 — 같은 하위호환. 깨진 일정은 정규화가 뺀다(그 항목은 처음 들어오는 항목으로 다시 계산)
       reviewSchedules: (parsed.reviewSchedules ?? []).map((d) => normalizeReviewSchedule(d)).filter((d): d is ReviewScheduleRecord => d !== null),
+      // 👩 엄마의 생활영어 이전 db.json엔 이 세 키가 없다 — 빈 배열. 저장 때 zod로 검사했으므로 배열 확인만
+      momContent: Array.isArray(parsed.momContent) ? (parsed.momContent as MomBlockRecord[]) : [],
+      momLessons: Array.isArray(parsed.momLessons) ? (parsed.momLessons as MomLessonRecord[]) : [],
+      momTests: Array.isArray(parsed.momTests) ? (parsed.momTests as MomTestRecord[]) : [],
       // 🔔 알림(가족 스트릭 §6) 이전 db.json엔 이 두 키가 없다 — 빈 맵
       pushSubscriptions: isPlainMap(parsed.pushSubscriptions) ? parsed.pushSubscriptions : {},
       pushLog: isPlainMap(parsed.pushLog) ? parsed.pushLog : {},
@@ -3326,6 +3354,60 @@ class JsonFileStore implements BookCardStore {
     });
   }
 
+  // ---- 👩 엄마의 생활영어 (설계 §6-2) — 결정은 lib/mom-contract의 순수 함수, 확인과 쓰기는 한 mutate 안에서 ----
+
+  async importMomContent(file: MomImportFile, nowIso: string): Promise<MomImportResult> {
+    return this.mutate((db) => {
+      const { result, writes } = decideMomImport(file, db.momContent, nowIso);
+      for (const w of writes) {
+        const i = db.momContent.findIndex((b) => b.id === w.id);
+        if (i >= 0) db.momContent[i] = w;
+        else db.momContent.push(w);
+      }
+      return result;
+    });
+  }
+
+  async listMomBlocks(): Promise<MomBlockRecord[]> {
+    return (await readDb()).momContent.slice();
+  }
+
+  async listMomLessons(): Promise<MomLessonRecord[]> {
+    return (await readDb()).momLessons.slice().sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+  }
+
+  async saveMomLesson(rec: MomLessonRecord): Promise<{ record: MomLessonRecord; reused: boolean }> {
+    return this.mutate((db) => {
+      const cur = db.momLessons.find((l) => l.id === rec.id);
+      if (cur) return { record: cur, reused: true };
+      db.momLessons.push(rec);
+      return { record: rec, reused: false };
+    });
+  }
+
+  async listMomTests(): Promise<MomTestRecord[]> {
+    return (await readDb()).momTests.slice().sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+  }
+
+  async saveMomTest(rec: Omit<MomTestRecord, "summaryKo">): Promise<{ record: MomTestRecord; reused: boolean }> {
+    return this.mutate((db) => {
+      const cur = db.momTests.find((t) => t.id === rec.id);
+      if (cur) return { record: cur, reused: true };
+      const full: MomTestRecord = { ...rec, summaryKo: null };
+      db.momTests.push(full);
+      return { record: full, reused: false };
+    });
+  }
+
+  async setMomTestSummary(id: string, summary: { goodKo: string; fixKo: string }): Promise<MomTestRecord | null> {
+    return this.mutate((db) => {
+      const cur = db.momTests.find((t) => t.id === id);
+      if (!cur) return null;
+      cur.summaryKo = summary;
+      return cur;
+    });
+  }
+
   async listToeicIslandEntries(): Promise<ToeicIslandEntry[]> {
     const db = await readDb();
     return sortIslandEntries(db.toeicIsland);
@@ -3563,6 +3645,10 @@ export async function mergeDbForSeed(seed: DbShape): Promise<void> {
     toeicIsland: mergeById(cur.toeicIsland, seed.toeicIsland),
     // 📅 오늘의 복습 일정 — 같은 이유로 반드시 mergeById(시드가 복습 간격을 지우지 않게). 시드는 빈 배열이다.
     reviewSchedules: mergeById(cur.reviewSchedules, seed.reviewSchedules),
+    // 👩 엄마의 생활영어 — 같은 이유로 반드시 mergeById(시드가 가져온 블록·레슨·테스트 기록을 지우지 않게). 시드는 빈 배열이다.
+    momContent: mergeById(cur.momContent, seed.momContent),
+    momLessons: mergeById(cur.momLessons, seed.momLessons),
+    momTests: mergeById(cur.momTests, seed.momTests),
     // 🔔 알림 구독·발송 기록 — 같은 이유로 기존 것을 지키는 머지(시드는 빈 맵이다)
     pushSubscriptions: { ...cur.pushSubscriptions, ...seed.pushSubscriptions },
     pushLog: { ...cur.pushLog, ...seed.pushLog },
