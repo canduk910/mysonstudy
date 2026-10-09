@@ -181,6 +181,14 @@ export function fakeBlock(id: string, week: number, stage: 0 | 1 | 2 | 3 | 4, n 
   add(A, "짧은 낱말 -d 떼기 금지(we/wed·she/shed → pass 아님, used/use는 pass)", jh("We will go home.", "Wed will go home") !== "pass" && jh("She will go home.", "Shed will go home") !== "pass" && judgeMomSpeech({ en: "I use it.", frameText: "I use ~", transcript: "I used it" }).verdict === "pass");
 }
 
+// ── 5) 배선(정적) ──
+{
+  const A = "배선";
+  const tr = src("../app/api/mom/transcribe/route.ts");
+  add(A, "받아쓰기: 키 검사가 formData보다 먼저·기대 문장 미전송", tr.indexOf("no_api_key") < tr.indexOf("formData()") && /transcribeAnswer\(/.test(tr) && !/prompt|expected|answer\s*:/.test(tr.replace(/transcribeAnswer/g, "")));
+  add(A, "홈 진입 카드 /mom", /href="\/mom"/.test(src("../app/page.tsx")));
+}
+
 // ── 출력 ──
 void (async () => {
   console.log("| 결과 | 영역 | 점검 항목 | 상세 |\n|---|---|---|---|");
