@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { MOM_IMPORT_FORMAT, momBlockHash, momImportFileSchema, isSpeakRole } from "../lib/mom-content";
 import { decideMomImport, momLessonSaveSchema, momTestSaveSchema } from "../lib/mom-contract";
 import { frameWordsOf, judgeMomSpeech } from "../lib/mom-judge";
+import { momHintText, momListenScript, momShadowRepeat, momShadowScript } from "../lib/mom-lesson-script";
 import { buildMomWeeks, isFullMomLesson, momPickTestItems, momProgress, momStageOfWeek, momTestSize, momToday, MOM_REVIEW_WEEKS } from "../lib/mom-plan";
 
 globalThis.fetch = (() => {
@@ -187,6 +188,22 @@ export function fakeBlock(id: string, week: number, stage: 0 | 1 | 2 | 3 | 4, n 
   const tr = src("../app/api/mom/transcribe/route.ts");
   add(A, "받아쓰기: 키 검사가 formData보다 먼저·기대 문장 미전송", tr.indexOf("no_api_key") < tr.indexOf("formData()") && /transcribeAnswer\(/.test(tr) && !/prompt|expected|answer\s*:/.test(tr.replace(/transcribeAnswer/g, "")));
   add(A, "홈 진입 카드 /mom", /href="\/mom"/.test(src("../app/page.tsx")));
+}
+
+// ── 6) 레슨 대본·저장 ──
+{
+  const A = "레슨";
+  const s = { en: "I would like a cup of tea.", ko: "차 한 잔 주세요.", chunks: ["I would like", "a cup of tea."] };
+  const ls = momListenScript(s);
+  add(A, "듣기: 덩어리 2 + 전체 1, 모두 en-US, 덩어리 뒤 쉼", ls.length === 3 && ls.every((x) => x.lang === "en-US") && (ls[0].pauseAfterMs ?? 0) > 0 && ls[2].text === s.en);
+  const sh = momShadowScript([s], 3);
+  add(A, "따라 말하기: ko 1 → en 3, en 쉼 ≥ 1500ms", sh.length === 4 && sh[0].lang === "ko-KR" && sh.slice(1).every((x) => x.lang === "en-US" && (x.pauseAfterMs ?? 0) >= 1500));
+  add(A, "반복: 0~2단계 3, 3~4단계 2", [0, 1, 2, 3, 4].map((x) => momShadowRepeat(x as 0)).join() === "3,3,3,2,2");
+  add(A, "힌트 1 첫 낱말 · 2 첫 덩어리 · 3 전체", momHintText(s.en, 1, s.chunks) === "I …" && momHintText(s.en, 2, s.chunks) === "I would like …" && momHintText(s.en, 3, s.chunks) === s.en);
+  const route = src("../app/api/mom/lessons/route.ts");
+  add(A, "저장 라우트: finishedAt null 거부·zod·멱등 저장", /finishedAt === null|finishedAt == null|!data\.finishedAt/.test(route) && /momLessonSaveSchema/.test(route) && /saveMomLesson/.test(route));
+  const runner = src("../components/mom-lesson-runner.tsx");
+  add(A, "러너: 넘어가기(skipped)·받아쓰기 실패 경로·완료 때만 저장·스트릭 갱신", /"skipped"/.test(runner) && /\/api\/mom\/transcribe/.test(runner) && /STREAK_REFRESH_EVENT/.test(runner) && (runner.match(/\/api\/mom\/lessons/g) ?? []).length === 1);
 }
 
 // ── 출력 ──
