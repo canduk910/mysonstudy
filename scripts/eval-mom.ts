@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { MOM_IMPORT_FORMAT, momBlockHash, momImportFileSchema, isSpeakRole } from "../lib/mom-content";
 import { decideMomImport, momLessonSaveSchema, momTestSaveSchema } from "../lib/mom-contract";
+import { frameWordsOf, judgeMomSpeech } from "../lib/mom-judge";
 import { buildMomWeeks, isFullMomLesson, momPickTestItems, momProgress, momStageOfWeek, momTestSize, momToday, MOM_REVIEW_WEEKS } from "../lib/mom-plan";
 
 globalThis.fetch = (() => {
@@ -141,6 +142,23 @@ export function fakeBlock(id: string, week: number, stage: 0 | 1 | 2 | 3 | 4, n 
   add(A, "말하기 문장 없는 블록만 → empty(done 아님)", momToday({ blocks: [fakeBlock("bz", 5, 1, 0)] as never, lessons: [], tests: [] }).kind === "empty");
   const span = buildMomWeeks([fakeBlock("ba", 10, 1, 2), fakeBlock("bc", 10, 1, 7)] as never).find((w) => w.week === 10)!;
   add(A, "두 블록에 걸친 레슨의 듣기 = 두 블록 dialog 모두(블록 순서)", JSON.stringify(span.lessons[0].listenIds) === JSON.stringify(["ba-d0", "bc-d0"]), JSON.stringify(span.lessons.map((l) => [l.speakIds.length, l.listenIds])));
+}
+
+// ── 4) 발화 판정 ──
+{
+  const A = "발화 판정";
+  const F = "I would like ~";
+  const j = (t: string, en = "I would like a cup of tea.") => judgeMomSpeech({ en, frameText: F, transcript: t });
+  add(A, "틀 낱말 = i would like", frameWordsOf(F).join(" ") === "i would like");
+  add(A, "정확히 → pass", j("I would like a cup of tea").verdict === "pass");
+  add(A, "축약형 I'd like → pass", j("I'd like a cup of tea").verdict === "pass");
+  add(A, "관사 빠짐 → pass(감점 없음)", j("I would like cup of tea").verdict === "pass");
+  add(A, "복수형 차이 → pass", j("I would like a cup of teas").verdict === "pass");
+  add(A, "틀 맞고 내용 절반 → close", j("I would like a cup").verdict === "close", JSON.stringify(j("I would like a cup")));
+  add(A, "틀 빠지고 내용 다 → close", j("a cup of tea please").verdict === "close");
+  add(A, "엉뚱한 말 → retry", j("good morning everyone").verdict === "retry");
+  add(A, "무응답·한 낱말 → retry + noSpeech", j("").noSpeech && j("tea").verdict === "retry");
+  add(A, "문장에 틀이 없으면 틀 검사 통과로", judgeMomSpeech({ en: "Where is the exit?", frameText: F, transcript: "where is the exit" }).verdict === "pass");
 }
 
 // ── 출력 ──
