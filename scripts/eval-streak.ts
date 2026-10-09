@@ -40,6 +40,8 @@ import { reviewFullDays, reviewStreakSessions, reviewTodayLabel } from "../lib/r
 import { FREEZES_PER_MONTH, STREAK_BADGES, badgesOf, decideBridges, kstWeekDays, litDaysOf, streakFromStatus, weekCells } from "../lib/streak-v2";
 import { familyV2, personV2, trackV2 } from "../lib/streak-v2-assemble";
 import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullQuiz, isFullTalk } from "../lib/streak-v2-sources";
+import { decidePushes, PUSH_DAILY_MAX } from "../lib/push-decide";
+import { DEFAULT_PUSH_PREFS } from "../lib/push-contract";
 
 interface CheckResult {
   book: string;
@@ -895,6 +897,23 @@ const TODAY = "2026-09-21";
   const files = ["vocab-quiz-view", "vocab-speak-quiz-runner", "ja-quiz-runner", "ja-kanji-quiz-runner", "toeic-quiz-runner", "toeic-template-quiz", "toeic-template-test", "toeic-frame-drill-runner", "toeic-take-view"];
   const missing = files.filter((f) => !/<StreakFinishHint /.test(readFileSync(new URL(`../components/${f}.tsx`, import.meta.url), "utf-8")));
   add(B, "그만둠 화면 9곳에 '한 판을 끝내야' 안내", missing.length === 0, `빠짐=${missing.join(",")}`);
+}
+
+// ---------------------------------------------------------------------------
+// 묶음 15 — 알림 결정(스펙 §6-2): 종류·조건·상한·조용한 시간
+{
+  const B = "알림 결정";
+  const st = (person: "eunwoo" | "appa" | "mom", o: Partial<{ doneToday: boolean; current: number; freezeLeft: number; pendingRepairYesterday: boolean }> = {}) => ({ person, doneToday: false, current: 5, freezeLeft: 1, pendingRepairYesterday: false, missingTracks: [], ...o });
+  const run = (now: string, states: ReturnType<typeof st>[], sent: { person: "eunwoo" | "appa" | "mom"; kind: "today" | "last" | "repair" | "family" | "poke" }[] = []) =>
+    decidePushes({ nowHHMM: now, states, prefs: DEFAULT_PUSH_PREFS, sentToday: sent });
+  add(B, "은우 18:00 오늘 아직 → today 1건", run("18:00", [st("eunwoo")]).map((p) => `${p.person}:${p.kind}`).join() === "eunwoo:today", "");
+  add(B, "18:00 전·켜짐이면 없음", run("17:30", [st("eunwoo")]).length === 0 && run("18:00", [st("eunwoo", { doneToday: true })]).length === 0, "");
+  add(B, "이미 보낸 종류는 다시 안 보냄(30분 뒤 틱)", run("18:30", [st("eunwoo")], [{ person: "eunwoo", kind: "today" }]).length === 0, "");
+  add(B, "22:30 마지막 — 카드 남음 문구", (() => { const r = run("22:30", [st("appa")], [{ person: "appa", kind: "today" }]); return r.length === 1 && r[0].kind === "last" && r[0].body.includes("🧊"); })(), "");
+  add(B, "조용한 시간(22:31~07:59) 없음", run("23:00", [st("appa")]).length === 0 && run("07:30", [st("appa", { pendingRepairYesterday: true })]).length === 0, "");
+  add(B, "08:30 만회 기회", run("08:30", [st("mom", { pendingRepairYesterday: true })]).some((p) => p.kind === "repair"), "");
+  add(B, "21:00 가족 — 은우 아직이면 엄마에게", run("21:00", [st("eunwoo"), st("mom", { doneToday: true })], [{ person: "eunwoo", kind: "today" }]).some((p) => p.person === "mom" && p.kind === "family"), "");
+  add(B, `하루 상한 ${PUSH_DAILY_MAX}건(콕 포함)`, run("22:30", [st("appa")], [{ person: "appa", kind: "today" }, { person: "appa", kind: "poke" }, { person: "appa", kind: "poke" }]).length === 0, "");
 }
 
 // ---------------------------------------------------------------------------
