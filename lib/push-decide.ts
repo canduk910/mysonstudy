@@ -45,7 +45,7 @@ export interface PushToSend {
   url: string;
 }
 
-const URL_OF: Record<PushPerson, string> = { eunwoo: "/english", appa: "/", mom: "/mom" };
+const URL_OF: Record<PushPerson, string> = { eunwoo: "/english", appa: "/appa", mom: "/mom" };
 
 export function pushText(person: PushPerson, kind: PushKind, s: PersonState, extra: { from?: PushPerson; about?: PushPerson } = {}): { title: string; body: string; url: string } {
   const kid = person === "eunwoo";
