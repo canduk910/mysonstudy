@@ -144,7 +144,7 @@ export default function StreakHeadline() {
         className={`print-hide sticky top-0 z-[15] flex items-center ${gapCls} overflow-x-auto overflow-y-hidden border-b border-line bg-bg px-2 [scrollbar-width:none] sm:gap-3 sm:px-3 [&::-webkit-scrollbar]:hidden`}
         style={{ height: "var(--streak-h)" }}
         role="group"
-        aria-label="학습 스트릭 — 가족, 은우, 아빠(어학·운동), 엄마"
+        aria-label={`학습 스트릭 — 가족, 은우, 아빠(어학·운동)${data?.mom ? ", 엄마" : ""}`}
       >
         {/* 가족 — 오늘 모두 한 판 이상이면 켜진다(v2) */}
         <Track emoji="👪" name="가족" p={data?.family} />

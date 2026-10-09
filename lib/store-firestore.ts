@@ -2235,6 +2235,12 @@ export class FirestoreStore implements StudyStore {
     return snap.docs.map((d) => ({ ...(d.data() as MomBlockRecord), id: d.id }));
   }
 
+  async hasMomContent(): Promise<boolean> {
+    // 문서 하나만 읽는다(스트릭은 모든 화면 머리·알림 틱마다 돈다 — 블록 전체 읽기 금지)
+    const snap = await this.momContent().limit(1).get();
+    return !snap.empty;
+  }
+
   async listMomLessons(): Promise<MomLessonRecord[]> {
     // 전체를 읽어 메모리 정렬(가족 규모 — orderBy는 필드 없는 문서를 뺀다)
     const snap = await this.momLessons().get();

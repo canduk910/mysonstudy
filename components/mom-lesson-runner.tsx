@@ -62,6 +62,9 @@ function newClientId(): string {
   return `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
 }
 
+/** 문장이 바뀐 직후 이 시간 동안은 넘어가기·다음 문장을 받지 않는다(빠른 두 번 탭이 두 문장을 건너뛰지 않게) */
+const ADVANCE_GUARD_MS = 400;
+
 /** 틀 글자의 `~`를 빈칸 강조로 */
 function FrameText({ text }: { text: string }) {
   const parts = text.split("~");
@@ -115,6 +118,8 @@ export default function MomLessonRunner({ lesson, stage, frame, explainKo, speak
   const autoStopRef = useRef<number | null>(null);
   const runRef = useRef(0);
   const firstMicRef = useRef(true);
+  /** 마지막으로 문장(또는 단계)이 바뀐 시각 — 연타 방지(같은 자리의 다음 "넘어가기"가 두 번째 탭을 받지 않게). 다시 그리지 않는다 */
+  const changedAtRef = useRef(0);
 
   useEffect(() => {
     idRef.current = newClientId();
@@ -198,6 +203,7 @@ export default function MomLessonRunner({ lesson, stage, frame, explainKo, speak
     (next: Step) => {
       stopSound();
       haltAsync();
+      changedAtRef.current = Date.now();
       setStep(next);
       if (typeof window !== "undefined") window.scrollTo({ top: 0 });
       if (next === "done") void save();
@@ -216,6 +222,7 @@ export default function MomLessonRunner({ lesson, stage, frame, explainKo, speak
     (i: number) => {
       haltAsync();
       stopSound();
+      changedAtRef.current = Date.now();
       setCi(i);
       setHintLevel(0);
       setPhase(transcribeOff ? { kind: "failed", reasonKo: transcribeOff } : { kind: "ready", noticeKo: null });
@@ -234,7 +241,7 @@ export default function MomLessonRunner({ lesson, stage, frame, explainKo, speak
 
   /** 넘어가기 — 마지막 받아쓰기가 있으면 남기고, 결과는 skipped */
   const skip = useCallback(() => {
-    if (!cur) return;
+    if (!cur || Date.now() - changedAtRef.current < ADVANCE_GUARD_MS) return;
     const p = phaseRef.current;
     record(cur, "skipped", p.kind === "result" ? p.transcript : null, hintLevel);
     nextSentence();
@@ -242,7 +249,7 @@ export default function MomLessonRunner({ lesson, stage, frame, explainKo, speak
 
   /** 판정을 받아들이고 다음 문장 */
   const accept = useCallback(() => {
-    if (!cur) return;
+    if (!cur || Date.now() - changedAtRef.current < ADVANCE_GUARD_MS) return;
     const p = phaseRef.current;
     if (p.kind === "result") record(cur, p.judge.verdict, p.transcript, hintLevel);
     nextSentence();

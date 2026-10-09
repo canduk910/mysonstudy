@@ -1522,6 +1522,8 @@ export interface StudyStore {
   /** 가져오기 — 블록 id upsert(decideMomImport). 해시 같으면 그대로, 파일에 없는 블록은 지우지 않는다. 판정과 쓰기가 한 원자 단위 */
   importMomContent(file: MomImportFile, nowIso: string): Promise<MomImportResult>;
   listMomBlocks(): Promise<MomBlockRecord[]>;
+  /** 블록이 하나라도 있는가(영역을 열었는가) — 스트릭처럼 자주 도는 경로용. 전체를 읽지 않는다(Firestore limit(1)) */
+  hasMomContent(): Promise<boolean>;
   /** startedAt 오름차순 */
   listMomLessons(): Promise<MomLessonRecord[]>;
   /** id 멱등: 같은 id가 있으면 쓰지 않고 그대로 반환(reused:true). 생성이라 prod-guard 무관 */
@@ -3370,6 +3372,10 @@ class JsonFileStore implements BookCardStore {
 
   async listMomBlocks(): Promise<MomBlockRecord[]> {
     return (await readDb()).momContent.slice();
+  }
+
+  async hasMomContent(): Promise<boolean> {
+    return (await readDb()).momContent.length > 0;
   }
 
   async listMomLessons(): Promise<MomLessonRecord[]> {

@@ -54,6 +54,8 @@ const MOM_TRANSCRIBE_TIMEOUT_MS = 15_000;
 const MOM_SUMMARY_CLIENT_TIMEOUT_MS = 50_000;
 const MOM_AUDIO_MAX_BYTES = 1024 * 1024;
 const BIG = { minHeight: 56 } as const;
+/** 문항이 바뀐 직후 이 시간 동안은 넘어가기·다음 문제를 받지 않는다(빠른 두 번 탭이 두 문항을 건너뛰지 않게) */
+const ADVANCE_GUARD_MS = 400;
 
 function newClientId(): string {
   try {
@@ -102,6 +104,8 @@ export default function MomTestRunner({ week, items, saved }: MomTestRunnerProps
   const runRef = useRef(0);
   const firstMicRef = useRef(true);
   const aliveRef = useRef(true);
+  /** 마지막으로 문항이 바뀐 시각 — 연타 방지. 다시 그리지 않는다 */
+  const changedAtRef = useRef(0);
 
   // ── 결과 화면 재생 ──
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -225,9 +229,11 @@ export default function MomTestRunner({ week, items, saved }: MomTestRunnerProps
   const cur = items[qi] ?? null;
 
   const goNext = useCallback(() => {
+    if (Date.now() - changedAtRef.current < ADVANCE_GUARD_MS) return; // 연타 — 같은 자리의 다음 버튼이 두 번째 탭을 받지 않게
     haltAsync();
     stopSound();
     if (qi + 1 < items.length) {
+      changedAtRef.current = Date.now();
       setQi(qi + 1);
       setPhase(micOff ? { kind: "micOff", reasonKo: micOff } : { kind: "ready", noticeKo: null });
       window.scrollTo({ top: 0 });
@@ -236,7 +242,7 @@ export default function MomTestRunner({ week, items, saved }: MomTestRunnerProps
 
   /** 넘어가기 — 이 문항 결과가 없으면 skipped(녹음했으면 recorded true) */
   const skip = useCallback(() => {
-    if (!cur) return;
+    if (!cur || Date.now() - changedAtRef.current < ADVANCE_GUARD_MS) return;
     if (!outcomesRef.current.has(qi)) outcomesRef.current.set(qi, { sentenceId: cur.id, verdict: "skipped", transcript: null, recorded: recordedRef.current.has(qi) });
     goNext();
   }, [cur, qi, goNext]);

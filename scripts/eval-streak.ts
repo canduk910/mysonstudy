@@ -43,6 +43,7 @@ import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullMomLessonRecor
 import { decidePushes, isQuietHHMM, kstHalfHourHHMM, pushStates, pushText, PUSH_DAILY_MAX, TICK_SKEW_MS } from "../lib/push-decide";
 import type { PersonStreak, StreakResponse } from "../lib/streak-contract";
 import { DEFAULT_PUSH_PREFS } from "../lib/push-contract";
+import { MOM_REVIEW_WEEKS, momStreakWeekKo } from "../lib/mom-plan";
 
 interface CheckResult {
   book: string;
@@ -1047,6 +1048,22 @@ const TODAY = "2026-09-21";
   add(B, "가족 조립에 엄마 사람(momP) — null 아님", /familyV2\(\[eunwooP, appaP, momP\]/.test(ss), "");
   add(B, "엄마 runs = 완료 레슨 + 완료 테스트 + mom 복습 한 판", /isFullMomLesson/.test(ss) && /isFullMomTest/.test(ss) && /reviewFullDays\(reviewsOf\("mom"\)\)/.test(ss), "");
   add(B, "엄마 기록 읽기 실패는 엄마만 null(라우트 200)", /listMomLessons\(\)\.catch/.test(ss), "");
+  add(
+    B,
+    "엄마 영역 열림은 hasMomContent로(블록 전체 읽기 없음) · 실패는 엄마만 null",
+    /store\.hasMomContent\(\)\.catch/.test(ss) && !/listMomBlocks\(/.test(ss) && /momHasContent === true/.test(ss),
+    "",
+  );
+  {
+    const real = MOM_REVIEW_WEEKS.map(momStreakWeekKo);
+    const ok =
+      real.every((x) => x === "복습 주") &&
+      momStreakWeekKo(108) === "복습 주" &&
+      momStreakWeekKo(7) === "7주차" &&
+      momStreakWeekKo(9) === "9주차" &&
+      /weekKo = momStreakWeekKo/.test(ss);
+    add(B, "엄마 라벨: 실제 복습 주(8·16·…·48)·가상 복습 주 → 「복습 주」, 새 주 → 「n주차」", ok, real.join());
+  }
   const pd = src("../lib/push-decide.ts");
   add(B, "알림: 엄마 자리표시 제거·URL /mom", !/person: "mom", doneToday: true/.test(pd) && /mom: "\/mom"/.test(pd), "");
   add(B, "헤드라인 👩 칸", /emoji="👩"/.test(src("../components/streak-headline.tsx")), "");

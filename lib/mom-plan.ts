@@ -31,6 +31,11 @@ export function isMomVirtualWeek(week: number): boolean {
   return week > MOM_VIRTUAL_WEEK_OFFSET;
 }
 
+/** 스트릭 라벨의 주 이름 — 실제 복습 주(8·16·…·48)와 자동 감속 가상 복습 주(> 100)는 "복습 주", 나머지는 "{n}주차". */
+export function momStreakWeekKo(week: number): string {
+  return isMomVirtualWeek(week) || MOM_REVIEW_WEEKS.includes(week) ? "복습 주" : `${week}주차`;
+}
+
 /** 테스트를 열 수 있는 주 번호 — 실제 주 1~52, 자동 감속 가상 복습 주 101~152. */
 export function isMomTestWeek(week: number): boolean {
   return Number.isInteger(week) && ((week >= 1 && week <= 52) || (week > MOM_VIRTUAL_WEEK_OFFSET && week <= MOM_VIRTUAL_WEEK_OFFSET + 52));

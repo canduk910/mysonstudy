@@ -27,8 +27,8 @@ import type {
   ToeicQuizRecord,
   WorkoutCycleRecord,
 } from "@/lib/store";
-import type { MomBlockRecord, MomLessonRecord, MomTestRecord } from "@/lib/mom-contract";
-import { isFullMomTest, isMomVirtualWeek } from "@/lib/mom-plan";
+import type { MomLessonRecord, MomTestRecord } from "@/lib/mom-contract";
+import { isFullMomTest, momStreakWeekKo } from "@/lib/mom-plan";
 import { isCountedTalkSession, talkStreakLabel, talkStreakSessions } from "@/lib/talk-streak";
 import { TOEIC_GUIDE_PART_TO_MOCK_PART, isToeicGuidePart } from "@/lib/toeic-guide";
 import { toeicMockPartLabelKo } from "@/lib/toeic-mock-contract";
@@ -74,7 +74,7 @@ const NEUTRAL_STREAK: PersonStreak = { info: { current: 0, doneToday: false, las
 
 export async function computeStreakResponse(store: StudyStore, today: string): Promise<StreakResponse> {
 
-  const [vocab, jaVocab, jaKanji, workoutCycles, toeicQuizzes, toeicAttempts, talkSessions, toeicFrameDrills, reviewSchedules, momBlocks, momLessons, momTests] = await Promise.all([
+  const [vocab, jaVocab, jaKanji, workoutCycles, toeicQuizzes, toeicAttempts, talkSessions, toeicFrameDrills, reviewSchedules, momHasContent, momLessons, momTests] = await Promise.all([
     store.listAllVocabQuizzes(),
     store.listAllJaQuizzes(),
     store.listJaKanjiQuizzes(),
@@ -108,8 +108,9 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
       return null;
     }),
     // 👩 엄마의 생활영어(엄마 설계 §7) — 셋 중 하나라도 못 읽으면 엄마만 null(다른 사람·라우트는 그대로 200)
-    store.listMomBlocks().catch((err: unknown): MomBlockRecord[] | null => {
-      console.error("[streak] 엄마 블록을 읽지 못했다 — 엄마 트랙만 뺀다", err);
+    // 영역을 열었는지만 본다(블록 전체를 읽지 않는다 — /api/streak은 모든 화면 머리·가족 보드·30분 알림 틱마다 돈다)
+    store.hasMomContent().catch((err: unknown): boolean | null => {
+      console.error("[streak] 엄마 자료 존재를 확인하지 못했다 — 엄마 트랙만 뺀다", err);
       return null;
     }),
     store.listMomLessons().catch((err: unknown): MomLessonRecord[] | null => {
@@ -234,7 +235,7 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
   // 레슨 한 판 = 끝냈고 체크 ≥ 1(isFullMomLessonRecord) — 지금 계획과 대조하지 않는다(내용을 다시 가져와도 지난 🔥가 소급해 바뀌지 않게).
   let momT: TrackInput | null = null;
   let momLabel: string | null = null;
-  if (momBlocks && momLessons && momTests && momBlocks.length > 0) {
+  if (momHasContent === true && momLessons && momTests) {
     try {
       const doneLessons = momLessons.filter(isFullMomLessonRecord);
       const doneTests = momTests.filter(isFullMomTest);
@@ -244,7 +245,7 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
       addDays(runs, reviewFullDays(reviewsOf("mom")));
       momT = { legacyDays: new Set<string>(), runs };
       // 라벨 = 오늘 끝낸 레슨·테스트 중 가장 늦게 시작한 것(같은 시각이면 레슨), 둘 다 없으면 오늘의 복습
-      const weekKo = (week: number) => (isMomVirtualWeek(week) ? "복습 주" : `${week}주차`);
+      const weekKo = momStreakWeekKo; // 실제 복습 주(8·16·…)·가상 복습 주 → "복습 주"
       const lessonWeek = (rec: MomLessonRecord): number | null => {
         const m = /^r?w(\d{1,3})-d[1-4]$/.exec(rec.lessonId);
         return m ? Number(m[1]) : null;
