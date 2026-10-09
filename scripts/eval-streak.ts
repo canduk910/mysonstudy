@@ -44,6 +44,7 @@ import { decidePushes, isQuietHHMM, kstHalfHourHHMM, pushStates, pushText, PUSH_
 import type { PersonStreak, StreakResponse } from "../lib/streak-contract";
 import { DEFAULT_PUSH_PREFS } from "../lib/push-contract";
 import { MOM_REVIEW_WEEKS, momStreakWeekKo } from "../lib/mom-plan";
+import { PERSON_HUB_HREF, personOfPath } from "../lib/person-area";
 
 interface CheckResult {
   book: string;
@@ -1156,6 +1157,51 @@ const TODAY = "2026-09-21";
       [t0, k0, l0, t5, k5, l5, l5n].join(" | "),
     );
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// 사람 진입 — 경로 → 사람(lib/person-area.ts). 헤드라인 아래 "누구 습관" 표시줄과 과목 화면 "← 과목 선택"이 같은 표를 본다.
+{
+  const B = "사람 진입";
+  const cases: [string, ReturnType<typeof personOfPath>][] = [
+    ["/eunwoo", "eunwoo"],
+    ["/english/vocab/abc/quiz", "eunwoo"],
+    ["/math", "eunwoo"],
+    ["/card/xyz", "eunwoo"],
+    ["/library", "eunwoo"],
+    ["/mama", "mama"],
+    ["/mom/lesson?x=1", "mama"],
+    ["/appa", "appa"],
+    ["/japanese/kanji", "appa"],
+    ["/toeic/attempts/x", "appa"],
+    ["/workout/", "appa"],
+  ];
+  const bad = cases.filter(([p, want]) => personOfPath(p) !== want);
+  add(B, "사람 영역 접두사 11개가 은우·엄마·아빠로 갈린다(쿼리·끝 슬래시 무관)", bad.length === 0, bad.length === 0 ? `${cases.length}건` : bad.map(([p]) => `${p}→${personOfPath(p)}`).join(", "));
+  const nulls = ["/", "", "/family", "/unlock", "/api/streak", null, undefined];
+  const badNull = nulls.filter((p) => personOfPath(p) !== null);
+  add(B, "홈·가족 보드·잠금 화면·api·빈 값 → null(표시줄 숨김)", badNull.length === 0, badNull.length === 0 ? `${nulls.length}건` : badNull.map(String).join(", "));
+  const near = ["/mother", "/english2", "/appartment", "/mamas", "/toeicx/1"];
+  const badNear = near.filter((p) => personOfPath(p) !== null);
+  add(B, "앞 글자만 같은 경로(/mother·/english2 등) → null", badNear.length === 0, badNear.length === 0 ? near.join(" ") : badNear.join(", "));
+  add(
+    B,
+    "허브 경로가 다시 자기 사람으로 판정된다(왕복)",
+    (Object.keys(PERSON_HUB_HREF) as (keyof typeof PERSON_HUB_HREF)[]).every((k) => personOfPath(PERSON_HUB_HREF[k]) === k),
+    JSON.stringify(PERSON_HUB_HREF),
+  );
+  const src = (f: string) => readFileSync(new URL(`../${f}`, import.meta.url), "utf8");
+  const backs: [string, string][] = [
+    ["app/math/page.tsx", "/eunwoo"],
+    ["components/english-nav.tsx", "/eunwoo"],
+    ["app/mom/page.tsx", "/mama"],
+    ["app/japanese/page.tsx", "/appa"],
+    ["app/toeic/page.tsx", "/appa"],
+    ["app/workout/page.tsx", "/appa"],
+  ];
+  const badBack = backs.filter(([f, href]) => !src(f).includes(`href="${href}"`) || src(f).includes('href="/"'));
+  add(B, "과목 첫 화면 '← 과목 선택'이 그 사람 허브로 간다(6곳, href=\"/\" 없음)", badBack.length === 0, badBack.length === 0 ? "6곳" : badBack.map(([f]) => f).join(", "));
 }
 
 // ---------------------------------------------------------------------------

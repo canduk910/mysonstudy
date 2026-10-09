@@ -41,7 +41,7 @@ export default function MathHomePage() {
       <header className="mb-8">
         {/* 과목 선택 ↔ 수학 홈 ↔ 지난 문제 — 영어 홈과 같은 알약 버튼(.u-navbtn) */}
         <div className="flex items-center justify-between gap-3">
-          <Link href="/" className="u-navbtn">
+          <Link href="/eunwoo" className="u-navbtn">
             ← 과목 선택
           </Link>
           <Link href="/math/library" className="u-navbtn">

@@ -73,7 +73,7 @@ function NavMenu({ pathname, onNavigate }: { pathname: string; onNavigate?: () =
           </Link>
         );
       })}
-      <Link href="/" onClick={onNavigate} className={`${s.link} ${s.subjectLink}`}>
+      <Link href="/eunwoo" onClick={onNavigate} className={`${s.link} ${s.subjectLink}`}>
         <span className={s.linkIcon} aria-hidden>
           ←
         </span>

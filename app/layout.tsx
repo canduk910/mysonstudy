@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import PhraseHelperHost from "@/components/phrase-helper";
+import PersonBar from "@/components/person-bar";
 import StreakHeadline from "@/components/streak-headline";
 import VersionWatch from "@/components/version-watch";
 import "./globals.css";
@@ -28,6 +29,8 @@ export default function RootLayout({
         {/* 학습 스트릭 헤드라인 — body 최상단, {children} 앞(§17-4). sticky top-0·z:15라 카드 오버레이(z:20)가 덮는다.
             VersionWatch는 여전히 **마지막 자식**이어야 하므로 그 앞에 두지 않는다. */}
         <StreakHeadline />
+        {/* "누구 습관" 표시줄 — 사람 영역(은우·엄마·아빠) 화면에서만, 문서 흐름 안의 얇은 줄(sticky 아님). lib/person-area.ts */}
+        <PersonBar />
         {children}
         {/* 표현 도우미(SPEC §22) — 경로가 정하는 영역(토익·일본어·은우 영어)에서만 버튼을 띄우고, 시험 화면에서는 아무것도 그리지 않는다.
             fixed 요소라 흐름에 자리를 만들지 않는다 — VersionWatch(마지막 자식) 앞에 둔다. */}

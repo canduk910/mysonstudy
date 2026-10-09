@@ -38,7 +38,7 @@ export default async function WorkoutPage() {
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
       <header className="mb-6">
         <div className="flex items-center justify-between gap-3">
-          <Link href="/" className="u-navbtn">
+          <Link href="/appa" className="u-navbtn">
             ← 과목 선택
           </Link>
         </div>

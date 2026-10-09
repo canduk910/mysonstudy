@@ -32,7 +32,7 @@ export default function ToeicHubPage() {
       <ToeicRecUploadDrain />
       <header className="mb-8">
         <div className="flex items-center justify-between gap-3">
-          <Link href="/" className="u-navbtn">
+          <Link href="/appa" className="u-navbtn">
             ← 과목 선택
           </Link>
         </div>

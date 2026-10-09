@@ -1,24 +1,12 @@
 /**
- * 과목 선택 `/` — 서버 컴포넌트(정적).
+ * 사람 선택 `/` — 서버 컴포넌트(정적).
  *
- * 진입점은 다섯이다(영어, 수학 = 수학코치, 일본어 = 아빠의 일본어, 영어(토익스피킹) = 아빠의 영어, 운동 = 아빠의 운동).
- * 접속하면 여기서 갈린다. 영어·수학은 은우(아이)용, 일본어·영어(토익)·운동은 **아빠 본인**이 쓴다(docs/harness/japanese.md
- * §0-1, docs/harness/toeic.md §0-1·§8, docs/SPEC.md §19) — 그래서 **은우 줄(영어·수학) / 아빠 줄(일본어·영어) / 아빠 운동 한 줄
- * (sm:col-span-2)** 로 나눴다. 폰(<640px)은 1열 그대로 위에서부터 이 순서.
- * 은우의 "영어"(북카드·단어장, `/english`)와 아빠의 영어(토익스피킹, `/toeic`)는 **다른 과목**이다 — 경로·컬렉션·스트릭이
- * 전부 갈린다(toeic.md §0-1). 그래서 아빠 쪽은 "아빠의 영어"로 부르고 부제 "토익스피킹"을 단다.
- * 영어는 그 아래 다시 북카드·단어장·자유대화 세 학습 메뉴로 갈리므로, `/english`는 기능 없이
- * 그 셋을 고르는 **허브**다(북카드 홈은 `/english/books`, 단어장은 `/english/vocab`, 자유대화는 `/english/talk` — SPEC §21).
- * 이 화면(`/`)은 과목 갈림길만 담당하고 기능은 하나도 갖지 않는다.
+ * 접속하면 여기서 **사람**이 갈린다 — 🧒 은우(`/eunwoo`) · 👩 엄마(`/mama`) · 🧑 아빠(`/appa`). 과목은 각 사람 허브가 나열한다
+ * (은우: 영어·수학 / 엄마: 생활영어 / 아빠: 일본어·영어(토익스피킹)·운동). 가족 보드(`/family`)는 사람이 아니라 가족 전체라
+ * 사람 카드 아래 따로 둔다. 경로 → 사람 판정은 lib/person-area.ts 한 곳이다(상단 "누구 습관" 표시줄과 공유).
+ * 은우의 "영어"(`/english`)와 아빠의 영어(토익스피킹, `/toeic`)는 다른 과목이다(toeic.md §0-1) — 사람이 먼저 갈리니 섞일 일이 없다.
  *
- * **탭 수**: 영어 사용자는 여기서 한 번 더 누르게 된다. 대신
- *   1) 영어를 주요(accent)·첫 번째 버튼으로 두고,
- *   2) 영어 화면들(`/library`·`/card/[id]`)의 "홈"은 `/`가 아니라 북카드 홈
- *      (`/english/books`)을 가리켜, 카드를 보다 돌아올 때는 이 화면을 지나지 않게 했다.
- *   3) `/english`(영어 허브)는 그 자체로 북마크·홈 화면 추가가 되는 주소다.
- *
- * 디자인: 새 스타일을 만들지 않는다 — 예전 홈의 큰 진입 버튼과 **같은 `.u-entry`**를
- * 그대로 쓴다(app/globals.css, docs/DESIGN.md §5). 버튼이 아니라 링크인 것만 다르다.
+ * 디자인: 새 스타일을 만들지 않는다 — 같은 `.u-entry`(app/globals.css, docs/DESIGN.md §5). 은우만 주요(accent).
  */
 
 import type { Metadata } from "next";
@@ -26,89 +14,50 @@ import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "은우학습",
-  description: "영어책 학습 카드·단어장·자유대화, 수학 문제 풀이 설명, 그리고 아빠의 일본어·영어(토익스피킹)·운동을 한곳에서.",
+  description: "은우의 영어·수학, 엄마의 생활영어, 아빠의 일본어·영어(토익스피킹)·운동을 한곳에서.",
 };
 
-export default function SubjectPickerPage() {
+export default function PersonPickerPage() {
   return (
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
       <header className="mb-8">
         <p className="t-caption">은우학습</p>
-        <h1 className="t-book-title mt-4">오늘은 무엇을 해볼까요?</h1>
-        <p className="t-lead mt-1">과목을 골라 주세요. 언제든 여기로 돌아올 수 있어요.</p>
+        <h1 className="t-book-title mt-4">누구의 습관을 할까요?</h1>
+        <p className="t-lead mt-1">사람을 고르면 그 사람의 과목이 나와요. 언제든 여기로 돌아올 수 있어요.</p>
       </header>
 
-      {/* 큰 진입 버튼 5개 — 이 화면의 전부. 주요(영어)만 accent 배경 (DESIGN §5).
-          은우 줄(영어·수학)이 윗줄, 아빠 줄(일본어·영어)이 가운데, 아빠 운동이 아랫줄 한 칸(sm:col-span-2). */}
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Link href="/english" className="u-entry u-entry-primary">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Link href="/eunwoo" className="u-entry u-entry-primary">
           <span className="u-entry-icon" aria-hidden>
-            📚
+            🧒
           </span>
-          <span className="u-entry-title">영어</span>
-          <span className="u-entry-desc">
-            영어책 표지를 찍어 학습 카드를 만드는 북카드, 단어장을 찍어 표·카드로 모으는 단어장
-            정복, 그리고 Sunny 선생님과 영어로 이야기하는 자유대화.
-          </span>
+          <span className="u-entry-title">은우</span>
+          <span className="u-entry-desc">영어(북카드·단어장·자유대화)와 수학코치.</span>
         </Link>
 
-        <Link href="/math" className="u-entry u-entry-secondary">
+        <Link href="/mama" className="u-entry u-entry-secondary">
           <span className="u-entry-icon" aria-hidden>
-            🔢
+            👩
           </span>
-          <span className="u-entry-title">수학 · 수학코치</span>
-          <span className="u-entry-desc">
-            문제집 사진을 찍거나 문제를 입력하면 &lsquo;왜 그렇게 푸는지&rsquo;를 탐정 시간 · 되감기 ·
-            다시 재생 3막으로 설명해요. 답은 검산을 거쳐 보여 줘요.
-          </span>
+          <span className="u-entry-title">엄마</span>
+          <span className="u-entry-desc">엄마의 생활영어 — 하루 5분 소리 블록.</span>
         </Link>
 
-        {/* 아빠 줄 — 학습자가 아빠라 은우 것과 줄을 나눈다(japanese.md §0-1). */}
-        <Link href="/japanese" className="u-entry u-entry-secondary">
+        <Link href="/appa" className="u-entry u-entry-secondary">
           <span className="u-entry-icon" aria-hidden>
-            🗾
+            🧑
           </span>
-          <span className="u-entry-title">아빠의 일본어</span>
-          <span className="u-entry-desc">
-            아빠가 일본어를 공부하는 곳. JLPT 단어장을 레벨·주제로 만들고, 듀오링고 대화를 찍어 복습해요.
-          </span>
-        </Link>
-
-        <Link href="/toeic" className="u-entry u-entry-secondary">
-          <span className="u-entry-icon" aria-hidden>
-            🎙️
-          </span>
-          <span className="u-entry-title">아빠의 영어 · 토익스피킹</span>
-          <span className="u-entry-desc">
-            아빠가 토익스피킹을 준비하는 곳. 표현집을 찍거나 파일로 넣어 발화 포인트와 함께 외우고, 소리 내어 말하는 시험을 봐요.
-          </span>
+          <span className="u-entry-title">아빠</span>
+          <span className="u-entry-desc">일본어, 영어(토익스피킹), 운동.</span>
         </Link>
 
         {/* 가족 보드 — 오늘·이번 주·쉬는 날 카드·가족 연속일(가족 스트릭 강화), 한 줄 전체 */}
-        <Link href="/family" className="u-entry u-entry-secondary sm:col-span-2">
+        <Link href="/family" className="u-entry u-entry-secondary sm:col-span-3">
           <span className="u-entry-icon" aria-hidden>
             👪
           </span>
           <span className="u-entry-title">가족 보드</span>
           <span className="u-entry-desc">오늘 누가 했는지, 이번 주 불꽃과 쉬는 날 카드, 가족 연속일을 한눈에 봐요.</span>
-        </Link>
-
-        {/* 엄마 — 한 줄 전체(sm:col-span-2) — 넓은 화면에서 반 칸이 비지 않게 */}
-        <Link href="/mom" className="u-entry u-entry-secondary sm:col-span-2">
-          <span className="u-entry-icon" aria-hidden>👩</span>
-          <span className="u-entry-title">엄마의 생활영어</span>
-          <span className="u-entry-desc">하루 5분부터 — 소리 블록 틀로 듣고 따라 하고 말해 봐요.</span>
-        </Link>
-
-        {/* 아빠 운동 — 아빠 줄 아래 한 줄 전체(sm:col-span-2) */}
-        <Link href="/workout" className="u-entry u-entry-secondary sm:col-span-2">
-          <span className="u-entry-icon" aria-hidden>
-            💪
-          </span>
-          <span className="u-entry-title">아빠의 운동</span>
-          <span className="u-entry-desc">
-            러시안 파이터 풀업·푸시업 사다리 — 오늘 할 세트를 계산해 주고, 기록하면 다음 날을 정해요.
-          </span>
         </Link>
       </div>
     </main>

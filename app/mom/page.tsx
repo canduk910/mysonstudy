@@ -17,7 +17,7 @@ export default async function MomPage() {
   const progress = momProgress({ blocks, lessons, tests });
   return (
     <main className="mx-auto max-w-2xl px-4 pb-16 pt-6">
-      <Link href="/" className="u-navbtn">← 과목 선택</Link>
+      <Link href="/mama" className="u-navbtn">← 과목 선택</Link>
       <h1 className="t-book-title mt-3">👩 엄마의 생활영어</h1>
       <p className="t-lead">소리 블록으로 하루 한 레슨 — 듣고, 따라 하고, 말해 봐요.</p>
       <MomHome today={today} progress={progress} hasContent={blocks.length > 0} />
