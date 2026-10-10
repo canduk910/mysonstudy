@@ -141,6 +141,8 @@ OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_
 
 **API 시나리오 e2e 방법**(`_workspace/qa_report_streak-workout_e2e_1.md`): db.json의 `workoutCycles`를 스펙대로 직접 구성한 뒤 `curl /api/streak`를 부르고, 스펙으로 **손계산한** 기대값과 JSON으로 대조한다. 기대값을 계산할 때 구현 코드를 import하지 않는다. 구현으로 기대값을 만들면 같은 버그를 두 번 쓰는 셈이다. 시나리오마다 은우·일본어 시험을 섞어 한 번 더 돌려 트랙이 오염되지 않는지 본다.
 
+- **아빠 한 칸(2026-10-09, SPEC §25-5).** 아빠는 어학·운동을 합친 한 값(`lib/streak-v2-assemble.ts` `appaPersonV2`)이고 `APPA_BOTH_FROM`(2026-10-10)부터 둘 다여야 켜진다. 검증은 **구현을 읽기 전에** 규칙만 보고 scratch에 참조 모델을 써서 적용일 양쪽에 걸친 무작위 시나리오(어학 판 수·운동 지킨 날·휴식일·카드·만회)로 대조한다(선례 `qa_report_common_appa-merge_1.md` — 2만 시나리오 차분 0). 확인 셋: ① 적용일 전 "오늘"은 옛 `personV2([lang, gym])`과 모든 값이 같다(소급 없음) ② 적용일부터 한쪽만 한 날은 꺼진다 ③ 만회 안내·알림이 남은 쪽을 말한다(`appaRepairHintText`).
+
 ## 4. 아빠의 운동 (§19)
 
 eval:workout이 잠그는 것은 이렇다. **원안 오라클**: 원안 Python 생성기를 JS로 옮겨 20개 운동일과 RM 1~150 전 범위를 대조하고, §19-1 표 10행과 합계 590·890을 본다. **재생 상태 기계**: 휴식은 달력이 채우고 운동일은 기다린다. 실패 → 회복 → 재부여 → 재도전, Day 7 실패 시 Day 5 목표로 가고 휴식을 다시 넣지 않는다, retestHint 루프, 월 경계를 본다. **판정**: `decide*`의 stale_state·conflict·not_active·empty, rev ABA, 결정성, 서버 계산값. **방어**: 깨진 사건 버리기, `snapshot`이 던지지 않는지.
