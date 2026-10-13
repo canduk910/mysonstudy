@@ -4,7 +4,9 @@
  * - `POST   /api/toeic/island`        담기(멱등 — 문서 id = 원본 키). 틀 말하기·모의고사 원본은 **서버가 저장된 원본에서** 글자를 만든다.
  * - `PATCH  /api/toeic/island/[id]`   편집(섬 문장·한국어 메모·소재·유형)
  * - `DELETE /api/toeic/island/[id]`   삭제(prod-guard `deleteToeicIslandEntry`)
- * AI 호출 없음 — 키 검사도 없다(키가 없어도 담기·편집·삭제는 된다).
+ * 담기·편집·삭제 자체는 AI 없이 된다 — 라우트에 키 검사가 없다(키가 없어도 된다).
+ * 한국어 해석 `entry.trKo`(§21-7 호출 G)만 서버가 **저장 뒤 best-effort로** 붙인다: 담은·고친 응답의 `entry.trKo`는 해석이거나 null이고
+ * (키 없음·실패·8초 넘김 → null인 채 200), 빠진 해석은 오늘의 복습(`/toeic/review`)을 열 때 한 묶음씩 채워진다. 요청으로 `trKo`를 보낼 수는 없다.
  *
  * ── 클라이언트 번들 경계 ── 값 import는 클라이언트 안전한 순수 모듈 `./toeic-island`뿐. lib/ai·lib/store 금지.
  */
@@ -30,7 +32,7 @@ export interface ToeicIslandCreateRequest {
 }
 
 export type ToeicIslandCreateResponse =
-  /** 200 — reused:true면 같은 원본이 이미 담겨 있어 쓰지 않았다(그 항목을 돌려준다) */
+  /** 200 — reused:true면 같은 원본이 이미 담겨 있어 쓰지 않았다(그 항목을 돌려준다). entry.trKo = AI 해석 또는 null(아직 없음) */
   | { ok: true; entry: ToeicIslandEntry; reused: boolean }
   /** 400 invalid_input · too_long(섬 문장 상한) · 404 source_not_found(원본 없음·그 문항에 글자 없음) · 422 unsupported_part(Q5–7·Q11 밖) · 409 full(상한) · 500 save_failed */
   | { ok: false; error: "invalid_input" | "too_long" | "source_not_found" | "unsupported_part" | "full" | "save_failed"; messageKo: string; issues?: Issue[] };
@@ -43,6 +45,7 @@ export interface ToeicIslandPatchRequest {
 }
 
 export type ToeicIslandPatchResponse =
+  /** 200 — 섬 문장이 바뀌었으면 entry.trKo는 새 해석 또는 null(옛 해석은 남지 않는다) */
   | { ok: true; entry: ToeicIslandEntry }
   /** 400 invalid_input·too_long · 404 not_found · 500 save_failed */
   | { ok: false; error: "invalid_input" | "too_long" | "not_found" | "save_failed"; messageKo: string; issues?: Issue[] };

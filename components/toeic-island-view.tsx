@@ -5,9 +5,9 @@
  *
  * - 유형 탭 Q5–7 · Q11 → 소재별 묶음(groupIslandByTopic — 은행 소재 순서, 은행에 없는 소재는 이름 사본, "소재 없음"은 끝).
  * - 문장마다 쓰인 틀을 강조(islandHighlightSegments — templateRunSpans와 같은 일치 규칙), 🔊는 **탭할 때만**(speak — 프리페치 없음),
- *   한국어 단서·어디서 담았나·내가 말한 문장(접힘)·질문(접힘), ✏️ 고치기(섬 문장·메모·소재)·🗑 지우기(확인 한 번 — prod-guard 라우트).
+ *   한국어 해석(trKo — 서버가 담은·고친 뒤 자동으로 붙인다, 없으면 줄 없음)·한국어 메모·어디서 담았나·내가 말한 문장(접힘)·질문(접힘), ✏️ 고치기(섬 문장·메모·소재)·🗑 지우기(확인 한 번 — prod-guard 라우트).
  * - ✍️ 직접 쓰기: 영어 문장 + 한 줄 한국어 메모 + 소재 칩. 두 번 눌러도 한 개(clientId = 문서 id 원본 키 — 성공하면 새 키).
- * - AI 호출 0. 순서변경 없음(최근에 담은 것이 위).
+ * - 이 화면이 AI를 직접 부르지 않는다(해석은 담기·고치기 응답의 entry.trKo로 온다). 순서변경 없음(최근에 담은 것이 위).
  */
 
 import { useMemo, useRef, useState } from "react";
@@ -253,7 +253,7 @@ export default function ToeicIslandView({
           type="text"
           value={ko}
           maxLength={TOEIC_ISLAND_KO_MAX}
-          placeholder="한국어 메모(떠올릴 단서) — 예: 주말 단골 장소"
+          placeholder="메모(선택) — 해석은 자동으로 붙어요"
           aria-label="한국어 메모"
           onChange={(e) => setKo(e.target.value)}
         />
@@ -289,7 +289,7 @@ export default function ToeicIslandView({
                   {editId === e.id ? (
                     <>
                       <textarea className={s.input} lang="en" value={editEn} maxLength={TOEIC_ISLAND_EN_MAX} aria-label="영어 문장 고치기" onChange={(x) => setEditEn(x.target.value)} />
-                      <input className={s.input} type="text" value={editKo} maxLength={TOEIC_ISLAND_KO_MAX} placeholder="한국어 메모" aria-label="한국어 메모 고치기" onChange={(x) => setEditKo(x.target.value)} />
+                      <input className={s.input} type="text" value={editKo} maxLength={TOEIC_ISLAND_KO_MAX} placeholder="한국어 메모(선택)" aria-label="한국어 메모 고치기" onChange={(x) => setEditKo(x.target.value)} />
                       <TopicChips topics={topics} value={editTopic} onChange={setEditTopic} />
                       <div className={s.tools}>
                         <button type="button" className="u-btn u-btn-primary" disabled={busyId === e.id} onClick={() => void saveEdit(e)}>
@@ -310,7 +310,14 @@ export default function ToeicIslandView({
                           🔊
                         </button>
                       </div>
-                      {e.ko && <p className={s.ko}>💬 {e.ko}</p>}
+                      {/* 해석(AI — 복습 단서의 주 문장)과 메모(내가 적은 한 줄)는 다른 줄. 틀 말하기 원본은 메모 자리가 곧 한글 문장이다 */}
+                      {e.trKo && (
+                        <p className={s.trKo} data-testid={`island-tr-${e.id}`}>
+                          <span className={s.trTag}>해석</span>
+                          {e.trKo}
+                        </p>
+                      )}
+                      {e.ko && e.ko !== e.trKo && <p className={s.ko}>💬 {e.ko}</p>}
                       {e.spokenEn && (
                         <details className={s.spoken}>
                           <summary>내가 말한 문장</summary>

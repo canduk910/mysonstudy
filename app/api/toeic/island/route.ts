@@ -1,7 +1,7 @@
 /**
  * POST /api/toeic/island — 🏝️ 나만의 답변 섬에 **담기** (docs/harness/toeic.md §21, SPEC §20-18)
  *
- * 담는 길 셋(AI 호출 0 — 키 검사 없음, 키가 없어도 담긴다):
+ * 담는 길 셋(담기 자체는 AI 없이 된다 — 이 라우트에 키 검사가 없고, 키가 없어도 담긴다):
  * - `origin.kind = "frame_drill"` {sessionId, index} — 🗣️ 틀 말하기 결과의 한 문항. **서버가 저장된 판에서** 글자를 만든다
  *   (섬 문장 = 고친 문장, 없으면 모범 영어 · 한국어 단서 = 한글 문장 · 내가 말한 문장 = 전사 · 틀 key · 소재 = 그 틀의 소재).
  * - `origin.kind = "attempt"` {attemptId, q, fixIndex} — 모의고사 결과 Q5–7·Q11의 개선 답변(fixIndex null) 또는 고친 문장.
@@ -9,11 +9,16 @@
  * - `origin.kind = "manual"` {clientId} + part·en(+ko·topicKey) — 섬 화면에서 직접 쓰기.
  * 클라이언트가 보낸 글자를 원본 대신 믿지 않는다(직접 쓰기만 예외 — 그게 원본이다).
  *
+ * 한국어 해석(`trKo`, §21-7): **저장이 성공한 뒤** 해석이 필요한 문장이면(틀 말하기 원본은 한글 문장이 있어 대상 아님) 서버가 best-effort로
+ * 만들어 붙인다(`lib/toeic-island-translate-server` translateSavedIslandEntry — 최대 8초 기다림). 서버에 AI 키가 없거나·실패하거나·늦으면
+ * `entry.trKo`가 null인 채 **그대로 200**이다(상태코드·shape 불변) — 늦은 해석은 응답 뒤에 마저 저장되고, 빠진 것은 오늘의 복습을 열 때 채워진다.
+ * 이미 담긴 원본(reused)은 해석을 다시 만들지 않는다.
+ *
  * 멱등: 문서 id = 원본 키(islandDocId). 같은 원본을 두 번 담으면 쓰지 않고 그 항목(reused:true). 생성이라 prod-guard 무관.
  * 로그: 종류·유형·길이만(문장 없음).
  *
  * 응답 shape (단일 정의처 `lib/toeic-island-contract.ts` ToeicIslandCreateResponse):
- * - 200 { ok:true, entry, reused }
+ * - 200 { ok:true, entry, reused }                               ← entry.trKo는 해석(붙었으면) 또는 null
  * - 400 { ok:false, error:"invalid_input", messageKo, issues } · { error:"too_long" }
  * - 404 { ok:false, error:"source_not_found", messageKo }
  * - 422 { ok:false, error:"unsupported_part", messageKo }       ← Q5–7·Q11 밖 문항
@@ -48,6 +53,7 @@ import {
   type ToeicIslandPart,
 } from "@/lib/toeic-island";
 import type { ToeicIslandCreateRequest, ToeicIslandCreateResponse } from "@/lib/toeic-island-contract";
+import { translateSavedIslandEntry } from "@/lib/toeic-island-translate-server";
 import { isRenderableToeicMock, isRenderableToeicTemplateBank } from "@/lib/toeic-record";
 import { toToeicIssues, toeicZodErrorKo } from "@/lib/toeic-zod-ko";
 
@@ -133,6 +139,7 @@ export async function POST(req: Request) {
         part: b.part,
         en,
         ko: null,
+        trKo: null,
         spokenEn: null,
         question: null,
         frameKey: null,
@@ -186,6 +193,7 @@ export async function POST(req: Request) {
       topicNameKo: topic.topicNameKo,
       en: draft.en,
       ko: koText,
+      trKo: null, // 해석(§21-7)은 저장이 성공한 뒤 아래에서 best-effort로 붙인다 — 저장 본문에는 늘 null
       spokenEn: draft.spokenEn,
       question: draft.question,
       frameKey: draft.frameKey,
@@ -197,7 +205,8 @@ export async function POST(req: Request) {
     const { record, reused, full } = await store.createToeicIslandEntry(entry, TOEIC_ISLAND_ENTRIES_MAX);
     if (full) return json({ ok: false, error: "full", messageKo: `섬이 가득 찼어요(${TOEIC_ISLAND_ENTRIES_MAX}개). 안 쓰는 문장을 지워 주세요.` }, 409);
     console.log(`[/api/toeic/island] ${b.origin.kind} · ${record.part} · ${record.en.length}자 · ${reused ? "이미 있음(그대로)" : "새로 담음"}`);
-    return json({ ok: true, entry: record, reused });
+    // 새로 담았을 때만 해석을 붙인다(부수 효과 — 던지지 않고, 안 되면 record 그대로)
+    return json({ ok: true, entry: reused ? record : await translateSavedIslandEntry(record, { store }), reused });
   } catch (err) {
     const why = err instanceof Error ? `${err.name}: ${err.message}`.slice(0, 200) : "unknown";
     console.error("[/api/toeic/island] 담기 실패:", why);

@@ -70,6 +70,7 @@
 - **요청 하나가 60초를 넘지 않게 쪼갠다.** 프로덕션은 Firebase Hosting → Cloud Run 리라이트라 요청 시간 상한이 있다. 그래서 호출 A는 사진마다, B는 7개씩, C는 파트마다(5개 병렬), P는 사진마다, 채점(T+D)은 문항마다 **별개 호출**이다. 한 묶음이 실패해도 나머지는 산다(부분 성공).
 - **유형별 공략(§12, 2026-09-27)은 새 AI 호출이 없다.** 한 문제 연습은 호출 C 파트 하나(Q3–4는 관문 P 1장)를 입력만 바꿔 부르고(§12-7-7), 템플릿 테스트는 관문 T만 쓴다(문항마다 녹음만 보낸다 — 기대 문장은 보내지 않는다, §12-5-4). 공략·틀 은행 가져오기는 AI 0이다.
 - **2026-10-02 — 호출 C·D가 "답변 흐름"을 받는다**(§12-13-3). 호출 수·JSON Schema·호출 옵션은 그대로이고, 원문 셋(§4-7 사용자 메시지 형식·§5-1 D 시스템 프롬프트·§5-2 D 사용자 메시지 형식)이 바뀌고 원문 하나(§4-1 둘째 블록 `TOEIC_MOCK_FLOW_RULES` — 흐름을 받은 파트만 과제 절 뒤에 붙는다)가 더해졌다(검토 반영 — 처음 안은 §4-1 머리말을 바꿨다). zod는 채우지 않은 틀 자리(`~`·`{`·`}`)만 새로 거부한다(§4-9·§5-3). 늘어나는 것은 입력 길이뿐이다. 같은 날 구현(T13~T15)과 통합 QA(P1·P2 0)를 마쳤다 — 구현이 정한 동작과 남은 틈은 §12-13-7. 틀 은행 쪽 화면(① 읽기 정렬·③ 👀 틀 시험)은 AI 0이다(발음만).
+- **위 표 밖의 호출 셋**: 소재별 틀 말하기의 **E**(판정·총평 `toeic_frame_judge`)·**F**(보충 출제 `toeic_frame_supply`) — §20-5·§20-6, 모델은 출제·채점(`OPENAI_TOEIC_MODEL`). 나만의 답변 섬의 **G**(섬 문장 해석 `toeic_island_translate`, 2026-10-13) — §21-7, temperature 0.2, 모델은 메인(`OPENAI_MODEL`). 토익 과목의 `callWithSchema` 호출은 A~G 일곱이다. 원문·JSON Schema는 각 절이 단일 정의처이고 eval 조각(`eval-toeic-frame-drill.ts`·`eval-toeic-island.ts`)이 따로 대조한다.
 
 ### 1-2. 파일 배치
 
@@ -4585,7 +4586,7 @@ interface ToeicFrameDrillFile {
 
 ## 21. 나만의 답변 섬 — Q5–7 · Q11 (2026-10-03)
 
-> "언어를 잊지 않는 법"(나와 연결된 의미 있는 문장을 섬처럼 쌓고, 가린 채 떠올린다)을 토익에 옮긴 것. 단골 소재마다 **내 경험으로 만든 답변 조각**을 모아 두면 시험장에서 남의 예문보다 먼저 떠오른다. **AI 호출 0**(새 호출·새 프롬프트 없음). 정의처 `lib/toeic-island.ts`(순수 — 클라이언트·eval 안전), 계약 `lib/toeic-island-contract.ts`. SPEC §20-18.
+> "언어를 잊지 않는 법"(나와 연결된 의미 있는 문장을 섬처럼 쌓고, 가린 채 떠올린다)을 토익에 옮긴 것. 단골 소재마다 **내 경험으로 만든 답변 조각**을 모아 두면 시험장에서 남의 예문보다 먼저 떠오른다. **AI 호출 0**(새 호출·새 프롬프트 없음 — 2026-10-13 정정: 섬 문장의 한국어 해석을 만드는 **호출 G**가 더해져 담기·고치기 라우트가 저장 뒤 best-effort로 부른다. 키가 없어도 담기·고치기는 그대로 성공한다 — §21-7). 정의처 `lib/toeic-island.ts`(순수 — 클라이언트·eval 안전), 계약 `lib/toeic-island-contract.ts`. SPEC §20-18.
 
 ### 21-0. 결정 (사용자 확정 2026-10-03 · 오케스트레이터 기본값)
 
@@ -4622,6 +4623,8 @@ interface ToeicFrameDrillFile {
 
 ### 21-3. 라우트 (AI·키 검사 없음 — 키가 없어도 담긴다)
 
+> **2026-10-13 정정(§21-7)**: 제목의 "AI 없음"은 이제 삭제에만 참이다. 담기(`POST`)·고치기(`PATCH`)는 **저장이 성공한 뒤** 해석(호출 G)을 best-effort로 붙인다 — 그래서 200 응답의 `entry.trKo`가 해석이거나 null이다. **"키 검사 없음 — 키가 없어도 담긴다"는 그대로 참이다**: 두 라우트는 키를 보지 않고 501을 내지 않으며, 키 없음·AI 실패·시간 초과는 `trKo: null`인 채 200이다. 아래 표의 상태코드·오류 이름은 바뀌지 않았다.
+
 | 라우트 | 본문 | 응답 |
 |---|---|---|
 | `POST /api/toeic/island` | `{origin, topicKey?, ko?, part?, en?}` | 200 `{ok, entry, reused}` · 400 `invalid_input`·`too_long` · 404 `source_not_found` · 422 `unsupported_part` · 409 `full` · 500 `save_failed` |
@@ -4640,6 +4643,8 @@ interface ToeicFrameDrillFile {
 
 순수(원본 키 멱등·형식 거부·두 원본 → 담을 내용·유형 대응·자르기/거부 상한·소재 추천·강조 조각·정규화·소재 고르기·편집 판정·묶음 순서) · 파일 백엔드(자식 프로세스·임시 cwd — 같은 원본 동시 두 번 = 하나, 편집 원자 단위, 삭제, 키 없는 옛 db.json) · 배선(AI·키 검사 없음, 원본은 저장소에서, Firestore 삭제 prod-guard·담기 create·편집 runTransaction, 클라이언트 번들 경계, 🔊 프리페치 없음, lookbehind 없음). `eval:toeic` 1864 → 1908.
 
+> **2026-10-13 정정(§21-7)**: 배선 묶음의 "AI·키 검사 없음" 단언은 "라우트에 키 검사·501·lib/ai 직접 import 없음 + 해석은 저장 성공 뒤 + 해석 서버 모듈은 던지지 않고 메인 모델 진입 함수만"으로 바뀌었다 — 지금 항목 수와 내용은 §21-7 eval 문단.
+
 ### 21-6. 알려진 틈 · 다음 회차
 
 - 복습 큐 연결(`ko` → 내 문장 떠올리기)은 하지 않았다 — 공통 "오늘의 복습" 작업이 끝난 뒤 잇는다.
@@ -4648,3 +4653,127 @@ interface ToeicFrameDrillFile {
 - **2026-10-09 수정 — 채점 직후 버튼**: 섬 데이터(`ToeicAttemptIslandData`)는 결과 화면을 처음 그릴 때 서버가 만든다. 같은 화면에서 "AI 채점"을 누르면 첨삭은 클라이언트 상태로만 들어가 버튼이 다시 들어와야 보였다(유형 연습·한 문제 연습·실전 모두). 이제 `runScoring`이 **채점 큐가 다 끝난 뒤 성공이 1건 이상이면 `router.refresh()`를 한 번** 부른다 — 문항마다 부르지 않는다(병렬 채점 중 늦게 온 서버 값이 막 받은 첨삭을 덮지 않게). 문항별 다시 채점도 같은 경로. eval: `eval-toeic-island.ts` 정적 2항목(`eval:toeic` 1908 → 1910).
 
 > 2026-10-03 — **오늘의 복습(간격 반복 + 힌트 사다리)**: 이 과목의 시험 본 항목(표현집 표현 `toeic-expr`·틀 은행 틀 `toeic-template`)이 1→3→7→14→30일 간격으로 다시 나온다. AI 호출이 없어 이 하네스의 호출·spec-sync와 무관하다 — 규칙·출처·저장·화면은 `docs/SPEC.md` §23(엔진 `lib/review-schedule.ts`, 어댑터 `lib/review-sources.ts`, eval `npm run eval:review`).
+
+### 21-7. 호출 G — 섬 문장 해석 (`translateIslandSentences`, 2026-10-13)
+
+> 사용자 신고(2026-10-13): 오늘의 복습의 🏝️ 섬 항목 단서가 담을 때 적은 한 줄 메모(주제어 수준 — 지어낸 예 "주말 단골 장소")뿐이라 어떤 영어 문장을 떠올려야 하는지 알 수 없다 — "섬에서 문제를 내려면 해석이 주어져야 할듯". 그래서 섬 문장마다 **AI가 만든 한국어 해석 `trKo`**를 저장해 복습 단서의 주 문장으로 쓴다. 이 절은 새 호출 **G**의 원문·JSON Schema·zod·모델·실패 처리와 순수 판정의 단일 정의처다. 구현(ai-engineer 몫): 프롬프트 `lib/ai/toeic/island-prompts.ts`, 스키마·zod `lib/ai/toeic/island-schemas.ts`, 진입 함수 `translateIslandSentences`(`lib/ai/toeic/calls.ts`), 순수 층 `lib/toeic-island.ts`, 단서 `lib/review-sources.ts`, eval `scripts/eval-toeic-island.ts` ④·`scripts/eval-review.ts`. 라우트·저장·화면 배선은 app-builder 몫이다.
+
+**이 절이 바꾸는 사실**: 토익 과목의 호출은 A·B·C·D·E·F에 **G**(`toeic_island_translate`)가 더해져 일곱이다. §21 머리의 "AI 호출 0"·§21-3 제목의 "AI 없음"은 이제 **삭제**에만 참이다 — 담기·고치기 라우트는 저장 성공 뒤 호출 G를 best-effort로 부른다(각 자리에 정정 한 줄을 붙였다). **"키가 없어도 담긴다"는 유지된 사실이다**(두 라우트에 키 검사·501 없음 — 키 없음·실패·지연은 `trKo: null`인 채 200). §21-6 첫 줄 "복습 큐 연결은 하지 않았다"는 2026-10-03 오늘의 복습 회차(SPEC §23)에서 이미 이어졌다. 호출 A~F의 원문·JSON Schema·호출 옵션은 바뀌지 않는다. spec-sync 원문은 이 절의 3, JSON Schema 의미 동치는 이 절의 1 — `scripts/eval-toeic-island.ts`가 따로 대조한다(`eval-toeic.ts`의 기존 단언 원문 15·JSON 8은 그대로이고, 기존 JSON 블록 수 단언은 `toeic_island_` 접두어도 세지 않는다).
+
+**저장 — 새 칸 `trKo: string | null`** (`ToeicIslandEntry`, 필수 nullable)
+
+- `ko`(한국어 단서)의 의미·동작은 그대로다 — 틀 말하기 원본이면 그 문항의 한글 문장, 모의고사·직접 쓰기면 사용자가 적은 한 줄 메모.
+- `trKo`는 호출 G가 만든 해석이다. 옛 문서에는 칸이 없다 → `normalizeToeicIslandEntry`가 null로 읽는다(`normalizeIslandTrKo` — 공백 정리, 한글 없는 값은 버림). 저장 본문 `islandEntryData`가 칸을 싣는다(빠지면 다음 저장에서 조용히 지워진다). 해석 상한 `TOEIC_ISLAND_TR_KO_MAX` 1000자(섬 문장 1200자의 해석이 통째로 들어간다 — zod·정규화·적용 판정이 같은 상수).
+- 사용자가 직접 고치는 칸이 아니다 — `IslandPatch`에 없다. **섬 문장 `en`이 편집으로 실제로 바뀌면 `applyIslandPatch`가 `trKo`를 null로 되돌린다**(옛 문장의 해석이 새 문장의 단서로 남지 않게 — 다시 만들 대상이 된다). 메모·소재·유형만 고치면 그대로다.
+
+**해석이 필요한 항목** `islandNeedsTranslation(e)`: `trKo`가 비었고, (원본이 `frame_drill`이 아니거나 `ko`가 빈) 항목. 틀 말하기 원본은 `ko`가 이미 한글 문장(진짜 해석)이라 AI를 부르지 않는다.
+
+**묶음 계획** `planIslandTranslateBatches(entries, limit?)`: 필요한 항목만 받은 순서대로, 한 묶음은 `TOEIC_ISLAND_TR_BATCH_MAX` 20개·영어 `TOEIC_ISLAND_TR_BATCH_CHARS` 3000자 이하(한 항목이 예산을 넘으면 혼자 한 묶음). **묶음 하나 = 호출 G 한 번 = 요청 하나**(§1-1 60초 상한). 묶음의 항목은 `{id, en}` — `en`은 요청 시점의 섬 문장이다.
+
+**해석 적용** `applyIslandTranslation(entry, {en, trKo})`: 원자 단위(`updateToeicIslandEntry`) 안에서 최신 항목 위에 부른다. 요청 뒤 섬 문장이 바뀌었으면 `stale`(쓰지 않는다), 이미 해석이 있으면 `exists`(먼저 채운 것이 이긴다), 빈 값·한글 없음·상한 초과는 `invalid`. `updatedAt`은 건드리지 않는다(사용자 편집이 아니다).
+
+**호출**
+
+- 입력은 영어 문장 1~20개 — `translateIslandSentences(sentences, {signal?, maxRetries?})`가 0부터 index를 붙이고, 반환은 **입력과 같은 길이·같은 순서**의 해석 배열이다. 한 항목은 한 문장일 수도, 여러 문장(Q11 답변 하나)일 수도 있다 — 항목 하나에 해석 하나.
+- 해석은 성인 수험자가 **그것만 보고 원 문장을 떠올리는 단서**다 — 의역을 지나치게 하지 않고 내용 낱말을 빠뜨리지 않는다. 문법이 어색한 원문도 고치거나 평가하지 않는다(채점은 호출 D·E의 일이다).
+- 호출 옵션: temperature 0.2, maxOutputTokens 6000, call 라벨 `toeic_island_translate`. 모델은 **메인 `resolveModel()`**(env `OPENAI_MODEL`, 기본 `gpt-6-luna`)이다 — `resolveToeicModel()`(출제·채점 C·D·E·F)이 아니다(§1-1 "출제·채점만 sol"). 추론 계열이라 공유 래퍼가 온도를 싣지 않는다.
+- 호출 전체(첫 요청 + zod 재요청)의 시간 상한 `TOEIC_ISLAND_TRANSLATE_TIMEOUT_MS` 45초 — 호출측 신호(`options.signal`, 라우트의 `req.signal`)와 합친다(`islandTranslateAbortSignal` — 먼저 온 쪽이 끊는다). SDK 자동 재시도 기본 `TOEIC_ISLAND_TRANSLATE_SDK_MAX_RETRIES` 0(시간 상한이 있는 호출 — retry-after 대기가 신호를 보지 않는다, 영어 호출 J와 같은 관용구). 화면이 기다리지 않는 경로는 `options.maxRetries`로 늘릴 수 있다.
+- 빈 입력·20개 초과·빈 문장·섬 문장 상한 초과는 호출 전에 throw(과금 0). 재요청까지 실패하면 throw — **부수 효과라 호출측이 best-effort로 삼킨다**(담기·편집·복습은 해석 없이도 돈다).
+
+**시스템 프롬프트 (원문 그대로 사용 — `TOEIC_ISLAND_TRANSLATE_SYSTEM_PROMPT`)**
+
+```
+너는 TOEIC Speaking을 준비하는 한국인 성인 수험자가 모아 둔 영어 답변 문장을 한국어로 옮기는 번역가다. 수험자는 나중에 이 한국어 해석만 보고 원래 영어 문장을 떠올려 말하는 연습을 한다.
+
+[입력]
+- 번호(index)가 붙은 영어 항목 목록을 받는다. 한 항목은 한 문장일 수도, 이어진 여러 문장(답변 하나)일 수도 있다.
+- 수험자가 직접 말하거나 쓴 문장이라 문법이 어색할 수 있다. 고치거나 평가하지 않고 말하려는 뜻을 옮긴다.
+
+[해석 — items]
+- 받은 index마다 정확히 하나씩 쓴다(index는 받은 번호 그대로, 개수는 받은 항목 수와 같다). 항목을 합치거나 나누지 않는다.
+- ko: 그 항목 전체의 한국어 해석이다. 자연스러운 한국어 구어체 존댓말(~요)로 쓴다.
+- 해석만 보고 원래 문장을 떠올릴 수 있어야 한다. 원문의 내용 낱말(누가, 무엇을, 언제, 어디서, 왜, 얼마나, 숫자, 이유와 예)을 하나도 빠뜨리지 않고, 원문에 없는 내용을 더하지 않는다.
+- 의역을 지나치게 하지 않는다. 문장 순서와 연결어(먼저, 게다가, 그래서, 예를 들면)를 원문대로 살리고, 원문이 여러 문장이면 해석도 같은 수의 문장으로 쓴다.
+- 영어 낱말을 그대로 섞지 않는다. 고유명사와 한국어에서도 영어로 쓰는 말만 그대로 둘 수 있다.
+
+[금지]
+- 설명, 주석, 영어 원문, 괄호 속 영어를 ko에 넣지 않는다.
+- 지정된 JSON 스키마 외의 텍스트를 내지 않는다.
+```
+
+**사용자 메시지 형식 (원문 그대로 사용 — `TOEIC_ISLAND_TRANSLATE_USER_TEMPLATE`)**
+
+```
+항목 수: {count}
+영어 항목:
+{items}
+```
+
+**항목 한 줄의 형식 (원문 그대로 사용 — `TOEIC_ISLAND_TRANSLATE_ITEM_TEMPLATE`)** — 항목끼리는 줄바꿈 하나로 잇고, 값의 공백·줄바꿈은 한 칸으로 접는다(한 항목 = 한 줄). 치환은 단일 패스다(`fillTemplate`).
+
+```
+[{index}] {en}
+```
+
+**JSON Schema (strict — `TOEIC_ISLAND_TRANSLATE_JSON_SCHEMA`)**
+
+```json
+{
+  "name": "toeic_island_translate",
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["items"],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["index", "ko"],
+          "properties": {
+            "index": { "type": "integer" },
+            "ko": { "type": "string" }
+          }
+        }
+      }
+    }
+  },
+  "strict": true
+}
+```
+
+**zod `buildIslandTranslateZod(input)`**(입력을 알고 만든다 — 위반이면 기존 1회 재요청):
+
+- `items`: 보낸 index마다 정확히 하나(개수 = 보낸 수, 받지 않은 index·중복 거부, 빠진 index를 알린다).
+- `ko`: 1~1000자(앞뒤 공백 뺀 길이)·**한글 포함**(영어를 그대로 돌려준 답 거부). 고유명사 라틴이 섞인 해석은 받는다.
+- 메시지에 값을 넣지 않는다(섬 문장이 로그·오류 본문에 새지 않게).
+
+**오늘의 복습 단서** (`toeicIslandItems` — `lib/review-sources.ts`, SPEC §23): `trKo`가 있으면 주 문장 = `trKo`, 곁줄 = (메모 `ko`가 있고 `trKo`와 다르면 메모) + (`소재 · X`)를 ` · `로 이은 것(둘 다 없으면 null). `trKo`가 없으면 옛 순서 그대로다(한국어 단서 → 소재/한국어 틀 → 질문 → 고정 문구) — 해석이 아직 없거나 만들기에 실패한 항목이 큐에서 빠지지 않는다. 정답·힌트·항목 키·첫 복습일은 바뀌지 않는다. `ToeicIslandLike.trKo`는 선택 칸이다(옛 호출부는 없는 것 = null). 곁줄의 메모는 **정답을 흘리면 뺀다**(`islandMemoLeaksAnswer` — 한글이 없는 메모(영어뿐), 또는 정답 영어 문장을 통째로 담은 메모. 구두점·대소문자·공백 차이는 같은 것으로 본다. 2026-10-13 QA island-tr 1 P3-B). 해석이 없을 때 메모가 주 문장이 되는 옛 순서는 건드리지 않았다.
+
+**라우트·저장 배선 (구현 — app-builder 2026-10-13, 오케스트레이터 확정. 처음 안의 별도 해석 라우트·"담기·편집 라우트 안에서 부르지 않는다"는 폐기)**
+
+AI 호출·키 확인·저장은 서버 전용 모듈 **`lib/toeic-island-translate-server.ts`** 한 곳에 있다. 공개 함수 셋은 던지지 않는다(부수 효과 — 키 없음·대상 없음·AI 실패·시간 초과는 "해석 없이"로 떨어진다). 새 라우트·새 스토어 메서드는 없다.
+
+- **담기** `POST /api/toeic/island` — 저장(`createToeicIslandEntry`)이 성공하고 **새로 담았을 때만**(`reused`가 아니면) `translateSavedIslandEntry(record)`를 부른다. 저장 본문의 `trKo`는 늘 null로 쓰고, 해석은 그 뒤 별도 원자 단위로 붙는다. 응답 200 `{ok, entry, reused}`의 `entry.trKo` = 해석 또는 null. 이미 담긴 원본(`reused`)은 다시 만들지 않는다.
+- **고치기** `PATCH /api/toeic/island/[id]` — 편집 원자 단위가 성공한 뒤 `translateSavedIslandEntry(r.entry)`. 섬 문장이 바뀌어 `trKo`가 지워졌거나 아직 없던 항목이면 붙이고, 해석이 필요 없는 항목(`islandNeedsTranslation` false)은 호출 0이다.
+- **오늘의 복습** `/toeic/review` 페이지 — 큐를 만든 **뒤** `fillIslandTranslationsForReview(q.cards)`: 키가 없으면 섬 목록도 읽지 않고 끝, 해석이 빠진 항목이 있으면 오늘 큐에 나온 섬 문장을 앞세워 **한 묶음만**(`planIslandTranslateBatches(...)[0]`) 채운다. 하나라도 붙었을 때만 큐를 한 번 더 만든다(다시 만들기가 실패하면 처음 큐 그대로). `GET /api/review/{area}`와 다른 영역의 복습 페이지는 이 모듈을 부르지 않는다(AI 0 그대로). 섬 화면(`/toeic/island`)을 열 때는 채우지 않는다.
+- **키·순서**: 두 라우트에는 키 검사·501·`lib/ai` 직접 import가 없다 — 키는 모듈 안 `hasKey()`가 대상 판정(`nothing`) **뒤**, 호출 G **앞**에서 본다. 그래서 키가 없으면 AI 호출 0이고 담기·고치기는 `trKo: null`인 채 200이다.
+- **기다림과 저장의 분리**: 화면은 상한까지만 기다린다 — 담기·고치기 `TOEIC_ISLAND_TR_SAVE_WAIT_MS` 8초, 복습 `TOEIC_ISLAND_TR_REVIEW_WAIT_MS` 10초. 넘으면 해석 없이 응답하고, 이미 보낸 호출은 끊지 않고 `after()`(next/server)로 응답 뒤에 마저 저장한다(호출 G 자체 상한 45초 안). 느린 날에도 같은 묶음을 매번 버리고 다시 사지 않게 하려는 것이다. 이 경로는 `translateIslandSentences`에 호출측 신호를 넘기지 않는다(응답이 끝나도 저장까지 가야 한다 — 관문 P 사진과 같은 까닭).
+- **실패 격리**(2026-10-13 QA island-tr 1 P2-A·P3-D): 묶음이 내용 때문에 실패하면(검증 위반·출력 미완성·400) 반으로 나눠 앞 절반부터 다시 청해 되는 것부터 저장하고, 한 문장으로도 안 되는 항목은 **프로세스 메모리 쿨다운** `TOEIC_ISLAND_TR_COOLDOWN_MS` 6시간 동안 계획에서 뺀다(문서에 새 칸 없음 — 재시작하면 풀리고, 섬 문장을 고치면 바로 풀린다). 채우기 한 번(페이지 한 번·담기 한 번)의 호출 G는 최대 `TOEIC_ISLAND_TR_MAX_CALLS` 6번(검증 재요청까지 HTTP 최대 12), 새 호출은 시작 뒤 `TOEIC_ISLAND_TR_WORK_MAX_MS` 45초까지만 연다. 20문장 묶음도 20→10→5→2→1 다섯 번이면 한 문장에 닿으므로 채우기마다 "저장" 아니면 "한 항목 쿨다운"이 반드시 일어난다. 첫 호출이 실패하면 다음 채우기의 첫 묶음 크기를 반으로 줄이고(성공하면 다시 키운다), 시간 상한·끊김이면 더 열지 않는다. 연결 실패·5xx·429는 나누지 않고 `TOEIC_ISLAND_TR_OUTAGE_BACKOFF_MS` 1분 쉰다. 지금 해석을 받고 있는 항목은 같은 프로세스에서 다시 청하지 않는다(상한을 넘긴 직후 다시 열어도 같은 묶음을 또 사지 않는다). 화면이 기다리는 상한(8초·10초)과 실패 닫힘은 그대로다.
+- **저장**: 항목마다 기존 `updateToeicIslandEntry(id, cur => applyIslandTranslation(cur, {en, trKo}))` — `stale`·`invalid`는 쓰지 않고, `exists`는 쓰지 않고 먼저 채워진 항목을 읽어 돌려준다. 한 항목의 저장 실패는 그 항목만 건너뛴다. 두 백엔드 모두 읽기 `normalizeToeicIslandEntry`·쓰기 `islandEntryData`만 지나 `trKo`가 왕복한다.
+- **화면**: 섬 화면 항목에 `해석` 줄(메모 💬는 해석과 다를 때만), 담기 패널·메모 칸에 "해석은 자동으로 붙어요". 복습 러너는 섬 단서가 40자를 넘을 때만 긴 글 모양으로 그린다.
+- 로그는 개수·ms·오류 이름만(문장·해석 없음).
+
+**비용**: 섬 문장 하나에 평생 한 번(문장을 고치면 한 번 더) — 새로 담기 1회·섬 문장 고치기 1회(각 한 문장짜리 호출), 옛 문장은 오늘의 복습을 열 때 묶음(최대 20문장)마다 호출 G 1회(재요청 시 2). 틀 말하기에서 담은 문장은 0. 같은 문장을 두 화면이 동시에 청하면 호출은 두 번 나가고 저장은 한 번이다(`exists`) — 같은 프로세스 안에서는 진행 중 표시가 둘째 호출을 막는다(인스턴스가 다르면 여전히 두 번).
+
+**알려진 틈**
+
+1. 내용 낱말을 빠뜨렸는지는 코드로 잴 수 없다 — 프롬프트 몫이다(zod는 개수·index·한글·길이만).
+2. 틀 말하기 원본은 섬 문장을 고쳐도 `ko`(한글 문장)가 남아 있는 한 해석 대상이 아니다 — 고친 문장과 한글 문장이 어긋날 수 있다(사용자가 메모 칸에서 함께 고친다). `ko`를 비우면 대상이 된다.
+3. 해석이 채워지기 전(키 없음·실패·상한을 넘긴 응답)의 복습 단서는 옛 순서(메모)다.
+4. 응답 뒤 저장(`after()`)의 Cloud Run 동작은 확인하지 않았다 — 요청 기반 CPU 할당이면 응답 뒤 작업이 늦어지거나 인스턴스와 함께 사라질 수 있다(그러면 다음 복습 열기가 다시 청한다 — 비용만 한 번 더).
+5. 20문장·3000자 묶음이 복습 상한 10초 안에 오는지는 실측하지 않았다(넘으면 첫 열기는 옛 단서, 다음 열기에 해석).
+6. 섬 화면을 열 때는 채우지 않으므로, 이 절 이전에 담은 문장의 해석은 오늘의 복습을 열어야 붙는다.
+
+**eval** (`scripts/eval-toeic-island.ts` ④ — `runToeicIslandChecks()`에 포함, 오프라인·실호출 0): spec-sync 원문 3(`block-exact`)·JSON Schema 의미 동치 1·블록 수 1·strict 모양·호출 옵션 문장·이 절의 산문 숫자(해석 상한·묶음 항목 수·글자 예산·시간 상한·SDK 재시도) ↔ 상수, 사용자 메시지(단일 패스·공백 접기), zod 반례(개수 불일치·index 중복·받지 않은 index·빈 해석·한글 없는 해석·길이 경계·모르는 칸·메시지에 값 0), 필요한 항목 판정, 묶음 계획(20개·글자 예산·limit), 적용 판정(stale·exists·invalid), 편집 시 `trKo` 초기화, 정규화·저장 본문, `calls.ts` 배선(메인 모델·합친 신호·재시도·호출 전 throw — 소스 대조). 배선 ③(소스 대조·주석 제외 — 2026-10-13 옛 "라우트: AI·키 검사 없음" 한 줄을 대체): 두 라우트에 키 검사·501·`lib/ai` 직접 import 없음, 담기는 저장·상한 판정 **뒤** 성공 응답 안에서 새로 담았을 때만 한 번, 고치기는 편집 원자 단위·실패 갈래 **뒤** 성공 응답 안에서 한 번(삭제에는 없음), 해석 서버 모듈은 `throw` 0·호출 약속에 `.catch`·대상 없음 → 키 확인 → 호출 순서·`lib/ai`에서 `translateIslandSentences`만(출제·채점 모델·공유 래퍼 직접 호출 없음)·저장은 원자 단위 안 `applyIslandTranslation`·상한을 넘기면 `after()`, 기다림 상수 ↔ 이 절의 숫자, 복습 페이지는 큐 뒤에 한 번·다시 만들기 실패 시 처음 큐·다른 영역 복습과 `/api/review`는 모듈 import 없음. 파일 백엔드 ②: 키 없는 자식 프로세스에서 `translateSavedIslandEntry`가 받은 항목 그대로·복습 채우기 false. 단서 규칙은 `scripts/eval-review.ts` "연결·답변 섬"(해석 주 문장·곁줄·폴백·정답과 힌트 불변). 실호출 게이트(자리만 — 오케스트레이터가 사용자 동의 뒤): `EVAL_TOEIC=1 EVAL_TOEIC_ISLAND=1`이면 G 1회(지어낸 2문장 — 개수·길이만 찍는다). `eval:toeic` 1910 → 1951(호출 G·순수 층) → 1962(배선 반영 뒤 — 섬 조각 98항목) → 1964(실패 격리 정적 2항목 — 섬 조각 100항목), `eval:review` 85 → 91 → 92(정답을 흘리는 메모).

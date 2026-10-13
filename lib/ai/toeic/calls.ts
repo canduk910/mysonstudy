@@ -1,9 +1,9 @@
 /**
- * lib/ai/toeic/calls.ts — 토익 호출 A·B·C·D(+ 소재별 틀 말하기 E·F — §20) 진입 함수 (**서버 전용**) (docs/harness/toeic.md §2~§5)
+ * lib/ai/toeic/calls.ts — 토익 호출 A·B·C·D(+ 소재별 틀 말하기 E·F — §20, 답변 섬 해석 G — §21-7) 진입 함수 (**서버 전용**) (docs/harness/toeic.md §2~§5)
  *
  * 공유 래퍼 `callWithSchema`(lib/ai/client.ts)를 **그대로** 부른다 — client.ts에 과목 분기·진입 함수를 넣지 않는다(docs/HARNESS.md §2).
  * 프롬프트·스키마·옵션은 prompts.ts·schemas.ts에서 가져온다. 모델(2026-10-02 사용자 결정): 출제·채점(C·D)은 resolveToeicModel()
- * (env OPENAI_TOEIC_MODEL, 빈 값이면 gpt-6.1-sol — model.ts), 판독·발화 포인트(A·B)는 메인 resolveModel()(env OPENAI_MODEL).
+ * (env OPENAI_TOEIC_MODEL, 빈 값이면 gpt-6.1-sol — model.ts), 판독·발화 포인트(A·B)와 섬 문장 해석(G)은 메인 resolveModel()(env OPENAI_MODEL).
  *
  * - 사진·묶음·파트·문항마다 **호출 하나**다(요청 하나가 60초를 넘지 않게, §1-1). 병렬·부분 성공은 라우트가 Promise.allSettled로 한다.
  * - 키 검사(501)는 라우트가 이 함수들보다 **먼저** 한다. 키가 없으면 getOpenAIClient가 throw한다.
@@ -72,6 +72,16 @@ import {
   type ToeicFrameSupplyOutput,
 } from "./frame-drill-schemas";
 import type { ToeicFrameDrillSupplyPlan } from "../../toeic-frame-drill";
+import {
+  TOEIC_ISLAND_TRANSLATE_CALL_OPTIONS,
+  TOEIC_ISLAND_TRANSLATE_SDK_MAX_RETRIES,
+  TOEIC_ISLAND_TRANSLATE_SYSTEM_PROMPT,
+  TOEIC_ISLAND_TRANSLATE_TIMEOUT_MS,
+  buildIslandTranslateUserMessage,
+  type ToeicIslandTranslateInput,
+} from "./island-prompts";
+import { TOEIC_ISLAND_TRANSLATE_JSON_SCHEMA, buildIslandTranslateZod } from "./island-schemas";
+import { TOEIC_ISLAND_EN_MAX, TOEIC_ISLAND_TR_BATCH_MAX, cleanIslandText } from "../../toeic-island";
 
 /**
  * 호출 A — 표현집 한 페이지 판독(vision). 사진 1장 = 호출 1회. 이미지 파트를 텍스트보다 먼저 넣는다(§2-2).
@@ -196,4 +206,60 @@ export async function supplyFrameDrillItems(plan: ToeicFrameDrillSupplyPlan): Pr
     maxOutputTokens: TOEIC_FRAME_SUPPLY_CALL_OPTIONS.maxOutputTokens,
     model: resolveToeicModel(),
   });
+}
+
+// ===========================================================================
+// 나만의 답변 섬 (§21-7 — 2026-10-13) — 호출 G(섬 문장 해석). 모델은 메인(resolveModel) — 출제·채점이 아니다
+// ===========================================================================
+
+/**
+ * 호출 G의 끊는 신호 — 서버 시간 상한(TOEIC_ISLAND_TRANSLATE_TIMEOUT_MS)과 호출측 신호(라우트의 req.signal 등)를 하나로 합친다.
+ * 둘 중 먼저 온 쪽이 호출 전체(zod 재요청 포함)를 끊는다. `ms`는 eval이 짧은 값으로 보려고 받는다(운영은 기본값).
+ */
+export function islandTranslateAbortSignal(external?: AbortSignal | null, ms: number = TOEIC_ISLAND_TRANSLATE_TIMEOUT_MS): AbortSignal {
+  const timeout = AbortSignal.timeout(ms);
+  return external ? AbortSignal.any([external, timeout]) : timeout;
+}
+
+/**
+ * 호출 G — 섬 문장 한 묶음의 한국어 해석(§21-7). 입력은 영어 문장 1~TOEIC_ISLAND_TR_BATCH_MAX개(묶음은 lib/toeic-island.ts
+ * planIslandTranslateBatches가 나눈다 — 묶음 하나 = 호출 하나 = 요청 하나). 반환은 **입력과 같은 길이·같은 순서**의 해석 배열이다
+ * (index는 이 함수가 0부터 붙이고 zod가 집합·개수를 잠근 뒤 순서대로 되돌린다 — 호출측은 자리로 짝짓는다).
+ * 저장은 호출측이 applyIslandTranslation(원자 단위 안)으로 한다 — 그사이 섬 문장이 바뀌었거나 이미 채워졌으면 쓰지 않는다.
+ *
+ * - 모델: 메인 `resolveModel()`(env OPENAI_MODEL) — `resolveToeicModel()`(출제·채점)이 아니다.
+ * - 시간 상한: 45초(재요청 포함 전체). `options.signal`이 끊겨도 멈춘다 — 둘 다 SDK가 던진다(래퍼는 삼키지 않는다).
+ * - SDK 자동 재시도: 기본 0(시간 상한이 있는 호출 — retry-after 대기가 신호를 보지 않는다). 화면이 기다리지 않는 경로는
+ *   `options.maxRetries`로 늘릴 수 있다.
+ * - 빈 입력·상한 초과·빈 문장·섬 문장 상한 초과는 **호출 전에** throw(과금 0). 키 검사(501)는 라우트가 먼저 한다.
+ * - 재요청까지 실패하면 throw — 호출측이 best-effort로 삼킨다(해석이 없으면 복습 단서는 옛 순서로 떨어진다).
+ */
+export async function translateIslandSentences(
+  sentences: readonly string[],
+  options: { signal?: AbortSignal | null; maxRetries?: number } = {},
+): Promise<string[]> {
+  if (sentences.length === 0 || sentences.length > TOEIC_ISLAND_TR_BATCH_MAX) {
+    throw new Error(`[ai:toeic_island_translate] 문장은 1~${TOEIC_ISLAND_TR_BATCH_MAX}개여야 합니다(지금 ${sentences.length}개).`);
+  }
+  const input: ToeicIslandTranslateInput = {
+    items: sentences.map((raw, index) => {
+      const en = cleanIslandText(raw);
+      if (en === null || en.length > TOEIC_ISLAND_EN_MAX) throw new Error(`[ai:toeic_island_translate] ${index}번 문장이 비었거나 너무 깁니다.`);
+      return { index, en };
+    }),
+  };
+  const { items } = await callWithSchema({
+    call: TOEIC_ISLAND_TRANSLATE_CALL_OPTIONS.call,
+    system: TOEIC_ISLAND_TRANSLATE_SYSTEM_PROMPT,
+    user: [textPart(buildIslandTranslateUserMessage(input))],
+    jsonSchema: TOEIC_ISLAND_TRANSLATE_JSON_SCHEMA,
+    zodSchema: buildIslandTranslateZod(input),
+    temperature: TOEIC_ISLAND_TRANSLATE_CALL_OPTIONS.temperature,
+    maxOutputTokens: TOEIC_ISLAND_TRANSLATE_CALL_OPTIONS.maxOutputTokens,
+    model: resolveModel(),
+    signal: islandTranslateAbortSignal(options.signal),
+    maxRetries: options.maxRetries ?? TOEIC_ISLAND_TRANSLATE_SDK_MAX_RETRIES,
+  });
+  const byIndex = new Map(items.map((it) => [it.index, it.ko] as const));
+  return input.items.map((it) => (cleanIslandText(byIndex.get(it.index)) as string));
 }

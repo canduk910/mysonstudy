@@ -206,6 +206,25 @@ textarea.input {
   color: var(--ink-2);
   overflow-wrap: anywhere;
 }
+/* AI 해석 — 메모(.ko, 💬)와 구분되는 줄 */
+.trKo {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  word-break: keep-all;
+}
+.trTag {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  font-size: 12px;
+  color: var(--ink-3);
+  vertical-align: 1px;
+}
 .meta {
   margin: 0;
   font-size: var(--fs-caption);

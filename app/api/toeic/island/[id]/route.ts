@@ -2,7 +2,9 @@
  * PATCH·DELETE /api/toeic/island/[id] — 🏝️ 답변 섬 문장 하나 편집·삭제 (docs/harness/toeic.md §21, SPEC §20-18)
  *
  * - PATCH 본문 {en?, ko?, topicKey?, part?} — 바꾼 칸만 덮는다(applyIslandPatch). 섬 문장을 비우거나 상한을 넘으면 400.
- *   판정은 원자 단위 안에서(파일 mutate · Firestore runTransaction). 수정이라 prod-guard 무관. AI·키 검사 없음.
+ *   판정은 원자 단위 안에서(파일 mutate · Firestore runTransaction). 수정이라 prod-guard 무관. 이 라우트에 키 검사는 없다(키가 없어도 고쳐진다).
+ *   섬 문장이 바뀌면 옛 해석(`trKo`)은 지워진다(applyIslandPatch). **저장이 성공한 뒤** 해석이 필요한 문장이면 best-effort로 다시 만들어 붙인다
+ *   (`lib/toeic-island-translate-server` — 최대 8초. 키 없음·실패·지연이면 `entry.trKo` null인 채 그대로 200, 나중에 오늘의 복습이 채운다 — §21-7).
  * - DELETE — 딸린 것 없음. **삭제라 prod-guard**(`deleteToeicIslandEntry` — 개발 환경에서 Firestore면 403).
  *
  * 응답 shape (단일 정의처 `lib/toeic-island-contract.ts`):
@@ -25,6 +27,7 @@ import {
   type IslandPatch,
 } from "@/lib/toeic-island";
 import type { ToeicIslandDeleteResponse, ToeicIslandPatchRequest, ToeicIslandPatchResponse } from "@/lib/toeic-island-contract";
+import { translateSavedIslandEntry } from "@/lib/toeic-island-translate-server";
 import { toToeicIssues, toeicZodErrorKo } from "@/lib/toeic-zod-ko";
 
 export const runtime = "nodejs";
@@ -86,7 +89,8 @@ export async function PATCH(req: Request, ctx: Ctx) {
       if (r.reason === "empty") return json({ ok: false, error: "invalid_input", messageKo: "영어 문장을 비울 수 없어요.", issues: [{ path: "en", message: "필수" }] }, 400);
       return json({ ok: false, error: "invalid_input", messageKo: "소재 형식이 아니에요.", issues: [{ path: "topicKey", message: "형식" }] }, 400);
     }
-    return json({ ok: true, entry: r.entry });
+    // 해석이 필요하면(문장을 고쳐 지워졌거나 아직 없던 것) 붙인다 — 부수 효과라 던지지 않고, 안 되면 r.entry 그대로
+    return json({ ok: true, entry: await translateSavedIslandEntry(r.entry, { store }) });
   } catch (err) {
     const why = err instanceof Error ? `${err.name}: ${err.message}`.slice(0, 200) : "unknown";
     console.error("[/api/toeic/island/[id]] 편집 실패:", why);

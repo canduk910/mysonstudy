@@ -441,6 +441,25 @@ const ses = (startedAt: string, items: [string, boolean, boolean | null][]): Qui
   const c = items.find((i) => i.card.itemKey === "toeic-island:isl-m-c3")?.card;
   add(A, "담긴 문장 전부(시험 기록 없이) · 같은 id 한 항목 · 첫 복습일 = 담은 KST 날 + 1", items.length === 3 && items[0].stats.attempts === 0 && items[0].stats.firstDueOn === "2026-10-03" && items[1].stats.firstDueOn === "2026-10-04", items.map((i) => i.stats.firstDueOn).join(","));
   add(A, "단서: 한국어 단서 → (없으면) 소재 + 한국어 틀 → (없으면) 질문", a?.cue.main === "우리 동네에서 가장 좋은 점은 조용한 공원이에요." && a.cue.sub === "소재 · 동네" && b?.cue.main === "소재 · 운동" && b.cue.sub === "[thing]에서 가장 좋은 점은 [reason]이에요." && c?.cue.main === "How often do you go outside?" && c.cue.lang === "en");
+  // AI 해석(trKo — toeic.md §21-7, 2026-10-13): 메모만으로는 어떤 문장인지 떠올릴 수 없다 → 해석이 주 문장, 메모·소재는 곁줄
+  const tr = (over: Record<string, unknown>) => toeicIslandItems([{ id: "isl-m-t1", en: "My go-to place on weekends is a small bakery.", ko: "주말 단골 장소", trKo: "제가 주말에 자주 가는 곳은 작은 빵집이에요.", topicNameKo: "여가", question: "Where do you go on weekends?", frameKey: "fd-like", createdAt: NOW, ...over }], frames)[0].card.cue;
+  const t1 = tr({});
+  add(A, "해석 단서: trKo가 주 문장 · 곁줄 = 메모 · 소재(` · `로)", t1.main === "제가 주말에 자주 가는 곳은 작은 빵집이에요." && t1.sub === "주말 단골 장소 · 소재 · 여가" && t1.lang === "ko", `${t1.main} / ${t1.sub}`);
+  add(A, "해석 단서: 메모가 없거나 해석과 같으면 곁줄에서 뺀다 · 소재도 없으면 곁줄 null", tr({ ko: null }).sub === "소재 · 여가" && tr({ ko: " 제가 주말에 자주 가는 곳은 작은 빵집이에요. " }).sub === "소재 · 여가" && tr({ topicNameKo: null }).sub === "주말 단골 장소" && tr({ ko: null, topicNameKo: null }).sub === null);
+  // 메모가 정답을 흘리면 곁줄에서 뺀다(QA island-tr 1 P3-B) — 한글 없는 메모 · 정답 영어 문장을 담은 메모(구두점·대소문자 차이 무시)
+  add(A, "해석 단서: 정답을 흘리는 메모는 곁줄에서 뺀다(영어뿐인 메모 · 정답 문장을 담은 메모) — 한글 메모·영어 낱말이 섞인 한글 메모는 그대로", tr({ ko: "weekend bakery" }).sub === "소재 · 여가" && tr({ ko: "my go-to place on weekends is a small bakery" }).sub === "소재 · 여가" && tr({ ko: "답: My go-to place on weekends is a small bakery." }).sub === "소재 · 여가" && tr({ ko: "bakery", topicNameKo: null }).sub === null && tr({ ko: "주말 bakery 이야기" }).sub === "주말 bakery 이야기 · 소재 · 여가" && tr({}).sub === "주말 단골 장소 · 소재 · 여가");
+  const t2 = tr({ trKo: null });
+  const t3 = tr({ trKo: "   " });
+  const t4 = toeicIslandItems([{ id: "isl-m-t2", en: "I usually walk there.", ko: "주말 단골 장소", topicNameKo: "여가", question: null, frameKey: null, createdAt: NOW }], frames)[0].card.cue;
+  add(A, "해석 폴백: trKo가 null·공백·칸 없음(옛 호출부)이면 옛 순서 그대로(메모가 주 문장 · 곁줄 소재)", [t2, t3, t4].every((c) => c.main === "주말 단골 장소" && c.sub === "소재 · 여가"), JSON.stringify([t2, t3, t4]));
+  add(A, "해석 폴백: 해석·메모 다 없으면 소재/틀 → 질문 순서 불변 · 해석이 있으면 질문보다 먼저(lang ko)", tr({ trKo: null, ko: null }).main === "소재 · 여가" && tr({ trKo: null, ko: null, topicNameKo: null, frameKey: null }).lang === "en" && tr({ ko: null, topicNameKo: null, frameKey: null }).lang === "ko");
+  add(A, "해석은 단서만 바꾼다 — 정답·힌트·항목 키·첫 복습일 불변", (() => {
+    const base = { id: "isl-m-t3", en: "What I like most about my town is the quiet park.", ko: "동네 좋은 점", topicNameKo: "동네", question: null, frameKey: "fd-like", createdAt: "2026-10-02T03:00:00.000Z" };
+    const [x] = toeicIslandItems([base], frames);
+    const [y] = toeicIslandItems([{ ...base, trKo: "우리 동네에서 가장 좋은 점은 조용한 공원이에요." }], frames);
+    const strip = (c: typeof x.card) => JSON.stringify({ ...c, cue: null });
+    return strip(x.card) === strip(y.card) && JSON.stringify(x.stats) === JSON.stringify(y.stats) && x.card.cue.main !== y.card.cue.main;
+  })());
   add(A, "힌트1 첫 낱말 · 힌트2 쓰인 틀 고정 부분(두 낱말 이상 조각 — templateRunSpans 규칙)만 보이는 뼈대(틀이 없으면 낱말 수 밑줄)", a?.hint1 === "What" && a.hint2 === "What I like most about __ ____ __ ___ _____ ____." && a.hint2Note === "쓰인 틀" && c?.hint2 === "________, __ _______ __ ___ _______." && c.hint2Note === "6낱말", `${a?.hint2} / ${c?.hint2}`);
   add(A, "뼈대 함수: 틀 못 찾으면 null · 밑줄은 첫 글자까지 가림", islandFrameSkeleton("Nothing here.", frames) === null && wordUnderscores("Go on!") === "__ __!");
   const cands = items.map((i) => ({ itemKey: i.card.itemKey, ...i.stats }));

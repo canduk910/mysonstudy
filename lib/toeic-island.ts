@@ -6,7 +6,10 @@
  *   ② 모의고사 결과(첨삭)의 Q5–7·Q11 "개선 답변" 또는 "고칠 문장 → 고친 문장"(소재는 사용자가 칩으로, 쓰인 틀이 있으면 그 소재를 추천)
  *   ③ 섬 화면에서 직접 쓰기(영어 문장 + 한 줄 한국어 메모 + 소재)
  * 같은 원본에서 두 번 담아도 한 개 — **문서 id가 원본 키**다(islandDocId — 확인과 생성이 한 원자 단위, 자유대화·틀 말하기 저장 관용구).
- * `ko`(한국어 단서)는 나중 회차의 "오늘의 복습(한국어 메모 → 내 문장 떠올리기)" 연결 자리다 — 지금은 화면 표시만.
+ * `ko`(한국어 단서)는 담을 때의 한글 문장(①)이거나 사용자가 적은 한 줄 메모(②③)다. 메모는 주제어 수준이라 그것만 보고는
+ * 어떤 영어 문장인지 떠올릴 수 없다 — 그래서 **`trKo`(AI 한국어 해석, 호출 G — §21-7, 2026-10-13)**를 따로 둔다. 오늘의 복습 단서는
+ * trKo가 주 문장이고 메모는 곁들인다(lib/review-sources.ts toeicIslandItems). 이 파일은 AI를 부르지 않는다 — 해석이 필요한 항목 판정·
+ * 묶음 계획·해석 적용 판정(순수)만 갖고, 호출은 lib/ai/toeic/calls.ts translateIslandSentences(서버 전용)다.
  *
  * ⚠️ 클라이언트·eval 안전: 런타임 import는 lib/toeic-template·lib/toeic-frame-drill·lib/toeic-guide·lib/toeic-text(전부 클라이언트 안전)뿐.
  * lib/ai·store·openai·zod 값 import 금지, 정규식 lookbehind 금지(구형 iOS Safari).
@@ -23,7 +26,7 @@ import {
   type ToeicFrameDrillTopic,
 } from "./toeic-frame-drill";
 import { toeicGuidePartOfMockPart } from "./toeic-guide";
-import { collapseSpaces } from "./toeic-text";
+import { collapseSpaces, hasHangul } from "./toeic-text";
 import type { ToeicMockPart } from "./toeic-mock";
 
 // ===========================================================================
@@ -38,6 +41,12 @@ export type ToeicIslandPart = ToeicFrameDrillPart;
 export const TOEIC_ISLAND_EN_MAX = 1200;
 /** 한국어 단서(메모·한글 문장) 상한 — 한 줄 */
 export const TOEIC_ISLAND_KO_MAX = 200;
+/** AI 한국어 해석(trKo) 상한 — 섬 문장(1200자, Q11 답변 하나)의 해석이 통째로 들어갈 만큼. zod(호출 G)·정규화·적용 판정이 같이 쓴다 */
+export const TOEIC_ISLAND_TR_KO_MAX = 1000;
+/** 해석 호출 G 한 번에 보내는 항목 수 상한(§21-7) */
+export const TOEIC_ISLAND_TR_BATCH_MAX = 20;
+/** 해석 호출 G 한 번에 보내는 영어 글자 수 예산 — 요청 하나가 60초 상한(§1-1) 안에 끝나게. 한 항목이 예산을 넘으면 그 항목 혼자 한 묶음 */
+export const TOEIC_ISLAND_TR_BATCH_CHARS = 3000;
 /** 내가 말한 문장(전사) 상한 — 곁들이는 기록이라 넘으면 자른다(거부하지 않는다) */
 export const TOEIC_ISLAND_SPOKEN_MAX = 1500;
 /** 질문 사본 상한 — 넘으면 자른다 */
@@ -76,8 +85,10 @@ export interface ToeicIslandEntryData {
   topicNameKo: string | null;
   /** 섬 문장 — 떠올릴 대상 */
   en: string;
-  /** 한국어 단서(한글 문장·메모) — 나중 복습 큐의 앞면 */
+  /** 한국어 단서(한글 문장·메모) — 틀 말하기 원본이면 그 문항의 한글 문장, 그 밖은 사용자가 적은 한 줄 메모 */
   ko: string | null;
+  /** AI 한국어 해석(호출 G — §21-7). 없으면 null(아직 안 만듦·옛 문서·섬 문장을 고쳐 되돌림). 사용자가 직접 고치는 칸이 아니다 */
+  trKo: string | null;
   /** 내가 실제로 말한 문장(전사·고칠 문장의 "말한 것") */
   spokenEn: string | null;
   /** 모의고사 질문 사본(②만) */
@@ -175,6 +186,7 @@ export function buildIslandFromFrameDrill(
       part: session.part,
       en,
       ko: clipIslandText(it.ko, TOEIC_ISLAND_KO_MAX),
+      trKo: null,
       spokenEn: it.outcome === "spoken" ? clipIslandText(it.transcript, TOEIC_ISLAND_SPOKEN_MAX) : null,
       question: null,
       frameKey: it.frameKey || null,
@@ -226,6 +238,7 @@ export function buildIslandFromAttempt(args: {
       part,
       en,
       ko: null,
+      trKo: null,
       spokenEn: spoken,
       question: clipIslandText(args.question, TOEIC_ISLAND_QUESTION_MAX),
       frameKey: null,
@@ -318,6 +331,8 @@ export function normalizeToeicIslandEntry(id: string, raw: unknown): ToeicIsland
     topicNameKo: topicKey === null ? null : clipIslandText(r.topicNameKo, TOEIC_ISLAND_TOPIC_NAME_MAX),
     en,
     ko: clipIslandText(r.ko, TOEIC_ISLAND_KO_MAX),
+    // 옛 문서에는 칸이 없다 → null(다시 만들 대상). 한글이 없는 값은 해석이 아니므로 버린다
+    trKo: normalizeIslandTrKo(r.trKo),
     spokenEn: clipIslandText(r.spokenEn, TOEIC_ISLAND_SPOKEN_MAX),
     question: clipIslandText(r.question, TOEIC_ISLAND_QUESTION_MAX),
     frameKey: typeof r.frameKey === "string" && r.frameKey !== "" ? r.frameKey : null,
@@ -335,6 +350,7 @@ export function islandEntryData(e: ToeicIslandEntry): ToeicIslandEntryData {
     topicNameKo: e.topicNameKo,
     en: e.en,
     ko: e.ko,
+    trKo: e.trKo,
     spokenEn: e.spokenEn,
     question: e.question,
     frameKey: e.frameKey,
@@ -370,7 +386,11 @@ export function resolveIslandTopic(
 
 export type IslandPatch = { en?: string; ko?: string | null; topicKey?: string | null; topicNameKo?: string | null; part?: ToeicIslandPart };
 
-/** 편집 판정 — 바꾼 칸만 덮는다. 섬 문장을 비우거나 상한을 넘으면 거부 */
+/**
+ * 편집 판정 — 바꾼 칸만 덮는다. 섬 문장을 비우거나 상한을 넘으면 거부.
+ * 섬 문장(en)이 **실제로 바뀌면** AI 해석 trKo를 null로 되돌린다(옛 문장의 해석이 새 문장의 단서로 남지 않게 — 다시 만들 대상이 된다).
+ * 메모·소재·유형만 고치면 trKo는 그대로다. trKo는 patch로 받지 않는다(applyIslandTranslation만 채운다).
+ */
 export function applyIslandPatch(
   e: ToeicIslandEntry,
   patch: IslandPatch,
@@ -381,6 +401,7 @@ export function applyIslandPatch(
     const en = cleanIslandText(patch.en);
     if (en === null) return { ok: false, reason: "empty" };
     if (en.length > TOEIC_ISLAND_EN_MAX) return { ok: false, reason: "too_long" };
+    if (en !== e.en) next.trKo = null;
     next.en = en;
   }
   if (patch.ko !== undefined) {
@@ -396,6 +417,82 @@ export function applyIslandPatch(
   const changed = JSON.stringify(islandEntryData({ ...next, updatedAt: e.updatedAt })) !== JSON.stringify(islandEntryData(e));
   if (changed) next.updatedAt = nowIso;
   return { ok: true, entry: changed ? next : e, changed };
+}
+
+// ===========================================================================
+// AI 한국어 해석(trKo) — 필요한 항목 판정 · 묶음 계획 · 적용 판정 (순수 — 호출 G는 lib/ai/toeic/calls.ts, §21-7)
+// ===========================================================================
+
+/** 저장·적용 전 해석 정리 — 공백 정리, 빈 값·한글 없는 값은 null, 상한을 넘으면 자른다(정규화 전용) */
+export function normalizeIslandTrKo(raw: unknown): string | null {
+  const t = clipIslandText(raw, TOEIC_ISLAND_TR_KO_MAX);
+  return t !== null && hasHangul(t) ? t : null;
+}
+
+/**
+ * 해석을 만들어야 하는 항목인가 — trKo가 비었고, (원본이 틀 말하기가 아니거나 한국어 단서 ko가 빈) 항목.
+ * 틀 말하기 원본은 ko가 이미 그 문항의 한글 문장(진짜 해석)이라 AI를 부르지 않는다. 섬 문장을 고치면 trKo가 null로 돌아가 다시 대상이 되지만,
+ * 틀 말하기 원본은 ko가 남아 있는 한 대상이 아니다(고친 문장과 한글 문장이 어긋날 수 있다 — §21-7 알려진 틈).
+ */
+export function islandNeedsTranslation(e: Pick<ToeicIslandEntry, "trKo" | "ko" | "origin">): boolean {
+  if (cleanIslandText(e.trKo) !== null) return false;
+  return e.origin.kind !== "frame_drill" || cleanIslandText(e.ko) === null;
+}
+
+/** 호출 G에 보낼 한 항목 — en은 **요청 시점의 섬 문장**(적용할 때 그대로 돌려줘 그사이 편집을 가른다) */
+export interface IslandTranslateTarget {
+  id: string;
+  en: string;
+}
+
+/**
+ * 해석 묶음 계획 — 필요한 항목(islandNeedsTranslation)만, 받은 순서대로, 한 묶음은 TOEIC_ISLAND_TR_BATCH_MAX개·
+ * TOEIC_ISLAND_TR_BATCH_CHARS자 이하(한 항목이 예산을 넘으면 혼자 한 묶음). 묶음 하나 = 호출 G 한 번 = 요청 하나.
+ * limit을 주면 앞에서부터 그 개수까지만 계획한다(나머지는 다음 요청). 같은 id는 한 번만.
+ */
+export function planIslandTranslateBatches(
+  entries: readonly Pick<ToeicIslandEntry, "id" | "en" | "trKo" | "ko" | "origin">[],
+  limit: number = Number.POSITIVE_INFINITY,
+): IslandTranslateTarget[][] {
+  const out: IslandTranslateTarget[][] = [];
+  let cur: IslandTranslateTarget[] = [];
+  let chars = 0;
+  let n = 0;
+  const seen = new Set<string>();
+  for (const e of entries) {
+    if (n >= limit) break;
+    const en = cleanIslandText(e.en);
+    if (en === null || seen.has(e.id) || !islandNeedsTranslation(e)) continue;
+    seen.add(e.id);
+    if (cur.length > 0 && (cur.length >= TOEIC_ISLAND_TR_BATCH_MAX || chars + en.length > TOEIC_ISLAND_TR_BATCH_CHARS)) {
+      out.push(cur);
+      cur = [];
+      chars = 0;
+    }
+    cur.push({ id: e.id, en });
+    chars += en.length;
+    n += 1;
+  }
+  if (cur.length > 0) out.push(cur);
+  return out;
+}
+
+/**
+ * 해석 적용 판정 — 원자 단위(updateToeicIslandEntry) **안에서** 최신 항목 위에 부른다.
+ * - stale: 해석을 청한 뒤 섬 문장이 바뀌었다(요청 시점 en ≠ 지금 en) → 쓰지 않는다(다음 계획이 새 문장으로 다시 청한다)
+ * - exists: 이미 해석이 있다 → 덮지 않는다(먼저 채운 것이 이긴다 — 두 탭이 같이 청해도 한 번만 쓴다)
+ * - invalid: 빈 값·한글 없음·상한 초과(zod를 지난 값이면 일어나지 않는다 — 방어)
+ * updatedAt은 건드리지 않는다(사용자 편집이 아니다 — 목록 순서·"고친 시각"에 영향 0).
+ */
+export function applyIslandTranslation(
+  e: ToeicIslandEntry,
+  tr: { en: string; trKo: string },
+): { ok: true; entry: ToeicIslandEntry } | { ok: false; reason: "stale" | "exists" | "invalid" } {
+  const cleaned = cleanIslandText(tr.trKo);
+  if (cleaned === null || cleaned.length > TOEIC_ISLAND_TR_KO_MAX || !hasHangul(cleaned)) return { ok: false, reason: "invalid" };
+  if (cleanIslandText(tr.en) !== e.en) return { ok: false, reason: "stale" };
+  if (cleanIslandText(e.trKo) !== null) return { ok: false, reason: "exists" };
+  return { ok: true, entry: { ...e, origin: { ...e.origin }, trKo: cleaned } };
 }
 
 // ===========================================================================

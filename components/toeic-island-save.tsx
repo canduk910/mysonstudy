@@ -117,7 +117,7 @@ export default function ToeicIslandSave({
             </button>
           </span>
           <label className={s.panelLabel}>
-            한국어 메모(떠올릴 단서 — 선택)
+            한국어 메모(선택) — 해석은 자동으로 붙어요
             <input
               className={s.input}
               type="text"

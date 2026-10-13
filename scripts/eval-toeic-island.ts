@@ -4,7 +4,11 @@
  * `eval-toeic.ts`가 `runToeicIslandChecks()`로 부른다(실호출 0 — AI·네트워크 없음).
  * 1. 순수(lib/toeic-island): 문서 id = 원본 키(멱등)·원본 → 담을 내용(틀 말하기·모의고사)·소재 추천·정규화·편집 판정·소재별 묶음
  * 2. 파일 백엔드 실제 동작(자식 프로세스 — 임시 cwd의 db.json): 담기 두 번 = 한 개 · 편집 · 삭제 · 옛 db.json 하위호환
- * 3. 소스 배선: AI·키 검사 없음 · 삭제 prod-guard · 클라이언트 경계
+ * 3. 소스 배선: 담기·고치기 라우트에 키 검사·501 없음(키 없이도 담긴다) · 해석(호출 G)은 저장 성공 뒤 best-effort · 해석 서버 모듈은 던지지 않고
+ *    메인 모델 진입 함수만 · 삭제 prod-guard · 클라이언트 경계
+ * 4. 해석 호출 G(§21-7 — 2026-10-13): spec-sync(원문 3 · JSON Schema 1 · 호출 옵션 1) · 사용자 메시지 · zod 반례 · 필요한 항목 판정 ·
+ *    묶음 계획 · 적용 판정 · 편집 시 trKo 초기화 · 정규화 · calls.ts 배선(소스 대조 — 오프라인 게이트가 fetch를 막아 태울 수 없다)
+ *    실호출은 runIslandLiveChecks() — eval-toeic.ts 게이트(EVAL_TOEIC=1) 안에서 EVAL_TOEIC_ISLAND=1일 때만. 에이전트는 실행하지 않는다.
  * 픽스처는 전부 지어낸 것(교재·강의 문장 없음).
  */
 
@@ -13,10 +17,29 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { checkSpecSync, extractSpecBlocks, type SpecSyncTarget } from "./spec-sync";
+import {
+  TOEIC_ISLAND_TRANSLATE_CALL_OPTIONS,
+  TOEIC_ISLAND_TRANSLATE_ITEM_TEMPLATE,
+  TOEIC_ISLAND_TRANSLATE_SDK_MAX_RETRIES,
+  TOEIC_ISLAND_TRANSLATE_SYSTEM_PROMPT,
+  TOEIC_ISLAND_TRANSLATE_TIMEOUT_MS,
+  TOEIC_ISLAND_TRANSLATE_USER_TEMPLATE,
+  buildIslandTranslateUserMessage,
+} from "../lib/ai/toeic/island-prompts";
+import { TOEIC_ISLAND_TRANSLATE_JSON_SCHEMA, buildIslandTranslateZod } from "../lib/ai/toeic/island-schemas";
 import {
   TOEIC_ISLAND_EN_MAX,
   TOEIC_ISLAND_SPOKEN_MAX,
+  TOEIC_ISLAND_TR_BATCH_CHARS,
+  TOEIC_ISLAND_TR_BATCH_MAX,
+  TOEIC_ISLAND_TR_KO_MAX,
   applyIslandPatch,
+  applyIslandTranslation,
+  islandEntryData,
+  islandNeedsTranslation,
+  normalizeIslandTrKo,
+  planIslandTranslateBatches,
   buildIslandFromAttempt,
   buildIslandFromFrameDrill,
   cleanIslandText,
@@ -66,6 +89,7 @@ function entry(over: Partial<ToeicIslandEntry> = {}): ToeicIslandEntry {
     topicNameKo: "여가",
     en: "My go-to place for running is the river path.",
     ko: "달리기 단골 장소",
+    trKo: null,
     spokenEn: null,
     question: null,
     frameKey: null,
@@ -240,6 +264,15 @@ out.upd = await st.updateToeicIslandEntry(base.id, (cur) => ({ entry: { ...cur, 
 out.got = await st.getToeicIslandEntry(base.id);
 out.noWrite = await st.updateToeicIslandEntry(base.id, (cur) => ({ entry: null, result: cur.ko }));
 out.missing = [await st.getToeicIslandEntry("isl-m-nopenope1"), await st.updateToeicIslandEntry("isl-m-nopenope1", () => ({ entry: null, result: 1 }))];
+// 해석 서버 모듈(§21-7) — 키가 없으면 AI 0·받은 항목 그대로·던지지 않는다(이 프로세스는 OPENAI_API_KEY=""이고 네트워크를 쓰지 않는다)
+try {
+  const tr = await import(process.env.EVAL_TR_URL);
+  const same = await tr.translateSavedIslandEntry(out.got, { store: st });
+  const filled = await tr.fillIslandTranslations([out.got], { budgetMs: 50, store: st });
+  out.noKey = { same: same === out.got, review: await tr.fillIslandTranslationsForReview([{ kind: "toeic-island", itemKey: "toeic-island:" + base.id }], { store: st }), skipped: filled.skipped, called: filled.called, trKo: (await st.getToeicIslandEntry(base.id)).trKo };
+} catch (err) {
+  out.noKey = { error: String(err && err.message).slice(0, 300) };
+}
 out.del = [await st.deleteToeicIslandEntry(base.id), await st.deleteToeicIslandEntry(base.id)];
 out.list2 = (await st.listToeicIslandEntries()).length;
 console.log("@@RESULT@@" + JSON.stringify(out));
@@ -269,6 +302,7 @@ function runFileBackendChecks(): IslandCheckResult[] {
         K_SERVICE: "",
         OPENAI_API_KEY: "",
         EVAL_STORE_URL: pathToFileURL(path.join(ROOT, "lib/store.ts")).href,
+        EVAL_TR_URL: pathToFileURL(path.join(ROOT, "lib/toeic-island-translate-server.ts")).href,
         EVAL_ENTRY: JSON.stringify(entry()),
       },
     });
@@ -283,6 +317,11 @@ function runFileBackendChecks(): IslandCheckResult[] {
     add("같은 원본 동시 두 번 담기 → 하나만 생기고 하나는 reused · 내용은 먼저 것", eqJson(o.create, [false, true]) && eqJson(o.list1, [[entry().id, entry().en]]), JSON.stringify([o.create, o.list1]));
     add("편집: 원자 단위 안 판정 결과를 쓴다 · 다시 읽으면 바뀐 값", o.upd === "w" && got !== null && got.ko === "고친 메모" && got.updatedAt === "2026-10-03T01:00:00.000Z", JSON.stringify(got));
     add("편집: entry null이면 쓰지 않고 결과만 · 없는 id → null", o.noWrite === "고친 메모" && eqJson(o.missing, [null, null]));
+    add(
+      "키 없는 서버: translateSavedIslandEntry는 받은 항목 그대로 · 채우기는 no_key(호출 0) · 복습 채우기 false · 저장된 trKo null · 던지지 않음",
+      eqJson(o.noKey, { same: true, review: false, skipped: "no_key", called: false, trKo: null }),
+      JSON.stringify(o.noKey),
+    );
     add("삭제: 처음 true · 다시 false · 목록 0", eqJson(o.del, [true, false]) && o.list2 === 0, JSON.stringify(o.del));
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -305,7 +344,108 @@ function runWiringChecks(): IslandCheckResult[] {
   const contract = read("lib/toeic-island-contract.ts");
   const view = read("components/toeic-island-view.tsx");
   const save = read("components/toeic-island-save.tsx");
-  add("라우트: AI·키 검사 없음(키가 없어도 담긴다)", ![create, one].some((src) => /OPENAI_API_KEY|lib\/ai\/(client|toeic\/calls)|callWithSchema/.test(src)));
+  // 2026-10-13(§21-7) — 담기·고치기가 저장 뒤 해석(호출 G)을 best-effort로 붙인다. 옛 "라우트: AI·키 검사 없음" 한 줄은 AI 호출이
+  // 서버 모듈로 옮겨 가며 뜻을 보증하지 못하게 됐다 → 실제로 지킬 성질로 나눈다(주석을 뺀 소스로 본다).
+  const strip = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
+  const createC = strip(create);
+  const oneC = strip(one);
+  const trSrv = strip(read("lib/toeic-island-translate-server.ts"));
+  add("라우트: 키 검사·501·lib/ai 직접 import 없음 — 키 없음이 담기·고치기를 실패로 만들 길이 없다", ![createC, oneC].some((src) => /OPENAI_API_KEY|no_api_key|\b501\b|callWithSchema|from "@\/lib\/ai\/(?:client|toeic\/calls)"/.test(src)));
+  const postTr = createC.indexOf("await translateSavedIslandEntry(");
+  add(
+    "담기: 해석은 저장(createToeicIslandEntry)·상한 판정 뒤, 성공 응답 안에서 · 새로 담았을 때만(reused는 그대로) · 한 번",
+    (createC.match(/translateSavedIslandEntry\(/g) ?? []).length === 1 &&
+      postTr > createC.indexOf("await store.createToeicIslandEntry(") &&
+      createC.indexOf("await store.createToeicIslandEntry(") > 0 &&
+      postTr > createC.indexOf("if (full) return json(") &&
+      /return json\(\{ ok: true, entry: reused \? record : await translateSavedIslandEntry\(record, \{ store \}\), reused \}\);/.test(createC),
+  );
+  add("담기: 저장 본문의 trKo는 늘 null(해석은 저장 뒤 따로 붙는다 — 클라이언트·원본이 해석을 끼워 넣을 수 없다)", (createC.match(/trKo: null/g) ?? []).length >= 2 && !/trKo: (?!null)/.test(createC), String((createC.match(/trKo:[^,\n]*/g) ?? []).join(" | ")));
+  const patchBody = oneC.slice(oneC.indexOf("export async function PATCH"), oneC.indexOf("export async function DELETE"));
+  const delBody = oneC.slice(oneC.indexOf("export async function DELETE"));
+  const patchTr = patchBody.indexOf("await translateSavedIslandEntry(");
+  add(
+    "고치기: 해석은 편집 원자 단위(updateToeicIslandEntry)와 실패 갈래(404·400) 뒤, 성공 응답 안에서 한 번 · 삭제에는 없음",
+    (oneC.match(/translateSavedIslandEntry\(/g) ?? []).length === 1 &&
+      patchTr > patchBody.indexOf("await store.updateToeicIslandEntry") &&
+      patchBody.indexOf("await store.updateToeicIslandEntry") > 0 &&
+      patchTr > patchBody.lastIndexOf("if (!r.ok) {") &&
+      /return json\(\{ ok: true, entry: await translateSavedIslandEntry\(r\.entry, \{ store \}\) \}\);/.test(patchBody) &&
+      !/translateSavedIslandEntry/.test(delBody),
+  );
+  const fillBody = /export async function fillIslandTranslations\(([\s\S]*?)\n}\n/.exec(trSrv)?.[0] ?? "";
+  const reviewBody = /export async function fillIslandTranslationsForReview\(([\s\S]*?)\n}\n/.exec(trSrv)?.[0] ?? "";
+  add(
+    "해석 서버 모듈: 던지지 않는다 — throw 0 · 호출 약속에 .catch · 복습 채우기는 try/catch로 false",
+    trSrv.length > 0 && !/\bthrow\b/.test(trSrv) && /translateAndSave\(store, batch, updated\)\s*\.catch\(/.test(fillBody) && /try \{[\s\S]*\} catch \(err\) \{[\s\S]*return false;\s*\}\s*\}\s*$/.test(reviewBody),
+  );
+  const iNothing = fillBody.indexOf('return none("nothing")');
+  const iKey = fillBody.indexOf('if (!hasKey()) return none("no_key")');
+  const iCall = fillBody.indexOf("translateAndSave(store, batch, updated)");
+  add(
+    "해석 서버 모듈: 대상 없음 → 키 확인 → 호출 순서(대상이 없으면 키도 안 본다 · 키가 없으면 호출 0) · 복습은 키가 없으면 목록도 읽지 않는다",
+    iNothing > 0 && iKey > iNothing && iCall > iKey && reviewBody.indexOf("if (!hasKey()) return false;") > 0 && reviewBody.indexOf("if (!hasKey()) return false;") < reviewBody.indexOf("listToeicIslandEntries()"),
+    `${iNothing} ${iKey} ${iCall}`,
+  );
+  const aiImports = [...trSrv.matchAll(/^import (?!type )([^;]*?) from "(?:\.\/ai\/|@\/lib\/ai\/)([^"]+)";/gm)].map((m) => `${m[2]}:${m[1].replace(/\s+/g, " ").trim()}`);
+  add(
+    "해석 서버 모듈: lib/ai에서 translateIslandSentences(메인 모델 진입 함수)만 — 공유 래퍼·출제/채점 모델·openai 직접 사용 없음",
+    eqJson(aiImports, ["toeic/calls:{ translateIslandSentences }"]) && !/callWithSchema|resolveToeicModel|resolveModel|from "openai"|"gpt-/.test(trSrv) && /await translateIslandSentences\(batch\.map\(\(t\) => t\.en\)\)/.test(trSrv),
+    aiImports.join(" , "),
+  );
+  add(
+    "해석 서버 모듈: 저장은 원자 단위(updateToeicIslandEntry) 안 applyIslandTranslation — stale·invalid는 쓰지 않고 exists는 읽기만 · 한 묶음만(planIslandTranslateBatches(...)[0])",
+    /store\.updateToeicIslandEntry<[^>]*>\(target\.id, \(cur\) => \{\s*const a = applyIslandTranslation\(cur, \{ en: target\.en, trKo \}\);\s*if \(a\.ok\) return \{ entry: a\.entry, result: a\.entry \};\s*return \{ entry: null, result: a\.reason === "exists" \? cur : null \};/.test(trSrv) &&
+      /planIslandTranslateBatches\(candidates\)\[0\]/.test(fillBody),
+  );
+  // 실패 격리(QA island-tr 1 P2-A·P3-D) — 한 항목이 계속 어겨도 같은 묶음을 끝없이 되풀이하지 않는다
+  const isoBody = /async function translateAndSave\(([\s\S]*?)\n}\n/.exec(trSrv)?.[0] ?? "";
+  add(
+    "해석 서버 모듈: 실패 격리 — 호출 수 상한(6)·시간 창 안에서 반으로 나눠 다시 · 한 문장 실패는 쿨다운(프로세스 메모리 — 문서에 새 칸 없음) · 연결/서버 실패는 나누지 않고 쉰다",
+    /export const TOEIC_ISLAND_TR_MAX_CALLS = 6;/.test(trSrv) &&
+      /while \(stack\.length > 0 && calls < TOEIC_ISLAND_TR_MAX_CALLS && Date\.now\(\) - started < TOEIC_ISLAND_TR_WORK_MAX_MS\)/.test(isoBody) &&
+      /if \(part\.length === 1\) \{\s*st\.cooldown\.set\(/.test(isoBody) &&
+      /stack\.push\(part\.slice\(mid\), part\.slice\(0, mid\)\)/.test(isoBody) &&
+      /if \(kind === "outage"\) \{\s*st\.outageUntil = [^;]*;\s*break;/.test(isoBody) &&
+      !/cooldown|inflight|startMax/.test(strip(lib)),
+  );
+  add(
+    "해석 서버 모듈: 진행 중·쿨다운 항목은 계획에서 뺀다 · 진행 표시는 일이 끝나면(성공·실패 모두) 지운다 · 쉬는 중이면 키 확인 뒤 호출 없이 끝",
+    /entries\.filter\(\(e\) => !st\.inflight\.has\(e\.id\) && !isCooling\(st, e, now\)\)/.test(fillBody) &&
+      /for \(const id of ids\) st\.inflight\.add\(id\);/.test(fillBody) &&
+      /\.catch\([\s\S]*?\)\s*\.then\(\(\) => \{\s*for \(const id of ids\) st\.inflight\.delete\(id\);/.test(fillBody) &&
+      fillBody.indexOf("if (Date.now() < st.outageUntil) return none(") > fillBody.indexOf('if (!hasKey()) return none("no_key")') &&
+      fillBody.indexOf("if (Date.now() < st.outageUntil) return none(") < fillBody.indexOf("translateAndSave(store, batch, updated)"),
+  );
+  const specTxt = readFileSync(path.join(ROOT, "docs/harness/toeic.md"), "utf8");
+  const waitNum = (name: string) => Number(new RegExp(`export const ${name} = ([\\d_]+);`).exec(trSrv)?.[1]?.replace(/_/g, "") ?? NaN);
+  const specNum = (re: RegExp) => Number(re.exec(specTxt)?.[1] ?? NaN) * 1000;
+  add(
+    "해석 서버 모듈: 기다림 상한 == 스펙 §21-7 숫자(담기·고치기 8초 · 복습 10초) · 넘기면 after()로 응답 뒤 저장 · 호출 G 자체 상한(45초)보다 짧다",
+    waitNum("TOEIC_ISLAND_TR_SAVE_WAIT_MS") === specNum(/`TOEIC_ISLAND_TR_SAVE_WAIT_MS` (\d+)초/) &&
+      waitNum("TOEIC_ISLAND_TR_REVIEW_WAIT_MS") === specNum(/`TOEIC_ISLAND_TR_REVIEW_WAIT_MS` (\d+)초/) &&
+      waitNum("TOEIC_ISLAND_TR_REVIEW_WAIT_MS") < TOEIC_ISLAND_TRANSLATE_TIMEOUT_MS &&
+      /after\(\(\) => work\.then\(/.test(fillBody) &&
+      /import \{ after \} from "next\/server";/.test(trSrv),
+    `${waitNum("TOEIC_ISLAND_TR_SAVE_WAIT_MS")} ${waitNum("TOEIC_ISLAND_TR_REVIEW_WAIT_MS")}`,
+  );
+  const reviewPage = strip(read("app/toeic/review/page.tsx"));
+  add(
+    "복습 페이지(toeic): 큐를 만든 뒤 한 번 채우고, 붙었을 때만 다시 만든다 — 다시 만들기 실패는 처음 큐 그대로",
+    (reviewPage.match(/fillIslandTranslationsForReview\(/g) ?? []).length === 1 &&
+      reviewPage.indexOf('loadReviewQueue("toeic", today)') > 0 &&
+      reviewPage.indexOf('loadReviewQueue("toeic", today)') < reviewPage.indexOf("fillIslandTranslationsForReview(q.cards)") &&
+      /if \(await fillIslandTranslationsForReview\(q\.cards\)\) \{\s*q = await loadReviewQueue\("toeic", today\)\.catch\(\(\) => q\);/.test(reviewPage),
+  );
+  const others = ["app/english/review/page.tsx", "app/japanese/review/page.tsx", "app/mom/review/page.tsx", "app/api/review/[area]/route.ts", "app/api/review/record/route.ts", "lib/review-server.ts"];
+  const otherSrc = others.map((p) => {
+    try {
+      return read(p);
+    } catch {
+      return null;
+    }
+  });
+  add("다른 영역 복습 페이지·/api/review·review-server는 해석 모듈을 import하지 않는다(AI 0 그대로) — 대상 파일이 모두 있다", otherSrc.every((x) => x !== null && !/toeic-island-translate-server/.test(x)), others.filter((_, i) => otherSrc[i] === null).join(","));
   add("담기: 원본 글자는 저장소에서 읽는다(getToeicFrameDrillSession·getToeicAttempt)", /getToeicFrameDrillSession\(/.test(create) && /getToeicAttempt\(/.test(create));
   add("삭제: Firestore가 prod-guard deleteToeicIslandEntry · 라우트가 403 prod_guard", /assertDestructiveAllowed\("deleteToeicIslandEntry"\)/.test(fs) && /isProdGuardError/.test(one) && /403/.test(one));
   add("Firestore 담기 = create(ALREADY_EXISTS 멱등 — 상한을 주면 같은 트랜잭션 안 tx.create, QA common_review_1 P3-E) · 편집 = runTransaction", /toeicIsland\(\)\.doc\(entry\.id\)[\s\S]{0,1400}tx\.create\(ref[\s\S]{0,800}ref\.create\(/.test(fs) && /updateToeicIslandEntry[\s\S]{0,300}runTransaction/.test(fs));
@@ -333,8 +473,219 @@ function runWiringChecks(): IslandCheckResult[] {
   return results;
 }
 
+// ---------------------------------------------------------------------------
+// 4. 해석 호출 G (§21-7)
+// ---------------------------------------------------------------------------
+
+const SPEC_URL = new URL("../docs/harness/toeic.md", import.meta.url);
+const ISLAND_PROMPT_SRC = "lib/ai/toeic/island-prompts.ts";
+
+export const ISLAND_SPEC_SYNC_TARGETS: readonly SpecSyncTarget[] = [
+  { constName: "TOEIC_ISLAND_TRANSLATE_SYSTEM_PROMPT", source: ISLAND_PROMPT_SRC, specLabel: "§21-7 호출 G 시스템 프롬프트", text: TOEIC_ISLAND_TRANSLATE_SYSTEM_PROMPT, mode: "block-exact" },
+  { constName: "TOEIC_ISLAND_TRANSLATE_USER_TEMPLATE", source: ISLAND_PROMPT_SRC, specLabel: "§21-7 호출 G 사용자 메시지", text: TOEIC_ISLAND_TRANSLATE_USER_TEMPLATE, mode: "block-exact" },
+  { constName: "TOEIC_ISLAND_TRANSLATE_ITEM_TEMPLATE", source: ISLAND_PROMPT_SRC, specLabel: "§21-7 호출 G 항목 형식", text: TOEIC_ISLAND_TRANSLATE_ITEM_TEMPLATE, mode: "block-exact" },
+];
+
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b || a === null || b === null || typeof a !== "object") return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((v, i) => deepEqual(v, b[i]));
+  }
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const ak = Object.keys(ao);
+  return ak.length === Object.keys(bo).length && ak.every((k) => Object.prototype.hasOwnProperty.call(bo, k) && deepEqual(ao[k], bo[k]));
+}
+
+// 지어낸 섬 문장(교재 문구 아님)
+const TR_INPUT = {
+  items: [
+    { index: 0, en: "My go-to place on weekends is a small bakery near my office." },
+    { index: 1, en: "First, it saves time. On top of that, I can compare three or four prices at once." },
+  ],
+};
+const TR_OUT = {
+  items: [
+    { index: 0, ko: "제가 주말에 자주 가는 곳은 사무실 근처의 작은 빵집이에요." },
+    { index: 1, ko: "먼저, 시간을 아껴 줘요. 게다가 서너 가지 가격을 한 번에 비교할 수 있어요." },
+  ],
+};
+
+function runTranslateChecks(): IslandCheckResult[] {
+  const results: IslandCheckResult[] = [];
+  const add = adder(results, "답변 섬 ④ 해석 호출 G");
+
+  // --- spec-sync ---
+  for (const o of checkSpecSync(SPEC_URL, ISLAND_SPEC_SYNC_TARGETS)) add(`${o.constName}이 toeic.md §21-7 원문 그대로`, o.ok, o.ok ? o.summary : `${o.summary}\n${o.detail}`);
+  add("spec-sync 원문 대상 = 3개(G 시스템·사용자·항목 줄)", ISLAND_SPEC_SYNC_TARGETS.length === 3, String(ISLAND_SPEC_SYNC_TARGETS.length));
+  const parsed = new Map<string, unknown>();
+  for (const b of extractSpecBlocks(SPEC_URL)) {
+    try {
+      const v = JSON.parse(b.text) as { name?: unknown };
+      if (v && typeof v === "object" && typeof v.name === "string") parsed.set(v.name, v);
+    } catch {
+      // JSON 아닌 블록
+    }
+  }
+  const specSchema = parsed.get("toeic_island_translate");
+  add("JSON Schema toeic_island_translate ↔ 스펙 의미 동치", specSchema !== undefined && deepEqual(specSchema, TOEIC_ISLAND_TRANSLATE_JSON_SCHEMA), specSchema === undefined ? "스펙 블록 없음" : "");
+  add("스펙의 toeic_island_* JSON 블록 수 = 1", [...parsed.keys()].filter((k) => k.startsWith("toeic_island_")).length === 1, [...parsed.keys()].filter((k) => k.startsWith("toeic_island_")).join(","));
+  const strictOk = (node: unknown): boolean => {
+    if (node === null || typeof node !== "object") return true;
+    const n = node as Record<string, unknown>;
+    if ("minItems" in n || "maxItems" in n) return false;
+    if (n.type === "object") {
+      const props = Object.keys((n.properties as Record<string, unknown>) ?? {});
+      const req = (n.required as string[]) ?? [];
+      if (n.additionalProperties !== false || props.length !== req.length || !props.every((p) => req.includes(p))) return false;
+    }
+    return Object.values(n).every(strictOk);
+  };
+  add("JSON Schema strict 모양(additionalProperties false · required 전부 · min/maxItems 없음)", strictOk(TOEIC_ISLAND_TRANSLATE_JSON_SCHEMA.schema));
+  const spec = readFileSync(SPEC_URL, "utf-8");
+  const opt = [...spec.matchAll(/temperature ([\d.]+), maxOutputTokens (\d+), call 라벨 `([^`]+)`/g)].find((m) => m[3] === TOEIC_ISLAND_TRANSLATE_CALL_OPTIONS.call);
+  add(
+    "호출 옵션 == 스펙 문장: toeic_island_translate",
+    !!opt && Number(opt[1]) === TOEIC_ISLAND_TRANSLATE_CALL_OPTIONS.temperature && Number(opt[2]) === TOEIC_ISLAND_TRANSLATE_CALL_OPTIONS.maxOutputTokens,
+    opt ? `스펙 t=${opt[1]} max=${opt[2]}` : "스펙 문장 없음",
+  );
+  const num = (re: RegExp) => {
+    const m = re.exec(spec);
+    return m ? Number(m[1]) : NaN;
+  };
+  add(
+    "스펙 산문 숫자 == 상수: 해석 상한·묶음 항목 수·묶음 글자 예산·시간 상한·SDK 재시도",
+    num(/해석 상한 `TOEIC_ISLAND_TR_KO_MAX` (\d+)자/) === TOEIC_ISLAND_TR_KO_MAX &&
+      num(/한 묶음은 `TOEIC_ISLAND_TR_BATCH_MAX` (\d+)개/) === TOEIC_ISLAND_TR_BATCH_MAX &&
+      num(/`TOEIC_ISLAND_TR_BATCH_CHARS` (\d+)자 이하/) === TOEIC_ISLAND_TR_BATCH_CHARS &&
+      num(/시간 상한 `TOEIC_ISLAND_TRANSLATE_TIMEOUT_MS` (\d+)초/) * 1000 === TOEIC_ISLAND_TRANSLATE_TIMEOUT_MS &&
+      num(/SDK 자동 재시도 기본 `TOEIC_ISLAND_TRANSLATE_SDK_MAX_RETRIES` (\d+)/) === TOEIC_ISLAND_TRANSLATE_SDK_MAX_RETRIES,
+    `${TOEIC_ISLAND_TR_KO_MAX} ${TOEIC_ISLAND_TR_BATCH_MAX} ${TOEIC_ISLAND_TR_BATCH_CHARS} ${TOEIC_ISLAND_TRANSLATE_TIMEOUT_MS} ${TOEIC_ISLAND_TRANSLATE_SDK_MAX_RETRIES}`,
+  );
+
+  // --- 사용자 메시지 ---
+  const msg = buildIslandTranslateUserMessage(TR_INPUT);
+  add("사용자 메시지: 항목 수 줄 · 항목마다 [index] 한 줄", msg === `항목 수: 2\n영어 항목:\n[0] ${TR_INPUT.items[0].en}\n[1] ${TR_INPUT.items[1].en}`, msg);
+  const tricky = buildIslandTranslateUserMessage({ items: [{ index: 0, en: "  I wrote {count}\n and {items}   here. " }] });
+  add("사용자 메시지: 값 안의 플레이스홀더 모양은 다시 치환되지 않는다(단일 패스) · 줄바꿈·연속 공백은 한 칸", tricky === "항목 수: 1\n영어 항목:\n[0] I wrote {count} and {items} here.", tricky);
+
+  // --- zod 반례 ---
+  const zod = buildIslandTranslateZod(TR_INPUT);
+  const ok = (v: unknown) => zod.safeParse(v).success;
+  add("zod: 올바른 해석 통과 · 순서가 뒤바뀌어도 통과(index로 짝짓는다)", ok(TR_OUT) && ok({ items: [TR_OUT.items[1], TR_OUT.items[0]] }));
+  add("zod 반례: 개수 불일치(하나 빠짐 · 하나 더)", !ok({ items: [TR_OUT.items[0]] }) && !ok({ items: [...TR_OUT.items, { index: 2, ko: "하나 더 있어요." }] }));
+  add("zod 반례: index 중복(개수는 맞지만 1이 빠짐)", !ok({ items: [TR_OUT.items[0], { index: 0, ko: "같은 번호를 또 썼어요." }] }));
+  add("zod 반례: 받지 않은 index · 정수가 아닌 index", !ok({ items: [TR_OUT.items[0], { index: 7, ko: "모르는 번호예요." }] }) && !ok({ items: [TR_OUT.items[0], { index: 1.5, ko: "소수예요." }] }));
+  add("zod 반례: 빈 해석 · 공백만", !ok({ items: [TR_OUT.items[0], { index: 1, ko: "" }] }) && !ok({ items: [TR_OUT.items[0], { index: 1, ko: "   " }] }));
+  add("zod 반례: 한글 없는 해석(영어를 그대로 돌려줌 · 숫자·기호만)", !ok({ items: [TR_OUT.items[0], { index: 1, ko: TR_INPUT.items[1].en }] }) && !ok({ items: [TR_OUT.items[0], { index: 1, ko: "3-4 !!" }] }));
+  add(
+    "zod 경계: 해석 길이 상한(TOEIC_ISLAND_TR_KO_MAX 통과 · +1 거부)",
+    ok({ items: [TR_OUT.items[0], { index: 1, ko: "가".repeat(TOEIC_ISLAND_TR_KO_MAX) }] }) && !ok({ items: [TR_OUT.items[0], { index: 1, ko: "가".repeat(TOEIC_ISLAND_TR_KO_MAX + 1) }] }),
+  );
+  add("zod 반례: 모르는 칸(strict) · 고유명사 라틴이 섞인 해석은 통과", !ok({ items: TR_OUT.items.map((x) => ({ ...x, en: "x" })) }) && ok({ items: [TR_OUT.items[0], { index: 1, ko: "먼저, Wi-Fi가 빨라서 시간을 아껴 줘요." }] }));
+  const issues = zod.safeParse({ items: [{ index: 0, ko: TR_INPUT.items[0].en }] });
+  add("zod 오류 메시지에 섬 문장·해석 값이 없다(경로·규칙만)", !issues.success && !JSON.stringify(issues.error.issues).includes("bakery"), issues.success ? "" : JSON.stringify(issues.error.issues.map((i) => i.message)));
+
+  // --- 필요한 항목 판정 ---
+  const manual = entry();
+  const attempt = entry({ id: "isl-at-att12345678-q6-imp", origin: { kind: "attempt", attemptId: "att12345678", q: 6, fixIndex: null }, ko: null });
+  const drill = entry({ id: "isl-fd-abc12345-0", origin: { kind: "frame_drill", sessionId: "fd-abc12345", index: 0 }, ko: "주말 산책 단골은 동네 공원이야." });
+  add("판정: 직접 쓰기(메모 있음)·모의고사(메모 없음)는 해석 필요 — 메모는 해석이 아니다", islandNeedsTranslation(manual) && islandNeedsTranslation(attempt));
+  add("판정: 틀 말하기 원본 + 한글 문장 있음 → 필요 없음(AI 0) · 한글 문장이 비면 필요", !islandNeedsTranslation(drill) && islandNeedsTranslation({ ...drill, ko: null }) && islandNeedsTranslation({ ...drill, ko: "  " }));
+  add("판정: trKo가 이미 있으면 필요 없음 · 공백뿐인 trKo는 없는 것", !islandNeedsTranslation({ ...manual, trKo: "달리기 하러 자주 가는 곳은 강변길이에요." }) && islandNeedsTranslation({ ...manual, trKo: "  " }));
+
+  // --- 묶음 계획 ---
+  const many = Array.from({ length: 45 }, (_, i) => entry({ id: `isl-m-plan${String(i).padStart(4, "0")}`, en: `Sentence number ${i} is short.` }));
+  const plan = planIslandTranslateBatches([...many.slice(0, 3), drill, { ...many[3], trKo: "이미 있어요." }, many[0], ...many.slice(4)]);
+  add(
+    "계획: 필요한 항목만(틀 말하기+한글·이미 해석 있음·같은 id 빠짐) · 받은 순서 · 한 묶음 ≤ 20개",
+    plan.flat().length === 44 && plan.every((b) => b.length >= 1 && b.length <= TOEIC_ISLAND_TR_BATCH_MAX) && eqJson(plan.map((b) => b.length), [20, 20, 4]) && plan[0][0].id === many[0].id && !plan.flat().some((t) => t.id === drill.id || t.id === many[3].id),
+    JSON.stringify(plan.map((b) => b.length)),
+  );
+  const longEn = `${"word ".repeat(239)}end.`; // 1199자
+  const longPlan = planIslandTranslateBatches(Array.from({ length: 5 }, (_, i) => entry({ id: `isl-m-long${String(i).padStart(4, "0")}`, en: longEn })));
+  add(
+    "계획: 글자 예산(TOEIC_ISLAND_TR_BATCH_CHARS)을 넘기 전에 끊는다 · 묶음마다 예산 이하",
+    eqJson(longPlan.map((b) => b.length), [2, 2, 1]) && longPlan.every((b) => b.reduce((n, t) => n + t.en.length, 0) <= TOEIC_ISLAND_TR_BATCH_CHARS),
+    JSON.stringify(longPlan.map((b) => b.length)),
+  );
+  add("계획: limit개까지만(나머지는 다음 요청) · 대상이 없으면 빈 배열 · en은 공백 정리된 요청 시점 문장", planIslandTranslateBatches(many, 5).flat().length === 5 && planIslandTranslateBatches([drill]).length === 0 && planIslandTranslateBatches([entry({ en: "  Two   spaces. " })])[0][0].en === "Two spaces.");
+
+  // --- 적용 판정 ---
+  const ap = applyIslandTranslation(manual, { en: manual.en, trKo: "  달리기 하러 자주 가는 곳은   강변길이에요. " });
+  add(
+    "적용: trKo만 채운다(공백 정리) · 메모·섬 문장·updatedAt·원본 불변",
+    ap.ok && ap.entry.trKo === "달리기 하러 자주 가는 곳은 강변길이에요." && ap.entry.ko === manual.ko && ap.entry.en === manual.en && ap.entry.updatedAt === manual.updatedAt && eqJson(ap.entry.origin, manual.origin) && manual.trKo === null,
+    JSON.stringify(ap),
+  );
+  const stale = applyIslandTranslation({ ...manual, en: "I changed this sentence." }, { en: manual.en, trKo: "옛 문장의 해석이에요." });
+  const exists = applyIslandTranslation({ ...manual, trKo: "먼저 채운 해석이에요." }, { en: manual.en, trKo: "뒤에 온 해석이에요." });
+  add("적용: 요청 뒤 섬 문장이 바뀌었으면 stale(쓰지 않음) · 이미 있으면 exists(먼저 채운 것이 이긴다)", !stale.ok && stale.reason === "stale" && !exists.ok && exists.reason === "exists");
+  add(
+    "적용: 빈 값·한글 없음·상한 초과 → invalid",
+    [" ", "only english", "가".repeat(TOEIC_ISLAND_TR_KO_MAX + 1)].every((t) => {
+      const r = applyIslandTranslation(manual, { en: manual.en, trKo: t });
+      return !r.ok && r.reason === "invalid";
+    }),
+  );
+
+  // --- 편집 시 trKo 초기화 ---
+  const withTr = { ...manual, trKo: "달리기 하러 자주 가는 곳은 강변길이에요." };
+  const e1 = applyIslandPatch(withTr, { en: "My go-to place for running is the lake trail." }, AT2);
+  add("편집: 섬 문장이 바뀌면 trKo → null(다시 만들 대상) · 메모는 그대로", e1.ok && e1.changed && e1.entry.trKo === null && e1.entry.ko === withTr.ko && islandNeedsTranslation(e1.entry));
+  const e2 = applyIslandPatch(withTr, { en: `  ${withTr.en} ` }, AT2);
+  const e3 = applyIslandPatch(withTr, { ko: "새 메모", topicKey: null }, AT2);
+  add("편집: 같은 문장(공백만 다름)·메모·소재만 고치면 trKo 유지", e2.ok && !e2.changed && e2.entry.trKo === withTr.trKo && e3.ok && e3.changed && e3.entry.trKo === withTr.trKo);
+  add("편집: patch로 trKo를 넣을 수 없다(IslandPatch에 칸 없음 — 모르는 칸은 무시)", (() => {
+    const r = applyIslandPatch(manual, { ko: "메모", ...({ trKo: "끼워 넣은 해석" } as object) }, AT2);
+    return r.ok && r.entry.trKo === null;
+  })());
+
+  // --- 정규화 · 저장 본문 ---
+  const old = normalizeToeicIslandEntry("isl-m-abcdefgh1", { ...entry(), id: undefined, trKo: undefined });
+  const kept = normalizeToeicIslandEntry("isl-m-abcdefgh1", { ...entry(), trKo: "  달리기 하러  자주 가요. " });
+  add("정규화: 옛 문서(trKo 칸 없음) → null(undefined 아님) · 있는 값은 공백 정리해 유지", old !== null && old.trKo === null && kept !== null && kept.trKo === "달리기 하러 자주 가요.");
+  add("정규화: 한글 없는 trKo·문자열 아닌 값은 버린다(null)", normalizeIslandTrKo("english only") === null && normalizeIslandTrKo(3) === null && normalizeIslandTrKo("") === null && normalizeToeicIslandEntry("isl-m-abcdefgh1", { ...entry(), trKo: "abc" })?.trKo === null);
+  add("저장 본문(islandEntryData)에 trKo 칸이 실린다(빠지면 다시 저장할 때 조용히 지워진다) · undefined 없음", (() => {
+    const d = islandEntryData(withTr);
+    return d.trKo === withTr.trKo && Object.keys(d).includes("trKo") && Object.values(d).every((v) => v !== undefined) && !("id" in d);
+  })());
+  const fromDrill = buildIslandFromFrameDrill({ part: "q5_7", topicKeys: [], items: [{ itemId: "a", frameKey: "go-to-spot", ko: "산책 단골은 공원이야.", en: "My go-to place for walks is the park.", frame: "x", outcome: "no_speech", transcript: null, verdict: "wrong", reasonKo: null, fixedEn: null }] }, "fd-abc12345", 0, FRAMES);
+  const fromAttempt = buildIslandFromAttempt({ attemptId: "att12345678", q: 6, fixIndex: null, mockPart: "respond", question: null, transcript: null, feedback: { improvedAnswer: "I usually shop online.", fixes: [] } });
+  add("담을 내용(두 원본): trKo는 늘 null로 시작(담기는 AI 0 — 해석은 뒤에 따로)", fromDrill.ok && fromDrill.draft.trKo === null && fromAttempt.ok && fromAttempt.draft.trKo === null);
+
+  // --- calls.ts 배선(소스 대조) ---
+  const calls = readFileSync(path.join(ROOT, "lib/ai/toeic/calls.ts"), "utf8");
+  const fn = /export async function translateIslandSentences\(([\s\S]*?)\n}\n/.exec(calls)?.[0] ?? "";
+  add("calls.ts: translateIslandSentences가 callWithSchema를 G 원문·스키마·zod·옵션으로 부른다", /call: TOEIC_ISLAND_TRANSLATE_CALL_OPTIONS\.call/.test(fn) && /system: TOEIC_ISLAND_TRANSLATE_SYSTEM_PROMPT/.test(fn) && /jsonSchema: TOEIC_ISLAND_TRANSLATE_JSON_SCHEMA/.test(fn) && /zodSchema: buildIslandTranslateZod\(input\)/.test(fn) && /temperature: TOEIC_ISLAND_TRANSLATE_CALL_OPTIONS\.temperature/.test(fn) && /maxOutputTokens: TOEIC_ISLAND_TRANSLATE_CALL_OPTIONS\.maxOutputTokens/.test(fn));
+  add("calls.ts: 모델은 메인 resolveModel() — 출제·채점 모델(resolveToeicModel)이 아니다", /model: resolveModel\(\)/.test(fn) && !/resolveToeicModel/.test(fn));
+  add("calls.ts: 합친 신호(시간 상한 + 호출측 신호) · SDK 재시도는 호출측 값 → 없으면 0", /signal: islandTranslateAbortSignal\(options\.signal\)/.test(fn) && /maxRetries: options\.maxRetries \?\? TOEIC_ISLAND_TRANSLATE_SDK_MAX_RETRIES/.test(fn) && /AbortSignal\.any\(\[external, timeout\]\)/.test(calls));
+  add("calls.ts: 빈 입력·상한 초과·빈 문장은 호출 전에 throw(과금 0) — 검사가 callWithSchema보다 앞", fn.indexOf("throw new Error") > 0 && fn.indexOf("throw new Error") < fn.indexOf("callWithSchema(") && /sentences\.length === 0 \|\| sentences\.length > TOEIC_ISLAND_TR_BATCH_MAX/.test(fn));
+  const promptSrc = readFileSync(path.join(ROOT, ISLAND_PROMPT_SRC), "utf8");
+  const schemaSrc = readFileSync(path.join(ROOT, "lib/ai/toeic/island-schemas.ts"), "utf8");
+  add("상한 단일 정의: TOEIC_ISLAND_TR_KO_MAX는 lib/toeic-island.ts 한 곳(zod는 import) · 프롬프트 파일에 모델 문자열 없음", /import \{ TOEIC_ISLAND_TR_KO_MAX \} from "\.\.\/\.\.\/toeic-island"/.test(schemaSrc) && !/TOEIC_ISLAND_TR_KO_MAX\s*=/.test(schemaSrc) && !/"gpt-/.test(promptSrc + schemaSrc + fn));
+  return results;
+}
+
+/** 실호출(게이트 — EVAL_TOEIC=1 EVAL_TOEIC_ISLAND=1): G 1회(지어낸 2문장). 결과는 개수·길이만 찍는다. 에이전트는 실행하지 않는다 */
+export async function runIslandLiveChecks(): Promise<IslandCheckResult[]> {
+  const results: IslandCheckResult[] = [];
+  const add = adder(results, "실호출(게이트) — 답변 섬 해석");
+  const calls = await import("../lib/ai/toeic/calls");
+  try {
+    const t0 = Date.now();
+    const out = await calls.translateIslandSentences(TR_INPUT.items.map((x) => x.en));
+    add("G 해석(2문장)", out.length === 2 && out.every((k) => /[가-힣]/.test(k)), `해석 길이 ${out.map((k) => k.length).join("·")}자 · ${Date.now() - t0}ms`);
+  } catch (e) {
+    add("G 해석(2문장)", false, e instanceof Error ? e.message : String(e));
+  }
+  return results;
+}
+
 export function runToeicIslandChecks(): IslandCheckResult[] {
-  return [...runPureChecks(), ...runFileBackendChecks(), ...runWiringChecks()];
+  return [...runPureChecks(), ...runFileBackendChecks(), ...runWiringChecks(), ...runTranslateChecks()];
 }
 
 // 단독 실행: npx tsx scripts/eval-toeic-island.ts

@@ -57,6 +57,14 @@
   line-height: var(--lh-tight);
   overflow-wrap: anywhere;
 }
+/* 답변 섬의 해석 단서 — 긴 한국어 문장(여러 문장일 수 있다). 굵은 가운데 정렬 대신 읽는 글로: 보통 굵기·왼쪽·넉넉한 줄 간격·낱말 단위 줄바꿈(글자 크기는 그대로) */
+.cueMainLong {
+  align-self: stretch;
+  font-weight: var(--fw-medium);
+  line-height: 1.55;
+  text-align: left;
+  word-break: keep-all;
+}
 .cueSub {
   margin: 0;
   color: var(--ink-2);

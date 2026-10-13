@@ -26,6 +26,9 @@ import s from "./review-runner.module.css";
 
 type Tone = "kid" | "adult";
 
+/** 답변 섬 해석 단서가 이보다 길면(두 줄을 넘기 시작) 읽는 글 모양으로 보인다 — 폰 390px 기준 한 줄 약 22자 */
+const CUE_LONG_CHARS = 40;
+
 /** 떠올리기 시간(ms) — 처음 단서, 힌트를 연 뒤 */
 const THINK_MS: Record<Tone, { first: number; after: number }> = {
   kid: { first: 5000, after: 3000 },
@@ -239,7 +242,8 @@ export default function ReviewRunner({
             {card.cue.emoji}
           </span>
         )}
-        <p className={s.cueMain} lang={card.cue.lang} data-testid="review-cue">
+        {/* 답변 섬의 해석 단서만 길어질 수 있다(문장·여러 문장) — 그때만 읽는 글 모양으로. 다른 종류의 표시는 그대로 */}
+        <p className={`${s.cueMain} ${card.kind === "toeic-island" && card.cue.main.length > CUE_LONG_CHARS ? s.cueMainLong : ""}`} lang={card.cue.lang} data-testid="review-cue">
           {card.cue.main}
         </p>
         {card.cue.sub && <p className={s.cueSub}>{card.cue.sub}</p>}

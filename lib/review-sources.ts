@@ -535,7 +535,10 @@ export function toeicTemplateItems(
 export interface ToeicIslandLike {
   id: string;
   en: string;
+  /** 한국어 단서 — 틀 말하기 원본이면 한글 문장, 그 밖은 사용자가 적은 한 줄 메모 */
   ko: string | null;
+  /** AI 한국어 해석(호출 G — toeic.md §21-7). 있으면 단서의 주 문장. 선택 칸 — 옛 호출부·옛 문서는 없다(= null) */
+  trKo?: string | null;
   topicNameKo: string | null;
   question: string | null;
   frameKey: string | null;
@@ -569,8 +572,24 @@ export function islandFrameSkeleton(en: string, frames: readonly IslandFrameLike
   return out.replace(/\s+/g, " ").trim();
 }
 
+/** 낱말만 남긴 소문자 꼴(구두점·공백 차이를 지운다) */
+function islandLooseText(t: string): string {
+  return t.toLowerCase().replace(/[^a-z0-9가-힣]+/g, " ").trim();
+}
+
 /**
- * 답변 섬 — 담긴 문장 전부(시험 기록 없음). 첫 복습일 = 담은 날(KST) + 1. 섬에서 지운 문장은 목록에 없으니 큐에서 빠진다(일정은 고아로 무해).
+ * 해석 단서의 곁줄에 메모를 붙여도 되나 — 메모에 한글이 없거나(영어뿐인 메모는 정답의 조각이기 쉽다) 정답 영어 문장을 통째로 담고 있으면
+ * 정답을 흘린다(true). 구두점·대소문자·공백 차이는 같은 것으로 본다.
+ */
+export function islandMemoLeaksAnswer(memo: string, answerEn: string): boolean {
+  if (!/[가-힣]/.test(memo)) return true;
+  const a = islandLooseText(answerEn);
+  return a !== "" && ` ${islandLooseText(memo)} `.includes(` ${a} `);
+}
+
+/**
+ * 답변 섬 — 담긴 문장 전부(시험 기록 없음). 단서: AI 해석 trKo가 있으면 그것이 주 문장(곁줄 = 메모 · 소재), 없으면 옛 순서
+ * (한국어 단서 → 소재/한국어 틀 → 질문 → 고정 문구). 첫 복습일 = 담은 날(KST) + 1. 섬에서 지운 문장은 목록에 없으니 큐에서 빠진다(일정은 고아로 무해).
  * frames: 틀 말하기 은행 틀(frameKey로 한국어 틀을 찾고, 뼈대 대조에도 쓴다) + 틀 은행 틀.
  */
 export function toeicIslandItems(entries: readonly ToeicIslandLike[], frames: readonly IslandFrameLike[] = []): ReviewSourceItem[] {
@@ -588,7 +607,14 @@ export function toeicIslandItems(entries: readonly ToeicIslandLike[], frames: re
     let main: string;
     let sub: string | null;
     let lang: "ko" | "en" = "ko";
-    if (ko) {
+    const trKo = e.trKo?.trim() || null;
+    if (trKo) {
+      // 해석이 주 문장 — 메모(해석과 다를 때만)와 소재는 곁들인다. 메모만으로는 어떤 문장인지 떠올릴 수 없다(2026-10-13 사용자 신고)
+      main = trKo;
+      // 메모가 정답을 흘리면 뺀다 — 한글이 없는 메모(영어뿐)·정답 영어 문장을 담은 메모(QA island-tr 1 P3-B)
+      const memo = ko && ko !== trKo && !islandMemoLeaksAnswer(ko, en) ? ko : null;
+      sub = [memo, topic ? `소재 · ${topic}` : null].filter((x): x is string => x !== null).join(" · ") || null;
+    } else if (ko) {
       main = ko;
       sub = topic ? `소재 · ${topic}` : null;
     } else if (topic || frameKo) {
