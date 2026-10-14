@@ -34,7 +34,7 @@ import {
   type TalkTurn,
 } from "@/lib/talk-contract";
 import { buildTalkExplainSpeakQueue } from "@/lib/talk-explain-script";
-import { splitTalkSentences } from "@/lib/talk-transcript";
+import { isMisheardChildTurn, splitTalkSentences } from "@/lib/talk-transcript";
 import s from "./talk.module.css";
 
 const HANGUL_RE = /[가-힣ㄱ-ㅎㅏ-ㅣ]/;
@@ -160,6 +160,7 @@ export default function TalkReviewView({
     const turn = turns[turnIndex];
     const sentence = sentencesByTurn[turnIndex]?.[sentenceIndex];
     if (!turn || sentence === undefined) return;
+    if (isMisheardChildTurn(turn)) return; // 설명 대상 밖(§12-2 9)
     const token = ++openRef.current;
     const cached = cache[keyOf(turnIndex, sentenceIndex)];
     if (cached) {
@@ -274,7 +275,20 @@ export default function TalkReviewView({
           <ul className={s.bubbles}>
             {turns.map((turn, ti) => {
               const teacher = turn.speaker === "teacher";
+              // 잘못 받아 적은 은우 턴(english.md §12-2 9 — 자리 표시 "…" 또는 옛 기록의 한자·가나): 글자를 보이지 않고 설명 탭도 없다.
+              // 은우가 말한 횟수(칩)에는 든다. 턴 번호는 그대로 둔다(설명 키 보존)
+              const misheard = isMisheardChildTurn(turn);
               const lang = teacher ? "en" : HANGUL_RE.test(turn.text) ? "ko" : "en";
+              if (misheard) {
+                return (
+                  <li key={ti} className={`${s.row} ${s.rowChild}`}>
+                    <div className={`${s.bubble} ${s.bubbleChild}`}>
+                      <span className={s.speaker}>은우</span>
+                      <p className={`${s.bubbleText} ${s.bubbleMuted}`}>잘 안 들렸어요</p>
+                    </div>
+                  </li>
+                );
+              }
               return (
                 <li key={ti} className={`${s.row} ${teacher ? "" : s.rowChild}`}>
                   <div className={`${s.bubble} ${teacher ? s.bubbleTeacher : s.bubbleChild}`}>

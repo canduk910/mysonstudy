@@ -62,6 +62,14 @@ export interface TalkLine {
    * 그 전에는 null이다(`toTalkTurns`는 선생님 줄의 null을 reply로 싣는다 — 앱이 청하지 않은 응답이다).
    */
   origin: TalkTurnOrigin | null;
+  /**
+   * 은우 전사를 **잘못 받아 적었다**(한자·가나·일본어 구두점 — 2026-10-14, §12-2 9). 글자는 비워 둔다(외국 문자를 어디에도 남기지 않는다).
+   * 오는 중이면 `listening`(완료 전까지 뒤 delta도 붙이지 않는다), 완료되면 `failed`("잘 안 들렸어요"). 모델이 알린 전사 실패(`.failed`)·
+   * 깨끗한 완료·빈 전사는 false로 되돌린다. **셈**: 이 줄은 저장 턴에 `TALK_MISHEARD_CHILD_TEXT`로 남아 은우가 말한 횟수에 든다
+   * (2026-10-14 후속 결정 — 받아쓰기 실수로 저장·스트릭이 손해 보지 않게). 모델이 알린 `failed`(misheard false)는 여전히 세지 않는다.
+   * 선생님 줄은 늘 false.
+   */
+  misheard: boolean;
 }
 
 /** 리듀서 상태. 화면은 `lines`만 읽는다(나머지는 멱등·연결을 위한 기억). */
@@ -85,6 +93,31 @@ export interface TalkTranscriptState {
   cutResponses: Readonly<Record<string, true>>;
   /** 소리가 끝까지 난 응답(output_audio_buffer.stopped) — 그 뒤에 온 cleared는 끊김으로 보지 않는다 */
   playedResponses: Readonly<Record<string, true>>;
+}
+
+// ---------------------------------------------------------------------------
+// 잘못 받아 적은 은우 전사 판정 (2026-10-14, §12-2 9)
+// ---------------------------------------------------------------------------
+
+/**
+ * 은우가 하지 않는 언어의 글자 — 한자(`\p{Script=Han}` — CJK 통합·확장·호환·부수·々〇), 히라가나·가타카나(`\p{Script=…}` —
+ * 반각 가타카나 U+FF66–FF9D·가타카나 음성 확장 포함), 그리고 Script=Common이라 위에 안 잡히는 일본어 쪽 기호:
+ * 、。〃(U+3001–3003) · 「」『』(U+300C–300F) · 〜(U+301C) · 탁점/반탁점(U+3099–309C) · ・ー(U+30FB–30FC) ·
+ * 반각 ｡｢｣､･(U+FF61–FF65) · 반각 ｰ(U+FF70) · 반각 탁점(U+FF9E–FF9F).
+ * 〈〉《》【】(U+3008–3011)과 전각 ？！，(U+FF01–FF0F 등)은 넣지 않는다 — 한국어 글에도 쓰여 한국어 발화를 잃을 수 있다.
+ * 한글·라틴(악센트 포함)·숫자·이모지는 해당 없음. lookbehind 없음(구형 iOS Safari), `u` 플래그 속성 이스케이프(ES2018 — tsconfig ES2022).
+ */
+const MISHEARD_CHILD_SCRIPT_RE =
+  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}、-〃「-』〜゙-゜・ー｡-･ｰﾞﾟ]/u;
+
+/**
+ * 은우 줄 전사가 **잘못 받아 적은 것**인가(2026-10-14 확정, english.md §12-2 9). 은우는 중국어·일본어를 하지 않으므로 한자·히라가나·
+ * 가타카나(반각 포함)·일본어 구두점이 하나라도 있으면 참 — 리듀서는 그 줄을 `failed`("잘 안 들렸어요", 저장에서 빠짐)로 두고,
+ * 대화 보기·설명 라우트는 저장된 옛 은우 턴을 읽을 때 같은 판정으로 "잘 안 들렸어요"·설명 대상 밖으로 다룬다(저장 데이터는 고치지 않는다).
+ * **선생님 줄에는 쓰지 않는다.** 전사 언어 지정(`language: "en"`, §12-1)은 힌트일 뿐이라 짧은·불분명한 아이 발화가 다른 문자로 적힌다.
+ */
+export function isMisheardChildTranscript(text: string): boolean {
+  return typeof text === "string" && MISHEARD_CHILD_SCRIPT_RE.test(text);
 }
 
 /** 앱이 `conversation.item.create`로 넣는 숨은 항목의 아이디 접두사(§12-2 5). 앱은 이 상수로 id를 만든다. */
@@ -159,6 +192,7 @@ function ensureLine(s: TalkTranscriptState, itemId: string, speaker: TalkSpeaker
     status: speaker === "child" ? "listening" : "partial",
     filtered: false,
     origin: null,
+    misheard: false,
   };
   return { ...s, lines: [...s.lines, line] };
 }
@@ -174,6 +208,7 @@ function patchLine(s: TalkTranscriptState, itemId: string, patch: Partial<Omit<T
     next.text === cur.text &&
     next.status === cur.status &&
     next.filtered === cur.filtered &&
+    next.misheard === cur.misheard &&
     next.origin === cur.origin
   ) {
     return s;
@@ -259,6 +294,11 @@ function onInputDelta(s: TalkTranscriptState, ev: Rec): TalkTranscriptState {
   const line = next.lines[findIndex(next.lines, id)];
   if (line.speaker !== "child" || line.status === "final" || line.status === "empty" || line.status === "failed") return next;
   if (delta === "") return next;
+  // 잘못 받아 적는 중(§12-2 9) — 그 글자를 띄우지 않고 "듣는 중…"으로 둔다. 한 번 보이면 완료 전까지 뒤 delta도 붙이지 않는다.
+  if (line.misheard || isMisheardChildTranscript(line.text + delta)) {
+    next = patchLine(next, id, { text: "", status: "listening", misheard: true });
+    return markDeltaSeen(next, eventId);
+  }
   next = patchLine(next, id, { text: line.text + delta, status: "partial" });
   return markDeltaSeen(next, eventId);
 }
@@ -268,7 +308,10 @@ function onInputCompleted(s: TalkTranscriptState, ev: Rec): TalkTranscriptState 
   if (id === null || isHidden(id)) return s;
   const next = ensureLine(s, id, "child");
   const text = (typeof ev.transcript === "string" ? ev.transcript : "").trim();
-  return patchLine(next, id, { text, status: text === "" ? "empty" : "final" });
+  // 잘못 받아 적은 전사(§12-2 9) — 실패와 같게("잘 안 들렸어요", 저장에서 빠짐). 글자는 남기지 않는다(어디에도 새지 않게).
+  const speaker = next.lines[findIndex(next.lines, id)].speaker;
+  if (speaker === "child" && isMisheardChildTranscript(text)) return patchLine(next, id, { text: "", status: "failed", misheard: true });
+  return patchLine(next, id, { text, status: text === "" ? "empty" : "final", misheard: false });
 }
 
 function onInputFailed(s: TalkTranscriptState, ev: Rec): TalkTranscriptState {
@@ -277,7 +320,8 @@ function onInputFailed(s: TalkTranscriptState, ev: Rec): TalkTranscriptState {
   const next = ensureLine(s, id, "child");
   const line = next.lines[findIndex(next.lines, id)];
   if (line.status === "final" || line.status === "empty") return next; // 확정 전사가 이미 있으면 그쪽이 이긴다(순서 무관)
-  return patchLine(next, id, { status: "failed" });
+  // 모델이 알린 실패 — 잘못 받아 적음 표시를 거둔다(기존 failed 셈 규칙 그대로: 세지 않는다)
+  return patchLine(next, id, { status: "failed", misheard: false });
 }
 
 /**
@@ -507,12 +551,39 @@ export function buildTalkResponseCreateEvent(): ResponseCreateEvent {
 // ---------------------------------------------------------------------------
 
 /**
+ * 잘못 받아 적은 은우 줄(§12-2 9)이 저장 턴에 남기는 글자(2026-10-14 후속 결정). 외국 문자 대신 이 자리 표시를 저장해 **은우가 말한
+ * 횟수에는 든다** — 저장 조건(은우 발화 ≥ 1)·`childTurnCount`(라우트·스토어·normalize가 모두 turns에서 다시 센다)·은우 트랙 스트릭·
+ * v2 한 판(은우 턴 3)·"은우 N번 말함" 칩이 전부 turns를 세므로, 저장 모양(스키마·Firestore 코덱·normalize)을 바꾸지 않고 셈이 맞는다.
+ * 화면(대화 보기)과 문장 설명은 `isMisheardChildTurn`으로 이 턴을 "잘 안 들렸어요"·설명 대상 밖으로 다룬다.
+ */
+export const TALK_MISHEARD_CHILD_TEXT = "\u2026";
+
+/**
+ * 저장된(또는 저장할) 턴이 잘못 받아 적은 은우 턴인가 — 자리 표시(`TALK_MISHEARD_CHILD_TEXT`)이거나, 이 규칙 전에 저장된 옛 기록처럼
+ * 외국 문자 글자 그대로인 은우 턴. 선생님 턴은 늘 false. (은우의 실제 전사가 말줄임 하나뿐이어도 같은 취급 — 알아들을 말이 없다.)
+ */
+export function isMisheardChildTurn(turn: { speaker: TalkSpeaker; text: string }): boolean {
+  if (turn.speaker !== "child" || typeof turn.text !== "string") return false;
+  const t = turn.text.trim();
+  return t === TALK_MISHEARD_CHILD_TEXT || isMisheardChildTranscript(t);
+}
+
+/**
  * 줄 → 저장용 턴. `empty`·`failed`·글자 없는 줄을 뺀다. 은우 턴의 interrupted는 늘 false.
+ * 예외(§12-2 9, 2026-10-14 후속): **잘못 받아 적은 은우 줄**(`misheard` — 완료면 failed, 오는 중이면 listening)은 외국 문자 대신
+ * `TALK_MISHEARD_CHILD_TEXT`로 남겨 은우 발화 셈에 넣는다. 모델이 알린 `failed`(misheard false)는 전처럼 뺀다.
  * origin(§12-7): 선생님 턴은 줄의 출처(모르면 reply), 은우 턴은 null — 키는 늘 싣는다(undefined 없음).
  */
 export function toTalkTurns(lines: readonly TalkLine[]): TalkTurn[] {
   const out: TalkTurn[] = [];
   for (const l of lines) {
+    const child = l.speaker === "child";
+    if (child && (l.misheard || isMisheardChildTranscript(l.text))) {
+      // 리듀서가 표시한 줄 + 방어(손으로 만든 줄에 외국 문자가 남았어도) — 글자는 저장하지 않고 자리 표시로 센다
+      if (l.status === "empty" || (l.status === "failed" && !l.misheard)) continue;
+      out.push({ speaker: "child", text: TALK_MISHEARD_CHILD_TEXT, interrupted: false, origin: null });
+      continue;
+    }
     if (l.status === "empty" || l.status === "failed") continue;
     const text = l.text.trim();
     if (text === "") continue;
@@ -588,6 +659,8 @@ export function pickTalkSentence(
   if (!Number.isInteger(turnIndex) || !Number.isInteger(sentenceIndex)) return null;
   if (turnIndex < 0 || turnIndex >= turns.length || sentenceIndex < 0) return null;
   const turn = turns[turnIndex];
+  // 잘못 받아 적은 은우 턴(§12-2 9 — 자리 표시·옛 기록의 외국 문자)은 설명 대상이 아니다 — 라우트가 과금 전에 400(sentence_not_found)
+  if (isMisheardChildTurn(turn)) return null;
   const sentences = splitTalkSentences(turn.text);
   if (sentenceIndex >= sentences.length) return null;
   return { speaker: turn.speaker, sentence: sentences[sentenceIndex] };

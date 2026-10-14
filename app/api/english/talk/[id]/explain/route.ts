@@ -7,7 +7,7 @@
  * 순서(과금을 막는 쪽이 먼저):
  * 1. 본문·id 형식 → 400/404
  * 2. 대화 읽기 + 렌더 판정(`isRenderableTalkSession`) → 404
- * 3. 범위 밖 번호(`pickTalkSentence` null) → 400 **과금 전에**
+ * 3. 범위 밖 번호(`pickTalkSentence` null) → 400 **과금 전에** — 잘못 받아 적은 옛 은우 턴(한자·가나, english.md §12-2 9)도 여기서 400
  * 4. 같은 문장의 설명이 이미 있으면 그것을 돌려준다(cached:true) — **AI 0회, 키가 없어도 된다**(두 번 탭해도 한 번 과금)
  * 5. 키 없음 → 501
  * 6. 호출 I(재요청 1회는 callWithSchema가) → 실패 500

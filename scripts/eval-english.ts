@@ -288,6 +288,9 @@ import {
   buildTalkSystemNoteEvent,
   childTurnCount,
   createTalkTranscript,
+  TALK_MISHEARD_CHILD_TEXT,
+  isMisheardChildTranscript,
+  isMisheardChildTurn,
   isVisibleTalkLine,
   pickTalkSentence,
   reduceTalkTranscript,
@@ -3889,7 +3892,7 @@ function runTalkTranscriptChecks(): CheckResult[] {
     failedResp.lines[0].status === "interrupted" && failedResp.lines[0].text === "Let us talk about" && isVisibleTalkLine(failedResp.lines[0]),
     talkLinesKey(failedResp),
   );
-  add("진행 중 선생님 줄(글자 전)은 보임", isVisibleTalkLine({ itemId: "x", speaker: "teacher", text: "", status: "partial", filtered: false, origin: null }));
+  add("진행 중 선생님 줄(글자 전)은 보임", isVisibleTalkLine({ itemId: "x", speaker: "teacher", text: "", status: "partial", filtered: false, origin: null, misheard: false }));
 
   // 재생 중 잘림(2026-10-03 — QA talk-cutoff P2-A): 생성이 끝난 뒤 재생 중에 잘리면 서버는 cleared·truncated만 보낸다 → 끊김
   const doneLine: RealtimeServerEvent[] = [
@@ -3963,8 +3966,120 @@ function runTalkTranscriptChecks(): CheckResult[] {
   add("childTurnCount = 은우 턴 수", childTurnCount(turns) === 1 && childTurnCount([]) === 0);
   const cutTurns = toTalkTurns(cutA.lines);
   add("끊긴 선생님 턴은 interrupted:true로 저장, 글자 없는 listening 줄은 제외", cutTurns.length === 1 && cutTurns[0].interrupted === true, JSON.stringify(cutTurns));
-  const partialLine: TalkLine = { itemId: "item_c17", speaker: "child", text: "  My dog is ", status: "partial", filtered: false, origin: null };
+  const partialLine: TalkLine = { itemId: "item_c17", speaker: "child", text: "  My dog is ", status: "partial", filtered: false, origin: null, misheard: false };
   add("세션이 끝날 때 partial 은우 글자는 trim해서 남긴다", toTalkTurns([partialLine])[0]?.text === "My dog is");
+
+  // 잘못 받아 적은 은우 전사(2026-10-14, §12-2 9) — 한자·가나·일본어 구두점 → failed. 픽스처는 지어낸 짧은 반례다.
+  const misheardSamples = ["拜拜", "グルパギテ。", "ありがとう", "ｸﾞﾙﾊﾟ", "OK。", "「yes」", "dog 犬", "ﾊﾞｲ", "ok､", "々"];
+  const cleanSamples = ["안녕하세요", "Yes, I like dogs.", "I have 3 cats!", "🐶 dog ❤️", "café", "naïve crème brûlée", "《겨울왕국》 좋아", "뭐？ 진짜！", "", "  "];
+  const misheardMiss = misheardSamples.filter((t) => !isMisheardChildTranscript(t));
+  add("판정: 한자·히라가나·가타카나·반각 가타카나·일본어 구두점(。「」､)이 있으면 잘못 받아 적음", misheardMiss.length === 0, misheardMiss.join(" | "));
+  const cleanHit = cleanSamples.filter((t) => isMisheardChildTranscript(t));
+  add("판정: 한글·영어·숫자·이모지·악센트 라틴·《》·전각 ？！·빈 글자는 그대로", cleanHit.length === 0, cleanHit.join(" | "));
+  const garbledDone = reduceTalkTranscriptEvents([talkEv.speechStarted("item_m1"), talkEv.committed("item_m1", null), talkEv.inCompleted("item_m1", "拜拜")]);
+  const gl = garbledDone.lines[0];
+  const garbledTurns = toTalkTurns(garbledDone.lines);
+  add(
+    "완료 전사에 한자 → failed('잘 안 들렸어요' — 보임)·misheard, 글자는 비움",
+    gl.status === "failed" && gl.misheard && gl.text === "" && isVisibleTalkLine(gl),
+    talkLinesKey(garbledDone),
+  );
+  add(
+    "후속(2026-10-14): 잘못 받아 적은 은우 줄은 저장 턴에 자리 표시로 남아 은우 발화 셈에 든다(외국 문자 저장 0)",
+    JSON.stringify(garbledTurns) === JSON.stringify([{ speaker: "child", text: TALK_MISHEARD_CHILD_TEXT, interrupted: false, origin: null }]) &&
+      childTurnCount(garbledTurns) === 1 &&
+      !isMisheardChildTranscript(JSON.stringify(garbledTurns)),
+    JSON.stringify(garbledTurns),
+  );
+  const kanaDone = reduceTalkTranscriptEvents([talkEv.speechStarted("item_m2"), talkEv.inCompleted("item_m2", "グルパギテ。")]);
+  const halfDone = reduceTalkTranscriptEvents([talkEv.speechStarted("item_m3"), talkEv.inCompleted("item_m3", "ｸﾞﾙﾊﾟ")]);
+  const periodDone = reduceTalkTranscriptEvents([talkEv.speechStarted("item_m4"), talkEv.inCompleted("item_m4", "OK。")]);
+  add(
+    "가타카나·반각 가타카나·일본어 마침표만 섞여도 failed",
+    kanaDone.lines[0].status === "failed" && halfDone.lines[0].status === "failed" && periodDone.lines[0].status === "failed",
+    `${talkLinesKey(kanaDone)} / ${talkLinesKey(halfDone)} / ${talkLinesKey(periodDone)}`,
+  );
+  const keepKinds = ["나는 강아지 좋아", "I'm 7!", "🐶 dog", "café"].map((t, i) => {
+    const st = reduceTalkTranscriptEvents([talkEv.speechStarted(`item_k${i}`), talkEv.inCompleted(`item_k${i}`, t)]);
+    return st.lines[0].status === "final" && st.lines[0].text === t;
+  });
+  add("한글·영어·숫자·이모지·악센트 라틴 완료 전사는 final 그대로", keepKinds.every(Boolean), keepKinds.join(","));
+  const partialEvents: RealtimeServerEvent[] = [talkEv.speechStarted("item_m5"), talkEv.inDelta("item_m5", "Bye"), talkEv.inDelta("item_m5", " 拜")];
+  const partialGarbled = reduceTalkTranscriptEvents(partialEvents);
+  const pg = partialGarbled.lines[0];
+  add("partial에 한자가 보이면 그 글자를 띄우지 않고 listening('듣는 중…')", pg.status === "listening" && pg.text === "" && isVisibleTalkLine(pg), talkLinesKey(partialGarbled));
+  const partialMore = reduceTalkTranscript(partialGarbled, talkEv.inDelta("item_m5", " bye"));
+  add("가려진 줄은 완료 전까지 뒤따르는 영어 delta도 붙이지 않음", partialMore.lines[0].status === "listening" && partialMore.lines[0].text === "", talkLinesKey(partialMore));
+  add(
+    "가려진 partial 줄: 호출 J 문맥에 글자 없음, 그 채로 끝나면 자리 표시로 센다(외국 문자 저장 0)",
+    pickTalkCardsContext([...partialMore.lines, { itemId: "t_after", speaker: "teacher", text: "Bye!", status: "final", filtered: false, origin: "reply", misheard: false }], "t_after").length === 0 &&
+      toTalkTurns(partialMore.lines).length === 1 &&
+      toTalkTurns(partialMore.lines)[0].text === TALK_MISHEARD_CHILD_TEXT,
+    JSON.stringify(toTalkTurns(partialMore.lines)),
+  );
+  const partialThenModelFail = reduceTalkTranscript(partialMore, talkEv.inFailed("item_m5"));
+  add(
+    "가려진 줄에 모델이 전사 실패(.failed)를 알리면 기존 failed 규칙 — misheard 거둠, 세지 않음",
+    partialThenModelFail.lines[0].status === "failed" && !partialThenModelFail.lines[0].misheard && toTalkTurns(partialThenModelFail.lines).length === 0,
+    talkLinesKey(partialThenModelFail),
+  );
+  const modelFailOnly = reduceTalkTranscriptEvents([talkEv.speechStarted("item_m8"), talkEv.inFailed("item_m8"), talkEv.speechStarted("item_m9"), talkEv.inCompleted("item_m9", "")]);
+  add("모델이 알린 failed·빈 전사(empty)는 여전히 세지 않음", childTurnCount(toTalkTurns(modelFailOnly.lines)) === 0, talkLinesKey(modelFailOnly));
+  const partialThenFailed = reduceTalkTranscript(partialMore, talkEv.inCompleted("item_m5", "Bye 拜拜"));
+  add("가려진 줄이 완료 때 잘못 받아 적었으면 failed", partialThenFailed.lines[0].status === "failed" && partialThenFailed.lines[0].text === "", talkLinesKey(partialThenFailed));
+  const partialThenClean = reduceTalkTranscript(partialMore, talkEv.inCompleted("item_m5", "Bye bye."));
+  add(
+    "가려진 줄도 완료 전사가 깨끗하면 그 글자로 final(misheard 거둠 — 진짜 글자로 저장)",
+    partialThenClean.lines[0].status === "final" && partialThenClean.lines[0].text === "Bye bye." && !partialThenClean.lines[0].misheard && toTalkTurns(partialThenClean.lines)[0]?.text === "Bye bye.",
+    talkLinesKey(partialThenClean),
+  );
+  const partialTwice = reduceTalkTranscriptEvents(partialEvents.flatMap((e) => [e, e]));
+  add("가림도 멱등(같은 delta 두 번)", talkLinesKey(partialTwice) === talkLinesKey(partialGarbled), talkLinesKey(partialTwice));
+  const koPartial = reduceTalkTranscriptEvents([talkEv.speechStarted("item_m6"), talkEv.inDelta("item_m6", "나는 ")]);
+  add("한글 partial은 그대로 보임(partial)", koPartial.lines[0].status === "partial" && koPartial.lines[0].text === "나는 ", talkLinesKey(koPartial));
+  const teacherKanji = reduceTalkTranscriptEvents([
+    talkEv.itemAdded("item_t60", "assistant", null),
+    talkEv.outDelta("item_t60", "resp_60", "Sushi is 寿司"),
+    talkEv.outDone("item_t60", "resp_60", "Sushi is 寿司 in Japanese. Do you like it?"),
+    talkEv.responseDone("resp_60", "completed", ["item_t60"]),
+  ]);
+  add(
+    "선생님 줄은 판정하지 않음(한자가 있어도 final·저장)",
+    teacherKanji.lines[0].status === "final" && toTalkTurns(teacherKanji.lines)[0]?.text === "Sushi is 寿司 in Japanese. Do you like it?",
+    talkLinesKey(teacherKanji),
+  );
+  const handMade: TalkLine = { itemId: "item_m7", speaker: "child", text: "グル", status: "final", filtered: false, origin: null, misheard: false };
+  add(
+    "toTalkTurns 방어: 손으로 만든 은우 final 줄에 외국 문자가 남았어도 글자는 저장하지 않고 자리 표시로 센다",
+    JSON.stringify(toTalkTurns([handMade])) === JSON.stringify([{ speaker: "child", text: TALK_MISHEARD_CHILD_TEXT, interrupted: false, origin: null }]),
+    JSON.stringify(toTalkTurns([handMade])),
+  );
+  // 옛 대화(저장 데이터는 그대로) — 설명 대상에서 빠지고, 뒤 턴의 번호는 그대로다
+  const oldTurns = [
+    { speaker: "teacher" as const, text: "Hi! Do you like snow?", interrupted: false, origin: "greeting" as const },
+    { speaker: "child" as const, text: "拜拜", interrupted: false, origin: null },
+    { speaker: "teacher" as const, text: "Oh, bye bye? Do you want to play?", interrupted: false, origin: "reply" as const },
+    { speaker: "child" as const, text: "Yes. I like snow.", interrupted: false, origin: null },
+    { speaker: "child" as const, text: TALK_MISHEARD_CHILD_TEXT, interrupted: false, origin: null },
+  ];
+  add(
+    "옛 대화·자리 표시 턴: pickTalkSentence null(설명 라우트 과금 전 400)·은우 셈에는 듦, 다른 턴 번호는 그대로",
+    pickTalkSentence(oldTurns, 1, 0) === null &&
+      pickTalkSentence(oldTurns, 4, 0) === null &&
+      isMisheardChildTurn(oldTurns[1]) &&
+      isMisheardChildTurn(oldTurns[4]) &&
+      !isMisheardChildTurn(oldTurns[3]) &&
+      !isMisheardChildTurn({ speaker: "teacher", text: TALK_MISHEARD_CHILD_TEXT }) &&
+      childTurnCount(oldTurns) === 3 &&
+      pickTalkSentence(oldTurns, 2, 0)?.sentence === "Oh, bye bye?" &&
+      pickTalkSentence(oldTurns, 3, 1)?.sentence === "I like snow." &&
+      pickTalkSentence(oldTurns, 0, 0)?.speaker === "teacher",
+  );
+  const reviewSrc = readFileSync(new URL("../components/talk-review-view.tsx", import.meta.url), "utf-8");
+  add(
+    "대화 보기: 같은 판정(isMisheardChildTurn)으로 '잘 안 들렸어요'를 그리고 문장 탭에서 뺀다, 칩은 저장 셈(childTurnCount)(소스 점검)",
+    (reviewSrc.match(/isMisheardChildTurn\(turn\)/g) ?? []).length >= 2 && reviewSrc.includes("잘 안 들렸어요") && reviewSrc.includes("은우 {childTurnCount}번 말함"),
+  );
   return results;
 }
 
@@ -5212,6 +5327,7 @@ function runTalkCardsCallChecks(): CheckResult[] {
     status,
     filtered: false,
     origin: speaker === "teacher" ? "reply" : null,
+    misheard: false,
   });
   const lines: TalkLine[] = [
     L("t0", "teacher", "Hi!"),
@@ -5343,6 +5459,7 @@ function runTalkCardsRequestChecks(): CheckResult[] {
     status,
     filtered: false,
     origin: speaker === "teacher" ? "reply" : null,
+    misheard: false,
   });
   const lines = [L("t0", "teacher", "Hi! Do you like dogs?"), L("c0", "child", "Yes."), L("t1", "teacher", "  Great! What color is your dog?  ")];
   const body = buildTalkCardsRequest({

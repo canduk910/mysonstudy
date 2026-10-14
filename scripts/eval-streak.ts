@@ -25,6 +25,8 @@ import { TOEIC_GUIDE_PART_TO_MOCK_PART, isToeicGuidePart } from "../lib/toeic-gu
 import { toeicMockPartLabelKo } from "../lib/toeic-mock-contract";
 import { TOEIC_TEMPLATE_BANK_MODE_LABELS_KO, isToeicTemplateBankMode } from "../lib/toeic-quiz";
 import { isCountedTalkSession, talkStreakLabel, talkStreakSessions } from "../lib/talk-streak";
+import { TALK_MISHEARD_CHILD_TEXT, childTurnCount, reduceTalkTranscriptEvents, toTalkTurns } from "../lib/talk-transcript";
+import { normalizeTalkSessionRecord } from "../lib/talk-normalize";
 import {
   TEST_STATUS_NONE,
   summarizeTestStatus,
@@ -830,6 +832,37 @@ const TODAY = "2026-09-21";
   add(B, "틀 말하기: 결과 전부 + 말한 문항 ≥ 1 → 한 판", isFullFrameDrill({ items: [{ outcome: "spoken" }, { outcome: "no_speech" }] }), "");
   add(B, "틀 말하기: 말한 문항 0 → 아님", !isFullFrameDrill({ items: [{ outcome: "no_speech" }] }), "");
   add(B, "자유대화: 발화 3 → 한 판, 2 → 아님", isFullTalk({ childTurnCount: 3 }) && !isFullTalk({ childTurnCount: 2 }) && !isFullTalk({ childTurnCount: Number.NaN }), "");
+  // 잘못 받아 적은 은우 줄(english.md §12-2 9, 2026-10-14 후속) — 화면·저장 글자에서는 가리되 은우가 말한 횟수에는 든다.
+  // 실시간 리듀서 → toTalkTurns(저장 본문) → normalize(스토어가 읽을 때 turns에서 다시 셈) → 스트릭 판정까지 실제 경로로 잇는다.
+  let evn = 0;
+  const said = (id: string, transcript: string) => [
+    { type: "input_audio_buffer.speech_started", event_id: `se${++evn}`, item_id: id, audio_start_ms: 0 },
+    { type: "conversation.item.input_audio_transcription.completed", event_id: `se${++evn}`, item_id: id, content_index: 0, transcript },
+  ];
+  const modelFail = (id: string) => [
+    { type: "input_audio_buffer.speech_started", event_id: `se${++evn}`, item_id: id, audio_start_ms: 0 },
+    { type: "conversation.item.input_audio_transcription.failed", event_id: `se${++evn}`, item_id: id, content_index: 0, error: { message: "fixture" } },
+  ];
+  const talkCount = (events: unknown[]) => normalizeTalkSessionRecord({ turns: toTalkTurns(reduceTalkTranscriptEvents(events).lines), startedAt: "2026-10-14T03:00:00.000Z" }).childTurnCount;
+  const allMisheardTurns = toTalkTurns(reduceTalkTranscriptEvents([...said("m1", "拜拜"), ...said("m2", "グルパギテ。")]).lines);
+  const allMisheard = talkCount([...said("m1", "拜拜"), ...said("m2", "グルパギテ。")]);
+  add(
+    B,
+    "자유대화: 은우 말이 전부 잘못 받아 적혀도 저장 조건(≥1)·은우 트랙에 든다(외국 문자 저장 0)",
+    childTurnCount(allMisheardTurns) === 2 && allMisheard === 2 && allMisheardTurns.every((t) => t.text === TALK_MISHEARD_CHILD_TEXT) &&
+      isCountedTalkSession({ startedAt: "2026-10-14T03:00:00.000Z", childTurnCount: allMisheard }),
+    JSON.stringify(allMisheardTurns),
+  );
+  const mixed = talkCount([...said("m3", "拜拜"), ...said("m4", "ありがとう"), ...said("m5", "Yes, I like dogs.")]);
+  add(B, "자유대화: 잘못 받아 적힘 2 + 정상 1 = 은우 3 → 한 판", mixed === 3 && isFullTalk({ childTurnCount: mixed }), String(mixed));
+  const withFail = talkCount([...modelFail("m6"), ...said("m7", "拜拜"), ...said("m8", "Blue!")]);
+  const failOnly = talkCount([...modelFail("m9"), ...said("m10", "")]);
+  add(
+    B,
+    "자유대화: 모델이 알린 전사 실패(failed)·빈 전사는 여전히 안 센다(실패 1 + 잘못 받아 적힘 1 + 정상 1 = 2 → 한 판 아님)",
+    withFail === 2 && !isFullTalk({ childTurnCount: withFail }) && failOnly === 0 && !isCountedTalkSession({ startedAt: "2026-10-14T03:00:00.000Z", childTurnCount: failOnly }),
+    `${withFail}/${failOnly}`,
+  );
   const m = new Map<string, number>();
   addRuns(m, ["2026-10-09T15:30:00.000Z", "2026-10-10T03:00:00.000Z"]); // 둘 다 KST 10-10
   addDays(m, ["2026-10-10", "2026-10-11"]);
