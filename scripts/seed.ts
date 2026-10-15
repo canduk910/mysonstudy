@@ -702,6 +702,7 @@ async function main() {
     // 🔔 알림 구독·발송 기록(가족 스트릭 §6)도 빈 맵 — 기기에서 켜는 것이다.
     pushSubscriptions: {},
     pushLog: {},
+    workoutRestAlerts: {},
   };
 
   await mergeDbForSeed(db);

@@ -25,8 +25,10 @@ import { UNLOCK_COOKIE, gateMode, getAppPin, verifyUnlockToken } from "@/lib/aut
 /**
  * 게이트 예외 — 잠금 화면 자체와 그 API, 그리고 알림 틱.
  * `/api/push/tick`: 라우트가 x-push-secret으로 검사(PIN 대신) — Cloud Scheduler는 잠금 쿠키가 없다.
+ * `/api/push/workout-rest/fire`: 같은 방식 — Cloud Tasks가 휴식 알림 시각에 부른다(SPEC §19-9). 예약 라우트
+ *   `/api/push/workout-rest`는 게이트 안이다(화면이 부른다).
  */
-const PUBLIC_PATHS = new Set(["/unlock", "/api/unlock", "/api/push/tick"]);
+const PUBLIC_PATHS = new Set(["/unlock", "/api/unlock", "/api/push/tick", "/api/push/workout-rest/fire"]);
 
 /** 정적 자산 확장자 — public/ 에 파일을 두게 되어도 잠금과 무관하게 서빙된다 */
 const STATIC_FILE = /\.(?:ico|png|jpg|jpeg|gif|webp|avif|svg|css|js|mjs|map|txt|xml|json|webmanifest|woff2?)$/i;

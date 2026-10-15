@@ -8,27 +8,19 @@
  * 200 `{ ok: true, sent }`(sent = 성공한 기기 발송 수) · 401 비밀 · 501 VAPID 키 없음.
  */
 
-import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { kstTodayString } from "@/lib/kst";
 import { TICK_SKEW_MS, decidePushes, kstHalfHourHHMM, pushStates } from "@/lib/push-decide";
 import { deliver, prefsByPerson, pushConfigured } from "@/lib/push-send";
+import { pushSecretOk } from "@/lib/push-secret";
 import { getStore } from "@/lib/store";
 import { computeStreakResponse } from "@/lib/streak-server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** 길이가 달라도 상수 시간 — 둘 다 sha256으로 같은 길이로 만든 뒤 비교 */
-function secretOk(given: string | null): boolean {
-  const want = process.env.PUSH_CRON_SECRET?.trim();
-  if (!want || !given) return false;
-  const h = (v: string) => createHash("sha256").update(v).digest();
-  return timingSafeEqual(h(given), h(want));
-}
-
 export async function POST(req: Request) {
-  if (!secretOk(req.headers.get("x-push-secret"))) {
+  if (!pushSecretOk(req.headers.get("x-push-secret"))) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
   if (!pushConfigured()) return NextResponse.json({ ok: false, error: "not_configured" }, { status: 501 });

@@ -124,6 +124,7 @@ import {
   parsePushLogId,
 } from "./store";
 import { isPushPerson, parsePushPrefs, type PushKind, type PushPerson } from "./push-contract";
+import { normalizeRestAlertRecord, type WorkoutRestAlertRecord } from "./workout-rest-alert";
 import { islandEntryData, normalizeToeicIslandEntry, sortIslandEntries, type ToeicIslandEntry } from "./toeic-island";
 // 엄마의 생활영어(설계 §6) — 결정은 순수 모듈(두 백엔드가 같은 함수를 부른다)
 import { decideMomImport, type MomBlockRecord, type MomImportResult, type MomLessonRecord, type MomTestRecord } from "./mom-contract";
@@ -741,6 +742,10 @@ export class FirestoreStore implements StudyStore {
   }
   private pushLog(): CollectionReference {
     return getDb().collection("pushLog");
+  }
+  // ⏱ 휴식 알림(SPEC §19-9) — 문서 id = 사람
+  private workoutRestAlerts(): CollectionReference {
+    return getDb().collection("workoutRestAlerts");
   }
   // 은우 자유대화(english.md §12-4·§12-6) — 은우 단어장 컬렉션과 섞지 않는다
   private talkSessions(): CollectionReference {
@@ -2344,6 +2349,23 @@ export class FirestoreStore implements StudyStore {
       .where(FieldPath.documentId(), "<", `${day};`)
       .get();
     return snap.docs.map((d) => parsePushLogId(d.id)).filter((x): x is { id: string; person: PushPerson; kind: PushKind } => x !== null);
+  }
+
+  // ---- ⏱ 휴식 알림(SPEC §19-9) — 판정과 쓰기가 트랜잭션 한 단위(예약·취소가 겹쳐도 rev가 하나씩 오른다). 삭제 없음 ----
+
+  async getWorkoutRestAlert(person: PushPerson): Promise<WorkoutRestAlertRecord | null> {
+    const snap = await this.workoutRestAlerts().doc(person).get();
+    return snap.exists ? normalizeRestAlertRecord(snap.data()) : null;
+  }
+
+  async updateWorkoutRestAlert<T>(person: PushPerson, decide: (cur: WorkoutRestAlertRecord | null) => { next: WorkoutRestAlertRecord | null; result: T }): Promise<T> {
+    const ref = this.workoutRestAlerts().doc(person);
+    return getDb().runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const { next, result } = decide(snap.exists ? normalizeRestAlertRecord(snap.data()) : null);
+      if (next) tx.set(ref, frameFirestoreData({ ...next }));
+      return result;
+    });
   }
 }
 

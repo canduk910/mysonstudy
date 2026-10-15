@@ -115,3 +115,23 @@ export function setMediaSessionPlaybackState(state: "none" | "paused" | "playing
     /* noop */
   }
 }
+
+/**
+ * 잠금 화면 진행 막대(남은 시간)를 맞춘다 — 운동 휴식의 잠금화면 타이머(SPEC §19-9 실험)가 쓴다. `duration`·`position`은 초.
+ * 값이 잘못됐거나(position > duration 등) 지원하지 않으면 조용히 넘어간다. null이면 지운다. 토익 플레이어는 부르지 않는다.
+ */
+export function setMediaSessionPositionState(state: { duration: number; position: number; playbackRate?: number } | null): void {
+  const ms = getSession();
+  if (!ms || typeof ms.setPositionState !== "function") return;
+  try {
+    if (state === null) {
+      ms.setPositionState();
+      return;
+    }
+    const duration = Math.max(0, state.duration);
+    const position = Math.min(duration, Math.max(0, state.position));
+    ms.setPositionState({ duration, position, playbackRate: state.playbackRate ?? 1 });
+  } catch {
+    /* noop */
+  }
+}

@@ -40,6 +40,10 @@
  *     카운트다운 타이머는 휴식 종료 시각이 바뀌거나(2분/3분·+30초) 휴식이 끝나거나(건너뛰기·끝) 음성을 끄거나 닫으면 effect
  *     cleanup이 전부 취소한다. **오늘 완료 안내만** 기록이 끝나 닫혀도 끝까지 읽는다(손잡이를 부모에 남긴다 — 부모 언마운트가 멈춘다).
  *   · 화면 꺼짐 방지 — Wake Lock을 요청하고 visible 복귀 때 재요청(지원 안 하면 조용히 넘어간다).
+ *   · ⏱ 휴식 알림(§19-9 A) — 쉬는 중 화면이 숨겨지는 순간 서버에 예약(keepalive), 다시 보이면 취소. 판정은 순수 함수
+ *     restAlertVisibilityAction(lib/workout-rest-alert). 서버가 꺼져 있으면(501) 아무것도 보내지 않고 안내 줄도 숨긴다.
+ *   · 🔒 잠금화면 타이머(§19-9 B, 실험, 기본 끔) — 휴식 길이만큼의 무음 + Media Session 진행 막대(lib/workout-lockscreen).
+ *     휴식을 시작하는 ✓에서 음성 안내보다 먼저 틀고, 안내가 끝나면(onEnd "done") 다시 튼다.
  * - **진행 보존**: localStorage `workout-session:v1` 하나. **마운트 후 effect에서만** 읽고(hydration),
  *   cycleId·rev·day·targetDay·dateKst가 전부 props와 같을 때만 복원 — 다르면 조용히 버린다(undo·다른 기기 기록·어제 세션이
  *   새 목표에 이어 붙지 않게). 기록 성공·409·실패 기록 시 삭제. 모든 접근은 try/catch(프라이빗 모드 등).
@@ -54,8 +58,12 @@
  *   새로고침 뒤 같은 Day의 recorded_today인지 보고 성공으로 보여 준다). 그 밖 오류는 세션 안에 남아 다시 누를 수 있다.
  */
 
+import Link from "next/link";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { PUSH_PERSON_STORAGE_KEY } from "@/lib/push-contract";
 import { lockBodyScroll } from "@/lib/scroll-lock";
+import { createLockscreenTimer, readLockscreenPref, writeLockscreenPref, type LockscreenTimer } from "@/lib/workout-lockscreen";
+import { nextRestAlertSeq, restAlertLabel, restAlertVisibilityAction, restNowPlayingText, type RestAlertRequest } from "@/lib/workout-rest-alert";
 import { prefetchSpeech, speakQueue, unlockSpeechPlayback } from "@/lib/speech";
 import {
   restFollowsStep,
@@ -356,6 +364,47 @@ function vibrate(pattern: number | number[] = [200, 100, 200]): void {
 }
 
 // ===========================================================================
+// ⏱ 휴식 알림(§19-9 A) — 서버 예약·취소. 실패는 조용히(알림은 best-effort, 화면 타이머가 기준)
+// ===========================================================================
+
+const REST_ALERT_PATH = "/api/push/workout-rest";
+/** 이 페이지가 마지막으로 보낸 요청 순번(QA 1 P2-A) — 시각 기반이라 새로고침 뒤에도 거꾸로 가지 않는다 */
+let lastRestAlertSeq = 0;
+
+type RestAlertBody = RestAlertRequest extends infer R ? (R extends unknown ? Omit<R, "seq"> : never) : never;
+
+/**
+ * keepalive: 화면이 숨겨지는 순간(앱 전환·잠금)에도 요청이 나가게 — 본문은 수백 바이트라 64KB 한도와 무관.
+ * 보내는 순간 순번을 붙인다 — 서버는 저장된 순번 이하인 요청을 버린다(거꾸로 도착한 숨김 예약이 보임 취소를 이기지 않게).
+ */
+function postRestAlert(body: RestAlertBody, keepalive: boolean): void {
+  try {
+    lastRestAlertSeq = nextRestAlertSeq(lastRestAlertSeq, Date.now());
+    void fetch(REST_ALERT_PATH, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...body, seq: lastRestAlertSeq }),
+      keepalive,
+    }).catch(() => {});
+  } catch {
+    /* noop */
+  }
+}
+
+/** 이 기기가 아빠로 알림을 켰는가 — "나는 누구"(localStorage) + 서비스 워커 구독이 있는지. 모르면 false */
+async function thisDeviceGetsAppaAlerts(): Promise<boolean> {
+  try {
+    if (window.localStorage.getItem(PUSH_PERSON_STORAGE_KEY) !== "appa") return false;
+    if (!("serviceWorker" in navigator)) return false;
+    const reg = await navigator.serviceWorker.getRegistration("/sw.js");
+    const sub = await reg?.pushManager.getSubscription();
+    return !!sub;
+  } catch {
+    return false;
+  }
+}
+
+// ===========================================================================
 // 컴포넌트
 // ===========================================================================
 
@@ -442,8 +491,22 @@ export default function WorkoutSession({
   const [popStep, setPopStep] = useState<number | null>(null);
   /** 스크린리더 알림(aria-live polite) — "n세트 완료!" */
   const [liveMsg, setLiveMsg] = useState("");
+  /** 🔒 잠금화면 타이머(실험, §19-9 B) — 기본 끔, localStorage `workout-lockscreen:v1` */
+  const [lockOn, setLockOn] = useState(false);
+  /** ⏱ 휴식 알림 안내 줄(§19-9 A) — hidden: 서버가 꺼짐(501)·확인 전 / on: 이 기기가 아빠로 알림 켬 / off: 안 켬 */
+  const [alertStatus, setAlertStatus] = useState<"hidden" | "on" | "off">("hidden");
 
   const voiceOnRef = useRef(true);
+  const lockOnRef = useRef(false);
+  /** 잠금화면 타이머 — 처음 켤 때 만든다(탭 안). 언마운트가 멈춘다 */
+  const lockTimerRef = useRef<LockscreenTimer | null>(null);
+  /** 지금 휴식을 시작한 시각(epoch ms) — 잠금화면 진행 막대의 0. 쉬는 중이 아니면 null */
+  const restStartRef = useRef<number | null>(null);
+  /** 휴식 알림 — 서버가 켜져 있는가(GET 200) / 이 휴식 끝을 이미 예약했는가(예약한 restEndsAt) */
+  const restAlertEnabledRef = useRef(false);
+  const restAlertScheduledRef = useRef<number | null>(null);
+  /** visibilitychange 핸들러(탭 밖)가 읽는 지금 휴식 끝·다음 세트 — 낡지 않게 ref */
+  const restEndsAtRef = useRef<number | null>(null);
   const beepRef = useRef<{ nodes: OscillatorNode[]; at: number } | null>(null);
   /**
    * 이 세션이 시작한 마지막 안내의 멈추기 함수 — 언마운트는 **이것만** 멈춘다. 부모 ▶ 탭의 시작 안내는 부모가 닫기에서 멈춘다
@@ -475,7 +538,8 @@ export default function WorkoutSession({
   useEffect(() => {
     stepRef.current = step;
     voiceCtxRef.current = voiceCtx;
-  }, [step, voiceCtx]);
+    restEndsAtRef.current = restEndsAt;
+  }, [step, voiceCtx, restEndsAt]);
 
   // body 스크롤 잠금(공용 ref-count 락)
   useEffect(() => lockBodyScroll(), []);
@@ -485,6 +549,9 @@ export default function WorkoutSession({
     const on = readVoicePref();
     voiceOnRef.current = on;
     setVoiceOn(on);
+    const lock = readLockscreenPref();
+    lockOnRef.current = lock;
+    setLockOn(lock);
     const saved = readSavedSession({ cycleId, rev, day, targetDay, dateKst });
     // 소요시간 시작점(§19-8): 이어서 하기면 처음 연 시각을 그대로(옛 저장값이라 없으면 null — 잴 수 없다), 새 세션이면 지금.
     const opened = Date.now();
@@ -497,6 +564,8 @@ export default function WorkoutSession({
       setStep(saved.step);
       if (saved.restEndsAt !== null && saved.restEndsAt > t) {
         setRestEndsAt(saved.restEndsAt);
+        // 휴식을 시작한 시각은 저장하지 않는다 — 잠금화면 진행 막대는 기본 휴식 길이로 어림한다(남은 시간이 더 길면 지금부터)
+        restStartRef.current = Math.min(t, saved.restEndsAt - DEFAULT_REST_MS);
         // 시작 탭(▶)에서 컨텍스트를 풀어 뒀다면 남은 시간에 비프를 다시 예약한다
         if (audioCtx && audioCtx.state === "running") {
           const at = audioCtx.currentTime + (saved.restEndsAt - t) / 1000;
@@ -537,6 +606,12 @@ export default function WorkoutSession({
       }
       if (celebrateTimerRef.current !== null) window.clearTimeout(celebrateTimerRef.current);
       celebrateTimerRef.current = null;
+      lockTimerRef.current?.stop();
+      // 숨겨진 채 세션이 사라지면(다른 화면으로 이동 등) 예약해 둔 휴식 알림을 거둔다
+      if (restAlertScheduledRef.current !== null) {
+        restAlertScheduledRef.current = null;
+        postRestAlert({ op: "cancel" }, true);
+      }
     },
     [speechRef],
   );
@@ -548,7 +623,12 @@ export default function WorkoutSession({
   const announce = useCallback(
     (lines: readonly string[]) => {
       if (!voiceOnRef.current || lines.length === 0) return;
-      const stop = speakQueue(lines.map((text) => ({ text, lang: WORKOUT_VOICE_LANG })));
+      // 잠금화면 타이머(§19-9 B)가 켜져 있으면 안내가 끝난 뒤 무음을 다시 틀고 진행 막대를 맞춘다(안내에 밀려났을 수 있다)
+      const stop = speakQueue(
+        lines.map((text) => ({ text, lang: WORKOUT_VOICE_LANG })),
+        // "done"일 때만 — "stopped"는 대개 새 안내가 끊은 것이라 그 안내가 끝날 때 다시 튼다(음성 끄기는 toggleVoice가 직접 튼다)
+        { onEnd: (reason) => { if (reason === "done") lockTimerRef.current?.resume(); } },
+      );
       speechRef.current = stop;
       ownSpeechRef.current = stop;
     },
@@ -581,12 +661,31 @@ export default function WorkoutSession({
     [cancelBeep],
   );
 
+  /**
+   * 잠금화면 타이머 켜기(탭 안 — §19-9 B). 다음 세트(쉬고 나서 할 풀업 + 같은 세트 푸시업)로 글자를 만든다. 토글이 꺼져 있으면 아무것도.
+   * 휴식을 시작하는 ✓에서는 **음성 안내보다 먼저** 부른다(밀려나는 쪽이 무음이게).
+   */
+  const startLockTimer = useCallback(
+    (nextStep: number, startMs: number, endsAt: number) => {
+      if (!lockOnRef.current) return;
+      const next = steps[nextStep];
+      if (!next) return;
+      const partner = steps.find((x) => x.setIndex === next.setIndex && x.step !== next.step) ?? null;
+      if (!lockTimerRef.current) lockTimerRef.current = createLockscreenTimer();
+      restStartRef.current = startMs;
+      lockTimerRef.current.start({ startMs, endsAt, ...restNowPlayingText(next, partner) });
+    },
+    [steps],
+  );
+
   /** 휴식 끝 — 타이머 콜백(탭 밖)에서 불린다. 비프(예약분이 아직이면 지금)·진동·음성 */
   const finishRest = useCallback(
     (endsAt: number) => {
       if (endedForRef.current === endsAt) return;
       endedForRef.current = endsAt;
       setRestEndsAt(null);
+      lockTimerRef.current?.stop();
+      restStartRef.current = null;
       // 예약한 비프가 아직 안 울렸으면(컨텍스트가 멈춰 있었다 등) 지금 울린다 — 늦게 튀어나오지 않게 예약분은 취소.
       const ctx = audioCtx;
       const b = beepRef.current;
@@ -628,6 +727,60 @@ export default function WorkoutSession({
     );
     return () => ids.forEach((id) => window.clearTimeout(id));
   }, [restEndsAt, voiceOn, announce]);
+
+  // ⏱ 휴식 알림(§19-9 A) — 서버가 켜져 있는지(GET) 확인하고, 켜져 있으면 남아 있을지 모를 예약을 먼저 거둔다(세션을 연 지금은
+  // 화면을 보고 있다 — 앱이 숨겨진 채 종료됐다 다시 연 경우). 이 기기가 아빠로 알림을 켰는지에 따라 안내 줄을 고른다. 꺼져 있으면(501) 줄을 숨긴다.
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const res = await fetch(REST_ALERT_PATH, { cache: "no-store" });
+        if (!alive || !res.ok) return;
+        restAlertEnabledRef.current = true;
+        postRestAlert({ op: "cancel" }, false);
+        const mine = await thisDeviceGetsAppaAlerts();
+        if (alive) setAlertStatus(mine ? "on" : "off");
+      } catch {
+        /* 꺼진 것으로 — 줄을 숨긴 채 */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // ⏱ 휴식 알림 — 쉬는 중 화면이 숨겨지는 순간(앱 전환·잠금) 예약, 다시 보이면 취소. 무엇을 보낼지는 순수 판정
+  // restAlertVisibilityAction(lib/workout-rest-alert)이 정한다. 숨김은 visibilitychange와 pagehide가 둘 다 올 수 있어 같은 휴식 끝은 한 번만.
+  // 휴식 중 조작(2분/3분·+30초·건너뛰기)은 화면이 보일 때만 되므로 그때는 예약이 없다 — 숨겨진 사이 휴식이 끝나도 끝 알림은 그대로 둔다.
+  useEffect(() => {
+    const handle = (visible: boolean) => {
+      const act = restAlertVisibilityAction({
+        visible,
+        enabled: restAlertEnabledRef.current,
+        restEndsAt: restEndsAtRef.current,
+        scheduledFor: restAlertScheduledRef.current,
+        now: Date.now(),
+      });
+      if (act.kind === "cancel") {
+        restAlertScheduledRef.current = null;
+        postRestAlert({ op: "cancel" }, false);
+      } else if (act.kind === "schedule") {
+        const next = steps[stepRef.current];
+        if (!next) return;
+        const partner = steps.find((x) => x.setIndex === next.setIndex && x.step !== next.step) ?? null;
+        restAlertScheduledRef.current = act.endsAt;
+        postRestAlert({ op: "schedule", remainingMs: act.remainingMs, label: restAlertLabel(next, partner), setNo: next.setIndex + 1 }, true);
+      }
+    };
+    const onVisibility = () => handle(document.visibilityState === "visible");
+    const onPageHide = () => handle(false);
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", onPageHide);
+    };
+  }, [steps]);
 
   // 화면 꺼짐 방지(best-effort) + visible 복귀 때 재요청·타이머 즉시 갱신
   useEffect(() => {
@@ -770,6 +923,10 @@ export default function WorkoutSession({
       void sendLog("complete", null);
       return;
     }
+    // 휴식을 시작하는 ✓면 잠금화면 타이머(§19-9 B, 켜 둔 경우)를 **음성 안내보다 먼저** 튼다 — 한 번에 하나만 재생되는 기기라도
+    // 밀려나는 쪽이 무음이게(안내가 끝나면 announce의 onEnd가 다시 튼다).
+    const t = Date.now();
+    if (restFollowsStep(step)) startLockTimer(step + 1, t, t + restMs);
     // ✓ 안내(§19-6) — 격려(+ 절반) + 다음 세트 시작(풀업 ✓) 또는 휴식 시작(푸시업 ✓). 탭 안에서 동기로.
     announce(workoutVoiceLines(voiceCtx, { kind: "step_done", step, restSec: restMs / 1000 }));
     if (!restFollowsStep(step)) {
@@ -780,9 +937,9 @@ export default function WorkoutSession({
       return;
     }
     // 푸시업 — 세트(라운드) 끝. 휴식 타이머 시작 + 종료 시각에 비프 예약(여기까지가 진행 — 축하는 그 뒤의 표시일 뿐)
-    const t = Date.now();
     const endsAt = t + restMs;
     restStartedAtRef.current = t;
+    restStartRef.current = t; // 잠금화면 진행 막대의 0 — 토글이 꺼져 있어도 둔다(휴식 도중 켜면 실제 경과로, QA 1 P3-E)
     rescheduleBeep(endsAt);
     setNow(t);
     setRestEndsAt(endsAt);
@@ -797,6 +954,7 @@ export default function WorkoutSession({
       // 쉬는 중에 바꾸면 이번 휴식 길이도 그만큼 늘리거나 줄인다(시작 시각 기준 2분 ↔ 3분)
       const endsAt = restEndsAt + (ms - restMs);
       rescheduleBeep(endsAt);
+      syncLockTimer(endsAt);
       setNow(Date.now());
       setRestEndsAt(endsAt);
     }
@@ -807,6 +965,7 @@ export default function WorkoutSession({
     if (restEndsAt === null || restTapTooSoon()) return;
     const endsAt = Math.max(restEndsAt, Date.now()) + REST_BUMP_MS;
     rescheduleBeep(endsAt);
+    syncLockTimer(endsAt);
     setNow(Date.now());
     setRestEndsAt(endsAt);
   }
@@ -814,12 +973,38 @@ export default function WorkoutSession({
   function skipRest() {
     if (restTapTooSoon()) return;
     cancelBeep();
+    lockTimerRef.current?.stop();
+    restStartRef.current = null;
     if (restEndsAt !== null) endedForRef.current = restEndsAt; // 같은 순간 틱이 휴식 끝을 한 번 더 처리하지 않게
     setRestEndsAt(null);
     // 건너뛰기도 세트 시작이다 — 휴식 끝과 같은 안내를 이 탭 안에서(§19-6). 남은 카운트다운 타이머는 effect cleanup이 취소한다.
     if (voiceOnRef.current) {
       unlockSpeechPlayback();
       announce(workoutVoiceLines(voiceCtx, { kind: "rest_end", step }));
+    }
+  }
+
+  /**
+   * 탭 안 — 휴식 끝이 바뀌었을 때 잠금화면 타이머를 맞춘다. 아직 돌지 않으면(새로고침으로 복원한 휴식 — 탭 없이는 재생이 막힌다)
+   * 이 탭에서 시작한다. 토글이 꺼져 있으면 아무것도.
+   */
+  function syncLockTimer(endsAt: number) {
+    if (!lockOnRef.current) return;
+    const timer = lockTimerRef.current;
+    if (timer?.isActive()) timer.update(endsAt);
+    else startLockTimer(step, restStartRef.current ?? Date.now(), endsAt);
+  }
+
+  /** 🔒 잠금화면 타이머 토글(실험, §19-9 B) — 켜는 탭이 쉬는 중이면 그 자리에서 시작한다(탭 안이라 재생이 허락된다) */
+  function toggleLock() {
+    const on = !lockOnRef.current;
+    lockOnRef.current = on;
+    setLockOn(on);
+    writeLockscreenPref(on);
+    if (on) {
+      if (restEndsAt !== null && restEndsAt > Date.now()) startLockTimer(step, restStartRef.current ?? Date.now(), restEndsAt);
+    } else {
+      lockTimerRef.current?.stop();
     }
   }
 
@@ -839,6 +1024,7 @@ export default function WorkoutSession({
       // 남은 안내를 즉시 멈춘다(부모의 시작 안내까지 — 손잡이가 하나다). 카운트다운 예약은 voiceOn effect cleanup이 취소한다.
       speechRef.current?.();
       speechRef.current = null;
+      lockTimerRef.current?.resume();
     }
   }
 
@@ -1020,6 +1206,23 @@ export default function WorkoutSession({
             {voiceOn ? "🔊 음성 안내 켬" : "🔇 음성 안내 끔"}
           </button>
           <p className="t-caption">세트 시작·휴식 카운트다운·완료를 소리로 알려 줘요. 화면이 켜져 있을 때 가장 잘 돼요.</p>
+          {/* ⏱ 휴식 알림(§19-9 A) — 서버가 꺼져 있으면(501) 숨긴다 */}
+          {alertStatus === "on" && <p className="t-caption">🔔 다른 앱을 써도 휴식 30초 전·끝에 알림이 와요.</p>}
+          {alertStatus === "off" && (
+            <p className="t-caption">
+              🔔 다른 앱을 쓸 때 휴식 알림을 받으려면{" "}
+              <Link href="/family/settings" className="underline">
+                가족 설정
+              </Link>
+              에서 이 폰을 &lsquo;아빠&rsquo;로 알림 켜기
+            </p>
+          )}
+        </div>
+        <div className={s.voiceRow}>
+          <button type="button" aria-pressed={lockOn} onClick={toggleLock} className="u-navbtn">
+            {lockOn ? "🔒 잠금화면 타이머(실험) 켬" : "🔓 잠금화면 타이머(실험) 끔"}
+          </button>
+          <p className="t-caption">켜면 휴식 중 잠금화면·다이나믹 아일랜드에 남은 시간을 띄워요. 듣던 음악은 멈춰요.</p>
         </div>
 
         {/* 세트(라운드) 목록 — 한 세트 = 풀업 + 푸시업, 휴식은 세트 사이에만(엔진 stepFollowsRest로 휴식 줄을 그린다).

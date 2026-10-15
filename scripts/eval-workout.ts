@@ -12,6 +12,9 @@
  *   예외 셋(2026-10-01, §19-7): 세션 음성 안내 계획 lib/workout-voice.ts(순수 — 런타임 의존은 lib/workout뿐)와, 미리 받기 상한·조각 길이
  *   상한을 대조할 발음 관문 상수 PREFETCH_MAX_ITEMS(lib/speech — 브라우저 밖에서는 아무것도 하지 않는다)·TTS_TEXT_MAX_CHARS(lib/tts-shared)
  *   — 값을 eval에 다시 적지 않는다.
+ *   예외 넷(2026-10-15, §19-9): 휴식 알림 순수 판정 lib/workout-rest-alert.ts(런타임 import는 ./workout-voice뿐)와 잠금화면 타이머의
+ *   무음 WAV 만들기 lib/workout-lockscreen.ts(silentWavBytes — 순수. 모듈은 lib/media-session만 끌어오고 최상위에서 브라우저를 읽지 않는다).
+ *   라우트·서비스 워커·세션 화면은 소스 문자열로만 본다(store·web-push·firebase-admin을 끌어오지 않는다).
  * 날짜는 전부 인자로 넘긴다("오늘"은 픽스처 상수) — 현재 시각에 의존하지 않는다.
  */
 
@@ -98,6 +101,29 @@ import {
   type WorkoutVoiceEvent,
 } from "../lib/workout-voice";
 import { PREFETCH_MAX_ITEMS } from "../lib/speech";
+import {
+  buildCloudTaskBody,
+  CLOUD_TASKS_QUEUE_PATTERN,
+  decideRestCancel,
+  isRestAlertSeqPlausible,
+  REST_ALERT_SEQ_MAX_AHEAD_MS,
+  decideRestFire,
+  decideRestSchedule,
+  nextRestAlertSeq,
+  normalizeBaseUrl,
+  normalizeRestAlertRecord,
+  parseRestAlertRequest,
+  parseRestAlertTask,
+  planRestAlerts,
+  REST_ALERT_TAG,
+  REST_ALERT_URL,
+  restAlertLabel,
+  restAlertMessage,
+  restAlertVisibilityAction,
+  restNowPlayingText,
+  type WorkoutRestAlertRecord,
+} from "../lib/workout-rest-alert";
+import { silentWavBytes, SILENT_WAV_MAX_SEC } from "../lib/workout-lockscreen";
 import { TTS_TEXT_MAX_CHARS } from "../lib/tts-shared";
 import { readFileSync } from "node:fs";
 
@@ -2656,6 +2682,237 @@ scenario("음성 안내", "미리 받기", () => {
   add("음성 안내", "순수 — 입력(ctx) 불변 · 출력은 문자열 배열(plain data)", S(V1) === before && isPlainData(list), "ok");
   add("음성 안내", "오늘 완료 첫 조각 상수", VOICE_DONE === "오늘 운동 완료!", VOICE_DONE);
 });
+// ===========================================================================
+// 12) 휴식 알림 — 다른 앱 쓸 때 (§19-9, 2026-10-15) — 예약 계획·발송 판정·라벨·화면 판정·잠금화면 무음
+//   기대값은 스펙 문장에서 손으로 적는다. 시각은 고정 epoch(지금 = 1_000_000_000).
+// ===========================================================================
+scenario("휴식 알림", "예약 계획", () => {
+  const NOW = 1_000_000_000;
+  const at = (xs: { kind: string; at: number }[]) => xs.map((x) => `${x.kind}@${x.at - NOW}`).join(",");
+  add("휴식 알림", "2분 남음 → 30초 알림(90초 뒤) + 끝 알림(120초 뒤)", at(planRestAlerts(NOW + 120_000, NOW)) === "pre@90000,end@120000", at(planRestAlerts(NOW + 120_000, NOW)));
+  add("휴식 알림", "35초 남음(30초+여유 5초 경계) → 30초 알림 건너뜀, 끝만", at(planRestAlerts(NOW + 35_000, NOW)) === "end@35000", at(planRestAlerts(NOW + 35_000, NOW)));
+  add("휴식 알림", "35.001초 남음 → 30초 알림 포함", at(planRestAlerts(NOW + 35_001, NOW)) === "pre@5001,end@35001", at(planRestAlerts(NOW + 35_001, NOW)));
+  add("휴식 알림", "20초 남음 → 끝만", at(planRestAlerts(NOW + 20_000, NOW)) === "end@20000", "");
+  add("휴식 알림", "이미 지남·지금과 같음·NaN → 아무것도 없음", planRestAlerts(NOW - 1, NOW).length === 0 && planRestAlerts(NOW, NOW).length === 0 && planRestAlerts(Number.NaN, NOW).length === 0, "");
+  // +30초 재예약 = 새 끝 시각으로 다시 계획(옛 태스크는 rev가 달라 무시된다 — 아래 발송 판정)
+  add("휴식 알림", "+30초 뒤 다시 숨김(남은 2:30) → 30초 알림 120초 뒤·끝 150초 뒤", at(planRestAlerts(NOW + 150_000, NOW)) === "pre@120000,end@150000", "");
+});
+
+scenario("휴식 알림", "저장 판정·발송 판정", () => {
+  const nowIso = "2026-10-15T14:00:00.000Z";
+  const sched = (cur: WorkoutRestAlertRecord | null, endIso: string, token: string, seq: number, label = "3세트 · 풀업 4 → 푸시업 7", setNo = 3) =>
+    decideRestSchedule(cur, { endsAtMs: Date.parse(endIso), label, setNo, token, nowIso, seq });
+  const s1 = sched(null, "2026-10-15T14:02:00.000Z", "t1", 10)!;
+  add("휴식 알림", "첫 예약 → rev 1·취소 아님·endsAt ISO·순번 기록", s1 !== null && s1.rev === 1 && !s1.cancelled && s1.endsAt === "2026-10-15T14:02:00.000Z" && s1.token === "t1" && s1.clientSeq === 10, S(s1));
+  const s2 = sched(s1, "2026-10-15T14:02:30.000Z", "t2", 11)!;
+  add("휴식 알림", "다시 예약 → rev 2·새 token", s2 !== null && s2.rev === 2 && s2.token === "t2", `${s2?.rev}/${s2?.token}`);
+  const c = decideRestCancel(s2, nowIso, 12);
+  add("휴식 알림", "취소 → rev 3·cancelled·token 유지·순번 12", c !== null && c.rev === 3 && c.cancelled && c.token === "t2" && c.clientSeq === 12, S(c));
+  const cc = decideRestCancel(c, nowIso, 13);
+  add("휴식 알림", "이미 취소 + 새 순번 → 순번만 기록(rev 그대로)", cc !== null && cc.rev === 3 && cc.cancelled && cc.clientSeq === 13, S(cc));
+  const c0 = decideRestCancel(null, nowIso, 5);
+  add("휴식 알림", "문서 없음 + 취소 → 취소된 빈 문서(순번 기록, 어떤 태스크 token과도 다름)", c0 !== null && c0.cancelled && c0.clientSeq === 5 && c0.token === "", S(c0));
+  const s3 = sched(c!, "2026-10-15T14:05:00.000Z", "t3", 14, "4세트 · 풀업 3 → 푸시업 6", 4)!;
+  add("휴식 알림", "취소 뒤 예약 → rev 4·취소 해제", s3 !== null && s3.rev === 4 && !s3.cancelled, "");
+  add("휴식 알림", "순번이 같거나 작은 요청 → 쓰지 않음(예약·취소 모두)", sched(s2, "2026-10-15T14:03:00.000Z", "tx", 11) === null && decideRestCancel(s2, nowIso, 10) === null && decideRestCancel(s2, nowIso, 11) === null, "");
+  // QA 2 P3-F — 시계가 미래였던 폰의 순번이 저장돼도 알림이 영영 막히지 않는다(하루 넘게 앞선 저장 순번은 무시), 너무 앞선 순번은 받지 않는다
+  {
+    const nowMs = Date.parse(nowIso);
+    const poisoned = sched(null, "2026-10-15T14:02:00.000Z", "tp", nowMs + 2 * REST_ALERT_SEQ_MAX_AHEAD_MS)!;
+    const recover = sched(poisoned, "2026-10-15T14:02:00.000Z", "tr", nowMs);
+    const recoverC = decideRestCancel(poisoned, nowIso, nowMs);
+    add("휴식 알림", "오염된 순번(하루 넘게 앞섬) 저장 뒤 정상 순번 예약·취소 → 받아들임(스스로 복구)", recover !== null && recover.token === "tr" && recoverC !== null && recoverC.cancelled, S(recover));
+    const near = sched(null, "2026-10-15T14:02:00.000Z", "tn", nowMs + 60_000)!;
+    add("휴식 알림", "하루 안쪽으로 앞선 저장 순번은 여전히 옛 요청을 막는다", sched(near, "2026-10-15T14:02:00.000Z", "to", nowMs) === null, "");
+    add("휴식 알림", "순번 그럴듯함: 지금+1일 이하 통과, 넘으면 거절", isRestAlertSeqPlausible(nowMs + REST_ALERT_SEQ_MAX_AHEAD_MS, nowMs) && !isRestAlertSeqPlausible(nowMs + REST_ALERT_SEQ_MAX_AHEAD_MS + 1, nowMs), "");
+  }
+
+  // QA 1 P2-A 반례 ① — 숨김 예약 S(seq 20, keepalive)가 보임 취소 C(seq 21)보다 늦게 도착: C 먼저 → S는 버려져 알림이 살아나지 않는다
+  const AT0 = 2_000_000_000;
+  {
+    const afterC = decideRestCancel(null, nowIso, 21);
+    const lateS = sched(afterC, "2026-10-15T14:02:00.000Z", "tS", 20);
+    const final = lateS ?? afterC;
+    const fire = decideRestFire(final, { token: "tS", rev: 1, at: AT0, kind: "end" }, AT0);
+    add("휴식 알림", "순서 뒤바뀜 ① 취소(21)가 예약(20)보다 먼저 도착 → 예약 버림·발송 안 함(화면을 보는 중 알림 없음)", lateS === null && !fire.send, S(fire));
+  }
+  // 반례 ② — 숨김 S1(30)·보임 C(31)·숨김 S2(32)를 서버가 S1 → S2 → C 순서로 처리 → C 버림, S2 살아 있음(숨긴 채 끝 알림이 온다)
+  {
+    const a = sched(null, "2026-10-15T14:02:00.000Z", "tA", 30)!;
+    const b = sched(a, "2026-10-15T14:02:00.000Z", "tB", 32)!;
+    const lateC = decideRestCancel(b, nowIso, 31);
+    const final = lateC ?? b;
+    const fire = decideRestFire(final, { token: "tB", rev: final.rev, at: AT0, kind: "end" }, AT0);
+    add("휴식 알림", "순서 뒤바뀜 ② S1(30)→S2(32)→C(31) → 늦은 취소 버림·S2의 끝 알림은 보냄", lateC === null && !final.cancelled && fire.send, S(fire));
+  }
+  // 순번 만들기 — 단조 증가·시각 기반(새로고침 뒤 첫 순번 = 지금 ms라 앞 페이지의 순번보다 크다)
+  add(
+    "휴식 알림",
+    "nextRestAlertSeq — 같은 ms 연속 호출도 +1 · 시계가 뒤로 가도 감소 없음 · 새 페이지(last 0)는 지금 ms",
+    nextRestAlertSeq(1000, 1000) === 1001 && nextRestAlertSeq(1001, 900) === 1002 && nextRestAlertSeq(0, 5000) === 5000 && nextRestAlertSeq(10, 5000.7) === 5000,
+    "",
+  );
+
+  const AT = 2_000_000_000;
+  const doc: WorkoutRestAlertRecord = { ...s2 };
+  const T = (kind: "pre" | "end", over: Partial<{ token: string; rev: number }> = {}) => ({ token: "t2", rev: 2, at: AT, kind, ...over });
+  const reason = (d: ReturnType<typeof decideRestFire>) => (d.send ? "send" : d.reason);
+  add("휴식 알림", "rev·token 같고 취소 아님·제시각 → 보냄", decideRestFire(doc, T("end"), AT).send, "");
+  add("휴식 알림", "rev 다름(+30초로 다시 예약된 옛 태스크) → stale", reason(decideRestFire(doc, T("end", { rev: 1 }), AT)) === "stale", "");
+  add("휴식 알림", "token 다름 → stale", reason(decideRestFire(doc, T("end", { token: "t1" }), AT)) === "stale", "");
+  add("휴식 알림", "취소된 문서(같은 rev·token) → cancelled", reason(decideRestFire({ ...doc, cancelled: true }, T("end"), AT)) === "cancelled", "");
+  add("휴식 알림", "취소 문서는 rev가 올라 옛 태스크엔 stale", reason(decideRestFire(c, T("end"), AT)) === "stale", "");
+  add("휴식 알림", "문서 없음 → no_doc", reason(decideRestFire(null, T("end"), AT)) === "no_doc", "");
+  add(
+    "휴식 알림",
+    "끝 알림 시각 — 3초 이르면 보냄·3.001초 이르면 too_early·90초 늦으면 보냄·90.001초 늦으면 too_late",
+    reason(decideRestFire(doc, T("end"), AT - 3_000)) === "send" &&
+      reason(decideRestFire(doc, T("end"), AT - 3_001)) === "too_early" &&
+      reason(decideRestFire(doc, T("end"), AT + 90_000)) === "send" &&
+      reason(decideRestFire(doc, T("end"), AT + 90_001)) === "too_late",
+    "",
+  );
+  // QA 1 P3-B — 30초 알림(at = 끝 − 30초)은 끝 2초 전까지만. 재시도로 끝 뒤(+30초 = 끝 시각, +60초)에 오면 "휴식 끝" 배너를 덮지 않게 버린다
+  add(
+    "휴식 알림",
+    "30초 알림 늦음 — +28초(끝 2초 전) 보냄·+28.001초 too_late·+60초(끝 30초 뒤) too_late",
+    reason(decideRestFire(doc, T("pre"), AT + 28_000)) === "send" &&
+      reason(decideRestFire(doc, T("pre"), AT + 28_001)) === "too_late" &&
+      reason(decideRestFire(doc, T("pre"), AT + 60_000)) === "too_late",
+    "",
+  );
+  // 정규화 — 두 백엔드 읽기 공용. 깨진 문서 null, 빠진 필드는 기본값(undefined가 남지 않는다)
+  const n = normalizeRestAlertRecord({ token: "x", rev: 2 });
+  add("휴식 알림", "정규화 — token·rev 없으면 null · 빠진 필드는 null/''/1/false/0으로", normalizeRestAlertRecord({ rev: 1 }) === null && normalizeRestAlertRecord(null) === null && n !== null && n.endsAt === null && n.label === "" && n.setNo === 1 && n.cancelled === false && n.clientSeq === 0 && Object.values(n).every((v) => v !== undefined), S(n));
+});
+
+scenario("휴식 알림", "라벨·문구", () => {
+  const steps = supersetSteps(targetFor(BASE, 1)); // Day 1: 풀업 [6,5,4,3,2] · 푸시업 [9,8,7,6,5]
+  const next = steps[4]; // 3세트 풀업
+  const partner = steps[5];
+  add("휴식 알림", "라벨 — '3세트 · 풀업 4 → 푸시업 7'", restAlertLabel(next, partner) === "3세트 · 풀업 4 → 푸시업 7", restAlertLabel(next, partner));
+  add("휴식 알림", "라벨 — 짝이 없으면 '3세트 · 풀업 4'", restAlertLabel(next, null) === "3세트 · 풀업 4", restAlertLabel(next, null));
+  const pre = restAlertMessage("pre", { label: "3세트 · 풀업 4 → 푸시업 7", setNo: 3 });
+  const end = restAlertMessage("end", { label: "3세트 · 풀업 4 → 푸시업 7", setNo: 3 });
+  add("휴식 알림", "30초 알림 — '휴식 30초 남음' / '다음 · 3세트 · …'", pre.title === "휴식 30초 남음" && pre.body === "다음 · 3세트 · 풀업 4 → 푸시업 7", S(pre));
+  add("휴식 알림", "끝 알림 — '휴식 끝 — 3세트 시작해요' / 라벨", end.title === "휴식 끝 — 3세트 시작해요" && end.body === "3세트 · 풀업 4 → 푸시업 7", S(end));
+  add("휴식 알림", "두 알림 같은 tag 'workout-rest'·renotify·url /workout", pre.tag === "workout-rest" && end.tag === REST_ALERT_TAG && pre.renotify && end.renotify && end.url === "/workout" && REST_ALERT_URL === "/workout", "");
+  const np = restNowPlayingText(next, partner);
+  add("휴식 알림", "잠금화면 글자 — '휴식 · 다음 3세트' / '풀업 4 → 푸시업 7'", np.title === "휴식 · 다음 3세트" && np.artist === "풀업 4 → 푸시업 7", S(np));
+});
+
+scenario("휴식 알림", "입력 검증", () => {
+  const ok = parseRestAlertRequest({ op: "schedule", remainingMs: 90_000, label: " 3세트 · 풀업 4 → 푸시업 7 ", setNo: 3, seq: 7 });
+  add("휴식 알림", "정상 예약 → 라벨 앞뒤 공백 제거·순번 그대로", ok.ok && ok.value.op === "schedule" && ok.value.label === "3세트 · 풀업 4 → 푸시업 7" && ok.value.seq === 7, S(ok));
+  const bad = [
+    { op: "schedule", remainingMs: 0, label: "a", setNo: 1, seq: 1 },
+    { op: "schedule", remainingMs: 15 * 60_000 + 1, label: "a", setNo: 1, seq: 1 },
+    { op: "schedule", remainingMs: 1000, label: "", setNo: 1, seq: 1 },
+    { op: "schedule", remainingMs: 1000, label: "x".repeat(61), setNo: 1, seq: 1 },
+    { op: "schedule", remainingMs: 1000, label: "a", setNo: 6, seq: 1 },
+    { op: "schedule", remainingMs: 1000, label: "a", setNo: 2.5, seq: 1 },
+    { op: "schedule", remainingMs: "1000", label: "a", setNo: 1, seq: 1 },
+    { op: "schedule", remainingMs: 1000, label: "a", setNo: 1 },
+    { op: "cancel" },
+    { op: "cancel", seq: 0 },
+    { op: "cancel", seq: 1.5 },
+    { op: "cancel", seq: "3" },
+    { op: "nope", seq: 1 },
+    null,
+  ].map((b) => parseRestAlertRequest(b).ok);
+  add("휴식 알림", "거부 — 0ms·15분 초과·빈 라벨·61자·setNo 6·소수·문자열 시간·순번 없음/0/소수/문자열·모르는 op·null", bad.every((x) => !x), S(bad));
+  add("휴식 알림", "15분 정각·취소(순번 있음)는 통과", parseRestAlertRequest({ op: "schedule", remainingMs: 15 * 60_000, label: "a", setNo: 5, seq: 2 }).ok && parseRestAlertRequest({ op: "cancel", seq: 3 }).ok, "");
+  const t = parseRestAlertTask({ person: "appa", token: "t", rev: 2, kind: "end", at: 5 });
+  add("휴식 알림", "태스크 본문 — 정상 통과 · 사람 appa 밖·rev 0·kind 모름 거부", t !== null && parseRestAlertTask({ person: "mom", token: "t", rev: 2, kind: "end", at: 5 }) === null && parseRestAlertTask({ person: "appa", token: "t", rev: 0, kind: "end", at: 5 }) === null && parseRestAlertTask({ person: "appa", token: "t", rev: 1, kind: "x", at: 5 }) === null, S(t));
+});
+
+scenario("휴식 알림", "화면 판정(숨김·보임)", () => {
+  const base = { enabled: true, restEndsAt: 1_090_000 as number | null, scheduledFor: null as number | null, now: 1_000_000 };
+  const k = (x: Parameters<typeof restAlertVisibilityAction>[0]) => {
+    const a = restAlertVisibilityAction(x);
+    return a.kind === "schedule" ? `schedule:${a.remainingMs}` : a.kind;
+  };
+  add("휴식 알림", "쉬는 중 숨김 → 예약(남은 90초)", k({ ...base, visible: false }) === "schedule:90000", k({ ...base, visible: false }));
+  add("휴식 알림", "같은 휴식 끝 이미 예약 → 다시 안 함(hidden + pagehide 한 번)", k({ ...base, visible: false, scheduledFor: 1_090_000 }) === "none", "");
+  add("휴식 알림", "보이게 됨 + 예약 있음 → 취소 / 예약 없음 → 아무것도", k({ ...base, visible: true, scheduledFor: 1_090_000 }) === "cancel" && k({ ...base, visible: true }) === "none", "");
+  add("휴식 알림", "쉬지 않음·남은 시간 0·서버 꺼짐 → 아무것도", k({ ...base, visible: false, restEndsAt: null }) === "none" && k({ ...base, visible: false, restEndsAt: 1_000_000 }) === "none" && k({ ...base, visible: false, enabled: false }) === "none", "");
+});
+
+scenario("휴식 알림", "Cloud Tasks 요청 모양·설정 형식", () => {
+  const body = buildCloudTaskBody(
+    { fireUrl: "https://example.run.app/api/push/workout-rest/fire", secret: "SECRET", payload: { person: "appa", token: "t", rev: 3, kind: "pre", at: Date.parse("2026-10-15T14:01:30.000Z") } },
+    (x) => Buffer.from(x, "utf8").toString("base64"),
+  );
+  const decoded = JSON.parse(Buffer.from(body.task.httpRequest.body, "base64").toString("utf8")) as Record<string, unknown>;
+  add(
+    "휴식 알림",
+    "태스크 — scheduleTime ISO·POST·fire URL·x-push-secret 헤더·본문 base64(JSON payload)",
+    body.task.scheduleTime === "2026-10-15T14:01:30.000Z" &&
+      body.task.httpRequest.httpMethod === "POST" &&
+      body.task.httpRequest.url.endsWith("/api/push/workout-rest/fire") &&
+      body.task.httpRequest.headers["x-push-secret"] === "SECRET" &&
+      decoded.kind === "pre" && decoded.rev === 3 && decoded.person === "appa",
+    body.task.scheduleTime,
+  );
+  add(
+    "휴식 알림",
+    "큐 이름 형식 — projects/eunwoo-bookcard/locations/asia-northeast3/queues/workout-rest-push 통과 · 짧은 이름 거부",
+    CLOUD_TASKS_QUEUE_PATTERN.test("projects/eunwoo-bookcard/locations/asia-northeast3/queues/workout-rest-push") && !CLOUD_TASKS_QUEUE_PATTERN.test("workout-rest-push"),
+    "",
+  );
+  add(
+    "휴식 알림",
+    "기본 URL — https 끝 슬래시 제거 · 경로 있는 값·http 원격·빈 값 거부",
+    normalizeBaseUrl("https://x.run.app/") === "https://x.run.app" && normalizeBaseUrl("https://x.run.app/a") === null && normalizeBaseUrl("http://x.run.app") === null && normalizeBaseUrl(" ") === null,
+    String(normalizeBaseUrl("https://x.run.app/")),
+  );
+});
+
+scenario("휴식 알림", "배선(소스)", () => {
+  const read = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8");
+  const mod = read("../lib/workout-rest-alert.ts");
+  const froms = [...mod.matchAll(/^import[\s\S]*?from\s+"([^"]+)";/gm)].map((m) => m[1]);
+  add("휴식 알림", "lib/workout-rest-alert.ts import는 ./workout-voice·./workout(타입)뿐", eq(froms, ["./workout-voice", "./workout"]) && /import type \{ WorkoutStep \} from "\.\/workout"/.test(mod), S(froms));
+  const fire = read("../app/api/push/workout-rest/fire/route.ts");
+  add(
+    "휴식 알림",
+    "발송 라우트 — 비밀 검사(pushSecretOk)·decideRestFire·구독 조회가 발송 기록 선점보다 먼저(QA 1 P3-C)·발송 기록 'rest:' 접두(가족 하루 상한 밖)·조용한 시간 안 봄·짧은 TTL",
+    /pushSecretOk\(/.test(fire) && /decideRestFire\(/.test(fire) && fire.indexOf("listPushSubscriptions(") < fire.indexOf("claimPushLog(") && /claimPushLog\(`rest:/.test(fire) && !/isQuietHHMM|decidePushes/.test(fire) && /REST_ALERT_TTL_SEC/.test(fire),
+    "",
+  );
+  const proxy = read("../proxy.ts");
+  const pub = /PUBLIC_PATHS = new Set\(\[[^\]]*\]\)/.exec(proxy)?.[0] ?? "";
+  add("휴식 알림", "proxy — 발송 라우트만 게이트 밖(예약 라우트는 게이트 안)", pub.includes('"/api/push/workout-rest/fire"') && !pub.includes('"/api/push/workout-rest"'), pub);
+  const sw = read("../public/sw.js");
+  add("휴식 알림", "서비스 워커 — tag 있을 때만 tag·renotify", /if \(typeof msg\.tag === "string" && msg\.tag\)/.test(sw) && /opts\.renotify = true/.test(sw), "");
+  const sess = read("../components/workout-session.tsx");
+  add(
+    "휴식 알림",
+    "세션 화면 — visibilitychange·pagehide에 순수 판정 · 예약은 keepalive · 마운트·언마운트 취소",
+    /restAlertVisibilityAction\(/.test(sess) && /"pagehide"/.test(sess) && /op: "schedule"[\s\S]{0,200}?, true\)/.test(sess) && (sess.match(/op: "cancel"/g) ?? []).length >= 3,
+    "",
+  );
+  add(
+    "휴식 알림",
+    "잠금화면 타이머 — 휴식을 시작하는 ✓에서 음성 안내보다 먼저 시작",
+    /startLockTimer\(step \+ 1, t, t \+ restMs\);\s*\/\/[^\n]*\n\s*announce\(workoutVoiceLines\(voiceCtx, \{ kind: "step_done"/.test(sess),
+    "",
+  );
+});
+
+scenario("휴식 알림", "잠금화면 무음 WAV", () => {
+  const w = silentWavBytes(120);
+  const txt = (o: number, n: number) => String.fromCharCode(...w.slice(o, o + n));
+  const dv = new DataView(w.buffer);
+  add(
+    "휴식 알림",
+    "120초 — RIFF/WAVE·PCM 모노 8kHz 8비트·data 960000바이트·전부 0x80",
+    txt(0, 4) === "RIFF" && txt(8, 4) === "WAVE" && dv.getUint16(20, true) === 1 && dv.getUint16(22, true) === 1 && dv.getUint32(24, true) === 8000 && dv.getUint16(34, true) === 8 && dv.getUint32(40, true) === 960_000 && w.length === 44 + 960_000 && w[44] === 0x80 && w[w.length - 1] === 0x80,
+    String(w.length),
+  );
+  add("휴식 알림", "길이 경계 — 0·NaN → 1초 · 소수 올림 · 상한 15분", silentWavBytes(0).length === 44 + 8000 && silentWavBytes(Number.NaN).length === 44 + 8000 && silentWavBytes(1.2).length === 44 + 16000 && silentWavBytes(10_000).length === 44 + SILENT_WAV_MAX_SEC * 8000, "");
+});
+
 // ---------------------------------------------------------------------------
 printTable(results);
 const failed = results.filter((r) => !r.pass);

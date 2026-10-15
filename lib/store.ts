@@ -170,6 +170,7 @@ import {
 import { islandEntryData, normalizeToeicIslandEntry, sortIslandEntries, type ToeicIslandEntry } from "./toeic-island";
 import { decideReview, normalizeReviewSchedule, type DecideReviewInput, type DecideReviewResult, type ReviewArea, type ReviewScheduleRecord } from "./review-schedule";
 import { isPushPerson, type PushKind, type PushPerson, type PushPrefs } from "./push-contract";
+import { normalizeRestAlertRecord, type WorkoutRestAlertRecord } from "./workout-rest-alert";
 // 엄마의 생활영어(설계 §6) — 계약·결정의 단일 정의처는 순수 모듈 lib/mom-contract.ts(store → 계약 한 방향)
 import type { MomBlockRecord, MomImportResult, MomLessonRecord, MomTestRecord } from "./mom-contract";
 import { decideMomImport } from "./mom-contract";
@@ -1547,6 +1548,14 @@ export interface StudyStore {
   claimPushLog(id: string, at: string): Promise<boolean>;
   /** 그날(`day:` 접두) 보낸 기록 */
   listPushLog(day: string): Promise<{ id: string; person: PushPerson; kind: PushKind }[]>;
+
+  // ---- ⏱ 휴식 알림(SPEC §19-9) — 컬렉션 `workoutRestAlerts`, 문서 id = 사람(지금은 appa) ----
+  getWorkoutRestAlert(person: PushPerson): Promise<WorkoutRestAlertRecord | null>;
+  /**
+   * 원자 단위(파일 mutate / Firestore runTransaction) 안에서 현재 문서로 `decide`를 부르고, next가 null이 아니면 그것으로 덮는다.
+   * 삭제 없음(취소는 cancelled 플래그) — prod-guard 무관.
+   */
+  updateWorkoutRestAlert<T>(person: PushPerson, decide: (cur: WorkoutRestAlertRecord | null) => { next: WorkoutRestAlertRecord | null; result: T }): Promise<T>;
 }
 
 /** 가져오기 결과 — ok면 병합 결과(은행 포함), too_large면 아무것도 쓰지 않았다 */
@@ -1605,6 +1614,8 @@ export interface DbShape {
   pushSubscriptions: Record<string, PushSubscriptionRecord>;
   /** 🔔 발송 기록 — 문서 id(`day:person:kind:n`) → 보낸 시각. 이 키가 없던 db.json은 빈 맵 */
   pushLog: Record<string, { sentAt: string }>;
+  /** ⏱ 휴식 알림(SPEC §19-9) — 사람 → 문서. 이 키가 없던 db.json은 빈 맵 */
+  workoutRestAlerts: Record<string, WorkoutRestAlertRecord>;
 }
 
 /** 파일 백엔드의 은행·통계 문서(모양이 달라 원본으로 두고 id로 골라 정규화한다) */
@@ -1624,6 +1635,7 @@ function emptyDb(): DbShape {
     momContent: [], momLessons: [], momTests: [],
     pushSubscriptions: {},
     pushLog: {},
+    workoutRestAlerts: {},
   };
 }
 
@@ -1725,6 +1737,8 @@ async function readDb(): Promise<DbShape> {
       // 🔔 알림(가족 스트릭 §6) 이전 db.json엔 이 두 키가 없다 — 빈 맵
       pushSubscriptions: isPlainMap(parsed.pushSubscriptions) ? parsed.pushSubscriptions : {},
       pushLog: isPlainMap(parsed.pushLog) ? parsed.pushLog : {},
+      // ⏱ 휴식 알림(§19-9) 이전 db.json엔 이 키가 없다 — 빈 맵
+      workoutRestAlerts: isPlainMap(parsed.workoutRestAlerts) ? parsed.workoutRestAlerts : {},
     };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyDb();
@@ -3499,6 +3513,21 @@ class JsonFileStore implements BookCardStore {
       .map(parsePushLogId)
       .filter((x): x is { id: string; person: PushPerson; kind: PushKind } => x !== null);
   }
+
+  // ---- ⏱ 휴식 알림(SPEC §19-9) — 판정과 쓰기가 mutate 한 단위 ----
+
+  async getWorkoutRestAlert(person: PushPerson): Promise<WorkoutRestAlertRecord | null> {
+    const db = await readDb();
+    return normalizeRestAlertRecord(db.workoutRestAlerts[person]);
+  }
+
+  async updateWorkoutRestAlert<T>(person: PushPerson, decide: (cur: WorkoutRestAlertRecord | null) => { next: WorkoutRestAlertRecord | null; result: T }): Promise<T> {
+    return this.mutate((db) => {
+      const { next, result } = decide(normalizeRestAlertRecord(db.workoutRestAlerts[person]));
+      if (next) db.workoutRestAlerts[person] = next;
+      return result;
+    });
+  }
 }
 
 /** 파일 백엔드 — 은행·통계 문서 하나를 id로 바꿔 끼운다(없으면 더한다) */
@@ -3658,5 +3687,6 @@ export async function mergeDbForSeed(seed: DbShape): Promise<void> {
     // 🔔 알림 구독·발송 기록 — 같은 이유로 기존 것을 지키는 머지(시드는 빈 맵이다)
     pushSubscriptions: { ...cur.pushSubscriptions, ...seed.pushSubscriptions },
     pushLog: { ...cur.pushLog, ...seed.pushLog },
+    workoutRestAlerts: { ...cur.workoutRestAlerts, ...(seed.workoutRestAlerts ?? {}) },
   });
 }

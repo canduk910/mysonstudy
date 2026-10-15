@@ -19,15 +19,36 @@ function init() {
   ready = true;
 }
 
+/**
+ * 알림 본문(서비스 워커 `public/sw.js`가 읽는다). tag·renotify는 선택 — 휴식 알림(SPEC §19-9)이 같은 tag로 앞 알림을 덮을 때만 싣는다
+ * (가족 알림은 싣지 않아 기존 동작 그대로).
+ */
+export interface PushMessage {
+  title: string;
+  body: string;
+  url: string;
+  tag?: string;
+  renotify?: boolean;
+}
+
+/** 발송 옵션 — 기본 TTL 3600초(가족 알림). 휴식 알림은 짧은 TTL·urgency high */
+export interface PushSendOptions {
+  ttlSec?: number;
+  urgency?: "very-low" | "low" | "normal" | "high";
+}
+
 /** 구독들에 보낸다. 410/404 = 사라진 기기(gone) — 호출측이 지운다. 그 밖 실패는 조용히 건너뛴다. */
-export async function sendTo(subs: readonly PushSubscriptionRecord[], msg: { title: string; body: string; url: string }): Promise<{ ok: string[]; gone: string[] }> {
+export async function sendTo(subs: readonly PushSubscriptionRecord[], msg: PushMessage, opts: PushSendOptions = {}): Promise<{ ok: string[]; gone: string[] }> {
   init();
   const ok: string[] = [];
   const gone: string[] = [];
   await Promise.all(
     subs.map(async (s) => {
       try {
-        await webpush.sendNotification({ endpoint: s.endpoint, keys: s.keys }, JSON.stringify(msg), { TTL: 3600 });
+        await webpush.sendNotification({ endpoint: s.endpoint, keys: s.keys }, JSON.stringify(msg), {
+          TTL: opts.ttlSec ?? 3600,
+          ...(opts.urgency ? { urgency: opts.urgency } : {}),
+        });
         ok.push(s.id);
       } catch (err) {
         const code = (err as { statusCode?: number }).statusCode;
@@ -43,9 +64,9 @@ export async function sendTo(subs: readonly PushSubscriptionRecord[], msg: { tit
  * 한 사람의 구독들에 보내고 뒷정리까지 — 사라진 기기(410/404)는 구독을 지우고, 성공한 기기는 lastOkAt을 적는다.
  * 뒷정리 실패(예: 개발 환경 Firestore의 prod-guard)는 발송 결과를 바꾸지 않는다. 돌려주는 값 = 성공한 기기 수.
  */
-export async function deliver(store: StudyStore, subs: readonly PushSubscriptionRecord[], msg: { title: string; body: string; url: string }): Promise<number> {
+export async function deliver(store: StudyStore, subs: readonly PushSubscriptionRecord[], msg: PushMessage, opts: PushSendOptions = {}): Promise<number> {
   if (subs.length === 0) return 0;
-  const { ok, gone } = await sendTo(subs, msg);
+  const { ok, gone } = await sendTo(subs, msg, opts);
   const at = new Date().toISOString();
   await Promise.all([
     ...gone.map((id) => store.deletePushSubscription(id).catch((err: unknown) => console.error("[push] 사라진 구독 정리 실패", err instanceof Error ? err.name : "unknown"))),
