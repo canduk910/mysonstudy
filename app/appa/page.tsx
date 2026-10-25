@@ -31,7 +31,7 @@ export default function AppaHubPage() {
           </span>
           <span className="u-entry-title">아빠의 일본어</span>
           <span className="u-entry-desc">
-            아빠가 일본어를 공부하는 곳. JLPT 단어장을 레벨·주제로 만들고, 듀오링고 대화를 찍어 복습해요.
+            아빠가 일본어를 공부하는 곳. JLPT 단어장을 레벨·주제로 만들고, 듀오링고 대화를 찍어 복습하고, 말하기 모의고사로 실전처럼 말해 봐요.
           </span>
         </Link>
 

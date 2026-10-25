@@ -76,6 +76,7 @@ import {
   type SpecSyncOutcome,
   type SpecSyncTarget,
 } from "./spec-sync";
+import { runJaSpeakingChecks } from "./eval-japanese-speaking";
 
 // .env.local / .env 로드 (없으면 무시). 이미 설정된 환경 변수가 우선한다.
 for (const envFile of [".env.local", ".env"]) {
@@ -1802,9 +1803,12 @@ async function main(): Promise<void> {
   all.push(...runDialogChecks());
   all.push(...runSpecSyncChecks());
   all.push(...runJsonSchemaSyncChecks());
+  // 🎙️ 말하기 모의고사(§15) — 조각 파일(scripts/eval-japanese-speaking.ts). spec-sync 상세도 함께 찍는다
+  const speaking = runJaSpeakingChecks();
+  all.push(...speaking.results);
 
   printTable(all);
-  printSpecSyncDetails(specSyncOutcomes);
+  printSpecSyncDetails([...specSyncOutcomes, ...speaking.specSyncOutcomes]);
 
   const failed = all.filter((r) => !r.pass);
   if (failed.length > 0) {

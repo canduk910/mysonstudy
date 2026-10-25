@@ -121,6 +121,28 @@ import {
   type JaVocabGeneration,
   type JlptLevel,
 } from "./japanese/schemas";
+import {
+  JA_SPEAKING_FEEDBACK_CALL_OPTIONS,
+  JA_SPEAKING_FEEDBACK_SYSTEM_PROMPT,
+  JA_SPEAKING_MOCK_CALL_OPTIONS,
+  buildJaSpeakingFeedbackUserMessage,
+  buildJaSpeakingMockUserMessage,
+  buildJaSpeakingSystemPrompt,
+  jaSpeakingCallLabel,
+  type JaSpeakingFeedbackInput,
+} from "./japanese/speaking-prompts";
+import {
+  JA_SPEAKING_FEEDBACK_JSON_SCHEMA,
+  JA_SPEAKING_JSON_SCHEMAS,
+  JA_SPEAKING_ZOD,
+  buildJaSpeakingFeedbackZod,
+  type JaSpeakingFeedback,
+  type JaSpeakingGenInput,
+  type JaSpeakingPartGenMap,
+  type JaSpeakingPartRecordMap,
+} from "./japanese/speaking-schemas";
+import { toJaSpeakingRecordPart } from "./japanese/speaking";
+import type { JaSpeakingPart } from "../ja-speaking";
 
 /**
  * OPENAI_MODEL 미설정 시 기본 모델 — 텍스트(Responses API) 호출 전부의 기본값.
@@ -611,6 +633,46 @@ export async function coachJaDialog(input: {
     zodSchema: jaDialogCoachingSchema,
     temperature: JA_DIALOG_COACH_CALL_OPTIONS.temperature,
     maxOutputTokens: JA_DIALOG_COACH_CALL_OPTIONS.maxOutputTokens,
+  });
+}
+
+/**
+ * 호출 E(일본어 말하기 모의고사) — 파트 하나(E1~E5, docs/harness/japanese.md §15-3). 파트마다 호출 하나(라우트가 고른 파트를
+ * Promise.allSettled로 병렬로 — 60초 상한). 반환은 **레코드에 바로 넣을 파트**다(E2는 image pending이 붙어 있다 — toJaSpeakingRecordPart).
+ * 모델은 메인 resolveModel()(토익 출제 모델이 아니다 — §15-0). 재요청까지 실패하면 throw — 라우트가 그 파트를 null로 둔다.
+ */
+export async function generateJaSpeakingPart<P extends JaSpeakingPart>(
+  part: P,
+  input: JaSpeakingGenInput,
+): Promise<JaSpeakingPartRecordMap[P]> {
+  const raw = await callWithSchema<JaSpeakingPartGenMap[P]>({
+    call: jaSpeakingCallLabel(part),
+    system: buildJaSpeakingSystemPrompt(part),
+    user: [textPart(buildJaSpeakingMockUserMessage({ part, level: input.level, topicHints: input.topicHints }))],
+    jsonSchema: JA_SPEAKING_JSON_SCHEMAS[part],
+    zodSchema: JA_SPEAKING_ZOD[part],
+    temperature: JA_SPEAKING_MOCK_CALL_OPTIONS.temperature,
+    maxOutputTokens: JA_SPEAKING_MOCK_CALL_OPTIONS.maxOutputTokens,
+    model: resolveModel(),
+  });
+  return toJaSpeakingRecordPart(part, raw);
+}
+
+/**
+ * 호출 F(일본어 말하기 모의고사) — 문항 하나의 답변 피드백(Q3–11, §15-4). 입력은 speaking.ts의 buildJaSpeakingFeedbackInput이 레코드에서 만든다.
+ * zod는 만점·전사문을 알고 만든다(score 범위, fixes.said ⊂ 전사문). Q1–2는 부르지 않는다(lib/ja-speaking-score.ts의 alignJaReadAloud) — 부르면 throw.
+ */
+export async function generateJaSpeakingFeedback(input: JaSpeakingFeedbackInput): Promise<JaSpeakingFeedback> {
+  if (input.q < 3) throw new Error("[ai:ja_speaking_feedback] Q1–2는 호출 F를 쓰지 않습니다(지문 대조 순수 함수).");
+  return callWithSchema({
+    call: JA_SPEAKING_FEEDBACK_CALL_OPTIONS.call,
+    system: JA_SPEAKING_FEEDBACK_SYSTEM_PROMPT,
+    user: [textPart(buildJaSpeakingFeedbackUserMessage(input))],
+    jsonSchema: JA_SPEAKING_FEEDBACK_JSON_SCHEMA,
+    zodSchema: buildJaSpeakingFeedbackZod({ q: input.q, transcript: input.transcript }),
+    temperature: JA_SPEAKING_FEEDBACK_CALL_OPTIONS.temperature,
+    maxOutputTokens: JA_SPEAKING_FEEDBACK_CALL_OPTIONS.maxOutputTokens,
+    model: resolveModel(),
   });
 }
 

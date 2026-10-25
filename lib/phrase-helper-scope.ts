@@ -56,6 +56,7 @@ export const PHRASE_HELPER_EXAM_PATHS: readonly { re: RegExp; labelKo: string }[
   { re: /^\/toeic\/guides\/[^/]+\/frame-drill\/take$/, labelKo: "토익 🗣️ 틀 말하기 진행" },
   { re: /^\/japanese\/vocab\/[^/]+\/quiz$/, labelKo: "일본어 단어 시험(방식 고르기·오답 다시 풀기 포함)" },
   { re: /^\/japanese\/kanji\/quiz$/, labelKo: "일본어 한자 시험" },
+  { re: /^\/japanese\/speaking\/[^/]+\/take$/, labelKo: "일본어 🎙️ 말하기 모의고사 응시(실전·유형 연습, docs/harness/japanese.md §15-10-2)" },
   { re: /^\/english\/vocab\/[^/]+\/quiz$/, labelKo: "은우 단어장 시험(오답 재시험·관계 문제 포함)" },
   { re: /^\/english\/vocab\/[^/]+\/speak$/, labelKo: "은우 그림 보고 말하기(다시 말해 보기 포함, SPEC §15-5)" },
   { re: /^\/(english|japanese|toeic|mom)\/review$/, labelKo: "오늘의 복습 러너(은우 영어는 5지선다 문제 맞히기 · 일본어·토익·엄마의 생활영어는 가린 채 떠올리기, SPEC §23)" },

@@ -45,7 +45,9 @@ export type DestructiveOp =
   // 🏝️ 나만의 답변 섬(docs/harness/toeic.md §21) — 담은 문장 하나(딸린 것 없음)
   | "deleteToeicIslandEntry"
   // 🔔 폰 알림 구독(가족 스트릭 강화 스펙 §6-1) — 기기 하나의 구독(해제·사라진 기기 정리)
-  | "push-subscription-delete";
+  | "push-subscription-delete"
+  // 🎙️ 일본어 말하기 모의고사(docs/harness/japanese.md §15-9) — 모의고사(+생성 사진·응시 기록) 연쇄 삭제. 녹음은 기기에만 있어 서버에 없다
+  | "deleteJaSpeakingMock";
 
 export class ProdGuardError extends Error {
   readonly code = "prod_guard";

@@ -2026,3 +2026,22 @@ QA 2회차(2026-09-26)는 배포 가능으로 판정했다(P0·P1 0). 그 회차
 - 적용일 **전** 날짜(2026-10-09까지)의 아빠 라벨은 한 것만 보인다("어학 ✓"·"운동 ✓") — 그날은 둘 중 하나로 이미 켜지므로 "남음"을 말하지 않는다. v2 계산이 실패해 옛 규칙으로 떨어질 때도 적용일부터는 둘 다를 요구한다.
 - **운동 사이클이 없으면 켜질 수 없다** — 적용일부터는 운동 루틴을 지킨 날이 꼭 있어야 하므로, 사이클을 끝낸(RM 재측정) 뒤 다음 사이클을 시작하지 않으면 어학을 해도 아빠 🔥가 꺼진다. 화면에 따로 경고는 없다.
 - eval: `eval:streak` 194("아빠 합침" — 적용일 전 둘 중 하나·적용일부터 둘 다·연속 이어받기·적용일에 운동만 → 아직·만회·가족·알림 남은 쪽·헤드라인 한 칸·순서, 만회 안내 어학 0~3판 × 운동 유무 7가지, 적용일 전 라벨).
+
+## 26. 아빠의 일본어 — 🎙️ 말하기 모의고사 (2026-10-24 스펙 + AI 층, 2026-10-25 앱 층 JS1~JS3)
+
+사용자 요청(2026-10-24): 토익스피킹 모의고사와 같은 11문항 5파트(Q1–2 지문 읽기 · Q3–4 사진 묘사 · Q5–7 듣고 답하기 · Q8–10 정보 활용 · Q11 의견)를 **일본어로**. AI 호출·프롬프트·스키마·저장·라우트·화면·비용·eval의 단일 정의처는 **`docs/harness/japanese.md` §15**다. 이 절은 제품 흐름 요약과 포인터만 둔다.
+
+### 26-1. 흐름
+- `/japanese` 허브의 🎙️ 카드 → `/japanese/speaking`(목록) → **새로 만들기**: JLPT 레벨 **하나**(N5~N1) + 파트(기본 다섯 — 유형 하나만도 된다) + 주제(선택) → AI가 파트마다 병렬로 문항을 만든다(호출 E1~E5, 메인 텍스트 모델) → 학습 보기(`/japanese/speaking/[id]` — 지문·질문·표는 일본어 + 후리가나 + 펼쳐 보는 한국어 뜻, 모범답변 🔊 ja-JP, Q3–4 사진 두 장은 일본 장소로 자동 생성).
+- **응시**(`/japanese/speaking/[id]/take`): 토익 응시 화면을 시험 프로필로 매개변수화해 그대로 쓴다 — 같은 형식표(준비·답변 시간·Q10 두 번 듣기)·타이머·비프·녹음 순서·마이크 유지. 지시문·진행 멘트·질문은 일본어로 읽고(기본 기기 음성 — 응시 화면에서 클라우드로 바꿀 수 있다) 한국어 캡션을 함께 보인다. 녹음은 **이 기기에만**(서버 업로드 없음 — 토익 녹음 저장소의 새 기기 전용 풀).
+- **결과**(`/japanese/speaking/attempts/[id]`): "AI 채점 받기"를 눌러야 문항마다 일본어 전사(`language: "ja"`, 기대 문장을 넣지 않는 무유도 전사) → Q1–2는 **AI 없이** 지문과 글자 단위로 대조(후리가나 읽기로 한자/가나 표기 차이를 흡수 — "글자 일치율(참고)"), Q3–11은 AI 피드백(점수 · 고칠 표현 · 고친 답변(후리가나) · 한국어 해설 · 답변의 **추정 JLPT 수준**). 응시 전체는 **추정 수준(참고용 — JLPT에는 말하기 시험이 없다)**과 "이 레벨 달성도"로 보인다.
+
+### 26-2. 경계
+- 저장은 새 컬렉션 셋 `jaSpeakingMocks`·`jaSpeakingImages`·`jaSpeakingAttempts` — 토익 모의고사·응시·추정 등급·영어 스트릭과 섞지 않는다.
+- 텍스트 모델은 메인(`OPENAI_MODEL`, 빈 값이면 `gpt-6-luna`) — 토익 출제·채점 모델 env(`OPENAI_TOEIC_MODEL`)를 쓰지 않는다(2026-10-02 사용자 규칙). 새 env 없음 — 사진은 `OPENAI_IMAGE_MODEL`·`OPENAI_IMAGE_QUALITY`, 전사는 `OPENAI_TRANSCRIBE_MODEL`(토익과 같은 값).
+- 스트릭: 끝까지 녹음한 응시가 **아빠 📚 어학(일본어 트랙)의 한 판**이다(토익 응시와 같은 `isFullAttempt` 규칙). 라벨 `일본어 · 말하기 모의고사 · {제목}`.
+- 교재가 없는 기능이다 — 문항은 전부 AI가 새로 쓰고, 예시·픽스처 문장은 지어낸 것이다.
+
+### 26-3. 진행
+- 2026-10-24: 스펙(harness japanese §15) + AI 층(`lib/ai/japanese/speaking-*.ts`·`lib/ja-speaking*.ts`·진입 함수 `generateJaSpeakingPart`·`generateJaSpeakingFeedback`) + eval(`eval:japanese` 오프라인 362 — 말하기 142 포함, 2026-10-25 QA speaking-ai 1 반영). 저장·라우트·응시·채점 화면은 harness §15-13 로드맵 JS1~JS3(app-builder).
+- 2026-10-25: 앱 층 JS1~JS3 — 컬렉션 셋(파일·Firestore 두 백엔드, 판정·적용은 `lib/ja-speaking-record.ts` 한 벌을 원자 단위 안에서, 삭제는 prod-guard `deleteJaSpeakingMock`)·계약 `lib/ja-speaking-contract.ts`·라우트 10개(`app/api/japanese/speaking/**`)·관문 P `lib/ja-speaking-image.ts`(공용 코어)·관문 T-ja `lib/ja-speaking-transcribe.ts`(`language: "ja"`, prompt 없음)·녹음 풀 `"ja"`(기기 전용 — 메모리 폴백은 같은 풀끼리만 비운다)·화면 넷(`/japanese/speaking` 목록·만들기, `[id]` 학습 보기·사진 자동, `[id]/take` 응시, `attempts/[id]` 결과·AI 채점)·허브 카드. 응시 화면은 토익 응시 화면에 **시험 프로필**(`components/take-exam-profile.ts`)을 넘겨 재사용한다 — 프로필이 없으면 토익 그대로(읽는 글 바이트 불변), 일본어는 지시문·멘트·질문을 ja-JP로·시험 창 글에 후리가나(응시 중 켜고 끄기)·서버 업로드와 토익 시작 안내 끔. 응시 경로는 시험 화면(표현 도우미·상단 스트릭 숨김). 스트릭: 끝까지 녹음한 응시가 일본어 트랙 한 판(`lib/ja-speaking-streak.ts`, 라벨 `일본어 · 말하기 모의고사 · {제목}`). eval: `eval:japanese` 오프라인 412(앱 층 50 — `scripts/eval-japanese-speaking-app.ts`), `eval:toeic` 1967·`eval:streak` 202·`eval:phrase` 218·`eval:mom` 85.

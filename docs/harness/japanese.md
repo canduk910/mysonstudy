@@ -992,3 +992,1026 @@ interface JaKanjiRecord {
 아빠의 일본어 화면의 표현 도우미는 과목 공통 기능의 `japanese` 모드다 — 프롬프트·JSON Schema·zod·모델(`OPENAI_PHRASE_HELPER_MODEL`, 기본 `gpt-6-luna`)·eval(`npm run eval:phrase`)의 단일 정의처는 **`docs/harness/phrase-helper.md`**다(제품 흐름 SPEC §22). 읽기는 §5 후리가나 토큰이 아니라 **문자열 하나**(한자·숫자만 히라가나로, 가타카나는 그대로 — 근거는 phrase-helper.md §5-2 끝)라 이 과목의 토큰 규약·호출 A~D·spec-sync 대상은 바뀌지 않았다. 단어 시험·한자 시험 중에는 열 수 없다(phrase-helper.md §9).
 
 > 2026-10-03 — **오늘의 복습(간격 반복 + 힌트 사다리)**: 이 과목의 시험 본 항목(단어 `ja-word`·한자 `ja-kanji`)이 1→3→7→14→30일 간격으로 다시 나온다. AI 호출이 없어 이 하네스의 호출·spec-sync와 무관하다 — 규칙·출처·저장·화면은 `docs/SPEC.md` §23(엔진 `lib/review-schedule.ts`, 어댑터 `lib/review-sources.ts`, eval `npm run eval:review`).
+
+## 15. 🎙️ 말하기 모의고사 — 토익스피킹 11문항 형식을 일본어로 (2026-10-24)
+
+> "아빠의 일본어" 아래 **세 번째 기능**이다. 토익스피킹 모의고사(`docs/harness/toeic.md` §4~§8)와 같은 11문항 5파트를 **일본어로** 만들고(AI 출제) → 실전처럼 응시·녹음하고(기기에만) → 버튼을 눌러 AI 채점·피드백을 받는다. 단어장·대화 복습과 서로 독립이다(§0-4와 같은 관계 — 진입·저장·레코드가 전부 갈린다).
+> 이 절이 프롬프트·JSON Schema 원문의 단일 정의처다(`scripts/eval-japanese-speaking.ts`가 대조한다). 2026-10-24 회차가 **스펙 + AI 층**, 2026-10-25 회차가 저장·라우트·화면(§15-9·§15-10 계약대로)을 구현했다.
+
+### 15-0. 결정
+
+**사용자 확정(2026-10-24 — 다시 묻지 않는다)**
+
+| 항목 | 결정 |
+|---|---|
+| 범위 | 모의고사만 — AI 출제 → 응시·녹음 → 버튼 AI 채점·피드백. 유형별 공략·틀 훈련은 없다 |
+| 난이도 | 만들 때 JLPT 레벨 **하나**(N5~N1)를 고른다. 지문·질문·모범답변이 그 레벨의 어휘·문형이다. 채점은 답변의 **추정 수준을 N레벨로**(공식 척도가 아니라 추정이라고 화면에 적는다) |
+| 언어 | 지시문·질문·지문은 **일본어**(실전처럼 듣고 읽는다) + 펼쳐 보는 **한국어 뜻**(각 지시·질문·지문·모범답변에 `ko`). 모범답변은 **후리가나**(§5 토큰 규약 재사용). 채점 해설·피드백은 한국어 |
+| 텍스트 모델 | **메인 기본 모델**(`resolveModel()` — env `OPENAI_MODEL`, 빈 값이면 `gpt-6-luna`). 토익 출제·채점 모델(`OPENAI_TOEIC_MODEL`)을 쓰지 않는다 — 2026-10-02 규칙 "토익 출제·채점만 sol, 나머지는 luna" |
+
+**구현이 정한 것(근거는 각 절)**
+
+| 항목 | 결정 | 절 |
+|---|---|---|
+| 형식표 | 토익 형식표(`lib/toeic-mock.ts` `TOEIC_MOCK_FORMAT`)를 **그대로 import**해 쓴다 — 준비·답변 시간·재생 횟수·만점을 두 벌 두지 않는다. 단계 전이 함수도 그대로 | §15-2 |
+| Q1–2 대조 | **AI 없이** 지문 토큰의 **표기 ∣ 후리가나 읽기 두 갈래**와 전사문 글자열의 편집거리 정렬(글자 단위). 지문은 **표준 표기**로 쓰게 프롬프트가 못 박는다 | §15-5 |
+| 추정 수준 | 호출 F가 문항마다 `levelEstimate`(N1~N5·`below_n5`)를 내고, 응시 전체는 그 **아래쪽 중앙값**(유효 추정 ≥ 3). 점수 합은 "이 레벨 달성도"로 따로 보인다 | §15-6 |
+| 컬렉션 | `jaSpeakingMocks`·`jaSpeakingImages`·`jaSpeakingAttempts` — 토익 컬렉션과 섞지 않는다 | §15-9 |
+| 녹음 | 토익 녹음 저장소(`lib/toeic-rec-store.ts`)의 **새 풀 `"ja"`, 기기 전용**(엄마 풀 `"mom"`과 같은 "gone" 규칙 — 서버 업로드 없음) | §15-9-4 |
+| 응시 화면 | 토익 응시 화면(`components/toeic-take-view.tsx`)을 **시험 프로필 인자로 매개변수화**해 재사용 — 토익 기본 프로필은 바이트까지 지금과 같아야 한다 | §15-10-3 |
+| 진입 함수 | 일본어 관례대로 `lib/ai/client.ts`에 얇게(`generateJaSpeakingPart`·`generateJaSpeakingFeedback`). 프롬프트·스키마·후처리는 `lib/ai/japanese/speaking-*.ts` | §15-1 |
+
+### 15-1. 구성 한눈에
+
+| 호출·관문 | 이름 | 입력 | 출력 | temperature | 성격 |
+|---|---|---|---|---|---|
+| **E1~E5** | 말하기 문항 생성(파트별) | 레벨 + 주제 힌트 + 길이 안내(계산값) | 파트 하나(지문·장면·질문·표·모범답변 — 일본어 + 토큰 + ko) | 0.8 | 창작 — 레벨 정확성이 우선 |
+| **F** | 답변 피드백 | 문항·레벨·본 자료·모범답변·전사문 | 점수 + 추정 수준 + 한국어 피드백 + 고친 답변(토큰) | 0.2 | 채점 |
+| 관문 **P** | 일본 배경 사진(하네스 밖) | E2 `imagePrompt` + 접미사 | JPEG data URL | — | 사진 공용 코어 `lib/image-gen.ts` |
+| 관문 **T-ja** | 일본어 답변 전사(하네스 밖) | 녹음 | 전사문(`language: "ja"`, 무유도) | — | 토익 관문 T와 같은 원칙 |
+
+- 표의 temperature는 스펙 다이얼이다 — 기본 모델(`gpt-6-luna`)처럼 temperature를 거부하는 추론 계열 모델에서는 `callWithSchema`가 이 파라미터를 **빼고** 보낸다(`isKnownTemperatureRejectingModel` — 다른 호출과 같은 동작). temperature를 받는 모델로 바꿀 때만 걸린다.
+- **Q1–2는 AI를 부르지 않는다**(§15-5) — 전사(관문 T-ja) 뒤 순수 함수 대조.
+- 호출 E는 **파트마다 1회**(실전이면 5회 병렬 — 토익 C1~C5와 같은 모양, 60초 상한·부분 성공 격리). 호출 F는 **문항마다 1회**(Q3–11).
+- 파일 배치:
+
+```text
+lib/ai/japanese/
+  speaking-prompts.ts    ← 호출 E 머리말·과제 5·사용자 템플릿, 호출 F 시스템·사용자 템플릿, 사진 접미사, 호출 옵션 (spec-sync)
+  speaking-schemas.ts    ← JSON Schema 6개(strict) + zod(E 파트별 고정 · F 팩토리) + 타입 + 상한 JA_SPEAKING_LIMITS
+  speaking.ts            ← 순수 후처리 — toJaSpeakingRecordPart(E2 image pending) · 피드백 자료·입력(buildJaSpeakingFeedbackInput)
+lib/ai/client.ts         ← 진입 함수 generateJaSpeakingPart · generateJaSpeakingFeedback (과목 분기 없음)
+lib/ja-speaking.ts       ← 클라이언트 안전 — 형식(토익 표 재사용)·지시문·멘트·질문 음성 조각·길이 안내·추정 수준·달성도
+lib/ja-speaking-score.ts ← 클라이언트 안전 — Q1–2 대조 alignJaReadAloud·참고 점수·무응답·said 대조
+scripts/eval-japanese-speaking.ts ← 오프라인 점검 조각(eval-japanese.ts가 불러 한 번에 돈다)
+lib/ja-speaking-image.ts(관문 P) · lib/ja-speaking-transcribe.ts(관문 T-ja) · lib/ja-speaking-contract.ts ·
+  lib/store.ts 레코드 3종 · app/api/japanese/speaking/** · app/japanese/speaking/** · components/ja-speaking-*.tsx
+```
+
+### 15-2. 형식·지시문·멘트 (AI 없음 — `lib/ja-speaking.ts`)
+
+- **형식표는 토익 §6-4 표 그대로다.** `jaSpeakingQuestionFormat`는 `toeicQuestionFormat` 자체이고, 응시 화면은 단계 전이(`firstPhase`·`nextPhase`·`beginAnswer`·`remainingSec`·`toeicSpeechOutcome`)를 토익 것 그대로 쓴다. 일본어라서 시간을 바꿀 근거가 없고(같은 11문항 형식이 요구사항), 두 벌이면 언젠가 어긋난다. 토익 형식표를 바꾸면 일본어도 따라 바뀐다 — 의도된 결합이다(eval이 두 문항 목록이 같은지 잠근다).
+- **지시문은 이 앱의 문장**이다(시험 원문을 옮기지 않는다). `JA_SPEAKING_PART_DIRECTIONS[part] = {ja, ko}` — `ja`를 **ja-JP로 읽고** `ko`는 화면 캡션(소리로 읽지 않는다). 지시문 속 숫자(지문·사진·질문 수, 준비·답변·표 읽기 초, Q10 재생 횟수)는 형식표에서 계산한다. 사진 1장만 푸는 경우는 `jaSpeakingPartDirections(part, count)`가 한 장짜리 문장을 낸다(토익 `toeicPartDirections`와 같은 규칙).
+- **진행 멘트**(토익 §18 관용구의 일본어판): 준비 앞 `準備を始めてください。`, Q10 두 번째 재생 앞 `もう一度聞いてください。`, 답변 앞 파트별(`音読を始めてください。`·`話し始めてください。`·`答え始めてください。`). 자리는 `jaSpeakingPhaseCue`가 정하고(토익 `toeicPhaseCue`와 같은 자리), 미리 받기 목록은 `jaSpeakingCueTexts(qs)`(실전 5개).
+- **질문 음성 조각** `jaSpeakingQuestionPieces(parts, q, play)` — Q5 첫 재생은 상황 소개 + 질문, Q8 첫 재생은 전화 건 사람 도입 + 질문, 그 밖은 질문만, Q1–4는 [](화면으로만). 읽는 것은 `ja` 원문이다 — 후리가나(reading)를 읽히지 않는다(§5).
+- 화면 노출은 토익과 같다 — Q8–10은 표만 보이고 질문 글은 숨긴다(듣기). 질문 음성이 끝내 나지 않으면 토익 안전망 그대로 "다시 듣기"·"질문 보기"(§15-11-1).
+
+### 15-3. 호출 E — 말하기 문항 생성 (E1~E5)
+
+#### 15-3-0. 무엇을 만드는가
+
+| 호출 | 파트 | 문항 | 만드는 것 |
+|---|---|---|---|
+| E1 | `read` | Q1–2 지문 읽기 | 지문 2개(일본어 + 토큰 + ko) + 읽기 주의점 |
+| E2 | `picture` | Q3–4 사진 묘사 | 일본 장소 장면 2개(사진 프롬프트·장면 설명) + 모범답변 + 묘사 포인트 |
+| E3 | `respond` | Q5–7 듣고 답하기 | 상황 소개 + 질문 3개 + 모범답변·요령 |
+| E4 | `info` | Q8–10 정보 활용 | 일본어 표 + 전화 건 사람 도입 + 질문 3개 + 모범답변·요령 |
+| E5 | `opinion` | Q11 의견 말하기 | 질문 + 모범답변 + 답변 뼈대 |
+
+- 고른 파트를 `Promise.allSettled`로 **병렬** 호출한다. 실패한 파트는 null로 저장하고 "이 파트 다시 만들기"로 채운다. 전부 실패하면 저장하지 않는다(토익 §7-2 관용구).
+- 시스템 프롬프트 = `JA_SPEAKING_MOCK_COMMON + "\n\n" + JA_SPEAKING_TASKS[part]`(`buildJaSpeakingSystemPrompt`). spec-sync 대상은 이어 붙인 결과가 아니라 아래 블록 6개 각각이다.
+- 학습자가 성인이다(§0-1). 토익 프롬프트는 영어 시험용이라 재사용하지 않고 형식만 옮긴 새 원문이다.
+- 호출 옵션: temperature 0.8, maxOutputTokens 10000, call 라벨 `ja_speaking_<part>`, 모델 `resolveModel()`
+  - 6,000(토익 C)보다 큰 까닭: 일본어 문장마다 후리가나 토큰 배열이 붙는다(일본어 단어장 호출 A가 8,000인 것과 같은 이유). 추론형 모델의 내부 토큰도 이 한도에 든다.
+
+#### 15-3-1. 공통 머리말 (원문 그대로 사용 — `JA_SPEAKING_MOCK_COMMON`)
+
+```
+너는 일본어 말하기 시험 문항 출제자다. 한국인 성인 학습자가 고른 JLPT 레벨(N5~N1)에 맞춰 실전처럼 연습할 말하기 모의 문항을 새로 만든다. 형식은 TOEIC Speaking 11문항(지문 읽기·사진 묘사·듣고 답하기·정보 활용·의견 말하기)을 일본어로 옮긴 것이다.
+
+[공통 규칙]
+- 실제 시험 문항이나 교재 문장을 베끼거나 옮기지 않는다. 소재와 문장은 새로 쓴다.
+- 학습자는 성인이다 — 아이 눈높이로 낮추지 않는다. 일본어는 받은 레벨의 어휘와 문형으로 쓴다. 그 레벨보다 어려운 어휘·문형을 쓰지 않고, 그 레벨에서 익혀야 할 어휘·문형을 피하지도 않는다.
+- 일본어는 일본에서 실제로 쓰는 자연스러운 표준어로 쓴다. 정중체(です・ます)를 기본으로 하고, 지인과의 대화 상황은 그 관계에 맞는 말투로 쓴다.
+- 표기는 일반적인 일본어 표기를 따른다 — 보통 한자로 쓰는 말은 레벨이 낮아도 한자로 쓰고(읽기는 후리가나로 돕는다), 보통 가나로 쓰는 말은 가나로 쓴다. 숫자는 아라비아 숫자로 쓴다.
+- 회사·사람·가게 이름은 지어낸 것을 쓴다(실존 기업이나 유명인을 쓰지 않는다). 일본의 실제 도시 이름은 써도 된다.
+- ko는 그 일본어의 자연스러운 한국어 뜻이다. 한국어 설명은 짧고 실용적으로 쓴다.
+- 모범답변은 받은 레벨의 학습자가 제한 시간 안에 실제로 말할 수 있는 길이와 수준으로 쓴다. 길이는 사용자 메시지의 '길이'(공백·문장부호를 뺀 글자 수)를 따른다.
+- 지정된 JSON 스키마 외의 텍스트를 내지 않는다.
+
+[후리가나]
+- 일본어 문장(ja)마다 후리가나 토큰 배열(tokens)을 함께 낸다. 각 토큰은 surface와 reading을 갖고, surface를 순서대로 이어 붙이면 ja와 정확히 같아야 한다.
+- reading은 surface가 한자만으로 이뤄진 토큰에만 히라가나로 채운다. 가나·숫자·기호가 섞인 토큰은 null로 둔다.
+- 한자가 들어간 토큰은 한자만으로 이뤄져야 하고 reading을 반드시 단다 — 한자에 읽기를 빼먹거나 문장을 통째로 한 토큰으로 내지 않는다.
+- 한자가 연달아 붙어 한 낱말을 이루면 한 토큰으로 묶고 읽기를 한 번에 단다(예: 会議 → 会議(かいぎ)). 오쿠리가나와 활용 어미, 한자에 붙은 숫자는 한자 토큰과 분리하고 그 토큰의 reading은 null로 둔다(예: 食べる → 食(た) + べる, 3時 → 3 + 時(じ)).
+- 읽기는 그 문맥에서 실제로 읽는 소리로 단다(예: 今日 → きょう, 一人 → ひとり).
+```
+
+- "표준 표기" 줄은 §15-5 대조를 위한 것이다 — 낮은 레벨이라고 보통 한자로 쓰는 말을 가나로 풀면(私 → わたし), 전사는 표준 표기(私)로 오는데 지문 쪽에는 그 한자의 읽기 갈래가 없어 맞게 읽어도 틀린 것으로 센다. 읽기는 후리가나가 돕는다.
+- "숫자는 아라비아 숫자" 줄도 같은 이유다(전사 모델이 시각·가격을 숫자로 적는다). 토큰 규칙상 `3時`는 `3` + `時(じ)`로 갈라야 한다(§5 — reading을 단 토큰은 한자만).
+
+#### 15-3-2. E1 `read` — Q1–2 지문 읽기 (`JA_SPEAKING_READ_TASK`)
+
+```
+[과제: Q1–2 지문 읽기]
+- 소리 내어 읽을 지문 정확히 2개를 만든다. 두 지문은 종류(kind)가 달라야 한다 — advertisement(광고), announcement(안내 방송), news(뉴스·소식), introduction(행사·인물 소개), tour(투어 안내), voicemail(자동 응답 메시지) 중에서 고른다.
+- 지문 길이는 사용자 메시지의 '길이'를 따르고, 문장 3~6개로 쓴다. 고유명사 1개 이상, 숫자·시각·가격 중 하나 이상을 넣는다.
+- passage: 지문(ja·tokens·ko).
+- tipsKo: 이 지문을 소리 내어 읽을 때 주의할 점 2~4개(한국어). 장음·촉음·발음(ん), 읽기가 까다로운 한자어, 숫자와 조수사 읽기, 끊어 읽을 곳 같은 것을 짚는다.
+- 지문 읽기에는 모범답변을 쓰지 않는다.
+```
+
+#### 15-3-3. E2 `picture` — Q3–4 사진 묘사 (`JA_SPEAKING_PICTURE_TASK`)
+
+```
+[과제: Q3–4 사진 묘사]
+- 묘사할 사진 장면 정확히 2개를 설계한다. 두 장면 모두 일본의 일상 장소이고 장소(place)가 서로 달라야 한다(역 개찰구, 편의점, 공원, 상점가, 식당, 카페, 사무실, 회의실, 공항, 신사 경내, 강변 등). 주제 힌트를 받으면 그와 어울리는 장소를 먼저 고른다.
+- 장면마다 성인이 2~5명 있고, 사람마다 동작과 옷차림이 분명하며, 배경과 주변 사물이 3개 이상 있다. 30초 동안 장소·인물·사물·느낌을 말할 거리가 충분해야 한다.
+- place: 장소 이름(한국어, 짧게).
+- imagePrompt: 이 장면을 사진으로 생성하기 위한 영어 프롬프트(60~120단어). 일본의 장소임이 드러나게 쓰고, 사람 수와 위치(왼쪽·가운데·오른쪽·배경), 각자의 동작과 옷 색, 주변 사물, 날씨와 빛을 구체적으로 적는다. 글자·간판 문구·로고·유명인·어린이는 넣지 않는다.
+- sceneKo: 사진을 보여 줄 수 없을 때 대신 보여 줄 장면 설명(한국어 2~3문장).
+- sampleAnswer: 모범답안(ja·tokens·ko). 장소 → 중심 인물의 동작(〜ています) → 주변 사람과 사물의 위치(〜に〜があります・います) → 느낌이나 추측(레벨에 맞는 말) 순서로 말한다. imagePrompt에 적은 장면과 어긋나는 내용을 말하지 않는다.
+- keyPointsKo: 이 사진에서 놓치지 말아야 할 묘사 포인트 3~5개(한국어).
+```
+
+- `imagePrompt`는 영어다(사진 모델에 넘긴다). 장면이 일본임은 이 프롬프트와 §15-7 접미사 두 곳에서 말한다.
+
+#### 15-3-4. E3 `respond` — Q5–7 듣고 답하기 (`JA_SPEAKING_RESPOND_TASK`)
+
+```
+[과제: Q5–7 듣고 답하기]
+- 상황 하나를 만든다: 일본의 조사 회사가 거는 전화 설문에 답하는 상황, 또는 일본인 지인과 전화로 이야기하는 상황이다. 주제는 일상생활(쇼핑, 음식, 여가, 여행, 교통, 주거, 운동, 공부, 일 등)에서 고르고, 주제 힌트를 받으면 그중에서 고른다.
+- topicKo: 이 상황의 주제를 한국어 한두 단어로 쓴다.
+- intro: 상황 소개 1~2문장(ja·tokens·ko). 수험자에게 상황을 알려 주는 말로 쓴다.
+- questions: 정확히 3개. 첫째와 둘째는 빈도·시간·장소·동행 같은 사실형 질문이고, 둘 중 하나 이상은 두 가지를 함께 묻는다. 셋째는 이유를 요구하는 선택·의견·묘사형 질문이다. 세 질문은 같은 주제로 이어진다.
+- 질문마다 question(ja·tokens·ko — 질문 ja는 か 또는 ？로 끝난다), sampleAnswer(ja·tokens·ko), tipKo를 쓴다. 모범답변은 직답을 먼저 한 뒤 이유나 부연을 붙이고, 질문의 시제와 말투를 따른다.
+- tipKo: 이 질문에서 점수를 받는 요령 한 줄(한국어).
+```
+
+#### 15-3-5. E4 `info` — Q8–10 정보 활용 (`JA_SPEAKING_INFO_TASK`)
+
+```
+[과제: Q8–10 제공된 정보로 답하기]
+- 표 하나를 만든다. 종류(kind)는 schedule(행사·연수 일정), itinerary(출장·여행 일정), timetable(수업·강좌 시간표), interview(면접 일정), resume(이력서) 중 하나다.
+- 표는 일본어로 쓴다 — 제목(title), 날짜·장소·요금 같은 머리 정보(meta, 1~4줄), 행(rows, 5~9개 — left에는 시간·기간·항목, right에는 내용), 각주(notes, 0~2줄, 예: "※昼食は含まれません。"). titleKo에는 제목의 한국어 뜻을 쓴다.
+- callerIntro: 이 표에 대해 전화를 건 사람의 도입 발화 1~2문장(ja·tokens·ko — 이름과 용건).
+- questions: 정확히 3개, 전화 건 사람이 묻는 질문이다. 첫째는 시간·장소·요금 같은 세부 정보, 둘째는 전화 건 사람이 잘못 알고 있는 정보를 확인하고 정정하게 하는 질문, 셋째는 조건에 맞는 항목 둘 이상을 모두 말하게 하는 질문이다. 답은 반드시 표 안에서 찾을 수 있어야 한다.
+- 질문마다 question(ja·tokens·ko — 질문 ja는 か 또는 ？로 끝난다), sampleAnswer(ja·tokens·ko), tipKo를 쓴다. 모범답변은 담당자로서 표의 표기를 말하는 문장으로 바꿔 정중하게 말한다(예: 「参加費：1,000円」 → 「参加費は1,000円です。」). 셋째는 순서를 나타내는 말(まず・次に・最後に 등 레벨에 맞는 말)로 잇는다.
+- tipKo: 이 질문에서 점수를 받는 요령 한 줄(한국어).
+```
+
+#### 15-3-6. E5 `opinion` — Q11 의견 말하기 (`JA_SPEAKING_OPINION_TASK`)
+
+```
+[과제: Q11 의견 말하기]
+- 의견 질문 하나를 만든다. 형식(kind)은 agree(찬반), choice(둘 중 선택), proscons(장단점) 중 하나다. 직장, 공부, 기술, 생활 방식처럼 성인이 경험으로 답할 수 있는 주제로 쓰고, 끝에 이유와 예를 들어 답하라는 요구 문장을 붙인다.
+- question: 질문(ja·tokens·ko).
+- sampleAnswer: 모범답안(ja·tokens·ko). 입장 → 첫째 이유와 개인 경험 예시 → 둘째 이유 → 마무리 순서다. 처음부터 끝까지 한 입장을 유지한다.
+- outlineKo: 답변 뼈대(한국어) 3~5줄 — 입장, 이유 1, 예시, 이유 2, 마무리.
+- tipKo: 이 질문에서 점수를 받는 요령 한 줄(한국어).
+```
+
+#### 15-3-7. 사용자 메시지 (E1~E5 공통 — `JA_SPEAKING_MOCK_USER_TEMPLATE`)
+
+```
+레벨: {N5|N4|N3|N2|N1}
+주제 힌트: {topicHints를 ", "로, 없으면 "없음"}
+길이:
+{jaSpeakingLengthLines(part, level)}
+```
+
+- 자리 값: 레벨 그대로, 주제 힌트는 `normalizeJaSpeakingTopicHints`(공백 정리·하나당 `JA_SPEAKING_LIMITS.topicHintMax` 30자로 자르기·빈 값·중복 제거·최대 `topicHintsMax` 3 — 상한은 그 상수 하나)를 `", "`로(없으면 `없음`), 길이는 `jaSpeakingLengthLines(part, level)`이 **계산해 넣는다**(숫자를 프롬프트에 손으로 적지 않는다 — 프롬프트·zod·eval이 같은 함수를 본다). 치환은 `fillJaSpeakingTemplate`(한 번에, 템플릿에 없는 자리는 throw — 토익 관용구).
+- 길이 계산(`lib/ja-speaking.ts` — 글자 수는 `countJaSpeechChars`: NFKC 뒤 문자·숫자만, 공백·문장부호 제외):
+  - 레벨별 학습자 말하기 속도 `JA_SPEAKING_CHARS_PER_SEC`(초당 글자): N5 2~3 · N4 2.5~3.5 · N3 3~4 · N2 3.5~4.5 · N1 4~5. **지어낸 근사**다(튜닝 대상 — §15-15).
+  - 모범답변: `답변 시간 × 느린 속도 × 0.6` ~ `답변 시간 × 빠른 속도 × 0.8`(반올림). 예: N4 15초 → 23~42자, N4 60초 → 90~168자.
+  - 지문(Q1–2): `읽기 시간(45초) × 느린 속도 × 0.8` ~ `× 빠른 속도 × 0.9`. 예: N5 72~122자, N1 144~203자.
+  - 줄 모양(지어낸 예 — N4):
+
+```text
+- 질문 1·2 모범답변(15초): 23~42자
+- 질문 3 모범답변(30초): 45~84자
+```
+
+#### 15-3-8. JSON Schema (strict) — 파트별 5개
+
+`$defs`의 `line`(일본어 한 줄 = `ja`·`tokens`·`ko`)과 `tokens`(§5 후리가나 토큰)는 여섯 스키마(호출 F 포함)가 **같은 객체**다. 아래 첫 블록에만 전문을 적고, 나머지는 `"…"` 자리표로 줄인다(eval이 대조 전에 코드 상수의 `$defs`를 같은 자리표로 바꾸고, 여섯 상수의 `$defs`가 서로 같은지는 따로 본다). 배열 개수는 스키마에 넣지 않는다(HARNESS §1 — zod 몫).
+
+```json
+{
+  "name": "ja_speaking_read",
+  "strict": true,
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "items"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "passage",
+            "tipsKo"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "advertisement",
+                "announcement",
+                "news",
+                "introduction",
+                "tour",
+                "voicemail"
+              ]
+            },
+            "passage": {
+              "$ref": "#/$defs/line"
+            },
+            "tipsKo": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "$defs": {
+      "line": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ja",
+          "tokens",
+          "ko"
+        ],
+        "properties": {
+          "ja": {
+            "type": "string"
+          },
+          "tokens": {
+            "$ref": "#/$defs/tokens"
+          },
+          "ko": {
+            "type": "string"
+          }
+        }
+      },
+      "tokens": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "surface",
+            "reading"
+          ],
+          "properties": {
+            "surface": {
+              "type": "string"
+            },
+            "reading": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+```json
+{
+  "name": "ja_speaking_picture",
+  "strict": true,
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "items"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "place",
+            "imagePrompt",
+            "sceneKo",
+            "sampleAnswer",
+            "keyPointsKo"
+          ],
+          "properties": {
+            "place": {
+              "type": "string"
+            },
+            "imagePrompt": {
+              "type": "string"
+            },
+            "sceneKo": {
+              "type": "string"
+            },
+            "sampleAnswer": {
+              "$ref": "#/$defs/line"
+            },
+            "keyPointsKo": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "$defs": {
+      "line": {
+        "…": "ja_speaking_read와 동일"
+      },
+      "tokens": {
+        "…": "ja_speaking_read와 동일"
+      }
+    }
+  }
+}
+```
+
+```json
+{
+  "name": "ja_speaking_respond",
+  "strict": true,
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "topicKo",
+      "intro",
+      "questions"
+    ],
+    "properties": {
+      "topicKo": {
+        "type": "string"
+      },
+      "intro": {
+        "$ref": "#/$defs/line"
+      },
+      "questions": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "question",
+            "sampleAnswer",
+            "tipKo"
+          ],
+          "properties": {
+            "question": {
+              "$ref": "#/$defs/line"
+            },
+            "sampleAnswer": {
+              "$ref": "#/$defs/line"
+            },
+            "tipKo": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "$defs": {
+      "line": {
+        "…": "ja_speaking_read와 동일"
+      },
+      "tokens": {
+        "…": "ja_speaking_read와 동일"
+      }
+    }
+  }
+}
+```
+
+```json
+{
+  "name": "ja_speaking_info",
+  "strict": true,
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "table",
+      "callerIntro",
+      "questions"
+    ],
+    "properties": {
+      "table": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "title",
+          "titleKo",
+          "meta",
+          "rows",
+          "notes"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "schedule",
+              "itinerary",
+              "timetable",
+              "interview",
+              "resume"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "titleKo": {
+            "type": "string"
+          },
+          "meta": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "left",
+                "right"
+              ],
+              "properties": {
+                "left": {
+                  "type": "string"
+                },
+                "right": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "callerIntro": {
+        "$ref": "#/$defs/line"
+      },
+      "questions": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "question",
+            "sampleAnswer",
+            "tipKo"
+          ],
+          "properties": {
+            "question": {
+              "$ref": "#/$defs/line"
+            },
+            "sampleAnswer": {
+              "$ref": "#/$defs/line"
+            },
+            "tipKo": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "$defs": {
+      "line": {
+        "…": "ja_speaking_read와 동일"
+      },
+      "tokens": {
+        "…": "ja_speaking_read와 동일"
+      }
+    }
+  }
+}
+```
+
+```json
+{
+  "name": "ja_speaking_opinion",
+  "strict": true,
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "kind",
+      "question",
+      "sampleAnswer",
+      "outlineKo",
+      "tipKo"
+    ],
+    "properties": {
+      "kind": {
+        "type": "string",
+        "enum": [
+          "agree",
+          "choice",
+          "proscons"
+        ]
+      },
+      "question": {
+        "$ref": "#/$defs/line"
+      },
+      "sampleAnswer": {
+        "$ref": "#/$defs/line"
+      },
+      "outlineKo": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "tipKo": {
+        "type": "string"
+      }
+    },
+    "$defs": {
+      "line": {
+        "…": "ja_speaking_read와 동일"
+      },
+      "tokens": {
+        "…": "ja_speaking_read와 동일"
+      }
+    }
+  }
+}
+```
+
+#### 15-3-9. zod + 후처리 (`JA_SPEAKING_ZOD`·`toJaSpeakingRecordPart`)
+
+zod는 **프롬프트보다 넓은 폭**으로 건다(경계에서 재요청을 태우지 않고 크게 벗어난 것만 거부 — 토익 §4-9 관용구). 폭·상한은 `lib/ja-speaking.ts`(`jaSpeakingZodAnswerBand`·`JA_SPEAKING_ZOD_PASSAGE`)와 `JA_SPEAKING_LIMITS`(`speaking-schemas.ts`)에 한 번만 둔다.
+
+- **일본어 한 줄**(`line`): `ja`는 일본 문자 포함·**한글 금지**·최대 600자, `ko`는 한글 포함·최대 800자, `tokens` 1개 이상이고 **surface를 이으면 `ja`와 정확히 같다**(토큰 무결성 — §2-4), 토큰마다 §5 `jaTokenSchema`(reading을 단 토큰은 한자만·reading은 히라가나·가나 토큰의 reading은 null로 정리).
+  - **말하기 전용 토큰 규칙**(2026-10-25, QA speaking-ai 1 P2-A — `jaLineKanjiTokenIssue`): **한자가 든 토큰은 한자만으로 이뤄지고 reading이 있어야 한다.** 그래서 문장을 통째로 한 토큰으로 낸 출력, 한자 토큰의 읽기를 빼먹은 출력(`本日`·null), 숫자·오쿠리가나를 가르지 않은 토큰(`3時`·`食べ`)은 거부된다(1회 재요청). 단어장 공용 `jaTokenSchema`는 reading null 한자 토큰을 그대로 받는다 — 이 규칙은 말하기 줄(`line` — 지문·질문·소개·모범답변·고친 답변 전부)에만 건다.
+  - 까닭: Q1–2 대조(§15-5)가 지문 토큰의 **읽기 갈래**에 기댄다 — 읽기가 없으면 전사가 한자어를 가나로 적었을 때 맞게 읽어도 틀린 것으로 센다(`本日`(null) vs "ほんじつ" → 0.17, 읽기를 달면 1.0). 응시 중 후리가나 토글도 이 읽기를 보인다. 재요청이 늘 수 있으니 첫 실호출에서 재시도율을 본다(잦으면 prompt-tuner).
+  - JSON Schema는 바꾸지 않는다(`reading`은 그대로 `string|null` — 가나 토큰이 null이어야 한다). 프롬프트 머리말 [후리가나]와 호출 F [후리가나]에 같은 뜻의 줄이 있다.
+- 발화 길이(글자, `countJaSpeechChars`): 모범답변은 `답변 시간 × 0.8` ~ `× 6`(15초 12~90 · 30초 24~180 · 60초 48~360 — 레벨 무관), 지문은 50~260.
+- E1: `items` 정확히 2, `kind` 서로 다름, `tipsKo` 2~4(한글).
+- E2: `items` 정확히 2, `place` 1~40자·서로 다름(NFKC·대소문자·연속 공백 무시), `imagePrompt` 영어(라틴 포함·한글 금지) 40~160단어, `sceneKo` 한글, 모범답변 30초 폭, `keyPointsKo` 3~5.
+- E3: `topicKo` 한글 최대 30자, `questions` 정확히 3, 질문 `ja`는 `か`·`？`·`?`로 끝남(뒤 `。` 하나 허용 — `isJaQuestionEnding`), 모범답변은 그 문항의 답변 시간 폭(Q5·Q6 15초, Q7 30초).
+- E4: 표 `title` 일본어, `titleKo` 한글, `meta` 1~4·`rows` 4~10·`notes` 0~3, 표 칸은 **비어 있지 않음 + 한글 금지 + 최대 80자만** 본다(시각·요금 칸에는 일본 문자가 없을 수 있다 — 토익 §4-9와 같은 이유), `questions` 정확히 3(질문 끝맺음·Q8·Q9 15초·Q10 30초 폭).
+- E5: 모범답변 60초 폭, `outlineKo` 3~5, `tipKo` 한글.
+- 후처리 `toJaSpeakingRecordPart(part, gen)`: E2만 `items[i].image = {status: "pending", imageId: null}`을 붙인다(관문 P가 채운다 — 토익 C2와 같은 상태 셋). 나머지는 그대로 레코드 파트가 된다. 토익의 `usedExpressions` 같은 목록 대조가 없다(활용할 표현 입력이 없다 — §15-15).
+
+### 15-4. 호출 F — 답변 피드백 (+ 관문 T-ja 전사, Q1–2 대조)
+
+#### 15-4-0. 흐름
+
+응시가 끝나면 녹음은 **이 기기**(IndexedDB 풀 `"ja"`)에만 있다(§15-9-4). 결과 화면의 **"AI 채점 받기"**를 누르면 문항마다(동시 2개 — 토익 `TOEIC_SCORE_CONCURRENCY`와 같은 값):
+
+1. 클라이언트가 녹음을 16kHz mono WAV로 정규화(`lib/mic-session.ts` — 토익과 같은 함수).
+2. `POST /api/japanese/speaking/attempts/[id]/score`(multipart `q`·`audio`) → 관문 T-ja 전사(`language: "ja"`, **기대 문장(지문·모범답변·질문)을 prompt로 넣지 않는다** — 전사가 기대 문장 쪽으로 끌려가 하지 않은 말이 맞게 적히고 점수가 부풀려진다. §15-8).
+3. 전사문 발화 글자(정규화 뒤)가 `JA_SPEAKING_MIN_TRANSCRIPT_CHARS`(4) 미만이면 **호출 F 없이** `score: 0, feedback: null, noResponse: true`로 저장("답변이 인식되지 않았어요"). 피드백 객체를 지어내지 않으므로 추정 수준 집계에 섞이지 않는다.
+4. Q1–2 → §15-5 대조(순수 함수). Q3–11 → 호출 F.
+   - Q1–2도 3의 무응답 판정을 **기록한다** — 4글자 미만이면 `noResponse: true`, 그래도 대조는 그대로 해서 `readDiff`를 저장하고 점수는 `jaReadProxyScore`(빈 전사면 정확도 0 → 0점). 즉 Q1–2에서 `noResponse`는 화면 문구("답변이 인식되지 않았어요")용 표시일 뿐 점수 경로를 바꾸지 않는다. Q3–11에서만 `noResponse`가 호출 F를 건너뛴다.
+5. 결과를 응시 기록의 그 문항에 저장하고 돌려준다.
+
+- 호출 F가 재요청 뒤에도 실패하면 **전사문을 먼저 저장**하고(점수 null) 실패를 알린다 — 다시 누르면 저장된 전사문으로 F만 한다(전사 비용을 두 번 내지 않는다). 이미 점수가 있으면 AI 없이 저장된 답을 돌려준다(토익 §5-0과 같다).
+- 호출 옵션: temperature 0.2, maxOutputTokens 6000, call 라벨 `ja_speaking_feedback`, 모델 `resolveModel()`
+  - 2,500(토익 D)보다 큰 까닭: `improvedAnswer`에 후리가나 토큰이 붙고(Q11 N1이면 보이는 출력만 약 2.5~3k 토큰), 기본 모델이 추론 계열이라 숨은 추론 토큰도 같은 한도에 든다. 한도에 걸리면 `incomplete` → 재요청 → 그 문항 채점 실패로 번지므로 처음 안(4,000)에서 올렸다(QA speaking-ai 1 P3-D, 2026-10-25). 비용은 실제로 낸 토큰만큼이라 한도를 올려도 늘지 않는다. 첫 실호출에서 `usage.output_tokens`로 확인한다.
+
+#### 15-4-1. 시스템 프롬프트 (원문 그대로 사용 — `JA_SPEAKING_FEEDBACK_SYSTEM_PROMPT`)
+
+```
+너는 일본어 말하기 시험 채점관 겸 코치다. 한국인 성인 학습자가 JLPT 레벨에 맞춘 말하기 모의 문항에 답한 전사문을 받아 점수를 매기고, 답변에 드러난 일본어 수준을 JLPT 레벨로 추정하고, 다음 답변을 더 잘하게 만드는 피드백을 한국어로 준다.
+
+[입력]
+- 문항 번호와 유형, 만점, 답변 시간, 문항의 레벨, 수험자가 본 자료(질문·표·사진 설명), 참고용 모범답변, 그리고 음성 인식으로 얻은 답변 전사문을 받는다.
+- 전사문은 음성 인식 결과라 발음·억양·장단음을 알 수 없고, 인식 오류가 섞이거나 한자·가나 표기가 모범답변과 다를 수 있다. 발음과 표기는 평가하지 않는다. 인식 오류로 보이는 말은 감점하지 말고 문맥으로 해석한다.
+- 모범답변은 참고용이다. 모범답변과 다르다는 이유로 감점하지 않는다.
+
+[채점]
+- 점수는 이 문항의 과제를 얼마나 해냈는가다 — 내용이 질문과 자료에 맞고 충분한가(관련성·완성도), 문법과 어휘가 정확하고 적절한가, 문장이 자연스럽게 이어지는가.
+- Q3–4(0~3): 사진의 주요 특징을 묘사했는가.
+- Q5–7(0~3): 질문에 맞는 완전하고 적절한 답인가.
+- Q8–10(0~3): 위 기준에 더해 표의 정보를 정확히 전달했는가.
+- Q11(0~5): 입장이 분명한가, 이유와 예시로 뒷받침했는가, 생각 사이의 관계가 분명한가. 이유 하나에 부연이 거의 없으면 3점 수준, 질문을 되읽거나 단어만 나열하면 1점 수준이다.
+- 무응답이거나 일본어가 아니거나 과제와 무관하면 0점이다.
+- 제한 시간에 비해 답이 너무 짧으면 완성도에서 깎는다.
+
+[수준 추정]
+- levelEstimate: 이 답변에 실제로 쓴 어휘·문형과 그 정확성으로 보아 어느 JLPT 레벨의 말하기에 해당하는지 하나로 고른다(N1~N5, N5에도 못 미치면 below_n5). 문항의 레벨과 상관없이 답변만 보고 정한다. JLPT에는 말하기 시험이 없으므로 이것은 추정이다.
+- levelReasonKo: 그렇게 본 근거 한 줄(한국어 — 답변에 쓴 문형이나 어휘를 예로 든다).
+
+[피드백]
+- summaryKo: 총평 1~2문장(한국어).
+- strengths: 잘한 점 1~3개(한국어, 구체적으로).
+- fixes: 고칠 표현 0~5개. said에는 전사문에서 그대로 복사한 구간을, better에는 같은 뜻의 올바르고 자연스러운 일본어를, whyKo에는 이유 한 줄(문법·어휘·어색함·내용·말투)을 쓴다. 인식 오류로 보이는 것은 고치지 않는다.
+- missingKo: 내용상 빠진 것 0~3개(한국어).
+- improvedAnswer: 수험자의 답변 내용을 살려 제한 시간 안에 말할 수 있게 고쳐 쓴 더 나은 답변(ja·tokens·ko). 문항의 레벨에 맞는 어휘와 문형으로 쓰고, 모범답변을 베끼지 않는다.
+
+[후리가나]
+- improvedAnswer의 tokens는 surface를 순서대로 이어 붙이면 ja와 정확히 같아야 한다. reading은 surface가 한자만으로 이뤄진 토큰에만 히라가나로 채우고, 가나·숫자·기호가 섞인 토큰은 null로 둔다. 한자 숙어는 한 토큰으로 묶고, 오쿠리가나와 활용 어미는 분리한다. 한자가 들어간 토큰에는 reading을 반드시 단다.
+
+[금지]
+- 전사문에 없는 말을 수험자가 했다고 쓰지 않는다.
+- 지정된 JSON 스키마 외의 텍스트를 내지 않는다.
+```
+
+- 점수 축은 토익 §5-1 채점과 같은 모양(과제 수행·정확성·연결)이고 **문항의 레벨이 과제 난이도**를 정한다 — 같은 3점이라도 N5 문항의 3점과 N2 문항의 3점은 다르다. 그래서 점수 합은 "이 레벨 달성도"로만 보이고(§15-6), 수준은 `levelEstimate`가 레벨과 **상관없이** 답변만 보고 따로 정한다.
+- "표기는 평가하지 않는다"는 전사문이 한자·가나를 임의로 고른다는 사실 때문이다(전사 모델이 같은 말을 私/わたし로 적을 수 있다).
+
+#### 15-4-2. 사용자 메시지 (`JA_SPEAKING_FEEDBACK_USER_TEMPLATE`)
+
+```
+문항: Q{n} ({유형 이름}) · 답변 시간 {초}초 · 만점 {3|5}
+문항의 레벨: {N5|N4|N3|N2|N1}
+수험자가 본 자료:
+{material}
+모범답변(참고용):
+{sampleAnswer}
+답변 전사문:
+{transcript}
+```
+
+- 유형 이름·답변 시간·만점은 형식표에서 읽는다(`buildJaSpeakingFeedbackUserMessage` — 숫자를 다시 적지 않는다). 문항의 레벨은 모의고사 레코드의 `level`이다.
+- `material`은 레코드에서 코드가 만든다(`buildJaSpeakingFeedbackMaterial` — 화면이 보낸 글을 믿지 않는다). 줄마다 한 가지, 라벨은 한국어:
+  - Q3–4: `사진 설명: {sceneKo}` → `묘사 포인트:` → 포인트마다 `- {keyPointsKo}`
+  - Q5–7: `상황: {intro.ja}` → `질문: {그 질문 ja}`
+  - Q8–10: `표: {title}` → meta 한 줄씩 → rows 한 줄씩 `{left} — {right}` → notes 한 줄씩 → `전화 건 사람: {callerIntro.ja}` → `질문: {그 질문 ja}`
+  - Q11: `질문: {question.ja}`
+- 모범답변은 그 문항의 `sampleAnswer.ja`(토큰·ko는 넣지 않는다). Q1–2이거나 그 파트·슬롯이 레코드에 없으면 입력이 null이고 호출 F를 부르지 않는다(`buildJaSpeakingFeedbackInput`).
+
+#### 15-4-3. JSON Schema (strict)
+
+```json
+{
+  "name": "ja_speaking_feedback",
+  "strict": true,
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "score",
+      "levelEstimate",
+      "levelReasonKo",
+      "summaryKo",
+      "strengths",
+      "fixes",
+      "missingKo",
+      "improvedAnswer"
+    ],
+    "properties": {
+      "score": {
+        "type": "integer"
+      },
+      "levelEstimate": {
+        "type": "string",
+        "enum": [
+          "N1",
+          "N2",
+          "N3",
+          "N4",
+          "N5",
+          "below_n5"
+        ]
+      },
+      "levelReasonKo": {
+        "type": "string"
+      },
+      "summaryKo": {
+        "type": "string"
+      },
+      "strengths": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "fixes": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "said",
+            "better",
+            "whyKo"
+          ],
+          "properties": {
+            "said": {
+              "type": "string"
+            },
+            "better": {
+              "type": "string"
+            },
+            "whyKo": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "missingKo": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "improvedAnswer": {
+        "$ref": "#/$defs/line"
+      }
+    },
+    "$defs": {
+      "line": {
+        "…": "ja_speaking_read와 동일"
+      },
+      "tokens": {
+        "…": "ja_speaking_read와 동일"
+      }
+    }
+  }
+}
+```
+
+#### 15-4-4. zod (`buildJaSpeakingFeedbackZod({q, transcript})`)
+
+- `score` 정수 0~만점(Q11 5, 나머지 3 — 형식표), `levelEstimate` enum, `levelReasonKo`·`summaryKo` 한글, `strengths` 1~3(한글), `missingKo` 0~3(한글), `improvedAnswer`는 §15-3-9 일본어 한 줄 규칙(토큰 무결성·한글 금지).
+- `fixes` 0~5 — `better`는 일본어(한글 금지), `whyKo` 한글, **`said`는 전사문에 연속 구간으로 있어야 한다**(`isSaidInJaTranscript` — `lib/ja-speaking-score.ts`): 양쪽을 NFKC·소문자로 바꾸고 문자·숫자만 남긴 뒤(공백·문장부호·기호 제거) 부분 문자열인지 본다. 정규화 뒤 2글자 미만도 거부. 가나 종류(히라가나↔가타카나)는 바꾸지 않는다 — said는 전사문 그대로의 구간이어야 한다.
+  - 거부하면 `callWithSchema`의 1회 재요청이 교정한다. 하지 않은 말을 고쳤다는 것은 환각이다(토익 `buildFeedbackZod`와 같은 자리 — 일본어는 띄어쓰기가 없어 단어열이 아니라 글자열로 본다).
+
+### 15-5. Q1–2 지문 대조 (AI 없음 — `lib/ja-speaking-score.ts`)
+
+#### 15-5-1. 왜 이 방식인가
+
+- 토익 `alignReadAloud`는 **단어 단위**다. 일본어는 띄어쓰기가 없어 쓸 수 없다.
+- 전사(관문 T-ja)는 한자·가나 섞인 표기로 오고 **읽기를 주지 않는다.** 사전·형태소 분석기 없이는 전사문을 가나로 바꿀 수 없다(이 저장소에 없고, 클라이언트 번들에 수 MB 사전을 싣는 것은 과하다).
+- 반면 **지문 쪽은 토큰마다 후리가나 읽기를 가지고 있다.** 그래서 정규화 방향을 거꾸로 잡는다 — 지문 토큰마다 **표기 갈래와 읽기 갈래**를 둘 다 열어 두고, 전사문 글자열과 맞는 쪽을 고른다. 전사가 지문의 한자어를 가나로 적어도(今日 ↔ きょう) 맞게 센다.
+- AI로 넘기지 않은 까닭: 소리 내어 읽기는 "지문 글자를 빠짐없이 읽었는가"라는 결정적 질문이고, 토익 Q1–2도 같은 이유로 AI 채점을 하지 않는다(§5-4 — 전사문이 LLM 채점에 섞이면 같은 녹음이 매번 다른 점수가 된다). 남는 틈(아래 §15-5-4)은 "글자 일치율(참고)"이라고 화면에 적어 정직하게 보인다.
+
+#### 15-5-2. 알고리즘 (`alignJaReadAloud(tokens, transcript)` → `JaReadDiff`)
+
+1. 정규화 `normalizeJaReadChars`: NFKC(전각 숫자·반각 가나 통일) → 소문자 → **가타카나를 히라가나로** → 히라가나·`ー`·`ゝゞ`·`々`·한자(통합·확장 A)·숫자·라틴만 남긴다(문장부호·공백·기호 버림). 코드포인트 배열.
+2. 지문 토큰마다 갈래 = `[정규화(surface)]`, reading이 있고 다르면 `+ [정규화(reading)]`. 정규화 뒤 빈 토큰(문장부호만)은 세지 않는다.
+3. **격자 크기 상한**(2026-10-25, QA speaking-ai 1 P3-B): 정규화한 전사를 `max(JA_READ_ALIGN_MIN_CHARS 60, 지문 최장 갈래 글자 수 × JA_READ_ALIGN_TRANSCRIPT_FACTOR 3)`글자로 자른 뒤 정렬한다 — 전사 모델의 반복 환각(같은 말을 수천 자 되풀이)에도 메모리·시간이 지문 크기에 묶인다. 잘린 꼬리는 어차피 덧붙음이라 정확도에 영향이 없다(덧붙음은 깎지 않는다). `alignJaReadAloud` 입구에서 하므로 라우트가 따로 자를 필요가 없다.
+4. 갈래가 있는 격자와 전사문 글자열의 편집거리(빠짐·덧붙음·바뀜 각 1)를 토큰 경계 벡터로 이어 계산하고 역추적한다. 같은 비용이면 표기 갈래, 그다음 일치 → 바뀜 → 빠짐 → 덧붙음 순.
+5. 결과(`JaReadDiff` — 토익 `ToeicReadDiff`와 **같은 모양**이라 결과 화면 렌더를 같이 쓸 수 있다):
+   - `accuracy = 1 − (빠진 글자 + 바뀐 글자) / 고른 갈래들의 글자 수`(0 미만은 0, 지문 글자 0이면 0)
+   - `missing`: 전사 글자가 하나도 정렬되지 않은 — **통째로 빠진** — 지문 토큰(표기). 전부 다르게 들린 토큰(정렬된 전사 글자가 있지만 모두 다름)은 `missing`이 아니라 `substituted`다(토익 §5-4와 같은 뜻)
+   - `substituted`: 일부가 다르게 들린 토큰 `{expected: 표기, heard: 그 자리에 정렬된 전사 글자}`
+   - `extra`: 덧붙여 들린 전사 글자 묶음(군말·되풀이). 덧붙음은 정확도를 깎지 않는다(토익과 같다)
+
+#### 15-5-3. 참고 점수·안내
+
+- `jaReadProxyScore(accuracy)`: ≥0.95 → 3, ≥0.85 → 2, ≥0.6 → 1, 그 밖 0(`JA_READ_PROXY_THRESHOLDS` — 토익과 같은 값으로 시작, 튜닝 대상 §15-15). 90자 지문에서 두 글자 낱말 하나를 틀리면 약 0.98이다.
+- 화면에 `JA_SPEAKING_READ_NOTICE_KO`("발음·억양은 채점하지 않았어요 — 글자 일치율이에요. 녹음을 다시 들어 보세요")를 함께 적는다.
+
+#### 15-5-4. 알려진 한계 (eval이 지금 동작을 잠근다)
+
+- **지문이 가나인데 전사가 한자**(わたし ↔ 私)는 맞추지 못한다 — 지문에 그 한자의 갈래가 없다. 프롬프트의 "표준 표기" 줄(§15-3-1)이 1차 방어선이다.
+- **숫자 표기**(3 ↔ 三 ↔ さん): 지문 토큰 `3`에는 읽기가 없다(§5 — 숫자 토큰 reading null). 전사가 한자 숫자나 가나로 적으면 바뀜으로 센다. 프롬프트가 아라비아 숫자를 요구하고, 전사 모델도 시각·가격은 대개 숫자로 적는다.
+- **같은 소리 다른 한자**(전사 오인식 — 会議 ↔ 開議)는 바뀜으로 센다. 읽기가 같아도 전사 쪽 읽기를 모르니 구분할 수 없다.
+- 발음·억양·장단음은 보지 않는다(전사가 고쳐 적는다).
+
+### 15-6. 추정 수준·달성도 (`lib/ja-speaking.ts`)
+
+- **추정 수준**(`estimateJaSpeakingLevel(xs: {levelEstimate}[])`): 결과 화면은 응시 레코드에서 `attempt.answers.filter(a => attempt.questions.includes(a.q)).map(a => ({ levelEstimate: a.feedback?.levelEstimate ?? null }))`로 넘긴다(범위 밖 답·무응답은 null이 되어 세지 않는다). 채점된 Q3–11 답의 `feedback.levelEstimate`를 모아 낮음→높음(`below_n5` < N5 < … < N1)으로 정렬해 **아래쪽 중앙값**(짝수 개면 낮은 쪽 — 보수적)을 낸다. 유효 추정이 `JA_SPEAKING_LEVEL_MIN_ESTIMATES`(3) 미만이면 null(사진 2장만 푼 연습 등). 무응답(`feedback: null`)과 모르는 값은 세지 않는다. 화면 라벨 `JA_SPEAKING_ESTIMATE_LABEL_KO` "추정(참고용) — JLPT에는 말하기 시험이 없어요".
+- **달성도**(`jaSpeakingAchievement(qs, answers)`): 응시 범위의 **모든 문항**이 채점됐을 때만 `점수 합 / 만점 합`(실전 35점)을 내고, ≥0.8 "이 레벨 말하기에 도달했어요" · ≥0.6 "이 레벨에 가까워요" · 그 밖 "이 레벨은 아직이에요". 하나라도 없으면 `{ok:false, scoredCount, total}`("n/m문항 채점됨"). 점수가 정수 0~만점 밖이거나 범위 밖 문항은 채점 안 된 것으로 센다(던지지 않는다 — 토익 §5-5와 같은 방어).
+- 토익의 ACTFL 환산(200점 척도)은 쓰지 않는다 — ETS 척도를 일본어에 빌려 쓰면 근거 없는 숫자가 된다.
+
+### 15-7. 관문 P — 일본 배경 사진 (하네스 밖)
+
+- 사진 공용 코어 `lib/image-gen.ts`의 `generateJpegImage`를 **그대로** 부르는 새 얇은 모듈 `lib/ja-speaking-image.ts`(app-builder)를 둔다 — 토익 `lib/toeic-image.ts`와 같은 설정(모델 `OPENAI_IMAGE_MODEL` → `gpt-image-2`, 품질 `OPENAI_IMAGE_QUALITY` → `medium`, 1536×1024, JPEG 압축 70 → 초과 시 50으로 1회, data URL 900,000자 상한), 로그 태그 `ja_speaking_scene`. 토익 모듈·코어는 고치지 않는다.
+- 프롬프트 = E2 `imagePrompt`(앞뒤 공백 제거) + 공백 하나 + 아래 접미사(`buildJaSpeakingImagePrompt` — 원문 그대로 `JA_SPEAKING_IMAGE_PROMPT_SUFFIX`, spec-sync 대상):
+
+```
+A realistic candid photograph taken in Japan for a Japanese speaking test picture-description task. Natural colors and lighting, everyday adults, clear actions. No text, no readable signs or writing, no logos, no watermarks, no children.
+```
+
+- "no readable signs or writing" — 일본 거리 장면은 간판 글자가 많은데, 사진 모델이 지어낸 가짜 일본어 글자를 그리면 학습자가 읽으려다 헷갈린다.
+- 사진 한 장 = 요청 하나(`{slot: 0|1}`), 응답이 끊겨도 서버는 끝까지 저장(요청 신호를 넘기지 않고 서버 시간 상한만), 먼저 준비된 사진이 이긴다(`ready`는 바뀌지 않는다), 실패하면 `sceneKo`로 대신 보이고 "사진 다시 만들기" — 전부 토익 §4-10·§7-2와 같다.
+
+### 15-8. 관문 T-ja — 일본어 답변 전사 (하네스 밖)
+
+- 새 모듈 `lib/ja-speaking-transcribe.ts`(app-builder) — 토익 `lib/toeic-transcribe.ts`는 `language: "en"` 고정이고 eval이 소스를 잠그므로 **고치지 않고 모양만 따라** 새로 쓴다(은우 관문 W `lib/kid-speak-transcribe.ts` 선례).
+  - 모델: 토익 관문 T와 같은 env `OPENAI_TRANSCRIBE_MODEL`(빈 값이면 `gpt-4o-mini-transcribe`) — `resolveToeicTranscribeModel()`을 그대로 부른다.
+  - **`language: "ja"` 고정**(일본어 답을 다른 언어로 적지 않게), `response_format: "json"`, `maxRetries: 1`, 시간 상한 30초.
+  - **`prompt`를 넣지 않는다 — 함수에 prompt 인자 자체가 없다.** 기대 문장(지문·모범답변·질문)을 넣으면 전사가 그쪽으로 끌려가 하지 않은 말이 맞게 적힌다(토익 §5-0). Q1–2 대조가 특히 무너진다. eval이 소스에 `prompt` 필드가 없는지·`language: "ja"`인지 정적으로 본다(app-builder 회차에 등록).
+  - 라우트는 `req.signal`을 넘긴다(화면이 끊으면 상류 전사도 멈추고 499). 로그에는 모델·바이트·형식·글자 수·ms만(전사문·오디오 없음).
+
+### 15-9. 저장 모델
+
+`lib/store.ts` 새 레코드 체크리스트 12항목을 전부 밟는다(토익 §7 머리말). 선택 키(`?`) 금지 — 전부 필수 nullable. **컬렉션 3개를 새로 둔다 — `jaSpeakingMocks`·`jaSpeakingImages`·`jaSpeakingAttempts`.** 토익 컬렉션(`toeicMocks`·`toeicImages`·`toeicAttempts`)에 섞지 않는다 — 섞으면 토익 모의고사 목록·제목 번호·토익 스트릭(`isFullAttempt` 영어 판)·추정 등급이 일본어 기록으로 오염된다. 이름은 일본어 기존 컬렉션(`jaVocabBooks`·`jaDialogs`·`jaKanji`) 접두어 관례를 따른다.
+
+#### 15-9-1. `JaSpeakingMockRecord` — `jaSpeakingMocks`
+
+```ts
+interface JaSpeakingMockRecord {
+  id: string;
+  titleKo: string;                         // 기본 "말하기 모의고사 {n}"(defaultJaSpeakingTitle) 또는 사용자 수정
+  level: JlptLevel;                        // 만들 때 고른 레벨 하나 — 파트 다시 만들기·채점(호출 F)이 같은 값을 쓴다
+  topicHints: string[];                    // 호출 E에 넘긴 주제 힌트(normalizeJaSpeakingTopicHints 결과 그대로) — 다시 만들기가 같은 입력
+  parts: {                                 // 실패·미선택이면 null
+    read: JaSpeakingReadPart | null;
+    picture: JaSpeakingPicturePart | null; // items[i].image {status: "pending"|"ready"|"failed", imageId: string|null}
+    respond: JaSpeakingRespondPart | null;
+    info: JaSpeakingInfoPart | null;
+    opinion: JaSpeakingOpinionPart | null;
+  };
+  model: string;
+  createdAt: string;
+  sortIndex: number | null;
+}
+```
+
+- 파트 타입은 `lib/ai/japanese/speaking-schemas.ts`(호출 E 결과 그대로 + E2의 `image`). 완전한 세트 = 다섯 파트 모두 non-null.
+- **빈 파트만 채운다** — "이 파트 다시 만들기"는 null 파트만, 이미 있으면 409 `part_exists`(판정은 원자 단위 안 — 토익 `decideFillPart` 관용구). 입력은 처음과 같다(`level`·`topicHints`).
+- **Firestore 배열 속 배열 금지**에 걸리는 곳이 있다: `JaLine.tokens`는 배열 속 객체 속 배열이라 괜찮지만(`items[].passage.tokens`), 그 자체가 배열 원소가 되는 곳은 없다 — 구현 회차에 `toeicFirestoreCodec`처럼 감쌀 필요가 없는지 한 번 더 본다.
+- 크기: 실전 한 세트에 토큰 배열이 모범답변 9개 + 지문 2 + 질문·도입 8개 — 수십 KB 안쪽(Firestore 1MB).
+
+#### 15-9-2. `JaSpeakingImageRecord` — `jaSpeakingImages`
+
+```ts
+interface JaSpeakingImageRecord { id: string; mockId: string; slot: 0 | 1; dataUrl: string; model: string; createdAt: string }
+```
+
+토익 §7-4와 같은 모양. 모의고사를 지우면 함께 지운다. 사진 바이트는 `GET /api/japanese/speaking/images/[id]`(PIN 게이트 안, `cache-control: private`).
+
+#### 15-9-3. `JaSpeakingAttemptRecord` — `jaSpeakingAttempts`
+
+```ts
+interface JaSpeakingAnswer {
+  q: number;                               // 1..11
+  recorded: boolean;
+  durationMs: number | null;
+  transcript: string | null;               // 관문 T-ja
+  readDiff: JaReadDiff | null;             // Q1–2만(§15-5)
+  feedback: JaSpeakingFeedback | null;     // Q3–11만(호출 F 결과 그대로). 무응답이면 null
+  noResponse: boolean;                     // 전사 글자 < 4 → 호출 F 없이 0점
+  score: number | null;                    // Q1–2 = jaReadProxyScore, Q3–11 = feedback.score, 무응답 0
+  scoredAt: string | null;
+}
+interface JaSpeakingAttemptRecord {
+  id: string; mockId: string;
+  scope: "full" | "part";
+  parts: JaSpeakingPart[];
+  questions: number[];                     // 응시 범위(jaSpeakingQuestionsForParts) — 스트릭 한 판 판정이 본다
+  startedAt: string; finishedAt: string | null;
+  answers: JaSpeakingAnswer[];
+}
+```
+
+- 규칙은 토익 §7-5 그대로다 — 시작에 레코드를 만들고(녹음 키에 id가 필요), 끝/그만두기가 범위의 모든 문항을 채우고(녹음 안 된 문항은 `recorded:false`), **한 번만** 받는다(409 `already_finished`는 화면이 성공으로 본다 — `pagehide` sendBeacon), 채점은 그 문항만 원자 단위로 바꾼다(동시 2개가 서로 덮지 않게).
+- 토익 §13의 서버 녹음 메타(`recordings`)는 두지 않는다(녹음이 기기 전용 — 아래).
+
+#### 15-9-4. 녹음 — 기기 전용(토익 녹음 저장소의 새 풀)
+
+- `lib/toeic-rec-store.ts`의 풀에 **`"ja"`를 더한다** — `ToeicRecPool = "mock" | "drill" | "mom" | "ja"`, `toeicRecPoolOf`가 `"ja"`를 알아보고, **`isDeviceOnlyPool`이 `"mom"`과 `"ja"`를 기기 전용**으로 본다(저장 즉시 `upload: "gone"` — 업로드 대기열·"내 녹음 서버 보관" 목록에서 빠진다). 키는 `{attemptId}:{q}`, 풀마다 최근 응시 5회분.
+- 이 변경은 토익·엄마 녹음 경로를 지난다 — `EVAL_OFFLINE_ONLY=1 npm run eval:toeic`·`eval:mom`이 통과해야 한다. 옛 메타(풀 없음)는 지금처럼 `"mock"`.
+  - **`scripts/eval-mom.ts`의 정적 점검을 함께 고친다**(QA speaking-ai 1 P2-B①): 지금 정규식은 `isDeviceOnlyPool` 본문이 `return toeicRecPoolOf(meta) === "mom";` 한 줄인 것만 받는다 — `"ja"`를 더하면 반드시 깨진다. 점검을 지우지 말고 **"mom과 ja가 둘 다 기기 전용이고, mock·drill은 아니다"**를 보는 점검으로 바꾼다(소스 정규식이면 두 풀 이름을 다 요구하고, 가능하면 함수를 import해 풀 넷의 값을 직접 본다). 의미가 같은 점검으로 갱신은 허용, 점검을 지우는 것은 금지다.
+  - **메모리 폴백은 같은 풀끼리만 지운다**: `rememberInMemory`(IndexedDB를 못 쓸 때의 메모리 보관)는 지금 "기기 전용 여부가 같은" 다른 응시 녹음을 비운다 — 그대로 두면 `"ja"`를 기기 전용에 넣는 순간 엄마 녹음과 일본어 녹음이 서로를 지운다. 비교를 `isDeviceOnlyPool(v) === isDeviceOnlyPool(rec)`에서 **`toeicRecPoolOf(v) === toeicRecPoolOf(rec)`**로 바꾼다(mock·drill도 서로 지우지 않게 된다 — 풀마다 따로 센다는 §12-7-6 원칙과 같은 방향). `eval:toeic`에 이 행을 더한다.
+- 서버 업로드가 없으므로 **다른 기기에서는 채점할 수 없다** — 녹음이 이 기기에 없으면 결과 화면이 AI 채점 버튼을 막고 "이 녹음은 응시한 기기에만 있어요"라고 말한다.
+
+### 15-10. 라우트·화면
+
+#### 15-10-1. 라우트 (`app/api/japanese/speaking/**`, 전부 `runtime = "nodejs"`)
+
+| 라우트 | 역할 | AI | 상태코드 |
+|---|---|---|---|
+| `POST /mocks` | 만들기 `{level, parts?, topicHints?}`(parts 생략 = 다섯) — 파트 병렬 호출 E → 저장 | E | 200 `{id, titleKo, createdParts, failedParts}` · 400 · 501(**맨 먼저**) · 500 `ai_failed`(retriable — 전부 실패, 저장 안 함)·`save_failed` |
+| `GET /mocks/[id]` · `DELETE /mocks/[id]` | 새로 읽기(사진 실패 재확인) · 모의고사 + 사진 + 응시 연쇄 삭제 | 없음 | 200 · 404 · 403 `prod_guard` · 500 |
+| `POST /mocks/[id]/rename` · `POST /mocks/reorder` | 제목 · 목록 순서 | 없음 | 200 · 400 · 404 · 500 (`reorder-contract.ts`) |
+| `POST /mocks/[id]/regenerate?part=` | 빈 파트 하나 | E | 200 · 400 · 404 · 409 `part_exists` · 501(AI 직전) · 500 |
+| `POST /mocks/[id]/image` | 사진 한 장 `{slot}` | 관문 P | 200 `{slot, image, reused}` · 400 · 404 · 409 `scene_changed` · 501 · 500 `image_failed`(retriable)·`save_failed` |
+| `GET /images/[id]` | 사진 바이트 | 없음 | 200 image/jpeg · 404 · 500 |
+| `POST /mocks/[id]/attempts` | 응시 시작(범위 판정) | 없음 | 200 `{attemptId, scope, parts, questions, startedAt}` · 400 · 404 · 409 `incomplete_mock`·`part_missing` · 500 |
+| `POST /attempts/[id]/finish` | 끝/그만두기 — 한 번만 | 없음 | 200 · 400 · 404 · 409 `already_finished` · 500 |
+| `POST /attempts/[id]/score` | 문항 하나 채점(multipart `q`·`audio`) | 관문 T-ja + F | 200 `{q, answer, reused, transcriptSource, noResponse}` · 400 · 413 `audio_too_large`(4MB) · 404 · 409 `not_finished`·`not_recorded` · 501 · 499 · 500 `transcribe_failed`·`ai_failed`(+answer)·`save_failed` |
+
+- 상태코드·검사 순서·부분 성공·best-effort는 토익 라우트(`ai-harness-impl` references toeic 6·7절)와 같다. 응답 shape 단일 정의처는 새 계약 파일 `lib/ja-speaking-contract.ts`(`lib/ai/japanese/*`에서 `import type`/`export type`만).
+- 만들기 요청 zod: `level` ∈ `JLPT_LEVELS`, `parts`는 `JA_SPEAKING_PARTS`의 부분집합(1~5, 중복 없음), `topicHints` 0~`JA_SPEAKING_LIMITS.topicHintsMax`(3)개 각 1~`topicHintMax`(30)자.
+- 채점 라우트의 Q1–2: `alignJaReadAloud(그 지문의 passage.tokens, transcript)` → `readDiff` + `score = jaReadProxyScore(accuracy)`. Q3–11: `isJaNoResponseTranscript` → 무응답 0점, 아니면 `buildJaSpeakingFeedbackInput(mock, q, transcript)` → `generateJaSpeakingFeedback`.
+
+#### 15-10-2. 화면·경로
+
+```text
+/japanese                              허브 — 단어장 · 대화 복습 · 한자 옆에 🎙️ 말하기 모의고사 카드
+/japanese/speaking                     목록 + 새로 만들기(레벨 하나 — N5~N1 버튼 · 파트 고르기(기본 다섯) · 주제(선택, 직접 입력 또는 JA_VOCAB_TOPIC_PRESETS))
+/japanese/speaking/[id]                학습 보기 — 파트별 자료(지문·사진·질문·표) 일본어 + 후리가나 + "뜻 보기"(ko 펼침) · 모범답변 🔊(ja-JP) · 응시(실전 / 유형 연습) · 응시 기록
+/japanese/speaking/[id]/take           응시 화면(전면 오버레이 — 타이머·지시문·질문 음성·녹음)
+/japanese/speaking/attempts/[id]       결과 — 내 녹음 ▶(이 기기) · 전사 · 점수 · 피드백(한국어) · 고친 답변(후리가나) · 모범답변 · AI 채점 받기 · 추정 수준 · 달성도
+```
+
+- 셸은 일본어 방식(페이지마다 `u-navbtn` "← 상위"). 렌더 판정은 `lib/japanese-record.ts`에 `isRenderableJaSpeakingMock`을 더한다(단일 정의처).
+- 후리가나는 `components/ja-ruby.tsx` 한 곳으로 렌더한다. **응시 중에는** 지문(Q1–2)·질문 글(Q5–7·Q11)에 후리가나를 **켜고 끌 수 있게**(기본 켬 — 실전 연습이지만 성인 학습자도 독음 없이는 새 한자를 못 읽는다, §0-2 후리가나 결정). `ko`는 응시 중 숨기고(정답 누설에 가까운 도움), 학습 보기·결과 화면에서 펼친다.
+- **응시 경로는 시험 화면이다**(QA speaking-ai 1 P2-B② — SPEC §22-3·§25-3): `/japanese/**`에는 일본어 표현 도우미(`phrase-helper-scope.ts` mode `japanese`)가 있다. `lib/phrase-helper-scope.ts`의 시험 경로 목록에 `^/japanese/speaking/[^/]+/take$`를 더해 `isPhraseHelperExamPath`(따라서 `isExamScreen`)가 첫 렌더부터 참이 되게 한다 — 응시 중 도우미가 뜨지 않고 상단 스트릭·"누구 습관" 줄이 숨는다. 응시 화면의 `usePhraseHelperBlock()`도 그대로 켠다(두 겹). `eval:phrase`·`eval:streak` exam-screen 행을 함께 갱신한다. 결과 화면(`/japanese/speaking/attempts/[id]`)은 시험이 아니다(토익 결과 화면과 같다).
+- 학습 보기 화면은 열 때 사진 두 장을 자동 요청한다(토익과 같은 자동 사진 — pending 칸만, 이미 ready면 0).
+
+#### 15-10-3. 응시 화면 재사용 — 토익 응시 화면의 매개변수화
+
+`components/toeic-take-view.tsx`(약 2,000줄 — 오디오 세션 순서·마이크 유지(전략 B)·Wake Lock·무음 질문 안전망·sendBeacon·진단 줄이 실기기 검증을 마친 상태)를 **복제하지 않고** 시험 프로필 인자로 매개변수화해 일본어가 같은 컴포넌트를 쓴다. 프로필에 들어갈 것(토익 기본값은 지금 코드의 값 그대로):
+
+| 프로필 칸 | 토익(기본) | 일본어 |
+|---|---|---|
+| 지시문 `directions(part, count)` → `{speak, caption}` | `toeicPartDirections` → `{en, ko}` | `jaSpeakingPartDirections` → `{ja, ko}` |
+| 읽기 언어 | `en-US`(`TOEIC_DIRECTIONS_LANG`) | `ja-JP`(`JA_SPEAKING_SPEECH_LANG`) |
+| 진행 멘트 `phaseCue`·`cueTexts` | `toeicPhaseCue`·`toeicCueTexts` | `jaSpeakingPhaseCue`·`jaSpeakingCueTexts` |
+| 질문 음성 조각 | 지금 코드(영어 필드) | `jaSpeakingQuestionPieces` |
+| 문항 화면 렌더(지문·사진·표·질문) | 지금 컴포넌트 | 일본어 렌더러(후리가나 토글) |
+| 라우트 접두어(시작·끝·사진) | `/api/toeic/…` | `/api/japanese/speaking/…` |
+| 녹음 풀 | `"mock"`·`"drill"` | `"ja"`(기기 전용) |
+| 서버 녹음 업로드(`drainToeicRecUploads`)·문항 다시 풀기(`toeic-retake`)·공략 돌아가기 | 켬 | **끔** |
+| 표현 도우미 막기(`usePhraseHelperBlock` — 도우미 내리기 + `isExamScreen` 상단 숨김) | 켬 | **켬(공통 코어 — 프로필로 끌 수 없다)** |
+
+**토익 동작 불변 조건**(재사용 회차의 완료 기준):
+1. 토익 화면은 프로필을 넘기지 않으면(또는 토익 프로필이면) 지금과 **같은 문자열**을 읽고 미리 받는다 — 지시문·멘트·질문 조각이 바이트까지 같아야 클라우드 TTS 영구 캐시가 그대로 맞는다(글자가 하나라도 바뀌면 캐시가 비고 합성 비용이 다시 난다).
+2. 오디오 세션 순서(재생과 캡처를 겹치지 않음, `play-and-record` → gUM → start → 답변 시계 → stop → 트랙 stop → `playback`)·마이크 유지 정책·대기 상한·무음 안전망(`toeicSpeechOutcome`)은 프로필로 바꿀 수 없는 공통 코어다.
+3. `EVAL_OFFLINE_ONLY=1 npm run eval:toeic`(마이크 유지 K1~K24·화면 배선 소스 대조 포함)·`tsc`·토익 응시 e2e(가짜 마이크·시간 배율·스텁)가 그대로 통과한다. `toeic-take-view.tsx`·`toeic-rec-store.ts`를 소스 정규식으로 잠근 eval 조각(`eval-toeic*.ts`·`eval-streak`·`eval-phrase-helper`·`eval-mom`)은 매개변수화로 글자가 바뀌면 손봐야 한다 — **의미가 같은 점검으로 갱신은 허용, 점검을 지우거나 느슨하게 하는 것은 금지**.
+4. 토익 레코드·컬렉션·스트릭 라벨에 일본어 응시가 섞이지 않는다(라우트 접두어·풀이 프로필에서만 온다).
+
+매개변수화가 위 조건을 지키기 어려우면(공통 코어와 토익 전용 분기가 너무 얽혀 있으면) 코어(단계 진행·녹음·오디오 세션)만 훅으로 떼어 내고 두 화면이 그 훅을 쓰는 쪽으로 간다 — 어느 쪽이든 **토익 화면 코드 복제는 하지 않는다**(복제하면 실기기에서 고친 오디오 버그가 한쪽에만 고쳐진다).
+
+### 15-11. 발음·스트릭·비용
+
+#### 15-11-1. 발음 — `speakQueue` ja-JP
+
+- 지시문·멘트·질문·모범답변은 `speakQueue`/`speak(text, "ja-JP")`로 읽는다(lang 항상 명시). 재생 규약은 SPEC §18(탭 안에서 동기 호출, 큐가 돌려준 stop만 쓴다).
+- **일본어 기본 엔진은 기기 음성**이다(SPEC §16-5 — 언어별 엔진: 영어·한국어는 클라우드, 일본어는 기기). 시험 음성 품질 주의:
+  - iPhone 기기 일본어 음성(Kyoko 등)은 또렷하지만 기계적이고, **일본어 음성이 설치되지 않은 기기**(일부 Android·데스크톱 브라우저)에서는 소리가 나지 않을 수 있다 → 무음이면 토익 안전망(`toeicSpeechOutcome` — 질문은 조각 하나라도 무음이면 멈춤)이 "다시 듣기"·"질문 보기"를 띄운다.
+  - 응시 화면에 `TtsEngineControl lang="ja-JP"`를 두어 클라우드 엔진으로 바꿀 수 있게 한다. 클라우드로 바꾸면 시작 탭의 미리 받기(지시문·멘트·질문)가 의미가 있고 영구 캐시라 두 번째 응시부터 합성 0. 기기 음성이면 미리 받기는 하지 않는다(받을 것이 없다).
+  - 클라우드 TTS 지시문이 "young learner" 톤이라 실제 시험보다 느리고 또박또박하다(토익 §10 알려진 한계와 같다) — 속도 조절(`TtsSpeedControl`)로 보완. 지시문을 바꾸면 전 언어 캐시가 비므로 이번 범위에서 건드리지 않는다.
+  - Q8–10은 질문 글을 숨기는 듣기 문항이다 — 기기 음성의 일본어 억양이 어색하면 질문을 못 알아들을 수 있다. 실기기 확인 항목(§15-14 3).
+
+#### 15-11-2. 스트릭 — 아빠 📚 어학(일본어 트랙)
+
+- **한 판**(SPEC §17-11 `lib/streak-v2-sources.ts`): 일본어 말하기 응시는 **`isFullAttempt`를 그대로** 쓴다 — `finishedAt ≠ null`이고 응시 범위(`questions`)의 **모든 문항이 녹음됨**. 토익 응시와 같은 규칙이라 함수를 새로 두지 않는다(`JaSpeakingAttemptRecord`가 `finishedAt`·`questions`·`answers{q, recorded}`를 같은 모양으로 가진다). 유형 연습(파트 하나)도 그 범위를 끝까지 녹음하면 한 판이다. "녹음 없이 연습"(마이크 거부)은 한 판이 아니다(토익과 같다).
+- 들어가는 곳(`lib/streak-server.ts`): 일본어 트랙 v2 runs에 `addRuns(m, jaSpeakingAttempts.filter(isFullAttempt).map(a => a.startedAt))`, 옛 일본어 스트릭 세션(`jaSessions`)에도 녹음된 문항을 답한 문항으로 보는 세션으로 더한다. 아빠 한 칸 규칙(어학 ∪ … 둘 다 — SPEC §25-5)은 그대로다 — 어학 쪽 날짜에 일본어 말하기가 더해질 뿐이다.
+- 오늘 라벨: 가장 늦게 시작한 일본어 기록이 말하기 응시면 `말하기 모의고사 · {titleKo}`(헤드라인이 `일본어 · `를 앞에 붙인다 — SPEC §17-10).
+- 일본어 말하기 기록을 읽다 실패하면 그것만 빼고 계산한다(토익 기록 실패 격리와 같은 원칙 — 라우트 전체가 500이 되지 않게).
+- eval: `eval:streak`에 "일본어 말하기 한 판"(끝까지 녹음 = 한 판, 한 문항 미녹음 = 아님, 토익 트랙에 섞이지 않음, 은우 트랙에 섞이지 않음)을 더한다(app-builder 회차).
+
+#### 15-11-3. 비용 (화면 경로별 실호출 수)
+
+| 경로 | 실호출 | 비고 |
+|---|---|---|
+| 새로 만들기(실전 5파트) | 호출 E **5회**(병렬) — 재요청 시 그 파트 ×2 | 버튼 |
+| 유형 하나 만들기 | 호출 E 1회 | 버튼 |
+| 학습 보기 화면을 처음 열 때 | 관문 P **2회**(사진 두 장 — pending 칸만) | 자동. 이미 ready면 0, 실패 칸은 "사진 다시 만들기" 버튼 |
+| 이 파트 다시 만들기 | 호출 E 1회(+ picture면 사진 2장 — 다음에 열 때 자동) | 버튼 |
+| 응시 | AI 0 — 기기 음성이면 발음 요금도 0. 클라우드 엔진이면 지시문·멘트·질문 합성(첫 응시만, 영구 캐시) | — |
+| AI 채점 받기(실전) | 관문 T-ja **11회** + 호출 F **9회**(Q3–11, 재요청 시 ×2). 무응답 문항은 F 0 | 버튼. 이미 채점된 문항 0, F만 실패한 문항은 다시 누르면 F만 |
+| 결과 화면 다시 열기 | 0 | 저장된 답 |
+| 모범답변 🔊 | 기기 음성 0 · 클라우드면 문장 합성 1 | 탭 |
+
+- 실호출 eval(`EVAL_JAPANESE=1`)은 지금처럼 **자리만 있다**(§9). 첫 실호출 확인은 사용자 동의 후 오케스트레이터가 묶는다 — 실전 만들기 1회(E 5 + 사진 2)와 채점 한 판의 일부(T-ja 2 + F 1)면 형식·토큰·said 대조·추정 수준을 한 번에 본다.
+
+### 15-12. eval (`scripts/eval-japanese-speaking.ts` — `eval-japanese.ts`가 불러 한 번에 돈다, 오프라인·실호출 0)
+
+- **spec-sync**(바이트 대조, `block-exact` — 조립 규칙 끔): `JA_SPEAKING_MOCK_COMMON`·과제 5·`JA_SPEAKING_MOCK_USER_TEMPLATE`·`JA_SPEAKING_FEEDBACK_SYSTEM_PROMPT`·`JA_SPEAKING_FEEDBACK_USER_TEMPLATE`·`JA_SPEAKING_IMAGE_PROMPT_SUFFIX` **10개**, 호출 옵션 문장 2개(`jaSpeakingCallOptionsSentence` — 스펙 산문에 그대로 있는지, `inline`).
+- **JSON Schema 의미 동치** 6개(`ja_speaking_read`·`picture`·`respond`·`info`·`opinion`·`feedback`) — 2~6번은 `$defs` 자리표로 바꿔 비교하고, 여섯 상수의 `$defs`가 서로 같은지·strict 모양(모든 객체 `additionalProperties:false`·모든 속성 required·`minItems`/`maxItems` 없음)을 따로 본다.
+- **zod 반례**: 토큰 무결성 깨짐·reading을 단 한자+가나 토큰·**말하기 토큰 규칙**(지문 통째 한 토큰·한자 토큰 reading null·숫자+한자 한 토큰·모범답변·고친 답변도 같은 규칙, 단어장 공용 `jaTokenSchema`는 그대로인지)·일본어 칸 한글·ko 한글 없음·지문 2개 아님·kind 같음·place 같음·질문 3개 아님·질문 끝맺음·모범답변 글자 수 폭 밖·imagePrompt 한글·표 칸 한글 / 통과 픽스처(지어낸 일본어). 호출 F — `said`가 전사문 밖·문장부호만 다른 인용은 통과·2글자 미만·점수 범위(Q3 4점 거부, Q11 5점 통과)·better 한글·improvedAnswer 무결성.
+- **순수 함수**: 형식표 공유(일본어 문항 목록 = 토익), 지시문 숫자가 형식표에서 나오는지, 멘트 자리·미리 받기 5개, 질문 음성 조각(Q5·Q8 도입 포함·Q10·Q1–4 빈 배열), 길이 계산(레벨·초 표), 사용자 메시지 치환(주제 없음·주제 정리·힌트 하나 30자 자르기·길이 줄), 피드백 자료 서식·Q1–2 null, 후처리(E2 image pending).
+- **Q1–2 대조**: 그대로 읽음 = 1.0, 한자어를 가나로 적은 전사 = 1.0, 가타카나/히라가나·전각 숫자 차이 = 1.0, 토큰 하나 빠짐(missing), 다른 한자(substituted), 군말(extra — 정확도 불변), 빈 전사 = 0, 격자 상한(긴 반복 전사도 정확도 1.0·덧붙음은 잘린 만큼만), 참고 점수 문턱, **한계 잠금**(지문 가나 ↔ 전사 한자, 숫자 3 ↔ 三은 지금 동작대로 틀림으로 센다).
+- **추정 수준·달성도**: 아래쪽 중앙값·유효 3 미만 null·모르는 값 무시, 달성도 전부 채점일 때만·범위 밖 점수 무시·문턱.
+- **번들 경계**: `lib/ja-speaking.ts`·`lib/ja-speaking-score.ts`의 런타임 import가 `./toeic-mock`뿐(lib/ai·openai·zod·store 없음), 정규식 lookbehind 없음.
+- 실호출 게이트는 새로 두지 않는다(`EVAL_JAPANESE=1`은 자리만 — §9).
+
+### 15-13. 로드맵
+
+| 단계 | 내용 | AI 호출 | 담당 |
+|---|---|---|---|
+| **JS0** | 스펙 + AI 층(프롬프트·스키마·zod·후처리·진입 함수·순수 모듈·eval) | 0(오프라인) | ai-engineer — 2026-10-24 이 회차 |
+| **JS1** | 저장·라우트 — 레코드 3종·컬렉션·관문 P(`lib/ja-speaking-image.ts`)·만들기/다시 만들기/사진/삭제·이름·순서 라우트·계약 파일·목록·학습 보기 화면·허브 카드 | E·P | app-builder |
+| **JS2** | 응시 — 응시 화면 매개변수화(§15-10-3)·녹음 풀 `"ja"`·시작/끝 라우트·스트릭 한 판 | 0 | app-builder — 실기기(iPhone) 확인 필수 |
+| **JS3** | 채점·결과 — 관문 T-ja·채점 라우트(Q1–2 대조·무응답·F)·결과 화면(추정 수준·달성도) | T-ja·F | app-builder — 버튼을 눌러야 비용 |
+
+JS1 → JS2 → JS3 순서 의존이다(응시는 모의고사가, 채점은 응시가 있어야). 각 단계는 오프라인 eval을 먼저 통과하고, 실호출 확인은 동의 후 1회로 묶는다(§15-11-3 끝).
+
+### 15-14. iPhone 실기기 확인 목록
+
+1. 만들기 → 학습 보기: 후리가나가 지문·질문·모범답변 전부에 붙는가(숙어가 한 덩어리인가), "뜻 보기"가 펼쳐지는가, 레벨에 맞는 어휘인가(N5에 N2 어휘가 섞이지 않는가 — 눈으로).
+2. 사진 두 장이 일본 장소로 보이는가, 가짜 일본어 간판 글자가 그려지지 않는가.
+3. 응시: 지시문·질문을 기기 일본어 음성으로 끝까지 읽는가, Q8–10(질문 글 숨김)을 귀로 알아들을 수 있는가, 일본어 음성이 없는 기기에서 "다시 듣기"·"질문 보기"가 뜨는가, 엔진을 클라우드로 바꾸면 소리가 나는가.
+4. 녹음: 토익과 같은 순서로 비프 뒤 녹음이 시작되고, 마이크 유지(전략 B)에서 권한 창이 응시 전체 1회인가, 녹음 중 화면 잠금이 "중단됨"인가.
+5. 토익 응시를 한 판 다시 해 본다 — 지시문·멘트가 영어 그대로이고 소리가 바로 나는가(캐시 유지 — §15-10-3 불변 조건 1).
+6. 채점: 전사가 일본어로 적히는가(영어·로마자로 새지 않는가), 몇 초 안에 오는가, Q1–2 글자 일치율이 맞게 읽었을 때 0.95 이상인가 — 한자어를 가나로 적은 전사에서도.
+7. 피드백: `said`가 실제 전사문 구간인가, 한국어 해설이 실용적인가, 고친 답변의 후리가나, 추정 수준 라벨에 "추정(참고용)"이 붙는가.
+8. 녹음이 기기에만 있는가 — 다른 기기에서 결과를 열면 채점 버튼이 막히고 이유가 보이는가.
+9. 스트릭: 끝까지 녹음한 응시 뒤 아빠 📚 어학 칸이 켜지고 라벨이 `일본어 · 말하기 모의고사 · …`인가. 중간에 그만둔 응시는 켜지지 않는가.
+
+### 15-15. 열린 결정·튜닝 대상 (스펙에는 기본값을 썼다)
+
+- **말하기 속도 표**(`JA_SPEAKING_CHARS_PER_SEC`)와 채움 몫(0.6·0.8 / 0.8·0.9)은 근사다 — 실응시에서 모범답변이 시간 안에 읽히는지 보고 prompt-tuner가 조정한다(숫자만 바꾸면 프롬프트·zod·eval이 함께 따라온다).
+- Q1–2 참고 점수 문턱(0.95·0.85·0.6)은 토익 값을 빌렸다 — 글자 단위라 실제 분포를 보고 조정한다.
+- **활용할 단어**(내 JLPT 단어장 어휘를 모범답변에 넣기 — 토익 "활용할 표현"의 일본어판)는 넣지 않았다(사용자 범위 "모의고사만"). 쓸 신호가 보이면 `docs/BACKLOG.md` 후보로 제안한다.
+- 무응답 문턱 4글자(`JA_SPEAKING_MIN_TRANSCRIPT_CHARS`)는 "はい" 같은 두 글자 답을 무응답으로 본다 — Q5–7에서 짧은 직답만 한 경우 0점이 맞다는 판단이다(토익 2단어 규칙과 같은 자리).
+- 응시 중 후리가나 기본 켬·`ko` 숨김은 화면 기본값이다 — 사용 신호를 보고 바꾼다.

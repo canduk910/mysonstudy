@@ -238,6 +238,32 @@ import {
 } from "./toeic-retake";
 import { deleteAttemptRecordings } from "./toeic-rec-blob";
 import { isFirestoreDocId } from "./reorder-contract";
+import {
+  applyJaSpeakingAnswer,
+  applyJaSpeakingFillPart,
+  applyJaSpeakingFinish,
+  applyJaSpeakingPictureImage,
+  decideJaSpeakingFillPart,
+  decideJaSpeakingPictureImage,
+  isJaSpeakingAttemptClosed,
+  normalizeJaSpeakingAttemptRecord,
+  normalizeJaSpeakingImageRecord,
+  normalizeJaSpeakingMockRecord,
+  type FillJaSpeakingMockPartResult,
+  type FinishJaSpeakingAttemptInput,
+  type FinishJaSpeakingAttemptResult,
+  type JaSpeakingAnswerScorePatch,
+  type JaSpeakingAttemptRecord,
+  type JaSpeakingImageRecord,
+  type JaSpeakingMockRecord,
+  type MarkJaSpeakingPictureImageFailedResult,
+  type NewJaSpeakingAttempt,
+  type NewJaSpeakingMock,
+  type SaveJaSpeakingPictureImageInput,
+  type SaveJaSpeakingPictureImageResult,
+} from "./ja-speaking-record";
+import type { JaSpeakingPart } from "./ja-speaking";
+import type { JaSpeakingPartRecordMap } from "./ai/japanese/speaking-schemas";
 
 // ---------------------------------------------------------------------------
 // Admin SDK 초기화 — 지연 + 중복 방지 (dev HMR에서 앱이 이미 있으면 재사용)
@@ -479,6 +505,25 @@ function toeicMockData(r: ToeicMockRecord): Omit<ToeicMockRecord, "id"> {
 function toToeicImage(id: string, d: DocumentData): ToeicImageRecord {
   return normalizeToeicImageRecord({ ...d, id, createdAt: toIso(d.createdAt) });
 }
+// ---- 🎙️ 일본어 말하기 모의고사(japanese.md §15-9) 읽기 변환·쓰기 본문 — 파일 백엔드와 같은 정규화(lib/ja-speaking-record.ts) ----
+function toJaSpeakingMock(id: string, d: DocumentData): JaSpeakingMockRecord {
+  return normalizeJaSpeakingMockRecord({ ...d, id, createdAt: toIso(d.createdAt) });
+}
+function jaSpeakingMockData(r: JaSpeakingMockRecord): Omit<JaSpeakingMockRecord, "id"> {
+  const { id: _id, ...data } = normalizeJaSpeakingMockRecord(r);
+  return data;
+}
+function toJaSpeakingImage(id: string, d: DocumentData): JaSpeakingImageRecord {
+  return normalizeJaSpeakingImageRecord({ ...d, id, createdAt: toIso(d.createdAt) });
+}
+function toJaSpeakingAttempt(id: string, d: DocumentData): JaSpeakingAttemptRecord {
+  return normalizeJaSpeakingAttemptRecord({ ...d, id, startedAt: toIso(d.startedAt) });
+}
+function jaSpeakingAttemptData(r: JaSpeakingAttemptRecord): Omit<JaSpeakingAttemptRecord, "id"> {
+  const { id: _id, ...data } = normalizeJaSpeakingAttemptRecord(r);
+  return data;
+}
+
 function toToeicAttempt(id: string, d: DocumentData): ToeicAttemptRecord {
   return normalizeToeicAttemptRecord({ ...d, id, startedAt: toIso(d.startedAt) });
 }
@@ -727,6 +772,16 @@ export class FirestoreStore implements StudyStore {
     return getDb().collection("reviewSchedules");
   }
   // 👩 엄마의 생활영어(설계 §6-2) — 블록(문서 id = 블록 id)·레슨 기록·주간 테스트(문서 id = 클라이언트 멱등 키)
+  // 🎙️ 일본어 말하기 모의고사(japanese.md §15-9) — 토익 컬렉션과 섞지 않는다
+  private jaSpeakingMocks(): CollectionReference {
+    return getDb().collection("jaSpeakingMocks");
+  }
+  private jaSpeakingImages(): CollectionReference {
+    return getDb().collection("jaSpeakingImages");
+  }
+  private jaSpeakingAttempts(): CollectionReference {
+    return getDb().collection("jaSpeakingAttempts");
+  }
   private momContent(): CollectionReference {
     return getDb().collection("momContent");
   }
@@ -2262,6 +2317,167 @@ export class FirestoreStore implements StudyStore {
       const snap = await ref.get();
       return { record: snap.exists ? { ...(snap.data() as MomLessonRecord), id: rec.id } : rec, reused: true };
     }
+  }
+
+  // ---- 🎙️ 일본어 말하기 모의고사(japanese.md §15-9) — 판정·적용은 파일 백엔드와 같은 함수(lib/ja-speaking-record.ts) ----
+
+  async createJaSpeakingMock(input: NewJaSpeakingMock): Promise<JaSpeakingMockRecord> {
+    const ref = this.jaSpeakingMocks().doc();
+    const record = normalizeJaSpeakingMockRecord({ ...input, id: ref.id, createdAt: new Date().toISOString(), sortIndex: null });
+    await ref.set(jaSpeakingMockData(record));
+    return record;
+  }
+
+  async getJaSpeakingMock(id: string): Promise<JaSpeakingMockRecord | null> {
+    const snap = await this.jaSpeakingMocks().doc(id).get();
+    return snap.exists ? toJaSpeakingMock(snap.id, snap.data()!) : null;
+  }
+
+  async listJaSpeakingMocks(): Promise<JaSpeakingMockRecord[]> {
+    const snap = await this.jaSpeakingMocks().orderBy("createdAt", "desc").get();
+    return snap.docs.map((d) => toJaSpeakingMock(d.id, d.data()));
+  }
+
+  async deleteJaSpeakingMock(id: string): Promise<{ ok: boolean }> {
+    assertDestructiveAllowed("deleteJaSpeakingMock");
+    const ref = this.jaSpeakingMocks().doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) return { ok: false };
+    const [imageSnap, attemptSnap] = await Promise.all([
+      this.jaSpeakingImages().where("mockId", "==", id).get(),
+      this.jaSpeakingAttempts().where("mockId", "==", id).get(),
+    ]);
+    // 딸린 것 먼저, 모의고사를 마지막에(녹음은 기기에만 있어 서버에서 지울 녹음이 없다 — §15-9-4)
+    const refs = [...imageSnap.docs.map((d) => d.ref), ...attemptSnap.docs.map((d) => d.ref), ref];
+    const db = getDb();
+    for (let i = 0; i < refs.length; i += BATCH_LIMIT) {
+      const batch = db.batch();
+      for (const r of refs.slice(i, i + BATCH_LIMIT)) batch.delete(r);
+      await batch.commit();
+    }
+    return { ok: true };
+  }
+
+  async updateJaSpeakingMockTitle(id: string, titleKo: string): Promise<JaSpeakingMockRecord | null> {
+    const ref = this.jaSpeakingMocks().doc(id);
+    if (!(await ref.get()).exists) return null;
+    await ref.update({ titleKo });
+    const updated = await ref.get();
+    return toJaSpeakingMock(updated.id, updated.data()!);
+  }
+
+  async reorderJaSpeakingMocks(orderedIds: string[]): Promise<void> {
+    await reorderBySortIndex(getDb(), this.jaSpeakingMocks(), orderedIds);
+  }
+
+  async fillJaSpeakingMockPart<P extends JaSpeakingPart>(id: string, part: P, value: JaSpeakingPartRecordMap[P]): Promise<FillJaSpeakingMockPartResult | null> {
+    const ref = this.jaSpeakingMocks().doc(id);
+    return getDb().runTransaction(async (tx): Promise<FillJaSpeakingMockPartResult | null> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      const current = toJaSpeakingMock(snap.id, snap.data()!);
+      if (decideJaSpeakingFillPart(current, part) === "exists") return { outcome: "exists", record: current };
+      const record = normalizeJaSpeakingMockRecord(applyJaSpeakingFillPart(current, part, value));
+      tx.update(ref, { parts: record.parts });
+      return { outcome: "filled", record };
+    });
+  }
+
+  async saveJaSpeakingPictureImage(input: SaveJaSpeakingPictureImageInput): Promise<SaveJaSpeakingPictureImageResult> {
+    const mockRef = this.jaSpeakingMocks().doc(input.mockId);
+    // 새 사진 문서 id·시각은 트랜잭션 밖에서 한 번만 — 재시도돼도 같은 문서에 같은 값을 쓴다(멱등)
+    const imageRef = this.jaSpeakingImages().doc();
+    const image = normalizeJaSpeakingImageRecord({
+      id: imageRef.id,
+      mockId: input.mockId,
+      slot: input.slot,
+      dataUrl: input.dataUrl,
+      model: input.model,
+      createdAt: new Date().toISOString(),
+    });
+    return getDb().runTransaction(async (tx): Promise<SaveJaSpeakingPictureImageResult> => {
+      const snap = await tx.get(mockRef);
+      if (!snap.exists) return { outcome: "missing", record: null };
+      const current = toJaSpeakingMock(snap.id, snap.data()!);
+      const decision = decideJaSpeakingPictureImage(current, input.slot, input.imagePrompt);
+      if (decision === "missing") return { outcome: "missing", record: current };
+      if (decision !== "apply") return { outcome: decision, record: current };
+      const record = normalizeJaSpeakingMockRecord(applyJaSpeakingPictureImage(current, input.slot, { status: "ready", imageId: image.id }));
+      const { id: _id, ...data } = image;
+      tx.set(imageRef, data);
+      tx.update(mockRef, { parts: record.parts });
+      return { outcome: "saved", record, image };
+    });
+  }
+
+  async markJaSpeakingPictureImageFailed(mockId: string, slot: 0 | 1, imagePrompt: string): Promise<MarkJaSpeakingPictureImageFailedResult> {
+    const ref = this.jaSpeakingMocks().doc(mockId);
+    return getDb().runTransaction(async (tx): Promise<MarkJaSpeakingPictureImageFailedResult> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return { outcome: "missing", record: null };
+      const current = toJaSpeakingMock(snap.id, snap.data()!);
+      const decision = decideJaSpeakingPictureImage(current, slot, imagePrompt);
+      if (decision === "missing") return { outcome: "missing", record: current };
+      if (decision !== "apply") return { outcome: decision, record: current };
+      const record = normalizeJaSpeakingMockRecord(applyJaSpeakingPictureImage(current, slot, { status: "failed", imageId: null }));
+      tx.update(ref, { parts: record.parts });
+      return { outcome: "marked", record };
+    });
+  }
+
+  async getJaSpeakingImage(id: string): Promise<JaSpeakingImageRecord | null> {
+    const snap = await this.jaSpeakingImages().doc(id).get();
+    return snap.exists ? toJaSpeakingImage(snap.id, snap.data()!) : null;
+  }
+
+  async createJaSpeakingAttempt(input: NewJaSpeakingAttempt): Promise<JaSpeakingAttemptRecord> {
+    const ref = this.jaSpeakingAttempts().doc();
+    const record = normalizeJaSpeakingAttemptRecord({ ...input, id: ref.id });
+    await ref.set(jaSpeakingAttemptData(record));
+    return record;
+  }
+
+  async getJaSpeakingAttempt(id: string): Promise<JaSpeakingAttemptRecord | null> {
+    const snap = await this.jaSpeakingAttempts().doc(id).get();
+    return snap.exists ? toJaSpeakingAttempt(snap.id, snap.data()!) : null;
+  }
+
+  async listJaSpeakingAttemptsByMock(mockId: string): Promise<JaSpeakingAttemptRecord[]> {
+    const snap = await this.jaSpeakingAttempts().where("mockId", "==", mockId).get();
+    return snap.docs.map((d) => toJaSpeakingAttempt(d.id, d.data())).sort(byStartedAtAsc);
+  }
+
+  async listAllJaSpeakingAttempts(): Promise<JaSpeakingAttemptRecord[]> {
+    const snap = await this.jaSpeakingAttempts().get();
+    return snap.docs.map((d) => toJaSpeakingAttempt(d.id, d.data())).sort(byStartedAtAsc);
+  }
+
+  async finishJaSpeakingAttempt(id: string, input: FinishJaSpeakingAttemptInput): Promise<FinishJaSpeakingAttemptResult | null> {
+    const ref = this.jaSpeakingAttempts().doc(id);
+    // 판정(한 번만)과 쓰기를 한 트랜잭션으로 — 두 요청(연타·비콘·다른 탭)이 겹쳐도 먼저 커밋한 끝/그만두기만 남는다
+    return getDb().runTransaction(async (tx): Promise<FinishJaSpeakingAttemptResult | null> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      const current = toJaSpeakingAttempt(snap.id, snap.data()!);
+      if (isJaSpeakingAttemptClosed(current)) return { outcome: "already_closed", record: current };
+      const next = applyJaSpeakingFinish(current, input);
+      tx.update(ref, { finishedAt: next.finishedAt, answers: next.answers });
+      return { outcome: "finished", record: next };
+    });
+  }
+
+  async updateJaSpeakingAttemptAnswer(id: string, q: number, patch: JaSpeakingAnswerScorePatch): Promise<JaSpeakingAttemptRecord | null> {
+    const ref = this.jaSpeakingAttempts().doc(id);
+    // 그 문항만 — 동시 채점 2개가 서로 덮지 않게(읽기·바꾸기·쓰기가 한 트랜잭션)
+    return getDb().runTransaction(async (tx): Promise<JaSpeakingAttemptRecord | null> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      const cur = toJaSpeakingAttempt(snap.id, snap.data()!);
+      if (!isJaSpeakingAttemptClosed(cur)) return null;
+      const next = applyJaSpeakingAnswer(cur, q, patch);
+      tx.update(ref, { answers: next.answers });
+      return next;
+    });
   }
 
   async listMomTests(): Promise<MomTestRecord[]> {

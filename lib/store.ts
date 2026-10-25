@@ -175,6 +175,32 @@ import { normalizeRestAlertRecord, type WorkoutRestAlertRecord } from "./workout
 import type { MomBlockRecord, MomImportResult, MomLessonRecord, MomTestRecord } from "./mom-contract";
 import { decideMomImport } from "./mom-contract";
 import type { MomImportFile } from "./mom-content";
+import {
+  applyJaSpeakingAnswer,
+  applyJaSpeakingFillPart,
+  applyJaSpeakingFinish,
+  applyJaSpeakingPictureImage,
+  decideJaSpeakingFillPart,
+  decideJaSpeakingPictureImage,
+  isJaSpeakingAttemptClosed,
+  normalizeJaSpeakingAttemptRecord,
+  normalizeJaSpeakingImageRecord,
+  normalizeJaSpeakingMockRecord,
+  type FillJaSpeakingMockPartResult,
+  type FinishJaSpeakingAttemptInput,
+  type FinishJaSpeakingAttemptResult,
+  type JaSpeakingAnswerScorePatch,
+  type JaSpeakingAttemptRecord,
+  type JaSpeakingImageRecord,
+  type JaSpeakingMockRecord,
+  type MarkJaSpeakingPictureImageFailedResult,
+  type NewJaSpeakingAttempt,
+  type NewJaSpeakingMock,
+  type SaveJaSpeakingPictureImageInput,
+  type SaveJaSpeakingPictureImageResult,
+} from "./ja-speaking-record";
+import type { JaSpeakingPart } from "./ja-speaking";
+import type { JaSpeakingPartRecordMap } from "./ai/japanese/speaking-schemas";
 
 /**
  * 폰 알림 구독 하나(가족 스트릭 강화 스펙 §6-1) — 컬렉션 `pushSubscriptions`. id = endpoint의 sha256 hex 앞 32자
@@ -1519,6 +1545,34 @@ export interface StudyStore {
    */
   applyReviewOutcome(input: DecideReviewInput): Promise<DecideReviewResult>;
 
+  // ---- 🎙️ 아빠의 일본어 말하기 모의고사 — jaSpeakingMocks·jaSpeakingImages·jaSpeakingAttempts (docs/harness/japanese.md §15-9) ----
+  // 토익 컬렉션과 섞지 않는다. 판정·적용은 lib/ja-speaking-record.ts(두 백엔드 같은 함수). 삭제는 Firestore에서 prod-guard(`deleteJaSpeakingMock`).
+  createJaSpeakingMock(input: NewJaSpeakingMock): Promise<JaSpeakingMockRecord>;
+  getJaSpeakingMock(id: string): Promise<JaSpeakingMockRecord | null>;
+  /** 최신순 */
+  listJaSpeakingMocks(): Promise<JaSpeakingMockRecord[]>;
+  /** 모의고사 삭제 — 생성 사진·응시 기록까지 연쇄(딸린 것 먼저, 모의고사 마지막). 녹음은 기기에만 있어 서버에서 지울 것이 없다. **prod-guard** */
+  deleteJaSpeakingMock(id: string): Promise<{ ok: boolean }>;
+  updateJaSpeakingMockTitle(id: string, titleKo: string): Promise<JaSpeakingMockRecord | null>;
+  reorderJaSpeakingMocks(orderedIds: string[]): Promise<void>;
+  /** 빈 파트만 채운다(판정과 쓰기가 한 원자 단위). 없는 id면 null */
+  fillJaSpeakingMockPart<P extends JaSpeakingPart>(id: string, part: P, value: JaSpeakingPartRecordMap[P]): Promise<FillJaSpeakingMockPartResult | null>;
+  /** 사진 문서 생성 + 칸 ready를 한 원자 단위로(먼저 준비된 사진이 이긴다) */
+  saveJaSpeakingPictureImage(input: SaveJaSpeakingPictureImageInput): Promise<SaveJaSpeakingPictureImageResult>;
+  /** 칸 failed(ready는 내리지 않는다) */
+  markJaSpeakingPictureImageFailed(mockId: string, slot: 0 | 1, imagePrompt: string): Promise<MarkJaSpeakingPictureImageFailedResult>;
+  getJaSpeakingImage(id: string): Promise<JaSpeakingImageRecord | null>;
+  createJaSpeakingAttempt(input: NewJaSpeakingAttempt): Promise<JaSpeakingAttemptRecord>;
+  getJaSpeakingAttempt(id: string): Promise<JaSpeakingAttemptRecord | null>;
+  /** startedAt 오름차순 */
+  listJaSpeakingAttemptsByMock(mockId: string): Promise<JaSpeakingAttemptRecord[]>;
+  /** startedAt 오름차순(스트릭) */
+  listAllJaSpeakingAttempts(): Promise<JaSpeakingAttemptRecord[]>;
+  /** 끝/그만두기 — 한 번만(판정과 쓰기가 한 원자 단위). 없는 id면 null */
+  finishJaSpeakingAttempt(id: string, input: FinishJaSpeakingAttemptInput): Promise<FinishJaSpeakingAttemptResult | null>;
+  /** 그 문항만 채점 결과로(동시 채점 2개가 서로 덮지 않게 원자 단위). 닫히지 않은 응시면 쓰지 않고 null. 없는 id면 null */
+  updateJaSpeakingAttemptAnswer(id: string, q: number, patch: JaSpeakingAnswerScorePatch): Promise<JaSpeakingAttemptRecord | null>;
+
   // ---- 👩 엄마의 생활영어 — 컬렉션 `momContent`·`momLessons`·`momTests` (설계 §6-2) ----
   /** 가져오기 — 블록 id upsert(decideMomImport). 해시 같으면 그대로, 파일에 없는 블록은 지우지 않는다. 판정과 쓰기가 한 원자 단위 */
   importMomContent(file: MomImportFile, nowIso: string): Promise<MomImportResult>;
@@ -1562,6 +1616,21 @@ export interface StudyStore {
 export type ImportToeicFrameDrillResult = { kind: "ok"; result: ToeicFrameDrillImportResult } | { kind: "too_large"; bytes: number };
 
 export type { ToeicFrameDrillSessionRecord };
+// 아빠의 일본어 🎙️ 말하기 모의고사(docs/harness/japanese.md §15-9) — 레코드·결과 타입의 정의처는 lib/ja-speaking-record.ts(두 백엔드 공유 정규화·판정)
+export type {
+  FillJaSpeakingMockPartResult,
+  FinishJaSpeakingAttemptInput,
+  FinishJaSpeakingAttemptResult,
+  JaSpeakingAnswerScorePatch,
+  JaSpeakingAttemptRecord,
+  JaSpeakingImageRecord,
+  JaSpeakingMockRecord,
+  MarkJaSpeakingPictureImageFailedResult,
+  NewJaSpeakingAttempt,
+  NewJaSpeakingMock,
+  SaveJaSpeakingPictureImageInput,
+  SaveJaSpeakingPictureImageResult,
+};
 
 /**
  * 예전 이름. 과목이 영어뿐이던 시절의 이름이라 수학 기록까지 안는 지금은 좁게 읽히지만,
@@ -1616,6 +1685,10 @@ export interface DbShape {
   pushLog: Record<string, { sentAt: string }>;
   /** ⏱ 휴식 알림(SPEC §19-9) — 사람 → 문서. 이 키가 없던 db.json은 빈 맵 */
   workoutRestAlerts: Record<string, WorkoutRestAlertRecord>;
+  /** 🎙️ 일본어 말하기 모의고사(japanese.md §15-9) — 이 키가 없던 db.json은 빈 배열 */
+  jaSpeakingMocks: JaSpeakingMockRecord[];
+  jaSpeakingImages: JaSpeakingImageRecord[];
+  jaSpeakingAttempts: JaSpeakingAttemptRecord[];
 }
 
 /** 파일 백엔드의 은행·통계 문서(모양이 달라 원본으로 두고 id로 골라 정규화한다) */
@@ -1636,6 +1709,7 @@ function emptyDb(): DbShape {
     pushSubscriptions: {},
     pushLog: {},
     workoutRestAlerts: {},
+    jaSpeakingMocks: [], jaSpeakingImages: [], jaSpeakingAttempts: [],
   };
 }
 
@@ -1739,6 +1813,10 @@ async function readDb(): Promise<DbShape> {
       pushLog: isPlainMap(parsed.pushLog) ? parsed.pushLog : {},
       // ⏱ 휴식 알림(§19-9) 이전 db.json엔 이 키가 없다 — 빈 맵
       workoutRestAlerts: isPlainMap(parsed.workoutRestAlerts) ? parsed.workoutRestAlerts : {},
+      // 🎙️ 일본어 말하기 모의고사(japanese.md §15-9) 이전 db.json엔 이 세 키가 없다 — 빈 배열. 각 레코드는 두 백엔드 공유 정규화로 방어
+      jaSpeakingMocks: (parsed.jaSpeakingMocks ?? []).map(normalizeJaSpeakingMockRecord),
+      jaSpeakingImages: (parsed.jaSpeakingImages ?? []).map(normalizeJaSpeakingImageRecord),
+      jaSpeakingAttempts: (parsed.jaSpeakingAttempts ?? []).map(normalizeJaSpeakingAttemptRecord),
     };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyDb();
@@ -3405,6 +3483,160 @@ class JsonFileStore implements BookCardStore {
     });
   }
 
+  // ---- 🎙️ 일본어 말하기 모의고사(japanese.md §15-9) — 판정·적용은 lib/ja-speaking-record.ts(Firestore와 같은 함수) ----
+
+  async createJaSpeakingMock(input: NewJaSpeakingMock): Promise<JaSpeakingMockRecord> {
+    const record = normalizeJaSpeakingMockRecord({ ...input, id: randomUUID(), createdAt: new Date().toISOString(), sortIndex: null });
+    return this.mutate((db) => {
+      db.jaSpeakingMocks.push(record);
+      return record;
+    });
+  }
+
+  async getJaSpeakingMock(id: string): Promise<JaSpeakingMockRecord | null> {
+    const db = await readDb();
+    return db.jaSpeakingMocks.find((m) => m.id === id) ?? null;
+  }
+
+  async listJaSpeakingMocks(): Promise<JaSpeakingMockRecord[]> {
+    const db = await readDb();
+    return [...db.jaSpeakingMocks].sort(byCreatedAtDesc);
+  }
+
+  async deleteJaSpeakingMock(id: string): Promise<{ ok: boolean }> {
+    // 녹음은 기기에만 있다(§15-9-4) — 서버에서 먼저 지울 녹음이 없다. 사진·응시를 함께 지운다(한 mutate)
+    return this.mutate((db) => {
+      const before = db.jaSpeakingMocks.length;
+      db.jaSpeakingMocks = db.jaSpeakingMocks.filter((m) => m.id !== id);
+      const ok = db.jaSpeakingMocks.length < before;
+      if (ok) {
+        db.jaSpeakingImages = db.jaSpeakingImages.filter((im) => im.mockId !== id);
+        db.jaSpeakingAttempts = db.jaSpeakingAttempts.filter((a) => a.mockId !== id);
+      }
+      return { ok };
+    });
+  }
+
+  async updateJaSpeakingMockTitle(id: string, titleKo: string): Promise<JaSpeakingMockRecord | null> {
+    return this.mutate((db) => {
+      const m = db.jaSpeakingMocks.find((x) => x.id === id);
+      if (!m) return null;
+      m.titleKo = titleKo;
+      return normalizeJaSpeakingMockRecord(m);
+    });
+  }
+
+  async reorderJaSpeakingMocks(orderedIds: string[]): Promise<void> {
+    const rank = new Map(orderedIds.map((id, i) => [id, i]));
+    await this.mutate((db) => {
+      for (const m of db.jaSpeakingMocks) {
+        const idx = rank.get(m.id);
+        if (idx !== undefined) m.sortIndex = idx;
+      }
+    });
+  }
+
+  async fillJaSpeakingMockPart<P extends JaSpeakingPart>(id: string, part: P, value: JaSpeakingPartRecordMap[P]): Promise<FillJaSpeakingMockPartResult | null> {
+    return this.mutate((db): FillJaSpeakingMockPartResult | null => {
+      const i = db.jaSpeakingMocks.findIndex((x) => x.id === id);
+      if (i < 0) return null;
+      const current = normalizeJaSpeakingMockRecord(db.jaSpeakingMocks[i]);
+      if (decideJaSpeakingFillPart(current, part) === "exists") return { outcome: "exists", record: current };
+      const record = normalizeJaSpeakingMockRecord(applyJaSpeakingFillPart(current, part, value));
+      db.jaSpeakingMocks[i] = record;
+      return { outcome: "filled", record };
+    });
+  }
+
+  async saveJaSpeakingPictureImage(input: SaveJaSpeakingPictureImageInput): Promise<SaveJaSpeakingPictureImageResult> {
+    const image = normalizeJaSpeakingImageRecord({
+      id: randomUUID(),
+      mockId: input.mockId,
+      slot: input.slot,
+      dataUrl: input.dataUrl,
+      model: input.model,
+      createdAt: new Date().toISOString(),
+    });
+    return this.mutate((db): SaveJaSpeakingPictureImageResult => {
+      const i = db.jaSpeakingMocks.findIndex((x) => x.id === input.mockId);
+      if (i < 0) return { outcome: "missing", record: null };
+      const current = normalizeJaSpeakingMockRecord(db.jaSpeakingMocks[i]);
+      const decision = decideJaSpeakingPictureImage(current, input.slot, input.imagePrompt);
+      if (decision === "missing") return { outcome: "missing", record: current };
+      if (decision !== "apply") return { outcome: decision, record: current };
+      const record = normalizeJaSpeakingMockRecord(applyJaSpeakingPictureImage(current, input.slot, { status: "ready", imageId: image.id }));
+      db.jaSpeakingImages.push(image);
+      db.jaSpeakingMocks[i] = record;
+      return { outcome: "saved", record, image };
+    });
+  }
+
+  async markJaSpeakingPictureImageFailed(mockId: string, slot: 0 | 1, imagePrompt: string): Promise<MarkJaSpeakingPictureImageFailedResult> {
+    return this.mutate((db): MarkJaSpeakingPictureImageFailedResult => {
+      const i = db.jaSpeakingMocks.findIndex((x) => x.id === mockId);
+      if (i < 0) return { outcome: "missing", record: null };
+      const current = normalizeJaSpeakingMockRecord(db.jaSpeakingMocks[i]);
+      const decision = decideJaSpeakingPictureImage(current, slot, imagePrompt);
+      if (decision === "missing") return { outcome: "missing", record: current };
+      if (decision !== "apply") return { outcome: decision, record: current };
+      const record = normalizeJaSpeakingMockRecord(applyJaSpeakingPictureImage(current, slot, { status: "failed", imageId: null }));
+      db.jaSpeakingMocks[i] = record;
+      return { outcome: "marked", record };
+    });
+  }
+
+  async getJaSpeakingImage(id: string): Promise<JaSpeakingImageRecord | null> {
+    const db = await readDb();
+    return db.jaSpeakingImages.find((im) => im.id === id) ?? null;
+  }
+
+  async createJaSpeakingAttempt(input: NewJaSpeakingAttempt): Promise<JaSpeakingAttemptRecord> {
+    const record = normalizeJaSpeakingAttemptRecord({ ...input, id: randomUUID() });
+    return this.mutate((db) => {
+      db.jaSpeakingAttempts.push(record);
+      return record;
+    });
+  }
+
+  async getJaSpeakingAttempt(id: string): Promise<JaSpeakingAttemptRecord | null> {
+    const db = await readDb();
+    return db.jaSpeakingAttempts.find((a) => a.id === id) ?? null;
+  }
+
+  async listJaSpeakingAttemptsByMock(mockId: string): Promise<JaSpeakingAttemptRecord[]> {
+    const db = await readDb();
+    return db.jaSpeakingAttempts.filter((a) => a.mockId === mockId).sort(byStartedAtAsc);
+  }
+
+  async listAllJaSpeakingAttempts(): Promise<JaSpeakingAttemptRecord[]> {
+    const db = await readDb();
+    return [...db.jaSpeakingAttempts].sort(byStartedAtAsc);
+  }
+
+  async finishJaSpeakingAttempt(id: string, input: FinishJaSpeakingAttemptInput): Promise<FinishJaSpeakingAttemptResult | null> {
+    return this.mutate((db): FinishJaSpeakingAttemptResult | null => {
+      const i = db.jaSpeakingAttempts.findIndex((x) => x.id === id);
+      if (i < 0) return null;
+      const current = normalizeJaSpeakingAttemptRecord(db.jaSpeakingAttempts[i]);
+      if (isJaSpeakingAttemptClosed(current)) return { outcome: "already_closed", record: current };
+      const next = applyJaSpeakingFinish(current, input);
+      db.jaSpeakingAttempts[i] = next;
+      return { outcome: "finished", record: next };
+    });
+  }
+
+  async updateJaSpeakingAttemptAnswer(id: string, q: number, patch: JaSpeakingAnswerScorePatch): Promise<JaSpeakingAttemptRecord | null> {
+    return this.mutate((db) => {
+      const i = db.jaSpeakingAttempts.findIndex((x) => x.id === id);
+      if (i < 0) return null;
+      const cur = normalizeJaSpeakingAttemptRecord(db.jaSpeakingAttempts[i]);
+      if (!isJaSpeakingAttemptClosed(cur)) return null;
+      const next = applyJaSpeakingAnswer(cur, q, patch);
+      db.jaSpeakingAttempts[i] = next;
+      return next;
+    });
+  }
+
   async listMomTests(): Promise<MomTestRecord[]> {
     return (await readDb()).momTests.slice().sort((a, b) => a.startedAt.localeCompare(b.startedAt));
   }
@@ -3688,5 +3920,9 @@ export async function mergeDbForSeed(seed: DbShape): Promise<void> {
     pushSubscriptions: { ...cur.pushSubscriptions, ...seed.pushSubscriptions },
     pushLog: { ...cur.pushLog, ...seed.pushLog },
     workoutRestAlerts: { ...cur.workoutRestAlerts, ...(seed.workoutRestAlerts ?? {}) },
+    // 🎙️ 일본어 말하기 모의고사 — 같은 이유로 반드시 mergeById(시드가 아빠의 모의고사·응시 기록을 지우지 않게). 시드는 빈 배열이다.
+    jaSpeakingMocks: mergeById(cur.jaSpeakingMocks, seed.jaSpeakingMocks ?? []),
+    jaSpeakingImages: mergeById(cur.jaSpeakingImages, seed.jaSpeakingImages ?? []),
+    jaSpeakingAttempts: mergeById(cur.jaSpeakingAttempts, seed.jaSpeakingAttempts ?? []),
   });
 }

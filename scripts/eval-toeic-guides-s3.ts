@@ -46,7 +46,7 @@ import { decidePictureImage } from "../lib/toeic-mock-apply";
 import { normalizeToeicAttemptRecord, normalizeToeicMockRecord } from "../lib/toeic-normalize";
 import type { ToeicQuizSessionLike } from "../lib/toeic-quiz";
 import { isToeicDrill, listableToeicMocks } from "../lib/toeic-record";
-import { pickAttemptsToEvict, pickAttemptsToEvictByPool, toeicRecPoolOf } from "../lib/toeic-rec-store";
+import { isDeviceOnlyPool, pickAttemptsToEvict, pickAttemptsToEvictByPool, toeicRecPoolOf } from "../lib/toeic-rec-store";
 import type { GuideCheckResult } from "./eval-toeic-guides";
 
 function adder(results: GuideCheckResult[], book: string) {
@@ -248,6 +248,32 @@ function runRecPoolChecks(): GuideCheckResult[] {
     "저장이 메타에 pool을 적고(toeicRecPoolOf) 정리는 풀별(pickAttemptsToEvictByPool), 옛 메타는 읽을 때 mock",
     /pool: toeicRecPoolOf\(rec\)/.test(store) && /pickAttemptsToEvictByPool\(metas, TOEIC_REC_KEEP_ATTEMPTS, current\)/.test(store) && /pool: toeicRecPoolOf\(m\)/.test(store) && !/new Set\(pickAttemptsToEvict\(metas/.test(store),
   );
+  // 일본어 말하기 풀 "ja"(docs/harness/japanese.md §15-9-4) — 기기 전용(mom과 같다), 메모리 폴백은 같은 풀끼리만 비운다
+  add(
+    "풀 \"ja\"·\"mom\"은 기기 전용, mock·drill은 아니다(toeicRecPoolOf·isDeviceOnlyPool)",
+    toeicRecPoolOf({ pool: "ja" }) === "ja" &&
+      isDeviceOnlyPool({ pool: "ja" }) &&
+      isDeviceOnlyPool({ pool: "mom" }) &&
+      !isDeviceOnlyPool({ pool: "mock" }) &&
+      !isDeviceOnlyPool({ pool: "drill" }) &&
+      !isDeviceOnlyPool({}),
+  );
+  const memFn = (() => {
+    const code = store.replace(/\/\/[^\n]*/g, "");
+    const i = code.indexOf("function rememberInMemory(");
+    return i < 0 ? "" : code.slice(i, code.indexOf("\n}", i));
+  })();
+  add(
+    "메모리 폴백(rememberInMemory)은 같은 풀끼리만 비운다 — 엄마·일본어·모의고사·연습 녹음이 서로를 지우지 않는다",
+    /toeicRecPoolOf\(v\) === toeicRecPoolOf\(rec\)/.test(memFn) && !/isDeviceOnlyPool\(v\) === isDeviceOnlyPool\(rec\)/.test(memFn),
+  );
+  // 풀 4개 전부 따로 센다(ja 6회가 mom·mock을 밀어내지 않는다)
+  const mixed = [
+    ...Array.from({ length: 6 }, (_x, i) => ({ attemptId: `ja-${i + 1}`, q: 3, createdAt: 3000 + i * 10, pool: "ja" })),
+    { attemptId: "mom-1", q: 1, createdAt: 1, pool: "mom" },
+    { attemptId: "mock-1", q: 1, createdAt: 2 },
+  ];
+  add("ja 풀 6회 → ja에서만 가장 오래된 1개(mom·mock 그대로)", eqJson(pickAttemptsToEvictByPool(mixed, 5, null), ["ja-1"]));
   return results;
 }
 

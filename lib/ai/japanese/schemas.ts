@@ -268,7 +268,7 @@ function isHiraganaOnly(s: string): boolean {
 }
 
 /** 한자(CJK 통합 한자·확장 A·반복부호 々)를 하나라도 포함하는가 — reading 정리의 근거. */
-function hasKanji(s: string): boolean {
+export function hasKanji(s: string): boolean {
   return /[一-鿿㐀-䶿々]/.test(s);
 }
 
@@ -276,12 +276,12 @@ function hasKanji(s: string): boolean {
  * 토큰 전체가 한자만인가 — reading을 달 수 있는 토큰의 조건(§2-1-11·P1).
  * 오쿠리가나·활용 어미(促'す'·食べ'る')가 한자 토큰에 섞여 있으면 이 검사가 false다 → reading을 못 단다.
  */
-function isAllKanji(s: string): boolean {
+export function isAllKanji(s: string): boolean {
   return /^[一-鿿㐀-䶿々]+$/.test(s);
 }
 
 /** 한글(음절)을 하나라도 포함하는가 — 뜻·번역이 일본어만 온 경우를 거른다. */
-function hasHangul(s: string): boolean {
+export function hasHangul(s: string): boolean {
   return /[가-힣]/.test(s);
 }
 
@@ -316,7 +316,7 @@ function graphemeCount(s: string): number {
  * 숙어 묶기(目標→目標(もくひょう))는 **프롬프트 규칙이지 zod 규칙이 아니다** — 목標를 目(もく)+標(ひょう)로 쪼갠 것도
  * 두 토큰 다 한자만이라 형식상 유효해 코드로 막을 수 없다(§5). zod는 여기(reading은 한자 토큰에만)까지만 강제한다.
  */
-const jaTokenSchema = z
+export const jaTokenSchema = z
   .object({
     surface: z.string().min(1),
     reading: z.string().nullable(),
@@ -626,11 +626,11 @@ export const jaKanjiInfoGenerationSchema = z.object({
 // ===========================================================================
 
 /** 일본 문자(히라가나·가타카나·한자)를 하나라도 포함하는가 — 일본어 필드 검증용(§4-4). */
-function hasJapanese(s: string): boolean {
+export function hasJapanese(s: string): boolean {
   return /[぀-ゟ゠-ヿ一-鿿㐀-䶿々]/.test(s);
 }
 /** 토큰 surface를 이으면 원문과 같은가 — 토큰 무결성(§2-4). */
-function tokensJoinEqual(tokens: readonly JaToken[], text: string): boolean {
+export function tokensJoinEqual(tokens: readonly JaToken[], text: string): boolean {
   return tokens.map((t) => t.surface).join("") === text;
 }
 

@@ -1,0 +1,4 @@
+/* 🎙️ 일본어 말하기 모의고사 — 응시 중 후리가나 끄기(독음 rt만 숨긴다 — 본문 글자는 그대로, docs/harness/japanese.md §15-10-2) */
+.noRuby rt {
+  display: none;
+}

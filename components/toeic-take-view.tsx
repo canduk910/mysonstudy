@@ -36,6 +36,11 @@
  *   버리지 않는다) + 마이크를 놓아 다음 답변이 새로 연다 · 같은 응시에서 두 번이면 남은 문항은 문항마다 열기 · 3초 넘게 조용하면 바로 알림.
  *   F2 문항별 진단(정책·열기 횟수·오류·최고 레벨·크기)을 끝 화면 행에 보이고 끝내기 본문에 싣는다. F3 마이크를 놓은 채(keep) 준비·답변에 들어가거나
  *   녹음 시작이 8초 감시·오류로 실패하면 시험을 멈추고 "🎙️ 마이크 다시 켜기"(탭 안에서 연다) / "시간만 재고 계속".
+ * - **시험 프로필**(2026-10-25, docs/harness/japanese.md §15-10-3 — components/take-exam-profile.ts): 일본어 말하기 모의고사가 이 화면을
+ *   **복제 없이** 쓴다. prop `profile`이 없으면 토익 그대로(읽는 글·미리 받는 글이 바이트까지 같다 — TTS 영구 캐시 유지). 프로필은 읽는 글·언어·
+ *   라우트 접두어·서버 녹음 업로드·시작 안내·시험 창 글 렌더만 바꾼다. 컴포넌트 안의 `toeicPhaseCue`·`toeicCueTexts`·`toeicPartDirections`·
+ *   `TOEIC_DIRECTIONS_LANG`·`toeicImageUrl`·`toeicAttemptHref`·`drainToeicRecUploads`는 **프로필이 고른 것**을 가리키는 지역 이름이다
+ *   (토익이면 lib의 그 함수·값 그대로 — 아래 "시험 프로필" 블록). 단계 전이·오디오 세션 순서·마이크 정책·무음 안전망은 프로필로 바꿀 수 없다.
  */
 
 import { Barlow } from "next/font/google";
@@ -80,7 +85,7 @@ import { prefetchSpeech, speakQueue, unlockSpeechPlayback } from "@/lib/speech";
 import { STREAK_REFRESH_EVENT } from "@/lib/streak";
 import {
   TOEIC_DEBUG_TIMESCALE_KEY,
-  toeicAttemptHref,
+  toeicAttemptHref as toeicAttemptHrefEn,
   toeicRetakeFinishHref,
   toeicRetakesHref,
   type ToeicAttemptCreateResponse,
@@ -91,22 +96,22 @@ import {
 } from "@/lib/toeic-attempt-contract";
 import { TOEIC_BEEP_SEC, cancelToeicBeep, ensureToeicAudio, getToeicAudioContext, resumeToeicAudio, scheduleToeicBeep } from "@/lib/toeic-audio-cue";
 import {
-  TOEIC_DIRECTIONS_LANG,
+  TOEIC_DIRECTIONS_LANG as TOEIC_DIRECTIONS_LANG_EN,
   TOEIC_MOCK_PARTS,
   beginAnswer,
   toeicCueCapMs,
-  toeicCueTexts,
+  toeicCueTexts as toeicCueTextsEn,
   toeicHoldForCue,
-  toeicPhaseCue,
+  toeicPhaseCue as toeicPhaseCueEn,
   toeicStartAfterCue,
   firstPhase,
   nextPhase,
-  toeicPartDirections,
+  toeicPartDirections as toeicPartDirectionsEn,
   toeicSpeechOutcome,
   type ToeicMockPart,
   type ToeicPhaseState,
 } from "@/lib/toeic-mock";
-import { toeicImageUrl } from "@/lib/toeic-mock-contract";
+import { toeicImageUrl as toeicImageUrlEn } from "@/lib/toeic-mock-contract";
 import {
   TOEIC_EXAM_CRITERIA_EN,
   TOEIC_REC_TOAST_MS,
@@ -114,21 +119,23 @@ import {
   type ToeicRecToast,
   TOEIC_EXAM_PART_TYPE_EN,
   formatToeicExamClock,
-  toeicExamBandTitle,
-  toeicExamDirectionsTitle,
+  toeicExamBandTitle as toeicExamBandTitleEn,
+  toeicExamDirectionsTitle as toeicExamDirectionsTitleEn,
   toeicExamPartRange,
+  type ToeicExamTimerLabel,
   toeicExamScreenOf,
   toeicExamTimers,
 } from "@/lib/toeic-exam-screen";
 import type { ToeicSetBackLink } from "@/lib/toeic-guide-view";
 import { deleteToeicRecordingsLocal, listToeicRecordings, saveToeicRecording, type ToeicRecPool } from "@/lib/toeic-rec-store";
 import { toeicRetakeFinishOutcome, toeicRetakeHref } from "@/lib/toeic-retake";
-import { drainToeicRecUploads } from "@/lib/toeic-rec-upload";
+import { drainToeicRecUploads as drainToeicRecUploadsEn } from "@/lib/toeic-rec-upload";
 import { useToeicRecUploadStates } from "@/components/use-toeic-rec-uploads";
 import { TTS_TEXT_MAX_CHARS } from "@/lib/tts-shared";
 import { splitForTts } from "@/lib/tts-split";
 import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
 import StreakFinishHint from "@/components/streak-finish-hint";
+import type { TakeExamProfile } from "@/components/take-exam-profile";
 import s from "./toeic-take-view.module.css";
 
 /**
@@ -196,11 +203,17 @@ function readDebugTimescale(): number {
   }
 }
 
-function enPieces(text: string | null): { text: string; lang: string }[] {
+/** 읽을 글 → speakQueue 조각(언어는 프로필이 고른 읽기 언어 — 토익이면 en-US) */
+function enPieces(text: string | null, lang: string = TOEIC_DIRECTIONS_LANG_EN): { text: string; lang: string }[] {
   if (!text) return [];
   return splitForTts(text, TTS_TEXT_MAX_CHARS)
     .filter((t) => t.trim() !== "")
-    .map((t) => ({ text: t, lang: TOEIC_DIRECTIONS_LANG }));
+    .map((t) => ({ text: t, lang }));
+}
+
+/** 서버 업로드를 끈 프로필(기기 전용 풀)의 대기열 비우기 — 아무것도 하지 않는다 */
+function noDrain(): Promise<{ uploaded: number; remaining: number }> {
+  return Promise.resolve({ uploaded: 0, remaining: 0 });
 }
 
 type FsDoc = Document & {
@@ -294,6 +307,7 @@ export default function ToeicTakeView({
   back,
   recPool,
   retake = null,
+  profile = null,
 }: {
   mockId: string;
   titleKo: string;
@@ -307,8 +321,26 @@ export default function ToeicTakeView({
   recPool: ToeicRecPool;
   /** 문항 단위 다시 풀기(§15-3) — 원래 응시 id와 (409 retake_in_progress 뒤 사용자가 고른) 닫을 진행 중 다시 풀기 id. null이면 새 응시 */
   retake?: { attemptId: string; replaceOpen: string | null } | null;
+  /** 시험 프로필(components/take-exam-profile.ts — 일본어 말하기 모의고사). null이면 토익 그대로(§15-10-3 불변 조건 1) */
+  profile?: TakeExamProfile | null;
 }) {
-  usePhraseHelperBlock(); // 시험·응답 중에는 표현 도우미를 띄우지 않는다(SPEC §22-3)
+  usePhraseHelperBlock(); // 시험·응답 중에는 표현 도우미를 띄우지 않는다(SPEC §22-3) — 공통 코어(프로필로 끌 수 없다)
+  // ── 시험 프로필(§15-10-3) — 아래 이름들은 프로필이 고른 것을 가리킨다(프로필이 없으면 토익 lib의 그 함수·값 그대로) ──
+  // 응시 하나 동안 프로필의 함수·값은 바뀌지 않는다(페이지가 정한다) — 그래서 콜백 의존 목록에 넣지 않는다.
+  const TOEIC_DIRECTIONS_LANG = profile?.speechLang ?? TOEIC_DIRECTIONS_LANG_EN;
+  const toeicPhaseCue = profile?.phaseCue ?? toeicPhaseCueEn;
+  const toeicCueTexts = profile?.cueTexts ?? toeicCueTextsEn;
+  const toeicPartDirections = profile?.directions ?? toeicPartDirectionsEn;
+  const toeicImageUrl = profile?.imageUrl ?? toeicImageUrlEn;
+  const toeicAttemptHref = profile?.resultHref ?? toeicAttemptHrefEn;
+  const serverUpload = profile?.serverUpload ?? true;
+  const drainToeicRecUploads = serverUpload ? drainToeicRecUploadsEn : noDrain;
+  // 시험 창 화면 글자(§15-10-3 — 일본어 프로필은 일본어 시험 화면 글자). 프로필이 없으면 토익 영어 그대로
+  const toeicExamBandTitle = profile?.examLabels.bandTitle ?? toeicExamBandTitleEn;
+  const toeicExamDirectionsTitle = profile?.examLabels.directionsTitle ?? toeicExamDirectionsTitleEn;
+  const examTimerLabel = (label: ToeicExamTimerLabel): string => (profile ? profile.examLabels.timerLabel(label) : label);
+  /** 시험 창 글 — 프로필 렌더(후리가나)가 있으면 그것, 없으면 글 그대로 */
+  const examText = (kind: "passage" | "intro" | "question", v: ToeicQuestionView, text: string) => (profile?.renderText ? profile.renderText(kind, v) : text);
   const qs = useMemo(() => questions.map((v) => v.q), [questions]);
   const viewByQ = useMemo(() => new Map(questions.map((v) => [v.q, v] as const)), [questions]);
   /** 파트 → 그 파트 지시문(응시하는 문항 수로 — 사진 1장 연습이면 한 장짜리 문장). 읽기·프리페치·화면 글이 이것 하나를 본다. */
@@ -340,7 +372,7 @@ export default function ToeicTakeView({
   const [scale, setScale] = useState(1);
   const [diag, setDiag] = useState<MicDiag | null>(null);
   /** 문항별 서버 보관 진행(§13-3 — "서버 ✓ / 올리는 중 / 대기") */
-  const uploadStates = useToeicRecUploadStates(attemptId);
+  const uploadStates = useToeicRecUploadStates(serverUpload ? attemptId : null);
   /** F1 녹음 중 3초 넘게 조용함 — 실시간 알림(§15-10) */
   const [silenceAlert, setSilenceAlert] = useState(false);
   const silenceAlertRef = useRef(false);
@@ -796,7 +828,7 @@ export default function ToeicTakeView({
   }, [qs]);
   /** 끝/그만두기 주소 — 새 응시는 `…/finish`, 다시 풀기는 `…/retakes/[rid]/finish`(§15-5 — 녹음된 문항만 원래 결과에 합친다) */
   const finishHref = useCallback((aid: string): string | null => {
-    if (!retake) return `/api/toeic/attempts/${encodeURIComponent(aid)}/finish`;
+    if (!retake) return profile ? profile.finishHref(aid) : `/api/toeic/attempts/${encodeURIComponent(aid)}/finish`;
     return retakeIdRef.current ? toeicRetakeFinishHref(aid, retakeIdRef.current) : null;
   }, [retake]);
 
@@ -904,12 +936,16 @@ export default function ToeicTakeView({
       switch (st.phase) {
         case "directions": {
           const v = st.q !== null ? viewByQ.get(st.q) : undefined;
-          playSpeech(v ? enPieces(directionsByPart.get(v.part)?.en ?? null) : [], token, "directions");
+          playSpeech(v ? enPieces(directionsByPart.get(v.part)?.en ?? null, TOEIC_DIRECTIONS_LANG) : [], token, "directions");
           break;
         }
         case "question": {
           const v = st.q !== null ? viewByQ.get(st.q) : undefined;
-          const pieces = v ? [...(st.play === 0 ? enPieces(v.spokenIntro) : []), ...enPieces(v.question)] : [];
+          const pieces = v
+            ? profile
+              ? profile.questionTexts(v, st.play).flatMap((t) => enPieces(t, TOEIC_DIRECTIONS_LANG))
+              : [...(st.play === 0 ? enPieces(v.spokenIntro) : []), ...enPieces(v.question)]
+            : [];
           // 두 번째 재생부터(Q10) "Now, listen again." 멘트 뒤 질문 — 멘트는 질문 큐와 따로(멘트가 안 나도 질문 안전망이 걸리지 않게)
           playCue(toeicPhaseCue(st), token, () => playSpeech(pieces, token, "question"));
           break;
@@ -1198,8 +1234,11 @@ export default function ToeicTakeView({
     // 진행 멘트(§18 — 실전 5문장)를 **맨 앞에** 둔다: 멘트에는 재생 상한이 있어, 첫 응시(캐시 없음)에 지시문·질문 뒤로 밀려
     // 합성이 늦으면 멘트가 잘린다(QA cues P3-1). 캐시되면 다음 응시부터 합성 0
     const texts: string[] = [...toeicCueTexts(qs)];
-    for (const part of parts) texts.push(...enPieces(directionsByPart.get(part)?.en ?? null).map((p) => p.text));
-    for (const v of questions) texts.push(...enPieces(v.spokenIntro).map((p) => p.text), ...enPieces(v.question).map((p) => p.text));
+    for (const part of parts) texts.push(...enPieces(directionsByPart.get(part)?.en ?? null, TOEIC_DIRECTIONS_LANG).map((p) => p.text));
+    for (const v of questions) {
+      if (profile) texts.push(...profile.prefetchQuestionTexts(v).flatMap((t) => enPieces(t, TOEIC_DIRECTIONS_LANG)).map((p) => p.text));
+      else texts.push(...enPieces(v.spokenIntro).map((p) => p.text), ...enPieces(v.question).map((p) => p.text));
+    }
     prefetchStopRef.current = prefetchSpeech(texts, TOEIC_DIRECTIONS_LANG);
     // Q3–4 사진을 미리 받아 둔다 — 준비 시간(45초)이 사진 로딩으로 깎이지 않게(비공개 캐시 응답이라 두 번째는 즉시)
     for (const v of questions) {
@@ -1222,7 +1261,7 @@ export default function ToeicTakeView({
   async function createAttempt(): Promise<string | null> {
     if (retake) return createRetake(retake);
     try {
-      const res = await fetch(`/api/toeic/mocks/${encodeURIComponent(mockId)}/attempts`, {
+      const res = await fetch(profile ? profile.attemptsHref(mockId) : `/api/toeic/mocks/${encodeURIComponent(mockId)}/attempts`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ scope, parts }),
@@ -1435,7 +1474,7 @@ export default function ToeicTakeView({
   );
 
   /** 실전 전체 응시만 시작 안내를 둔다 — 파트 연습·한 문제 연습·다시 풀기는 파트 안내부터(지금 흐름) */
-  const showTestDirections = scope === "full" && !retake;
+  const showTestDirections = scope === "full" && !retake && (profile?.testDirections ?? true);
 
   if (stage === "error") {
     return (
@@ -1466,7 +1505,7 @@ export default function ToeicTakeView({
   /** 시험 창 머리 띠 — "TOEIC Speaking"(왼쪽 위) · 가운데 문항 · 오른쪽 CONTINUE(있으면)·VOLUME */
   const examBand = (title: string | null, onContinue: (() => void) | null) => (
     <header className={s.band}>
-      <span className={s.brand}>TOEIC Speaking</span>
+      <span className={s.brand}>{profile?.brand ?? "TOEIC Speaking"}</span>
       {title && (
         <span className={s.bandTitle} data-testid="exam-band-title">
           {title}
@@ -1475,7 +1514,7 @@ export default function ToeicTakeView({
       <span className={s.bandBtns}>
         {onContinue && (
           <button type="button" className={s.continueBtn} onClick={onContinue} data-testid="exam-continue">
-            CONTINUE
+            {profile?.examLabels.continueLabel ?? "CONTINUE"}
           </button>
         )}
         <button
@@ -1484,10 +1523,10 @@ export default function ToeicTakeView({
           onClick={() => setVolumeOpen((v) => !v)}
           aria-expanded={volumeOpen}
           aria-controls="toeic-exam-volume"
-          aria-label="VOLUME — 소리 설정(질문 음성 속도·엔진)"
+          aria-label={`${profile?.examLabels.volumeLabel ?? "VOLUME"} — 소리 설정(질문 음성 속도·엔진)`}
           data-testid="exam-volume"
         >
-          <span className={s.volumeText}>VOLUME</span>
+          <span className={s.volumeText}>{profile?.examLabels.volumeLabel ?? "VOLUME"}</span>
           <svg className={s.volumeIcon} viewBox="0 0 16 12" aria-hidden="true">
             <path d="M1 4h3l4-3v10L4 8H1z" fill="currentColor" />
             <path d="M10.5 3.5a3.5 3.5 0 0 1 0 5M12.5 1.8a6 6 0 0 1 0 8.4" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
@@ -1506,7 +1545,7 @@ export default function ToeicTakeView({
         </button>
       </div>
       <TtsSpeedControl />
-      <TtsEngineControl lang="en-US" />
+      <TtsEngineControl lang={TOEIC_DIRECTIONS_LANG} />
     </div>
   );
   const fsButton = fsSupported && (
@@ -1591,8 +1630,9 @@ export default function ToeicTakeView({
               </p>
             ) : (
               <p className={s.lead}>
-                {questions.length}문항 · 약 {totalMin}분. 문항마다 질문을 듣고 준비한 뒤, <strong>삐— 소리가 나면</strong> 답을 말하세요. 녹음은
-                이 기기에 먼저 저장하고 문항마다 서버에도 보관해요 — 끝난 뒤 결과 화면(다른 기기에서도)에서 다시 듣거나 AI 채점을 받을 수 있어요.
+                {questions.length}문항 · 약 {totalMin}분. 문항마다 질문을 듣고 준비한 뒤, <strong>삐— 소리가 나면</strong> 답을 말하세요.{" "}
+                {profile?.recLeadKo ??
+                  "녹음은 이 기기에 먼저 저장하고 문항마다 서버에도 보관해요 — 끝난 뒤 결과 화면(다른 기기에서도)에서 다시 듣거나 AI 채점을 받을 수 있어요."}
               </p>
             )}
             {pendingOld.length > 0 && (
@@ -1665,7 +1705,8 @@ export default function ToeicTakeView({
             <summary className={s.settingsSummary}>⚙️ 소리 설정(질문 음성)</summary>
             <div className={s.settingsBody}>
               <TtsSpeedControl />
-              <TtsEngineControl lang="en-US" />
+              <TtsEngineControl lang={TOEIC_DIRECTIONS_LANG} />
+              {profile?.extraControls}
             </div>
           </details>
 
@@ -1697,7 +1738,7 @@ export default function ToeicTakeView({
               ? retakeLead()
               : `녹음 ${recordedCount} / ${qs.length}문항${mode === "nomic" ? " (녹음 없이 연습)" : ""}. 결과 화면에서 다시 듣고 AI 채점을 받을 수 있어요.`}
           </p>
-          {keepTargets.length > 0 && (
+          {serverUpload && keepTargets.length > 0 && (
             <p className={s.caption} data-testid="rec-upload-summary" aria-live="polite">
               🗄️ 녹음 {keepTargets.length}개 중 {uploadedCount}개를 서버에 보관했어요
               {uploadedCount < keepTargets.length ? " — 나머지는 결과 화면에서 이어서 올려요." : "."}
@@ -1716,7 +1757,7 @@ export default function ToeicTakeView({
                     {a ? ANSWER_STATUS_KO[a.status] : "안 함"}
                     {hasRec(q) && a?.durationMs ? ` · ${(a.durationMs / 1000).toFixed(1)}초` : ""}
                   </span>
-                  {hasRec(q) && <span className={s.caption}>{uploadLabel(q)}</span>}
+                  {serverUpload && hasRec(q) && <span className={s.caption}>{uploadLabel(q)}</span>}
                   {/* F2 문항별 진단(§15-11) — 다음 "녹음이 안 됐어"에서 어느 갈래였는지 화면만으로 가른다 */}
                   {d && mode === "mic" && (
                     <span className={s.rowDiag} data-testid={`answer-diag-${q}`}>
@@ -1769,7 +1810,7 @@ export default function ToeicTakeView({
     st !== null &&
     st.phase !== "directions" &&
     st.phase !== "reading";
-  const introPieces = view && st?.phase === "question" && st.play === 0 ? enPieces(view.spokenIntro).length : 0;
+  const introPieces = view && st?.phase === "question" && st.play === 0 ? enPieces(view.spokenIntro, TOEIC_DIRECTIONS_LANG).length : 0;
   const screen = st ? toeicExamScreenOf(st, { introPieces, speakingIndex: speakIdx, paused: pause !== null }) : "question";
   const timers = st ? toeicExamTimers(st, now) : [];
   const phaseLabel = cueOn && st
@@ -1794,8 +1835,8 @@ export default function ToeicTakeView({
   const timerRow = timers.length > 0 && (
     <div className={`${s.timerRow} ${view?.part === "opinion" ? s.timerCol : ""}`}>
       {timers.map((t) => (
-        <div key={t.label} className={s.timerBox} role="timer" aria-label={t.label} data-running={t.running ? "1" : "0"}>
-          <span className={s.timerHead}>{t.label}</span>
+        <div key={t.label} className={s.timerBox} role="timer" aria-label={examTimerLabel(t.label)} data-running={t.running ? "1" : "0"}>
+          <span className={s.timerHead}>{examTimerLabel(t.label)}</span>
           <span className={s.timerValue}>{formatToeicExamClock(t.ms)}</span>
         </div>
       ))}
@@ -1812,17 +1853,17 @@ export default function ToeicTakeView({
             screen === "directions" && pause?.kind === "speech" && pause.phase === "directions" ? continueAfterDirections : null,
           )}
           {screen === "directions" ? (
-            <div className={`${s.winBody} ${s.dirBody}`} lang="en">
+            <div className={`${s.winBody} ${s.dirBody}`} lang={profile?.textLang ?? "en"}>
               {view && <h2 className={s.dirTitle}>{toeicExamDirectionsTitle(view.part, qs)}</h2>}
               {view && (
                 <p className={s.dirText}>
-                  <strong>Directions:</strong> {directionsByPart.get(view.part)?.en}
+                  <strong>{profile?.examLabels.directionsLabel ?? "Directions:"}</strong> {directionsByPart.get(view.part)?.en}
                 </p>
               )}
             </div>
           ) : (
-            <div className={`${s.winBody} ${s.qBody}`} lang="en">
-              {view?.passage && <p className={s.xPassage}>{view.passage}</p>}
+            <div className={`${s.winBody} ${s.qBody}`} lang={profile?.textLang ?? "en"}>
+              {view?.passage && <p className={s.xPassage}>{examText("passage", view, view.passage)}</p>}
               {view?.picture &&
                 (view.picture.imageId ? (
                   <figure className={s.xPhoto}>
@@ -1835,7 +1876,7 @@ export default function ToeicTakeView({
                     <p>{view.picture.sceneKo}</p>
                   </div>
                 ))}
-              {view?.intro && <p className={s.xIntro}>{view.intro}</p>}
+              {view?.intro && <p className={s.xIntro}>{examText("intro", view, view.intro)}</p>}
               {screen === "question" && view?.table && (
                 <div className={s.xTable}>
                   <p className={s.xTableTitle}>{view.table.title}</p>
@@ -1864,7 +1905,9 @@ export default function ToeicTakeView({
               {screen === "question" &&
                 showQuestion &&
                 view?.question &&
-                (view.part === "opinion" ? (
+                (profile?.renderText ? (
+                  <p className={view.part === "opinion" ? s.xOpinion : s.xQuestion}>{examText("question", view, view.question)}</p>
+                ) : view.part === "opinion" ? (
                   // 의견 질문 — 문단(줄바꿈)마다 따로(실제 시험의 질문 + "근거를 들어 말하라" 둘째 문단 모양)
                   <div className={s.xOpinion}>
                     {view.question
@@ -2009,6 +2052,7 @@ export default function ToeicTakeView({
                 진단
               </button>
             )}
+            {profile?.extraControls}
             {fsButton}
             <button type="button" className={s.quitBtn} onClick={() => setQuitConfirm(true)}>
               그만두기
@@ -2037,7 +2081,7 @@ export default function ToeicTakeView({
               {diag.durationMs !== null ? `${(diag.durationMs / 1000).toFixed(1)}초` : "–"} · {kb(diag.size)} · 세션 {diag.audioSession ?? "API 없음"}
               {diag.error ? ` · 오류 ${diag.error}` : ""}
               {attemptId ? "" : " · 응시 기록 만드는 중"}
-              {recordedCount > 0 && (
+              {serverUpload && recordedCount > 0 && (
                 <span data-testid="rec-upload-diag">
                   {" · 서버 "}
                   {qs

@@ -12,6 +12,7 @@ import { MOM_SUMMARY_CALL_OPTIONS, MOM_SUMMARY_SYSTEM_PROMPT, buildMomSummaryUse
 import { summarizeMomTest } from "../lib/ai/mom/calls";
 import { MOM_CLOSE_CONTENT, MOM_PASS_CONTENT } from "../lib/mom-judge";
 import { checkSpecSync, extractSpecBlocks, printSpecSyncDetails } from "./spec-sync";
+import { isDeviceOnlyPool, toeicRecPoolOf } from "../lib/toeic-rec-store";
 import { buildMomWeeks, isFullMomLesson, momPickTestItems, momProgress, momStageOfWeek, momTestSize, momToday, MOM_REVIEW_WEEKS } from "../lib/mom-plan";
 
 /** 실호출 게이트 — 둘 다 맞을 때만 네트워크를 연다(EVAL_OFFLINE_ONLY는 2차 방어선) */
@@ -246,15 +247,23 @@ export function fakeBlock(id: string, week: number, stage: 0 | 1 | 2 | 3 | 4, n 
     const j = rec.indexOf("\nexport ", i + 1);
     return rec.slice(i, j < 0 ? undefined : j);
   };
-  add(A, "녹음 풀 유니온에 mom", /export type ToeicRecPool = "mock" \| "drill" \| "mom";/.test(rec) && /TOEIC_REC_POOLS[^=]*= \["mock", "drill", "mom"\]/.test(rec));
-  add(A, "기기 전용 풀 = mom만", /function isDeviceOnlyPool\([^)]*\)[^{]*\{\s*return toeicRecPoolOf\(meta\) === "mom";\s*\}/.test(rec));
+  // 2026-10-25 일본어 말하기 모의고사 풀 "ja"(japanese.md §15-9-4) — 점검은 지우지 않고 의미가 같은 점검으로 넓혔다(mom과 ja 둘 다 기기 전용, mock·drill은 아님)
+  add(A, "녹음 풀 유니온에 mom(+ja)", /export type ToeicRecPool = "mock" \| "drill" \| "mom" \| "ja";/.test(rec) && /TOEIC_REC_POOLS[^=]*= \["mock", "drill", "mom", "ja"\]/.test(rec));
+  const devicePools = (["mock", "drill", "mom", "ja", undefined] as const).map((pool) => `${toeicRecPoolOf({ pool })}:${isDeviceOnlyPool({ pool })}`).join(",");
+  add(
+    A,
+    "기기 전용 풀 = mom·ja(mock·drill·옛 메타는 아님 — 함수 값 + 소스에 두 풀 이름)",
+    devicePools === "mock:false,drill:false,mom:true,ja:true,mock:false" &&
+      /function isDeviceOnlyPool\([^)]*\)[^{]*\{[^}]*pool === "mom" \|\| pool === "ja"[^}]*\}/.test(rec),
+    devicePools,
+  );
   const save = fnBody("saveToeicRecording");
   add(A, "저장: 기기 전용 풀은 upload \"gone\", 나머지는 \"pending\"", /isDeviceOnlyPool\(input\)\s*\?\s*\{\s*\.\.\.input,\s*upload:\s*"gone"/.test(save) && /:\s*\{\s*\.\.\.input,\s*upload:\s*"pending"/.test(save));
   const pend = fnBody("listPendingToeicRecordings");
   add(A, "업로드 대기열 목록: 메모리·IndexedDB 둘 다 기기 전용 풀 제외", (pend.match(/upload === "pending" && !isDeviceOnlyPool\(/g) ?? []).length === 2);
   const mine = fnBody("listAllToeicRecordingMetas");
   add(A, "\"내 녹음\" 목록: 메모리·IndexedDB 둘 다 기기 전용 풀 제외", (mine.match(/filter\(\(\w+\) => !isDeviceOnlyPool\(\w+\)\)/g) ?? []).length === 2);
-  add(A, "메모리 폴백: 엄마 풀과 토익 풀은 서로 비우지 않는다", /isDeviceOnlyPool\(v\) === isDeviceOnlyPool\(rec\)/.test(fnBody("rememberInMemory")));
+  add(A, "메모리 폴백: 같은 풀끼리만 비운다(엄마·일본어·토익 풀이 서로 비우지 않는다)", /toeicRecPoolOf\(v\) === toeicRecPoolOf\(rec\)/.test(fnBody("rememberInMemory")));
 }
 
 // ── 8) spec-sync — 원문 바이트 대조 + JSON Schema 의미 동치 + 호출 옵션 문장 + 판정 상수 ──

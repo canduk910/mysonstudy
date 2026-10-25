@@ -777,6 +777,7 @@ function runShapeChecks(): CheckResult[] {
 /** 시험 러너 전수(SPEC §22-3 — 마운트 동안 usePhraseHelperBlock을 건다). 이름 규칙으로도 새 러너를 잡는다(아래 검사) */
 const RUNNER_COMPONENTS: readonly string[] = [
   "components/toeic-take-view.tsx",
+  "components/ja-speaking-take-view.tsx",
   "components/toeic-quiz-runner.tsx",
   "components/toeic-template-quiz.tsx",
   "components/toeic-template-test.tsx",
@@ -810,6 +811,7 @@ async function runAppChecks(): Promise<CheckResult[]> {
     ["/japanese/vocab/abc", "japanese"],
     ["/japanese/dialog/abc", "japanese"],
     ["/japanese/kanji", "japanese"],
+    ["/japanese/speaking/abc", "japanese"],
     ["/english", "english-kid"],
     ["/english/books", "english-kid"],
     ["/english/vocab", "english-kid"],
@@ -849,6 +851,12 @@ async function runAppChecks(): Promise<CheckResult[]> {
     ["/japanese/vocab/v1/quiz", true],
     ["/japanese/vocab/v1/quiz?wrong=reading", true],
     ["/japanese/kanji/quiz", true],
+    // 🎙️ 일본어 말하기 모의고사 응시(docs/harness/japanese.md §15-10-2) — 학습 보기·목록·결과는 시험이 아니다
+    ["/japanese/speaking/m1/take", true],
+    ["/japanese/speaking/m1/take?scope=part&part=read", true],
+    ["/japanese/speaking/m1", false],
+    ["/japanese/speaking", false],
+    ["/japanese/speaking/attempts/a1", false],
     ["/english/vocab/v1/quiz", true],
     ["/english/vocab/v1/quiz?mode=wrong", true],
     ["/english/vocab/v1/speak", true],

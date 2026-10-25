@@ -5,6 +5,7 @@
  * 허브는 **두 독립 기능을 나란히 세운 갈림길**일 뿐이다(영어 허브 `/english`가 북카드·단어장을 두 장으로 세우는 것과 같은 모양):
  *   - **JLPT 단어장**(`/japanese/vocab`) — 레벨·주제로 단어를 만들고 후리가나·TTS로 외운다(J1).
  *   - **대화 복습**(`/japanese/dialog`) — 듀오링고 스크린샷을 찍어 전사·해설로 복습한다(J3).
+ *   - **한자**(`/japanese/kanji`)·**🎙️ 말하기 모의고사**(`/japanese/speaking` — §15, 토익스피킹 형식을 일본어로).
  * 한쪽이 비어 있어도 다른 쪽은 온전히 동작한다(§0-4). 기능은 하나도 갖지 않는다 — 고르기만 한다.
  *
  * 잠금: `proxy.ts`가 허용목록 밖을 전부 막으므로 이 경로도 자동으로 PIN 게이트 안이다(별도 등록 불필요).
@@ -31,7 +32,7 @@ export default function JapaneseHubPage() {
         </div>
         <h1 className="t-book-title mt-4">🗾 아빠의 일본어</h1>
         <p className="t-lead mt-1">
-          JLPT 단어장으로 어휘를 쌓고, 듀오링고 대화를 찍어 복습하고, 모은 한자를 한국 한자음으로 익혀요. 따로따로 써도 돼요.
+          JLPT 단어장으로 어휘를 쌓고, 듀오링고 대화를 찍어 복습하고, 모은 한자를 한국 한자음으로 익히고, 말하기 모의고사로 입을 풀어요. 따로따로 써도 돼요.
         </p>
       </header>
 
@@ -59,14 +60,25 @@ export default function JapaneseHubPage() {
           </span>
         </Link>
 
-        {/* 한자 — 단어장에서 파생되지만 화면은 독립(§12-1). 아랫줄 full-width로 두 기능과 시각 구분. */}
-        <Link href="/japanese/kanji" className="u-entry u-entry-secondary sm:col-span-2">
+        {/* 한자 — 단어장에서 파생되지만 화면은 독립(§12-1). */}
+        <Link href="/japanese/kanji" className="u-entry u-entry-secondary">
           <span className="u-entry-icon" aria-hidden>
             🈳
           </span>
           <span className="u-entry-title">한자</span>
           <span className="u-entry-desc">
             단어장에서 모은 한자를 한국 한자음을 다리 삼아 익혀요. 음독·훈독·뜻과 한자 시험이 있어요.
+          </span>
+        </Link>
+
+        {/* 🎙️ 말하기 모의고사(§15) — 단어장·대화 복습·한자와 독립(진입·저장·레코드가 전부 갈린다, §0-4) */}
+        <Link href="/japanese/speaking" className="u-entry u-entry-secondary" data-testid="ja-hub-speaking">
+          <span className="u-entry-icon" aria-hidden>
+            🎙️
+          </span>
+          <span className="u-entry-title">말하기 모의고사</span>
+          <span className="u-entry-desc">
+            토익스피킹 11문항 형식을 일본어로 — JLPT 레벨에 맞춰 AI가 출제하고, 실전처럼 응시·녹음한 뒤 AI 채점을 받아요.
           </span>
         </Link>
       </div>

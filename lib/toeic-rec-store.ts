@@ -43,17 +43,21 @@ export const TOEIC_REC_KEEP_ATTEMPTS = 5;
  * "mom"(2026-10-09, 엄마의 생활영어 주간 테스트 — 설계 §5): **기기에만** 둔다 — 서버 업로드 대기열에 넣지 않고("gone"으로 저장 →
  * 고정되지 않아 풀마다 최근 5회분 정리를 그대로 받는다), 토익 "내 녹음" 목록·대기열 목록에도 나오지 않는다. 풀이 따로라 토익 녹음을 밀어내지 않는다.
  */
-export type ToeicRecPool = "mock" | "drill" | "mom";
-export const TOEIC_REC_POOLS: readonly ToeicRecPool[] = ["mock", "drill", "mom"];
+export type ToeicRecPool = "mock" | "drill" | "mom" | "ja";
+export const TOEIC_REC_POOLS: readonly ToeicRecPool[] = ["mock", "drill", "mom", "ja"];
 
-/** 메타의 풀 — "drill"·"mom"이 아니면 전부 "mock"(필드가 없는 옛 메타 = 모의고사 응시) */
+/**
+ * 메타의 풀 — "drill"·"mom"·"ja"가 아니면 전부 "mock"(필드가 없는 옛 메타 = 모의고사 응시).
+ * "ja"(2026-10-25, 아빠의 일본어 말하기 모의고사 — docs/harness/japanese.md §15-9-4): 엄마 풀과 같은 **기기 전용** 규칙.
+ */
 export function toeicRecPoolOf(meta: { pool?: unknown }): ToeicRecPool {
-  return meta.pool === "drill" ? "drill" : meta.pool === "mom" ? "mom" : "mock";
+  return meta.pool === "drill" ? "drill" : meta.pool === "mom" ? "mom" : meta.pool === "ja" ? "ja" : "mock";
 }
 
-/** 기기에만 두는 풀(서버에 올리지 않는다) */
-function isDeviceOnlyPool(meta: { pool?: unknown }): boolean {
-  return toeicRecPoolOf(meta) === "mom";
+/** 기기에만 두는 풀(서버에 올리지 않는다) — 엄마 주간 테스트·일본어 말하기 모의고사. 토익 풀(mock·drill)은 아니다 */
+export function isDeviceOnlyPool(meta: { pool?: unknown }): boolean {
+  const pool = toeicRecPoolOf(meta);
+  return pool === "mom" || pool === "ja";
 }
 
 export interface ToeicRecordingMeta {
@@ -131,8 +135,9 @@ const memory = new Map<string, ToeicRecording>();
 
 function rememberInMemory(rec: ToeicRecording): void {
   // 다른 응시의 녹음은 비운다 — 탭 메모리에 여러 응시분 바이트를 쌓지 않는다
-  // 엄마 풀과 토익 풀은 서로 비우지 않는다(엄마 테스트가 아직 못 올린 토익 메모리 녹음을 지우지 않게)
-  for (const [k, v] of memory) if (v.attemptId !== rec.attemptId && isDeviceOnlyPool(v) === isDeviceOnlyPool(rec)) memory.delete(k);
+  // **같은 풀끼리만** 비운다(japanese.md §15-9-4) — 엄마·일본어(둘 다 기기 전용)가 서로를 지우지 않고, 기기 전용 풀이 아직 못 올린
+  // 토익 메모리 녹음을 지우지 않으며, 모의고사·연습 풀도 서로 밀어내지 않는다(풀마다 따로 센다 — toeic.md §12-7-6)
+  for (const [k, v] of memory) if (v.attemptId !== rec.attemptId && toeicRecPoolOf(v) === toeicRecPoolOf(rec)) memory.delete(k);
   memory.set(toeicRecKey(rec.attemptId, rec.q), rec);
 }
 

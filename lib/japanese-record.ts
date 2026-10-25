@@ -9,6 +9,7 @@
  */
 
 import type { JaVocabBookRecord } from "./store";
+import type { JaSpeakingMockRecord } from "./ja-speaking-record";
 import type { JaVocabEntry } from "./ai/japanese/schemas";
 
 function isArray(v: unknown): v is unknown[] {
@@ -37,5 +38,61 @@ export function isRenderableJaVocabBook(record: JaVocabBookRecord): boolean {
     if (!e.example || !isArray((e.example as { tokens?: unknown }).tokens)) return false;
   }
 
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// 🎙️ 말하기 모의고사(docs/harness/japanese.md §15-10-2) — 목록·학습 보기·응시·결과·라우트가 이 판정 하나를 본다
+// ---------------------------------------------------------------------------
+
+function isLine(v: unknown): boolean {
+  const l = v as { ja?: unknown; tokens?: unknown; ko?: unknown } | null;
+  return !!l && typeof l.ja === "string" && Array.isArray(l.tokens) && typeof l.ko === "string";
+}
+
+function isRenderableJaSpeakingPart(part: string, p: unknown): boolean {
+  const o = p as Record<string, unknown> | null;
+  if (!o || typeof o !== "object") return false;
+  switch (part) {
+    case "read":
+      return Array.isArray(o.items) && o.items.length > 0 && o.items.every((it) => isLine((it as { passage?: unknown })?.passage) && Array.isArray((it as { tipsKo?: unknown }).tipsKo));
+    case "picture":
+      return (
+        Array.isArray(o.items) &&
+        o.items.length > 0 &&
+        o.items.every((it) => {
+          const x = it as { sampleAnswer?: unknown; sceneKo?: unknown; imagePrompt?: unknown; keyPointsKo?: unknown; image?: { status?: unknown } };
+          return isLine(x?.sampleAnswer) && typeof x.sceneKo === "string" && typeof x.imagePrompt === "string" && Array.isArray(x.keyPointsKo) && !!x.image && typeof x.image.status === "string";
+        })
+      );
+    case "respond":
+    case "info": {
+      const intro = part === "respond" ? o.intro : o.callerIntro;
+      if (!isLine(intro) || !Array.isArray(o.questions) || o.questions.length === 0) return false;
+      if (!o.questions.every((qq) => isLine((qq as { question?: unknown })?.question) && isLine((qq as { sampleAnswer?: unknown }).sampleAnswer))) return false;
+      if (part === "info") {
+        const t = o.table as { title?: unknown; meta?: unknown; rows?: unknown; notes?: unknown } | null;
+        return !!t && typeof t.title === "string" && Array.isArray(t.meta) && Array.isArray(t.rows) && Array.isArray(t.notes);
+      }
+      return true;
+    }
+    case "opinion":
+      return isLine(o.question) && isLine(o.sampleAnswer) && Array.isArray(o.outlineKo);
+    default:
+      return false;
+  }
+}
+
+/** 화면이 실제로 읽는 자리가 제자리에 있는가 — 파트 하나라도 모양이 깨졌으면 열지 않는다(null 파트는 정상 — "이 파트 만들기") */
+export function isRenderableJaSpeakingMock(record: JaSpeakingMockRecord): boolean {
+  const r = record as Partial<JaSpeakingMockRecord>;
+  if (!r.id || typeof r.createdAt !== "string" || typeof r.titleKo !== "string" || typeof r.level !== "string") return false;
+  if (!r.parts || typeof r.parts !== "object" || !Array.isArray(r.topicHints)) return false;
+  const parts = r.parts as Record<string, unknown>;
+  for (const part of ["read", "picture", "respond", "info", "opinion"]) {
+    const p = parts[part];
+    if (p === null || p === undefined) continue;
+    if (!isRenderableJaSpeakingPart(part, p)) return false;
+  }
   return true;
 }

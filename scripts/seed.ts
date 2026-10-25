@@ -703,6 +703,10 @@ async function main() {
     pushSubscriptions: {},
     pushLog: {},
     workoutRestAlerts: {},
+    // 🎙️ 일본어 말하기 모의고사(japanese.md §15-9)도 빈 배열 — 아빠가 앱에서 만드는 기록이다(mergeById라 기존 것은 그대로 남는다).
+    jaSpeakingMocks: [],
+    jaSpeakingImages: [],
+    jaSpeakingAttempts: [],
   };
 
   await mergeDbForSeed(db);

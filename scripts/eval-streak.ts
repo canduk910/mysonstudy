@@ -48,6 +48,7 @@ import { DEFAULT_PUSH_PREFS } from "../lib/push-contract";
 import { MOM_REVIEW_WEEKS, momStreakWeekKo } from "../lib/mom-plan";
 import { PERSON_HUB_HREF, personOfPath } from "../lib/person-area";
 import { EXAM_SCREEN_EXTRA_PATHS, EXAM_SCREEN_STREAK_H_CSS, isExamScreen, isExamScreenPath } from "../lib/exam-screen";
+import { isCountedJaSpeakingAttempt, jaSpeakingStreakLabel, jaSpeakingStreakSessions } from "../lib/ja-speaking-streak";
 
 interface CheckResult {
   book: string;
@@ -400,7 +401,8 @@ const TODAY = "2026-09-21";
   const wiredEnglish = /const toeicSessions: StreakSession\[\] = \[\.\.\.toeicStreakSessions\(toeicQuizzes, toeicAttempts, frameDrills\), \.\.\.reviewStreakSessions\(reviewsOf\("toeic"\)\)\];/.test(route) && /info: computeStreak\(toeicSessions, today\)/.test(route) && /const frameDrills = toeicFrameDrills \?\? \[\];/.test(route);
   // 은우 계산식 — §17-9부터 단어장 시험 + 자유대화(talkStreakSessions)다. 그 밖의 것(토익·일본어)은 여기 섞이지 않는다(noLeak).
   const eunwooUntouched = /computeStreak\(\[\.\.\.vocab, \.\.\.talkStreakSessions\(talks\), \.\.\.reviewStreakSessions\(reviewsOf\("english"\)\)\], today\)/.test(route);
-  const jaUntouched = /const jaSessions: StreakSession\[\] = \[\.\.\.jaVocab, \.\.\.jaKanji, \.\.\.reviewStreakSessions\(reviewsOf\("japanese"\)\)\];/.test(route) && /info: computeStreak\(jaSessions, today\)/.test(route);
+  // 2026-10-25 일본어 말하기 모의고사(japanese.md §15-11-2) — 일본어 세션에 jaSpeakingStreakSessions(일본어 컬렉션 jaSpeakingAttempts)만 더해졌다. 식 자체는 같다
+  const jaUntouched = /const jaSessions: StreakSession\[\] = \[\.\.\.jaVocab, \.\.\.jaKanji, \.\.\.reviewStreakSessions\(reviewsOf\("japanese"\)\), \.\.\.jaSpeakingStreakSessions\(jaSpeak\)\];/.test(route) && /info: computeStreak\(jaSessions, today\)/.test(route) && /const jaSpeak = jaSpeakingAttempts \?\? \[\];/.test(route);
   const noLeak = !/toeicStreakSessions\([^)]*\b(vocab|jaVocab|jaKanji)\b/.test(route) && !/computeStreak\(\[\.\.\.(?:vocab|jaVocab)\b[^\]]*toeic/i.test(route);
   add(
     "영어 트랙",
@@ -1286,6 +1288,8 @@ const TODAY = "2026-09-21";
     "/toeic/guides/q5_7/frame-drill/take",
     "/japanese/vocab/v1/quiz",
     "/japanese/kanji/quiz",
+    "/japanese/speaking/m1/take",
+    "/japanese/speaking/m1/take?scope=part&part=info",
     "/english/vocab/v1/quiz?mode=wrong",
     "/english/vocab/v1/speak/",
     "/english/review",
@@ -1297,7 +1301,7 @@ const TODAY = "2026-09-21";
   ];
   const badExam = exams.filter((p) => !isExamScreenPath(p) || !isExamScreen({ pathname: p, blockCount: 0 }));
   add(B, "시험·응시·복습 경로는 숨김(쿼리·끝 슬래시 무관, 엄마 주간 테스트 포함)", badExam.length === 0, badExam.length === 0 ? `${exams.length}건` : badExam.join(", "));
-  const normals = ["/", "/eunwoo", "/appa", "/mama", "/family", "/english", "/english/vocab/v1", "/english/talk", "/japanese", "/japanese/vocab/v1", "/toeic", "/toeic/sets/s1", "/toeic/mocks/m1", "/toeic/guides/q5_7/frame-drill/fd-1", "/mom", "/mom/lesson/l1", "/workout", "/math", "/mom/test", "/mom/test/3/x", null, undefined];
+  const normals = ["/", "/eunwoo", "/appa", "/mama", "/family", "/english", "/english/vocab/v1", "/english/talk", "/japanese", "/japanese/vocab/v1", "/japanese/speaking", "/japanese/speaking/m1", "/japanese/speaking/attempts/a1", "/toeic", "/toeic/sets/s1", "/toeic/mocks/m1", "/toeic/guides/q5_7/frame-drill/fd-1", "/mom", "/mom/lesson/l1", "/workout", "/math", "/mom/test", "/mom/test/3/x", null, undefined];
   const badNormal = normals.filter((p) => isExamScreen({ pathname: p, blockCount: 0 }));
   add(B, "보통 화면(허브·목록·상세·엄마 오늘의 레슨·운동)은 보인다", badNormal.length === 0, badNormal.length === 0 ? `${normals.length}건` : badNormal.map(String).join(", "));
   add(B, "블록이 걸리면(경로로 못 가르는 통화 오버레이 등) 보통 경로도 숨김", isExamScreen({ pathname: "/english/talk", blockCount: 1 }) && !isExamScreen({ pathname: "/english/talk", blockCount: 0 }), "");
@@ -1609,6 +1613,42 @@ const TODAY = "2026-09-21";
     const route = src("lib/streak-server.ts");
     add(B, "라우트가 적용일 전이면 either 라벨 · 폴백도 적용일부터 교집합", (route.match(/either: today < APPA_BOTH_FROM/g) ?? []).length === 2 && /d < APPA_BOTH_FROM \|\| \(langDays\.has\(d\) && gymKept\.has\(d\)\)/.test(route), "");
   }
+}
+
+// ---------------------------------------------------------------------------
+// 🎙️ 일본어 말하기 모의고사 한 판(docs/harness/japanese.md §15-11-2, 2026-10-25) — 토익 응시와 같은 isFullAttempt,
+//   아빠 📚 어학의 **일본어** 트랙에만(토익 영어 트랙·은우 트랙에 섞이지 않는다)
+{
+  const B = "일본어 말하기";
+  const ans = (q: number, recorded: boolean) => ({ q, recorded });
+  const full = { startedAt: "2026-10-25T01:00:00.000Z", finishedAt: "2026-10-25T01:20:00.000Z", questions: [1, 2], answers: [ans(1, true), ans(2, true)] };
+  const oneMissing = { ...full, answers: [ans(1, true), ans(2, false)] };
+  const quit = { ...full, finishedAt: null };
+  const noMic = { ...full, answers: [ans(1, false), ans(2, false)] };
+  add(B, "끝까지 + 범위 전부 녹음 → 한 판(isFullAttempt 그대로)", isFullAttempt(full), "");
+  add(B, "한 문항 미녹음 → 아님 · 그만둠 → 아님 · 녹음 없이 연습 → 아님", !isFullAttempt(oneMissing) && !isFullAttempt(quit) && !isFullAttempt(noMic), "");
+  const sess = jaSpeakingStreakSessions([full, noMic, { startedAt: "2026-10-25T02:00:00.000Z", answers: [] }]);
+  add(
+    B,
+    "옛 일본어 세션: 녹음된 문항 = 답한 문항(끝내기 전 빈 answers는 0 — 오늘로 세지 않는다)",
+    sess.length === 3 && sess[0].items.every((i) => i.answered === true) && sess[1].items.every((i) => i.answered === false) && sess[2].items.length === 0 &&
+      computeStreak(sess.slice(1), "2026-10-25").doneToday === false && computeStreak(sess, "2026-10-25").doneToday === true,
+    "",
+  );
+  add(B, "오늘 라벨 후보 = 녹음 ≥ 1 · 라벨 `말하기 모의고사 · {제목}`", isCountedJaSpeakingAttempt(oneMissing) && !isCountedJaSpeakingAttempt(noMic) && jaSpeakingStreakLabel({ titleKo: "말하기 모의고사 2" }) === "말하기 모의고사 · 말하기 모의고사 2" && jaSpeakingStreakLabel(null) === "말하기 모의고사", "");
+  const route = readFileSync(new URL("../lib/streak-server.ts", import.meta.url), "utf-8");
+  const langAt = route.indexOf("const langT");
+  add(
+    B,
+    "배선: v2 어학 runs에 jaSpeak.filter(isFullAttempt) · 읽기 실패는 .catch → null(그것만 빼고) · 토익 영어 트랙·은우 트랙에 없음",
+    /addRuns\(m, jaSpeak\.filter\(isFullAttempt\)\.map\(\(a\) => a\.startedAt\)\)/.test(route) &&
+      route.indexOf("jaSpeak.filter(isFullAttempt)") > langAt &&
+      /store\.listAllJaSpeakingAttempts\(\)\.catch\(/.test(route) &&
+      !/toeicStreakSessions\([^)]*jaSpeak/.test(route) &&
+      !/computeStreak\(\[\.\.\.vocab[^\]]*jaSpeak/.test(route) &&
+      !/eunwooT[\s\S]{0,400}jaSpeak/.test(route),
+    "",
+  );
 }
 
 // ---------------------------------------------------------------------------

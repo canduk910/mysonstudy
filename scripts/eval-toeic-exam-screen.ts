@@ -150,7 +150,8 @@ export function runToeicExamScreenChecks(): GuideCheckResult[] {
   add("E16 lib/toeic-exam-screen: 값 import는 ./toeic-mock 하나(클라이언트 번들 — lib/ai·store·zod 없음)", eqJson(runtimeImports, ["./toeic-mock"]), runtimeImports.join(","));
   add(
     "E17 시작 안내는 실전 전체 응시만(scope full · 다시 풀기 아님) · CONTINUE와 앱 띠 \"시작\"이 start()를 탭으로 부른다",
-    /const showTestDirections = scope === "full" && !retake;/.test(take) &&
+    // 2026-10-25 시험 프로필(japanese.md §15-10-3): 프로필이 시작 안내를 끌 수 있다(일본어) — 토익(프로필 없음)은 기본 켬 그대로
+    /const showTestDirections = scope === "full" && !retake && \(profile\?\.testDirections \?\? true\);/.test(take) &&
       /onClick=\{showTestDirections \? \(\) => setTestDirections\(true\) : start\}/.test(take) &&
       /\{examBand\(null, start\)\}/.test(take) &&
       /onClick=\{start\}>\s*시작\s*<\/button>/.test(take),
