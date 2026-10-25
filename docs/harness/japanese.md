@@ -1931,6 +1931,8 @@ interface JaSpeakingAttemptRecord {
 | 녹음 풀 | `"mock"`·`"drill"` | `"ja"`(기기 전용) |
 | 서버 녹음 업로드(`drainToeicRecUploads`)·문항 다시 풀기(`toeic-retake`)·공략 돌아가기 | 켬 | **끔** |
 | 표현 도우미 막기(`usePhraseHelperBlock` — 도우미 내리기 + `isExamScreen` 상단 숨김) | 켬 | **켬(공통 코어 — 프로필로 끌 수 없다)** |
+| 시험 창 글자 `examLabels`(문항 제목·지시 제목·"Directions:"·CONTINUE·VOLUME·타이머 제목 — 2026-10-25 구현 회차) | 없음 → 지금 영어 문자열 그대로(`Question 3 of 11`·`Directions:`·`CONTINUE`·`VOLUME`·`PREPARATION TIME`/`RESPONSE TIME`) | `JA_SPEAKING_EXAM_LABELS`(`lib/ja-speaking-contract.ts` — `問題 3 / 11`·정보 활용은 `問題 8–10 / 11`·`問題 1–2：音読`·`指示：`·`次へ`·`音量`·`準備時間`/`回答時間`) |
+| 토익 시작 안내 화면("Speaking Test Directions" — `testDirections`) | 켬 | **끔** |
 
 **토익 동작 불변 조건**(재사용 회차의 완료 기준):
 1. 토익 화면은 프로필을 넘기지 않으면(또는 토익 프로필이면) 지금과 **같은 문자열**을 읽고 미리 받는다 — 지시문·멘트·질문 조각이 바이트까지 같아야 클라우드 TTS 영구 캐시가 그대로 맞는다(글자가 하나라도 바뀌면 캐시가 비고 합성 비용이 다시 난다).
