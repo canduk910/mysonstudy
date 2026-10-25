@@ -1,0 +1,39 @@
+/*
+ * review-quiz-runner.module.css — 은우 오늘의 복습(문제 맞히기) 러너의 덧붙임만. 나머지 모양은 단어장 시험과 같은
+ * vocab-quiz-view.module.css를 그대로 쓴다(같은 화면처럼 보이게). 색은 globals 토큰만.
+ */
+
+.emoji {
+  margin: 0.25rem 0 0.75rem;
+  font-size: 3.5rem;
+  line-height: 1;
+  text-align: center;
+}
+
+.feedbackBody {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.meaning {
+  color: var(--ink);
+  font-size: 1.125rem;
+  font-weight: 700;
+}
+
+.nextDue {
+  color: var(--ink-3);
+  font-size: 0.875rem;
+}
+
+.dist {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.375rem;
+  margin: 0.375rem 0 0;
+  padding: 0;
+  list-style: none;
+}

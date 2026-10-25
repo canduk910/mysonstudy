@@ -784,6 +784,7 @@ const RUNNER_COMPONENTS: readonly string[] = [
   "components/ja-kanji-quiz-runner.tsx",
   "components/vocab-quiz-view.tsx",
   "components/vocab-speak-quiz-runner.tsx",
+  "components/review-quiz-runner.tsx",
   "components/talk-call-overlay.tsx",
 ];
 

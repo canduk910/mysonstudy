@@ -8,6 +8,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import {
   REVIEW_AREAS,
   REVIEW_DAILY_CAP,
@@ -24,6 +25,7 @@ import {
   normalizeReviewSchedule,
   parseReviewItemKey,
   reviewDocId,
+  reviewFullDays,
   reviewIntervalLabelKo,
   reviewItemKey,
   reviewScheduleData,
@@ -51,7 +53,14 @@ import {
   islandFrameSkeleton,
   wordUnderscores,
   type QuizSessionLike,
+  buildEnglishReviewQuiz,
+  maskAnswerForKidQuiz,
+  KID_QUIZ_MASK,
 } from "../lib/review-sources";
+import * as reviewSourcesModule from "../lib/review-sources";
+import { REVIEW_QUIZ_CHOICE_COUNT, REVIEW_QUIZ_MIN_CHOICES, isReviewQuizCorrect, reviewQuizOutcome } from "../lib/review-quiz";
+import { DEFAULT_CHOICE_COUNT } from "../lib/vocab-quiz";
+import { nonEnglishReviewSnapshot } from "./eval-review-fixture";
 import { computeStreak } from "../lib/streak";
 import { kstDateString, kstTodayString, shiftDateString } from "../lib/kst";
 import { PHRASE_HELPER_EXAM_PATHS, isPhraseHelperExamPath } from "../lib/phrase-helper-scope";
@@ -541,7 +550,7 @@ async function recordChecks(): Promise<void> {
   const runner = src("../components/review-runner.tsx");
   const card = src("../components/review-today-card.tsx");
   add(A, "러너: usePhraseHelperBlock · 🔊는 onClick 안 speak만 · 프리페치·speakQueue·/api/tts 직접 호출 0 · 첫 적용 때 스트릭 이벤트", /usePhraseHelperBlock\(\)/.test(runner) && /onClick=\{\(\) => card\.speak && speak\(card\.speak\.text, card\.speak\.lang\)\}/.test(runner) && !/prefetchSpeech|speakQueue|prepareSpeech|\/api\/tts/.test(runner + card) && /STREAK_REFRESH_EVENT/.test(runner) && (runner.match(/speak\(/g) ?? []).length === 1);
-  const reviewFiles = ["../lib/review-schedule.ts", "../lib/review-sources.ts", "../lib/review-server.ts", "../lib/review-contract.ts", "../app/api/review/[area]/route.ts", "../app/api/review/record/route.ts", "../components/review-runner.tsx", "../components/review-today-card.tsx"].map(src);
+  const reviewFiles = ["../lib/review-schedule.ts", "../lib/review-sources.ts", "../lib/review-server.ts", "../lib/review-contract.ts", "../app/api/review/[area]/route.ts", "../app/api/review/record/route.ts", "../components/review-runner.tsx", "../components/review-today-card.tsx", "../lib/review-quiz.ts", "../components/review-quiz-runner.tsx", "../app/english/review/page.tsx"].map(src);
   add(A, "AI 0: 복습 파일 어디에도 lib/ai·openai·callWithSchema·OPENAI_API_KEY 없음", reviewFiles.every((f) => !/from "[^"]*\/ai\/|from "openai"|callWithSchema|OPENAI_API_KEY/.test(f)));
   const eng = src("../lib/review-schedule.ts");
   const imports = [...eng.matchAll(/^import[^;]*from "([^"]+)"/gm)].map((m) => m[1]);
@@ -549,7 +558,7 @@ async function recordChecks(): Promise<void> {
   const contract = src("../lib/review-contract.ts");
   add(A, "계약: 타입 전용(import type만)", [...contract.matchAll(/^import (?!type )/gm)].length === 0);
   const pages = ["../app/english/review/page.tsx", "../app/japanese/review/page.tsx", "../app/toeic/review/page.tsx"].map(src);
-  add(A, "러너 페이지 셋: force-dynamic · loadReviewQueue · 영역 맞음", pages.every((p) => /export const dynamic = "force-dynamic"/.test(p) && /loadReviewQueue\(/.test(p)) && /loadReviewQueue\("english"/.test(pages[0]) && /loadReviewQueue\("japanese"/.test(pages[1]) && /loadReviewQueue\("toeic"/.test(pages[2]) && /tone="kid"/.test(pages[0]));
+  add(A, "러너 페이지 셋: force-dynamic · loadReviewQueue · 영역 맞음 · 은우는 문제 맞히기 러너(§23-11)", pages.every((p) => /export const dynamic = "force-dynamic"/.test(p) && /loadReviewQueue\(/.test(p)) && /loadReviewQueue\("english"/.test(pages[0]) && /loadReviewQueue\("japanese"/.test(pages[1]) && /loadReviewQueue\("toeic"/.test(pages[2]) && /<ReviewQuizRunner/.test(pages[0]) && /buildEnglishReviewQuiz\(q\.cards, books, today\)/.test(pages[0]) && !/ReviewRunner\b/.test(pages[0].replace(/ReviewQuizRunner/g, "")));
   const hubs = ["../app/english/page.tsx", "../app/japanese/page.tsx", "../app/toeic/page.tsx"].map(src);
   add(A, "허브 셋에 오늘의 복습 카드(영역·말투 맞음)", /<ReviewTodayCard area="english" tone="kid" \/>/.test(hubs[0]) && /<ReviewTodayCard area="japanese" tone="adult" \/>/.test(hubs[1]) && /<ReviewTodayCard area="toeic" tone="adult" \/>/.test(hubs[2]));
   const rec = src("../app/api/review/record/route.ts");
@@ -594,6 +603,129 @@ async function recordChecks(): Promise<void> {
     const items = momSentenceItems(blocks as never, lessons as never, []);
     add("엄마", "끝낸 말하기 문장만·dialog 제외·다음 날부터·틀림 1", items.length === 1 && items[0].card.itemKey === "mom-sentence:b1-s0" && items[0].stats.firstDueOn === "2026-10-11" && items[0].stats.wrongCount === 1, JSON.stringify(items[0]?.stats));
   }
+}
+
+// ---------------------------------------------------------------------------
+// 14) 은우 문제 맞히기(§23-11, 2026-10-25) — 보기 생성 · 순서 · 자동 채점 매핑 · 다른 영역 카드 불변 · 배선
+// ---------------------------------------------------------------------------
+{
+  const A = "은우 문제 맞히기";
+  const ent = (word: string) => ({ word, meanings: [{ ko: `${word}-뜻` }], definitionEn: `Something known as ${word.trim().toLowerCase()} here.`, imageEmoji: null });
+  const card = (word: string) => englishWordItems([{ id: "tmp", titleKo: "t", createdAt: NOW, entries: [ent(word)] }], [ses(NOW, [[word, true, true]])])[0].card;
+  const keyOf = (w: string) => w.trim().replace(/\s+/g, " ").toLowerCase();
+  const distinct = (xs: string[]) => new Set(xs.map(keyOf)).size === xs.length;
+  add(A, "보기 수 = 단어장 시험과 같은 5 · 최소 2", REVIEW_QUIZ_CHOICE_COUNT === DEFAULT_CHOICE_COUNT && DEFAULT_CHOICE_COUNT === 5 && REVIEW_QUIZ_MIN_CHOICES === 2);
+
+  // ① 같은 DAY에 다른 단어가 충분 — 5지 전부 그 DAY에서, 정답 포함·서로 다름
+  const day1 = { id: "d1", titleKo: "DAY 01", createdAt: "2026-09-01T00:00:00.000Z", entries: ["cat", "dog", "bird", "fish", "frog", "duck", "lion"].map(ent) };
+  const other = { id: "d0", titleKo: "DAY 00", createdAt: "2026-08-01T00:00:00.000Z", entries: ["moon", "star", "sun", "sky"].map(ent) };
+  const c1 = card("cat");
+  const b1 = buildEnglishReviewQuiz([c1], [other, day1], TODAY);
+  const ch1 = b1.questions[0]?.choices ?? [];
+  add(A, "같은 DAY가 넉넉하면 5지 · 정답 포함 · 서로 다름 · 오답은 전부 같은 DAY", ch1.length === 5 && ch1.includes("cat") && distinct(ch1) && ch1.every((w) => day1.entries.some((e) => e.word === w)), ch1.join(","));
+
+  // ② 같은 DAY가 모자라면 다른 단어장으로 채움(같은 DAY 단어는 전부 들어간다)
+  const day2 = { id: "d2", titleKo: "DAY 02", createdAt: "2026-09-10T00:00:00.000Z", entries: ["kite", "drum", "ball"].map(ent) };
+  const b2 = buildEnglishReviewQuiz([card("kite")], [other, day2], TODAY);
+  const ch2 = b2.questions[0]?.choices ?? [];
+  add(A, "같은 DAY가 모자라면 다른 단어장 단어로 채워 5지 · 같은 DAY 단어(drum·ball) 전부 포함", ch2.length === 5 && ch2.includes("kite") && ch2.includes("drum") && ch2.includes("ball") && distinct(ch2) && ch2.filter((w) => other.entries.some((e) => e.word === w)).length === 2, ch2.join(","));
+
+  // ③ 대소문자·공백만 다른 같은 단어는 한 번 · 정답과 같은 단어(Cat)는 오답이 아님
+  const dupDay = { id: "d3", titleKo: "DAY 03", createdAt: "2026-09-20T00:00:00.000Z", entries: ["cat", "Cat", "Apple", "apple ", "APPLE", "pig"].map(ent) };
+  const ch3 = buildEnglishReviewQuiz([card("cat")], [dupDay], TODAY).questions[0]?.choices ?? [];
+  add(A, "중복 접기 — 대소문자·공백만 다른 단어 한 번, 정답의 다른 표기는 보기에서 빠짐 → 있는 만큼(3지)", ch3.length === 3 && distinct(ch3) && ch3.filter((w) => keyOf(w) === "cat").length === 1 && ch3.includes("cat"), ch3.join(","));
+
+  // ④ 전체에 단어가 둘뿐 → 2지 · 하나뿐 → 문항에서 빠지고 skipped
+  const two = buildEnglishReviewQuiz([card("cat")], [{ id: "x", titleKo: "x", createdAt: NOW, entries: ["cat", "dog"].map(ent) }], TODAY);
+  const one = buildEnglishReviewQuiz([card("cat")], [{ id: "y", titleKo: "y", createdAt: NOW, entries: ["cat"].map(ent) }], TODAY);
+  add(A, "단어 둘뿐이면 2지 · 하나뿐이면 빼고 skipped 1(문제가 서지 않음)", two.questions[0]?.choices.length === 2 && two.skipped === 0 && one.questions.length === 0 && one.skipped === 1);
+
+  // ⑤ 결정성·순서 — 같은 날 다시 열면 같은 보기·같은 순서, 남은 카드만 와도 앞뒤 같음, 날이 바뀌면 순서가 섞임
+  const words = ["cat", "dog", "bird", "fish", "frog", "duck", "lion"];
+  const cards = words.map(card);
+  const r1 = buildEnglishReviewQuiz(cards, [day1], TODAY);
+  const r2 = buildEnglishReviewQuiz(cards, [day1], TODAY);
+  add(A, "같은 날 두 번 → 같은 보기·같은 순서(서버 고정 — hydration 안전)", JSON.stringify(r1) === JSON.stringify(r2));
+  const order = r1.questions.map((x) => x.card.itemKey);
+  const subset = buildEnglishReviewQuiz(cards.filter((_, i) => i % 2 === 0), [day1], TODAY).questions.map((x) => x.card.itemKey);
+  add(A, "남은 카드만 와도 서로의 앞뒤가 같다(같은 날 다시 열기)", JSON.stringify(subset) === JSON.stringify(order.filter((k) => subset.includes(k))), subset.join(","));
+  const days = Array.from({ length: 6 }, (_, i) => buildEnglishReviewQuiz(cards, [day1], shiftDateString(TODAY, i)).questions.map((x) => x.card.itemKey).join(","));
+  const queueOrder = cards.map((c) => c.itemKey).join(",");
+  add(A, "출제 순서는 무작위(날마다 다른 순서가 나오고, 큐 순서 그대로가 매일은 아님) · 문항 수 = 카드 수", new Set(days).size >= 3 && days.some((d) => d !== queueOrder) && r1.questions.length === cards.length, days[0]);
+  add(A, "en-word가 아닌 카드는 무시(다른 영역 카드를 넘겨도 문항 0)", buildEnglishReviewQuiz([{ ...c1, kind: "ja-word", itemKey: "ja-word:猫" }], [day1], TODAY).questions.length === 0);
+  add(A, "문항 카드 = 큐 카드 그대로 · 문제 글(q.cue)에 한국어 없음 — 한국어 뜻은 answer.sub에만", r1.questions.every((x) => cards.includes(x.card) && x.cue !== null && !/[가-힣]/.test(x.cue)));
+
+  // ⑤-1 QA english_review-quiz_1 P3-A — 같은 뜻 오답(같은 정의·유의어 연결)은 보기에서 빠진다
+  const rel = (kind: string, word: string) => ({ kind, word, glossKo: null, source: "user", linkedNo: null, linkedMeaningIndex: null });
+  const wE = (word: string, def: string | null, meaningRel: ReturnType<typeof rel>[] = [], entryRel: ReturnType<typeof rel>[] = []) => ({ word, meanings: [{ ko: `${word}-뜻`, related: meaningRel }], definitionEn: def, imageEmoji: null, related: entryRel });
+  const synDay = { id: "s1", titleKo: "DAY 10", createdAt: "2026-09-25T00:00:00.000Z", entries: [
+    wE("big", "Of great size.", [rel("synonym", "huge"), rel("antonym", "small")]),
+    wE("large", "of great  SIZE"),
+    wE("huge", "Very, very big."),
+    wE("grand", null, [], [rel("synonym", "Big")]),
+    wE("small", "Not big."),
+    wE("cat", "A pet."),
+  ] };
+  const synOther = { id: "s0", titleKo: "DAY 09", createdAt: "2026-09-01T00:00:00.000Z", entries: ["moon", "star", "sun", "sky", "cup"].map((w) => wE(w, `A ${w} thing.`)) };
+  const bigCard = englishWordItems([synDay], [ses(NOW, [["big", true, true]])])[0].card;
+  const sameSize = buildEnglishReviewQuiz([bigCard], [synOther, synDay], TODAY).questions[0]?.choices ?? [];
+  add(A, "P3-A: 정답(big)과 정의가 같은 large(대소문자·공백·끝 마침표 무시)·유의어 huge(뜻 아래)·grand(상대 단어 쪽 단어 아래 연결)는 보기에 없다 · 반의어 small은 남을 수 있다 · 빠진 만큼 다른 단어장으로 5지", sameSize.length === 5 && sameSize.includes("big") && !["large", "huge", "grand"].some((w) => sameSize.includes(w)) && distinct(sameSize) && sameSize.includes("small") && sameSize.includes("cat"), sameSize.join(","));
+  const hugeCard = englishWordItems([synDay], [ses(NOW, [["huge", true, true]])])[0].card;
+  const fromHuge = buildEnglishReviewQuiz([hugeCard], [synOther, synDay], TODAY).questions[0]?.choices ?? [];
+  add(A, "P3-A: 유의어 연결은 양방향 — 정답 huge면 big이 빠진다(정의가 다른 large는 남을 수 있다)", fromHuge.length === 5 && fromHuge.includes("huge") && !fromHuge.includes("big"), fromHuge.join(","));
+
+  // ⑤-2 QA P3-B — 은우 문제 전용 가리기: 고정 길이 밑줄·파생형·구 굴절형·하이픈/공백 변형. 공용 maskAnswerInCue는 그대로
+  const kidRows: [string, string, string][] = [
+    ["A dog is a pet. Dogs bark.", "dog", "A ____ is a pet. ____ bark."],
+    ["An elephant is big.", "elephant", "An ____ is big."],
+    ["Feeling happy: happiness, happily, happier.", "happy", "Feeling ____: ____, ____, ____."],
+    ["She looks after the baby. He looked  after it.", "look after", "She ____ the baby. He ____ it."],
+    ["Ice-cream is cold. Ice  cream melts. I like icecream.", "ice cream", "____ is cold. ____ melts. I like ____."],
+    ["Ice cream is cold.", "ice-cream", "____ is cold."],
+    ["Careful people take care.", "care", "____ people take ____."],
+    ["A category of cats.", "cat", "A category of ____."],
+  ];
+  const kidBad = kidRows.filter(([cue, ans, want]) => maskAnswerForKidQuiz(cue, ans) !== want);
+  add(A, `P3-B: 은우 가리기 반례 ${kidRows.length}행(고정 밑줄 ${JSON.stringify(KID_QUIZ_MASK)}·파생형·구 굴절·하이픈/공백·낱말 경계)`, kidBad.length === 0 && KID_QUIZ_MASK === "____", kidBad.map(([c, a]) => `${a}: ${maskAnswerForKidQuiz(c, a)}`).join(" / "));
+  add(A, "P3-B: 공용 maskAnswerInCue는 그대로(글자 수 밑줄 — 힌트 사다리 카드)", maskAnswerInCue("A dog is a pet.", "dog") === "A ___ is a pet." && maskAnswerInCue("An elephant is big.", "elephant") === "An ________ is big.");
+  const happyBook = { id: "h1", titleKo: "DAY 11", createdAt: NOW, entries: [wE("happy", "Full of happiness; smiling happily."), wE("sad", "Not glad."), wE("cat", "A pet.")] };
+  const happyQ = buildEnglishReviewQuiz(englishWordItems([happyBook], [ses(NOW, [["happy", true, true]])]).map((i) => i.card), [happyBook], TODAY).questions[0];
+  add(A, "P3-B: 문항 문제 글(q.cue)은 은우 가리기 결과 · 카드 단서(공용 가리기)는 그대로", happyQ?.cue === "Full of ____; smiling ____." && happyQ.card.cue.main === maskAnswerInCue("Full of happiness; smiling happily.", "happy"), happyQ?.cue ?? "");
+  const noDefQ = buildEnglishReviewQuiz([card("cat")], [{ id: "nd", titleKo: "nd", createdAt: NOW, entries: [{ word: "cat", meanings: [{ ko: "고양이" }], definitionEn: null, imageEmoji: "🐱" }, ent("dog")] }], TODAY).questions[0];
+  add(A, "정의가 없는 단어는 문제 글 null(그림만)", noDefQ?.cue === null);
+
+  // ⑥ 자동 채점 매핑 — 첫 선택 정답 = 힌트 없이 got · 오답 = 정답 봄 forgot(→ 내일)
+  const okO = reviewQuizOutcome("cat", "cat");
+  const ngO = reviewQuizOutcome("dog", "cat");
+  add(A, "채점: 정답 → {0, got} · 오답 → {3, forgot} · 대소문자 다른 글자는 정답 아님(보기는 정답 글자 그대로 실린다)", okO.hintLevel === 0 && okO.judge === "got" && ngO.hintLevel === 3 && ngO.judge === "forgot" && isReviewQuizCorrect("cat", "cat") && !isReviewQuizCorrect("Cat", "cat"));
+  const apply = (prev: ReviewScheduleRecord | null, o: { hintLevel: ReviewHintLevel; judge: ReviewJudge }, day: string) => decideReview(prev, { area: "english", itemKey: "en-word:cat", outcome: o, todayKst: day, nowIso: `${day}T03:00:00.000Z` });
+  const d1 = apply(null, okO, TODAY);
+  const d2 = d1.kind === "applied" ? apply(d1.record, okO, shiftDateString(TODAY, 3)) : null;
+  const d3 = d2 && d2.kind === "applied" ? apply(d2.record, ngO, shiftDateString(TODAY, 10)) : null;
+  add(A, "간격 규칙 그대로: 처음 맞힘 3일 뒤 → 연속 맞힘 +2(14일) → 틀림 내일(단계 0)", d1.record.dueOn === shiftDateString(TODAY, 3) && d2?.record.dueOn === shiftDateString(TODAY, 3 + 14) && d3?.record.step === 0 && d3.record.dueOn === shiftDateString(TODAY, 11), `${d1.record.dueOn} ${d2?.record.dueOn} ${d3?.record.dueOn}`);
+  const same = apply(d1.record, ngO, TODAY);
+  add(A, "같은 날 같은 단어 두 번째 답은 already_today(바꾸지 않음)", same.kind === "already_today");
+
+  // ⑦ 스트릭 한 판(reviewFullDays)은 기록만 본다 — 문제 맞히기로 남긴 기록도 같은 판정
+  const sched = Array.from({ length: 5 }, (_, i) => {
+    const r = decideReview(null, { area: "english", itemKey: `en-word:w${i}`, outcome: i % 2 ? ngO : okO, todayKst: TODAY, nowIso: NOW });
+    return r.record;
+  });
+  add(A, "스트릭: 처음 들어온 5개를 문제 맞히기로 끝낸 날 = 한 판(기록 모양 같음) · 4개면 아님", reviewFullDays(sched).has(TODAY) && !reviewFullDays(sched.slice(0, 4)).has(TODAY));
+
+  // ⑧ 다른 영역 카드 바이트 불변 — 이 회차 직전 커밋의 어댑터와 같은 산출(scripts/eval-review-fixture.ts 머리 주석)
+  const snap = createHash("sha256").update(nonEnglishReviewSnapshot(reviewSourcesModule)).digest("hex").slice(0, 16);
+  add(A, "일본어·토익·엄마 카드 불변 — 고정 입력 산출 sha256 = 직전 커밋 값", snap === "347f36549e6725a1", snap);
+  add(A, "은우 카드 모양 불변 — 키 집합 그대로(보기는 카드가 아니라 문항에 붙는다)", JSON.stringify(Object.keys(c1).sort()) === JSON.stringify(["answer", "cue", "hint1", "hint2", "hint2Note", "itemKey", "kind", "sourceKo", "speak"]));
+
+  // ⑨ 배선 — 은우 러너만 바뀌고 일본어·토익·엄마는 힌트 사다리 러너 그대로
+  const qr = src("../components/review-quiz-runner.tsx");
+  const otherPages = ["../app/japanese/review/page.tsx", "../app/toeic/review/page.tsx", "../app/mom/review/page.tsx"].map(src);
+  add(A, "일본어·토익·엄마 페이지는 ReviewRunner 그대로 · 문제 맞히기 모듈 import 0", otherPages.every((p) => /import ReviewRunner from "@\/components\/review-runner"/.test(p) && !/review-quiz/.test(p)) && !/review-quiz/.test(src("../components/review-runner.tsx")));
+  add(A, "문제 맞히기 러너: 채점은 reviewQuizOutcome 하나 · 표현 도우미 막음 · 스트릭 이벤트 · 자기 판정/힌트 버튼 없음", /reviewQuizOutcome\(choice, question\.card\.answer\.main\)/.test(qr) && /usePhraseHelperBlock\(\)/.test(qr) && /STREAK_REFRESH_EVENT/.test(qr) && !/review-judge-|review-hint|hintLevel:|judge: "/.test(qr));
+  add(A, "러너 비용·hydration: 프리페치·speakQueue·/api/tts 0 · speak는 고르는 탭과 🔊 onClick에서만(2곳) · Math.random·Date 0", !/prefetchSpeech|speakQueue|prepareSpeech|\/api\/tts|Math\.random|new Date|Date\.now/.test(qr) && (qr.match(/speak\(/g) ?? []).length === 2 && /onClick=\{\(\) => speak\(answer, "en-US"\)\}/.test(qr));
+  const rq = src("../lib/review-quiz.ts");
+  add(A, "번들 경계: lib/review-quiz는 타입 import만(러너가 값으로 import)", [...rq.matchAll(/^import (?!type )/gm)].length === 0);
 }
 
 // ---------------------------------------------------------------------------

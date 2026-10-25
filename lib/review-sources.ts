@@ -22,10 +22,14 @@
  * - 엄마 문장(mom-sentence): 단서 = 한국어 뜻(+ 틀) · 힌트1 = 첫 글자 · 힌트2 = 첫 덩어리 + " …". **레슨에서 결과가 난 말하기 문장만**
  *   (넘어감 포함) — 첫 복습일 = 그 문장이 든 레슨을 처음 끝낸 날(KST) + 1(섬과 같은 "담은 다음 날부터").
  *
- * ⚠️ 서버·eval에서만 부른다(카드는 서버가 만들어 props로 내린다). 런타임 import: ./review-schedule·./toeic-text·./toeic-template·./kst·./mom-content.
+ * - 은우 오늘의 복습 화면은 힌트 사다리 대신 **5지선다 문제 맞히기**다(§23-11) — 카드는 위와 같고, 보기·순서는 `buildEnglishReviewQuiz`가 붙인다.
+ *
+ * ⚠️ 서버·eval에서만 부른다(카드는 서버가 만들어 props로 내린다). 런타임 import: ./review-schedule·./toeic-text·./toeic-template·./kst·./mom-content·./vocab-quiz·./review-quiz.
  */
 
 import { reviewItemKey, type ReviewKind, type ReviewQueueCandidate } from "./review-schedule";
+import { buildChoices } from "./vocab-quiz";
+import { REVIEW_QUIZ_CHOICE_COUNT, REVIEW_QUIZ_MIN_CHOICES, type ReviewQuizQuestion } from "./review-quiz";
 import { expressionKey } from "./toeic-text";
 import { frameToExpression, templateRunSpans } from "./toeic-template";
 import { kstDateString, shiftDateString } from "./kst";
@@ -299,6 +303,214 @@ export function englishWordItems(books: readonly EnVocabBookLike[], quizzes: rea
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// 은우 오늘의 복습 — 문제 맞히기(5지선다) 보기·순서 (SPEC §23-11). 일본어·토익 카드에는 손대지 않는다
+// ---------------------------------------------------------------------------
+
+/** 32비트 FNV-1a — 결정적 시드 */
+function quizHash(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h >>> 0;
+}
+
+/** mulberry32 — 시드 고정 [0,1) 생성기(같은 날 같은 항목이면 같은 보기·같은 순서) */
+function seededRng(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function seededShuffle<T>(items: readonly T[], rng: () => number): T[] {
+  const a = [...items];
+  for (let i = a.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(rng() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+export interface EnglishReviewQuizBuild {
+  /** 문항(순서 = 오늘 날짜로 섞은 고정 순서) */
+  questions: ReviewQuizQuestion[];
+  /** 보기를 2개 이상 만들 수 없어 뺀 카드 수(단어장 전체에 다른 단어가 없을 때) */
+  skipped: number;
+}
+
+/** 관련어 최소 shape(VocabRelated가 구조적으로 만족) — 같은 뜻 오답 거르기에 유의어만 본다 */
+interface EnQuizRelatedLike {
+  kind: string;
+  word: string;
+}
+
+/**
+ * 보기 만들기가 읽는 단어장 — EnVocabBookLike에 관련어(선택)를 더한 것. 저장 레코드(VocabBookRecord)가 구조적으로 만족한다.
+ * englishWordItems의 입력 모양은 바꾸지 않는다(다른 카드 불변).
+ */
+export interface EnQuizBookLike {
+  id: string;
+  titleKo: string;
+  createdAt: string;
+  entries: readonly {
+    word: string;
+    meanings: readonly { ko: string; related?: readonly EnQuizRelatedLike[] }[];
+    definitionEn: string | null;
+    imageEmoji: string | null;
+    related?: readonly EnQuizRelatedLike[];
+  }[];
+}
+
+/** 은우 문제 맞히기 밑줄 — 글자 수와 무관한 고정 길이(밑줄 길이로 보기를 좁히지 못하게, QA english_review-quiz_1 P3-B) */
+export const KID_QUIZ_MASK = "____";
+
+/** 파생 접미사(가리기 전용 — 넓게 가려도 단서가 덜 보일 뿐 답이 새지 않는다) */
+const KID_DERIVATION_SUFFIXES = ["ness", "ly", "ful", "less", "ment", "able", "ish", "ily", "iness", "ier", "iest", "y"];
+
+/** 한 낱말의 굴절형 + 흔한 파생형(happy → happiness·happily, care → careful·careless) — 소문자 */
+export function kidWordForms(word: string): string[] {
+  const w = word.trim().toLowerCase();
+  const out = new Set(englishInflections(w));
+  if (!/^[a-z]+$/.test(w)) return [...out];
+  const stems = new Set([w]);
+  const last = w[w.length - 1];
+  const prev = w.length >= 2 ? w[w.length - 2] : "";
+  if (last === "y" && prev && !VOWEL.test(prev)) stems.add(w.slice(0, -1) + "i");
+  if (last === "e" && w.length >= 3) stems.add(w.slice(0, -1));
+  if (last === "y") stems.add(w.slice(0, -1));
+  for (const st of stems) for (const suf of KID_DERIVATION_SUFFIXES) out.add(st + suf);
+  return [...out];
+}
+
+/**
+ * 은우 문제 맞히기 전용 정답 가리기(§23-11) — 공용 maskAnswerInCue(일본어·토익·힌트 사다리 카드)는 그대로 두고 은우 문제만 이걸 쓴다.
+ * - 밑줄은 고정 길이 `KID_QUIZ_MASK`
+ * - 정답을 공백·하이픈으로 나눈 낱말마다 굴절형·파생형을 맞추고, 낱말 사이는 공백·하이픈이 있든 없든(`Ice-cream`·`Ice  cream`·`icecream`) 같은 것으로 본다.
+ *   구 답(`look after`)은 앞 낱말 굴절(`looks after`)도 가린다
+ * - 낱말 경계(앞뒤가 라틴 글자가 아님)에서만, 대소문자 무시. lookbehind 없음(구형 iOS Safari)
+ */
+export function maskAnswerForKidQuiz(cue: string, answer: string): string {
+  const parts = answer.trim().toLowerCase().split(/[\s\-\u2010\u2011]+/).filter(Boolean);
+  if (parts.length === 0 || cue === "") return cue;
+  const alt = (forms: string[]) => forms.sort((x, y) => y.length - x.length).map(escapeRe).join("|");
+  const body = parts.map((p) => `(?:${alt(kidWordForms(p))})`).join("[\\s\\-\\u2010\\u2011]*");
+  const re = new RegExp(body, "gi");
+  let out = "";
+  let from = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(cue)) !== null) {
+    if (m[0].length === 0) {
+      re.lastIndex = m.index + 1;
+      continue;
+    }
+    const at = m.index;
+    const end = at + m[0].length;
+    const before = at > 0 ? cue[at - 1] : "";
+    const after = end < cue.length ? cue[end] : "";
+    if ((before && LATIN_LETTER.test(before)) || (after && LATIN_LETTER.test(after))) {
+      re.lastIndex = at + 1;
+      continue;
+    }
+    out += cue.slice(from, at) + KID_QUIZ_MASK;
+    from = end;
+  }
+  return out + cue.slice(from);
+}
+
+/** 정의 비교용 정규화 — 소문자·공백 접기·끝 구두점 제거 */
+function normDefinition(def: string | null): string | null {
+  const d = def?.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!?。]+$/, "").trim() ?? "";
+  return d === "" ? null : d;
+}
+
+/**
+ * 은우 복습 문항 — 오늘 큐(en-word 카드)마다 영단어 5지선다를 만들고 순서를 섞는다. 서버(페이지)·eval에서만 부른다.
+ *
+ * 보기 규칙(단어장 시험 lib/vocab-quiz `buildChoices`와 같은 모양 — 그 함수를 그대로 쓴다):
+ * - 정답 = 카드의 정답 글자(가장 최근 단어장의 표기). 오답 후보 ① **같은 DAY**(정답 단어가 든 가장 최근 단어장)의 다른 단어
+ *   ② 그것이 4개보다 모자라면 **다른 단어장**의 단어로 채운다(최근 단어장 먼저 모아 시드로 섞어 모자란 수만큼).
+ *   같은 단어(대소문자·공백 무시 — enWordKey)는 한 번만, 정답과 같은 단어는 빠진다.
+ * - **같은 뜻 오답 제외**(QA P3-A): 영영 정의가 정답의 정의와 같은 단어(정규화 비교 — 어느 단어장의 정의든), 정답과 유의어로
+ *   이어진 단어(어느 쪽에 적혔든 — 단어 아래·뜻 아래 related의 synonym)는 오답 후보에서 빠진다. 빠진 만큼 다른 단어장에서 채운다.
+ * - 그래도 모자라면 있는 만큼(최소 2지 — REVIEW_QUIZ_MIN_CHOICES). 1개뿐이면 그 카드는 빼고 `skipped`로 센다.
+ * - 셔플은 시드 고정 — 시드 = `{오늘}|{항목 키}`. 같은 날 다시 열면 같은 보기(서버 렌더 한 번 — hydration 안전).
+ * 문제 글(`cue`): 정답 단어장 항목의 영영 정의를 `maskAnswerForKidQuiz`로 다시 가린 것(정의가 없으면 null — 그림만). 카드 자체는 바꾸지 않는다.
+ * 순서: 큐가 고른 카드(간격 규칙이 정한 오늘 할 것 — 그대로)를 `{오늘}|order|{항목 키}` 해시 순으로 놓는다 — 문항 순서는 무작위로
+ * 보이되 같은 날 다시 열어 남은 카드만 와도 서로의 앞뒤가 같다.
+ */
+export function buildEnglishReviewQuiz(cards: readonly ReviewCard[], books: readonly EnQuizBookLike[], todayKst: string): EnglishReviewQuizBuild {
+  const ordered = byCreatedDesc(books);
+  // 단어 키 → 정규화 정의 집합 · 유의어 키 집합(양방향)
+  const defsOf = new Map<string, Set<string>>();
+  const synOf = new Map<string, Set<string>>();
+  const addTo = (m: Map<string, Set<string>>, k: string, v: string) => {
+    if (!m.has(k)) m.set(k, new Set());
+    m.get(k)!.add(v);
+  };
+  for (const b of ordered) {
+    for (const e of b.entries) {
+      const k = enWordKey(e.word);
+      if (k === "") continue;
+      const d = normDefinition(e.definitionEn);
+      if (d) addTo(defsOf, k, d);
+      const rels = [...(e.related ?? []), ...e.meanings.flatMap((m) => m.related ?? [])];
+      for (const r of rels) {
+        if (r.kind !== "synonym") continue;
+        const rk = enWordKey(r.word);
+        if (rk === "" || rk === k) continue;
+        addTo(synOf, k, rk);
+        addTo(synOf, rk, k);
+      }
+    }
+  }
+  const questions: ReviewQuizQuestion[] = [];
+  let skipped = 0;
+  for (const card of cards) {
+    if (card.kind !== "en-word") continue;
+    const answer = card.answer.main;
+    const answerKey = enWordKey(answer);
+    const home = ordered.find((b) => b.entries.some((e) => enWordKey(e.word) === answerKey)) ?? null;
+    const answerDefs = defsOf.get(answerKey) ?? new Set<string>();
+    const answerSyns = synOf.get(answerKey) ?? new Set<string>();
+    const sameMeaning = (k: string) => answerSyns.has(k) || [...(defsOf.get(k) ?? [])].some((d) => answerDefs.has(d));
+    const seen = new Set<string>([answerKey]);
+    const uniq = (words: readonly string[]): string[] => {
+      const out: string[] = [];
+      for (const raw of words) {
+        const w = raw.trim();
+        const k = enWordKey(w);
+        if (k === "" || seen.has(k) || sameMeaning(k)) continue;
+        seen.add(k);
+        out.push(w);
+      }
+      return out;
+    };
+    const same = uniq(home ? home.entries.map((e) => e.word) : []);
+    const others = uniq(ordered.filter((b) => b !== home).flatMap((b) => b.entries.map((e) => e.word)));
+    const rng = seededRng(quizHash(`${todayKst}|${card.itemKey}`));
+    const need = REVIEW_QUIZ_CHOICE_COUNT - 1;
+    const pool = same.length >= need ? same : [...same, ...seededShuffle(others, rng).slice(0, need - same.length)];
+    const choices = buildChoices(answer, pool, REVIEW_QUIZ_CHOICE_COUNT, rng);
+    if (choices.length < REVIEW_QUIZ_MIN_CHOICES) {
+      skipped += 1;
+      continue;
+    }
+    const homeEntry = home?.entries.find((e) => enWordKey(e.word) === answerKey) ?? null;
+    const def = homeEntry?.definitionEn?.trim() || null;
+    questions.push({ card, choices, cue: def ? maskAnswerForKidQuiz(def, answer) : null });
+  }
+  const orderKey = (q: ReviewQuizQuestion) => quizHash(`${todayKst}|order|${q.card.itemKey}`);
+  questions.sort((a, b) => orderKey(a) - orderKey(b) || (a.card.itemKey < b.card.itemKey ? -1 : a.card.itemKey > b.card.itemKey ? 1 : 0));
+  return { questions, skipped };
 }
 
 // ---------------------------------------------------------------------------

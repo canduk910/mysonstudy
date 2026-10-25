@@ -35,7 +35,7 @@ export default function ReviewTodayCard({ area, tone }: { area: ReviewArea; tone
         : "가린 채 떠올리기 — 힌트를 조금씩 열어 가며 기억을 꺼내요."
       : count > 0
         ? tone === "kid"
-          ? "보지 말고 머릿속에서 꺼내 봐요. 막히면 힌트가 있어요!"
+          ? "전에 시험 본 단어예요. 알맞은 단어를 골라 맞혀 봐요!"
           : "보지 말고 떠올리세요. 막히면 첫 글자 → 뼈대 순으로 힌트를 열어요."
         : state && state.doneToday > 0
           ? tone === "kid"
