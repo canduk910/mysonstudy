@@ -169,6 +169,15 @@ const toRecords = (f: JaDailyImportFile): JaDailyContentRecord[] => decideJaDail
   }
   add(A, "id가 종류를 넘어 겹치면 거부(문장 id = 단어 id)", !mut((f) => (f.vocabDays[0].words[0].id = f.lessons[2].tracks[0].lines[0].id)));
   add(A, "id 형식(대문자) 거부", !mut((f) => (f.listening.tips[0].id = "Tip-1")));
+  {
+    const drill = (ja: string, tokens: { surface: string; reading: string | null }[]) => ({ no: 1, noteKo: "て ↔ で", items: [{ ja, tokens, ko: "날씨" }] });
+    const ok = [{ surface: "天気", reading: "てんき" }];
+    add(A, "요령 drills(원음 대본) 선택 필드 — 있으면 통과 · 없던 옛 파일도 통과", mut((f) => (f.listening.tips[0].drills = [drill("天気", ok)])) && jaDailyImportFileSchema.safeParse(FILE).success);
+    add(A, "요령 drills — 토큰을 이어도 ja가 안 되면 거부", !mut((f) => (f.listening.tips[0].drills = [drill("電気", ok)])));
+    add(A, "요령 drills — 한자+가나 섞인 토큰의 reading 거부", !mut((f) => (f.listening.tips[0].drills = [drill("行きます", [{ surface: "行きます", reading: "いきます" }])])));
+    add(A, "요령 drills — items 0개·모르는 키 거부", !mut((f) => (f.listening.tips[0].drills = [{ no: 1, items: [] }])) && !mut((f) => (f.listening.tips[0].drills = [{ ...drill("天気", ok), extra: 1 } as never])));
+    add(A, "요령 drills — 상한(번호 수·번호당 문장 수) 초과 거부", !mut((f) => (f.listening.tips[0].drills = Array.from({ length: JA_DAILY_LIMITS.tipDrills + 1 }, (_, i) => ({ ...drill("天気", ok), no: i })))) && !mut((f) => (f.listening.tips[0].drills = [{ no: 1, items: Array.from({ length: JA_DAILY_LIMITS.drillItems + 1 }, () => drill("天気", ok).items[0]) }])));
+  }
   add(A, "keyLineIds가 그 과 문장이 아니면 거부", !mut((f) => (f.lessons[2].keyLineIds = [f.lessons[3].tracks[0].lines[0].id])));
   add(A, "청해 answer > 보기 수 거부", !mut((f) => (f.listening.items[2].answer = 4)));
   add(A, "청해 보기 없는데 answer 있으면 거부", !mut((f) => (f.listening.items[0].answer = 1)));

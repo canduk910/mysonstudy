@@ -3,7 +3,7 @@
 /**
  * components/ja-daily-exam.tsx — 🗓️ 오늘의 일본어 **📝 시험 대비 칸**(설계 §3-1·§4).
  *
- * - tip: 청해 요령(원음 + pointsKo) + 같은 원음의 예제 문항(기록하지 않는다)
+ * - tip: 청해 요령(원음 + pointsKo + 접힌 원음 대본 drills — 먼저 듣고 펼쳐 확인) + 같은 원음의 예제 문항(기록하지 않는다)
  * - litems: 청해 문항 — 원음 ▶(없으면 대본 합성). 문제3·4는 보기 3개(보기 글자는 답한 뒤 공개 — 소리로 듣고 번호로 고른다),
  *   문제1·2는 "들었어요 → 대본·해석" 스스로 확인(choice·correct null). 답한 뒤 대본·해석·해설.
  * - mockItems·mockReview·weakItems·final: 모의 문항 연습 — 문제(`[[ ]]` 밑줄) + 보기 4 → 바로 정답·해석·해설. 청해는 원음,
@@ -14,6 +14,7 @@
  */
 
 import { useState } from "react";
+import JaRuby from "@/components/ja-ruby";
 import { JaDailyAudio } from "@/components/ja-daily-media";
 import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
 import type { JaDailyExamView, JaDailyMockItemView, JaDailyMockScore } from "@/lib/ja-daily-contract";
@@ -462,6 +463,27 @@ export default function JaDailyExam({ view, urls, onDone }: { view: JaDailyExamV
                 <li key={i}>{p}</li>
               ))}
             </ul>
+            {view.tip.drills && view.tip.drills.length > 0 ? (
+              <details className="mt-4 rounded-[var(--radius-box)] border border-line bg-surface-2 p-3" data-testid="ja-daily-tip-drills">
+                <summary className="cursor-pointer t-caption">🔎 음원 대본 보기 ({view.tip.drills.length}개) — 먼저 듣고 펼쳐 보세요</summary>
+                <ol className="mt-3 flex flex-col gap-3">
+                  {view.tip.drills.map((d) => (
+                    <li key={d.no} className="flex gap-2">
+                      <span className="t-caption text-ink-3 w-5 shrink-0 pt-1">{d.no}.</span>
+                      <div className="flex-1 min-w-0">
+                        {d.noteKo ? <p className="t-caption text-accent">{d.noteKo}</p> : null}
+                        {d.items.map((it, i) => (
+                          <div key={i} className="mt-1">
+                            <JaRuby tokens={it.tokens} className="text-lg" />
+                            <p className="t-caption text-ink-3">{it.ko}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </details>
+            ) : null}
           </section>
           {view.examples.map((it) => (
             <LitemCard key={it.id} item={it} url={urls[it.audioKey]} onAnswer={null} label="예제" />

@@ -40,6 +40,8 @@ export const JA_DAILY_LIMITS = {
   linesPerTrack: 120,
   wordsPerDay: 60,
   pointsKo: 12,
+  tipDrills: 24,
+  drillItems: 6,
   sectionsPerMock: 24,
   itemsPerSection: 40,
   passagesPerSection: 12,
@@ -98,11 +100,24 @@ export interface JaDailyVocabDay {
   day: number;
   words: JaDailyWord[];
 }
+/** 요령 원음에서 읽어 주는 연습 한 번호 — 짝 단어(청음↔탁음 등)는 items 둘 이상, noteKo는 무엇을 들을지 */
+export interface JaDailyTipDrillItem {
+  ja: string;
+  tokens: JaDailyToken[];
+  ko: string;
+}
+export interface JaDailyTipDrill {
+  no: number;
+  noteKo?: string;
+  items: JaDailyTipDrillItem[];
+}
 export interface JaDailyListeningTip {
   id: string;
   audioKey: string;
   titleKo: string;
   pointsKo: string[];
+  /** 원음 대본(선택 — 2026-11-16 추가, 없던 옛 파일도 그대로 통과) */
+  drills?: JaDailyTipDrill[];
 }
 export interface JaDailyScriptLine {
   speaker: string | null;
@@ -242,8 +257,23 @@ const wordSchema = z
 
 const vocabDaySchema = z.object({ day: z.number().int().min(1).max(99), words: z.array(wordSchema).min(1).max(L.wordsPerDay) }).strict();
 
+const tipDrillItemSchema = z
+  .object({ ja: exact(L.jaMax), tokens: z.array(jaTokenSchema).min(1).max(200), ko: ko(L.koMax) })
+  .strict()
+  .refine((l) => tokensJoinEqual(l.tokens, l.ja), { message: "토큰 surface를 이으면 ja와 같아야 해요", path: ["tokens"] });
+
+const tipDrillSchema = z
+  .object({ no: z.number().int().min(0).max(99), noteKo: ko(L.pointMax).optional(), items: z.array(tipDrillItemSchema).min(1).max(L.drillItems) })
+  .strict();
+
 const tipSchema = z
-  .object({ id: ID, audioKey: AUDIO_KEY, titleKo: ko(L.titleMax), pointsKo: z.array(ko(L.pointMax)).max(L.pointsKo) })
+  .object({
+    id: ID,
+    audioKey: AUDIO_KEY,
+    titleKo: ko(L.titleMax),
+    pointsKo: z.array(ko(L.pointMax)).max(L.pointsKo),
+    drills: z.array(tipDrillSchema).max(L.tipDrills).optional(),
+  })
   .strict();
 
 const scriptLineSchema = z.object({ speaker: SPEAKER, ja: exact(L.jaMax), ko: ko(L.koMax) }).strict();
