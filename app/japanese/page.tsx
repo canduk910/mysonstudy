@@ -6,6 +6,7 @@
  *   - **JLPT 단어장**(`/japanese/vocab`) — 레벨·주제로 단어를 만들고 후리가나·TTS로 외운다(J1).
  *   - **대화 복습**(`/japanese/dialog`) — 듀오링고 스크린샷을 찍어 전사·해설로 복습한다(J3).
  *   - **한자**(`/japanese/kanji`)·**🎙️ 말하기 모의고사**(`/japanese/speaking` — §15, 토익스피킹 형식을 일본어로).
+ *   - 맨 위 **🗓️ 오늘의 일본어**(`/japanese/daily` — 하루 30분 90회 과정, ja-daily 설계 §5)가 primary, 나머지는 secondary.
  * 한쪽이 비어 있어도 다른 쪽은 온전히 동작한다(§0-4). 기능은 하나도 갖지 않는다 — 고르기만 한다.
  *
  * 잠금: `proxy.ts`가 허용목록 밖을 전부 막으므로 이 경로도 자동으로 PIN 게이트 안이다(별도 등록 불필요).
@@ -14,6 +15,7 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
+import JaDailyHubCard from "@/components/ja-daily-hub-card";
 import ReviewTodayCard from "@/components/review-today-card";
 
 export const metadata: Metadata = {
@@ -36,11 +38,14 @@ export default function JapaneseHubPage() {
         </p>
       </header>
 
+      {/* 🗓️ 오늘의 일본어(ja-daily 설계 §5) — 맨 위 primary. 다음 회차는 마운트 뒤 읽는다 */}
+      <JaDailyHubCard />
+
       {/* 📅 오늘의 복습(SPEC §23) — 간격 반복 큐 진입. 개수는 마운트 뒤 읽는다 */}
       <ReviewTodayCard area="japanese" tone="adult" />
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <Link href="/japanese/vocab" className="u-entry u-entry-primary">
+        <Link href="/japanese/vocab" className="u-entry u-entry-secondary">
           <span className="u-entry-icon" aria-hidden>
             🗂️
           </span>

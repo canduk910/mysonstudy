@@ -129,6 +129,8 @@ import { islandEntryData, normalizeToeicIslandEntry, sortIslandEntries, type Toe
 // 엄마의 생활영어(설계 §6) — 결정은 순수 모듈(두 백엔드가 같은 함수를 부른다)
 import { decideMomImport, type MomBlockRecord, type MomImportResult, type MomLessonRecord, type MomTestRecord } from "./mom-contract";
 import type { MomImportFile } from "./mom-content";
+import { decideJaDailyImport, type JaDailyContentRecord, type JaDailyImportResult, type JaDailySessionRecord } from "./ja-daily-contract";
+import { jaDailyDocId, splitJaDailyFile, type JaDailyContentKind, type JaDailyImportFile } from "./ja-daily-content";
 import {
   decideReview,
   normalizeReviewSchedule,
@@ -790,6 +792,13 @@ export class FirestoreStore implements StudyStore {
   }
   private momTests(): CollectionReference {
     return getDb().collection("momTests");
+  }
+  // 🗓️ 오늘의 일본어(ja-daily 설계 §6) — 내용(문서 id `{kind}:{contentId}`)·회차 기록(문서 id = 클라이언트 id)
+  private jaDailyContent(): CollectionReference {
+    return getDb().collection("jaDailyContent");
+  }
+  private jaDailySessions(): CollectionReference {
+    return getDb().collection("jaDailySessions");
   }
   // 🔔 폰 알림(가족 스트릭 §6) — 구독(문서 id = endpoint 해시)·발송 기록(문서 id = day:person:kind:n)
   private pushSubscriptions(): CollectionReference {
@@ -2316,6 +2325,52 @@ export class FirestoreStore implements StudyStore {
       if ((err as { code?: unknown } | null)?.code !== GRPC_ALREADY_EXISTS) throw err;
       const snap = await ref.get();
       return { record: snap.exists ? { ...(snap.data() as MomLessonRecord), id: rec.id } : rec, reused: true };
+    }
+  }
+
+  // ---- 🗓️ 오늘의 일본어 (ja-daily 설계 §2-1·§6) ----
+  // 가져오기는 runTransaction — 파일의 문서 id를 전부 읽은 뒤(읽기 먼저) decideJaDailyImport로 판정하고 바뀐 것만 쓴다.
+  // 문서 상한 450(jaDailyImportFileSchema — 과 64·날 40·요령 40·청해 300·모의 6)이라 트랜잭션 쓰기 500 한도 안, 파일 6MB 상한이라 요청 10MiB 안.
+  // 비교는 저장된 hash 필드로만(문서를 다시 해시하지 않는다). 내용은 배열 속 배열이 없다(토큰·보기·대본 모두 객체/문자열 배열) — 코덱 불필요.
+  // 회차 기록은 ref.create() 멱등(엄마 레슨 관용구). 삭제 경로 없음(prod-guard 무관).
+
+  async importJaDailyContent(file: JaDailyImportFile, nowIso: string): Promise<JaDailyImportResult> {
+    const refs = splitJaDailyFile(file).map((p) => this.jaDailyContent().doc(jaDailyDocId(p.kind, p.contentId)));
+    return getDb().runTransaction(async (tx): Promise<JaDailyImportResult> => {
+      const snaps = refs.length > 0 ? await tx.getAll(...refs) : [];
+      const existing = snaps.filter((sn) => sn.exists).map((sn) => ({ id: sn.id, hash: String((sn.data() as { hash?: unknown }).hash ?? "") }));
+      const { result, writes } = decideJaDailyImport(file, existing, nowIso);
+      for (const w of writes) {
+        const { id, ...body } = w;
+        tx.set(this.jaDailyContent().doc(id), frameFirestoreData(body));
+      }
+      return result;
+    });
+  }
+
+  async listJaDailyContent(kind?: JaDailyContentKind): Promise<JaDailyContentRecord[]> {
+    // where 하나만(다른 필드 orderBy 없음 — 복합 인덱스 불필요)
+    const snap = kind ? await this.jaDailyContent().where("kind", "==", kind).get() : await this.jaDailyContent().get();
+    return snap.docs.map((d) => ({ ...(d.data() as Omit<JaDailyContentRecord, "id">), id: d.id }));
+  }
+
+  async listJaDailySessions(): Promise<JaDailySessionRecord[]> {
+    // 전체를 읽어 메모리 정렬(가족 규모 — orderBy는 필드 없는 문서를 뺀다)
+    const snap = await this.jaDailySessions().get();
+    return snap.docs
+      .map((d) => ({ ...(d.data() as JaDailySessionRecord), id: d.id }))
+      .sort((a, b) => String(a.finishedAt).localeCompare(String(b.finishedAt)));
+  }
+
+  async saveJaDailySession(rec: JaDailySessionRecord): Promise<{ record: JaDailySessionRecord; reused: boolean }> {
+    const ref = this.jaDailySessions().doc(rec.id);
+    try {
+      await ref.create(frameFirestoreData(rec));
+      return { record: rec, reused: false };
+    } catch (err) {
+      if ((err as { code?: unknown } | null)?.code !== GRPC_ALREADY_EXISTS) throw err;
+      const snap = await ref.get();
+      return { record: snap.exists ? { ...(snap.data() as JaDailySessionRecord), id: rec.id } : rec, reused: true };
     }
   }
 

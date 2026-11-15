@@ -175,6 +175,10 @@ import { normalizeRestAlertRecord, type WorkoutRestAlertRecord } from "./workout
 import type { MomBlockRecord, MomImportResult, MomLessonRecord, MomTestRecord } from "./mom-contract";
 import { decideMomImport } from "./mom-contract";
 import type { MomImportFile } from "./mom-content";
+// 🗓️ 오늘의 일본어(설계 2026-11-15-ja-daily-design §6) — 계약·결정의 단일 정의처는 순수 모듈 lib/ja-daily-contract.ts(store → 계약 한 방향)
+import type { JaDailyContentRecord, JaDailyImportResult, JaDailySessionRecord } from "./ja-daily-contract";
+import { decideJaDailyImport } from "./ja-daily-contract";
+import type { JaDailyContentKind, JaDailyImportFile } from "./ja-daily-content";
 import {
   applyJaSpeakingAnswer,
   applyJaSpeakingFillPart,
@@ -1590,6 +1594,16 @@ export interface StudyStore {
   /** 요약 붙이기 — 없는 id면 null */
   setMomTestSummary(id: string, summary: { goodKo: string; fixKo: string }): Promise<MomTestRecord | null>;
 
+  // ---- 🗓️ 오늘의 일본어 — 컬렉션 `jaDailyContent`·`jaDailySessions` (설계 2026-11-15-ja-daily-design §2-1·§6) ----
+  /** 가져오기 — 문서 단위 upsert(decideJaDailyImport). 해시 같으면 그대로, 파일에 없는 문서는 지우지 않는다. 판정과 쓰기가 한 원자 단위 */
+  importJaDailyContent(file: JaDailyImportFile, nowIso: string): Promise<JaDailyImportResult>;
+  /** 저장된 내용 — kind를 주면 그 종류만(Firestore where 하나) */
+  listJaDailyContent(kind?: JaDailyContentKind): Promise<JaDailyContentRecord[]>;
+  /** finishedAt 오름차순 */
+  listJaDailySessions(): Promise<JaDailySessionRecord[]>;
+  /** id 멱등: 같은 id가 있으면 쓰지 않고 그대로 반환(reused:true). 생성이라 prod-guard 무관. 앞질러 저장 판정은 라우트(decideJaDailySave) */
+  saveJaDailySession(rec: JaDailySessionRecord): Promise<{ record: JaDailySessionRecord; reused: boolean }>;
+
   // ---- 🔔 폰 알림 — 컬렉션 `pushSubscriptions`·`pushLog` (가족 스트릭 강화 스펙 §6) ----
   /** 구독 저장 — 같은 id(같은 endpoint)면 person·keys·prefs를 덮고 createdAt·lastOkAt은 지킨다. 생성·수정이라 prod-guard 무관 */
   upsertPushSubscription(rec: Omit<PushSubscriptionRecord, "createdAt" | "lastOkAt">): Promise<void>;
@@ -1679,6 +1693,9 @@ export interface DbShape {
   momContent: MomBlockRecord[];
   momLessons: MomLessonRecord[];
   momTests: MomTestRecord[];
+  /** 🗓️ 오늘의 일본어(ja-daily 설계 §6) — 이 키가 없던 db.json은 빈 배열 */
+  jaDailyContent: JaDailyContentRecord[];
+  jaDailySessions: JaDailySessionRecord[];
   /** 🔔 알림 구독(가족 스트릭 §6-1) — id → 레코드 맵. 이 키가 없던 db.json은 빈 맵 */
   pushSubscriptions: Record<string, PushSubscriptionRecord>;
   /** 🔔 발송 기록 — 문서 id(`day:person:kind:n`) → 보낸 시각. 이 키가 없던 db.json은 빈 맵 */
@@ -1706,6 +1723,7 @@ function emptyDb(): DbShape {
     toeicIsland: [],
     reviewSchedules: [],
     momContent: [], momLessons: [], momTests: [],
+    jaDailyContent: [], jaDailySessions: [],
     pushSubscriptions: {},
     pushLog: {},
     workoutRestAlerts: {},
@@ -1808,6 +1826,9 @@ async function readDb(): Promise<DbShape> {
       momContent: Array.isArray(parsed.momContent) ? (parsed.momContent as MomBlockRecord[]) : [],
       momLessons: Array.isArray(parsed.momLessons) ? (parsed.momLessons as MomLessonRecord[]) : [],
       momTests: Array.isArray(parsed.momTests) ? (parsed.momTests as MomTestRecord[]) : [],
+      // 🗓️ 오늘의 일본어 이전 db.json엔 이 두 키가 없다 — 빈 배열. 저장 때 zod로 검사했으므로 모양만(id 문자열) 확인
+      jaDailyContent: Array.isArray(parsed.jaDailyContent) ? (parsed.jaDailyContent as JaDailyContentRecord[]).filter(hasStringId) : [],
+      jaDailySessions: Array.isArray(parsed.jaDailySessions) ? (parsed.jaDailySessions as JaDailySessionRecord[]).filter(hasStringId) : [],
       // 🔔 알림(가족 스트릭 §6) 이전 db.json엔 이 두 키가 없다 — 빈 맵
       pushSubscriptions: isPlainMap(parsed.pushSubscriptions) ? parsed.pushSubscriptions : {},
       pushLog: isPlainMap(parsed.pushLog) ? parsed.pushLog : {},
@@ -1822,6 +1843,11 @@ async function readDb(): Promise<DbShape> {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyDb();
     throw err;
   }
+}
+
+/** 배열 원소가 id 문자열을 가진 객체인가(새 컬렉션 하위호환 — 깨진 원소는 뺀다) */
+function hasStringId(v: unknown): boolean {
+  return v !== null && typeof v === "object" && typeof (v as { id?: unknown }).id === "string";
 }
 
 /** 맵 모양 키(배열·null 아님) 확인 */
@@ -3483,6 +3509,38 @@ class JsonFileStore implements BookCardStore {
     });
   }
 
+  // ---- 🗓️ 오늘의 일본어(ja-daily 설계 §6) — 결정은 lib/ja-daily-contract의 순수 함수, 확인과 쓰기는 한 mutate 안에서 ----
+
+  async importJaDailyContent(file: JaDailyImportFile, nowIso: string): Promise<JaDailyImportResult> {
+    return this.mutate((db) => {
+      const { result, writes } = decideJaDailyImport(file, db.jaDailyContent, nowIso);
+      for (const w of writes) {
+        const i = db.jaDailyContent.findIndex((r) => r.id === w.id);
+        if (i >= 0) db.jaDailyContent[i] = w;
+        else db.jaDailyContent.push(w);
+      }
+      return result;
+    });
+  }
+
+  async listJaDailyContent(kind?: JaDailyContentKind): Promise<JaDailyContentRecord[]> {
+    const all = (await readDb()).jaDailyContent;
+    return kind ? all.filter((r) => r.kind === kind) : all.slice();
+  }
+
+  async listJaDailySessions(): Promise<JaDailySessionRecord[]> {
+    return (await readDb()).jaDailySessions.slice().sort((a, b) => String(a.finishedAt).localeCompare(String(b.finishedAt)));
+  }
+
+  async saveJaDailySession(rec: JaDailySessionRecord): Promise<{ record: JaDailySessionRecord; reused: boolean }> {
+    return this.mutate((db) => {
+      const cur = db.jaDailySessions.find((r) => r.id === rec.id);
+      if (cur) return { record: cur, reused: true };
+      db.jaDailySessions.push(rec);
+      return { record: rec, reused: false };
+    });
+  }
+
   // ---- 🎙️ 일본어 말하기 모의고사(japanese.md §15-9) — 판정·적용은 lib/ja-speaking-record.ts(Firestore와 같은 함수) ----
 
   async createJaSpeakingMock(input: NewJaSpeakingMock): Promise<JaSpeakingMockRecord> {
@@ -3916,6 +3974,9 @@ export async function mergeDbForSeed(seed: DbShape): Promise<void> {
     momContent: mergeById(cur.momContent, seed.momContent),
     momLessons: mergeById(cur.momLessons, seed.momLessons),
     momTests: mergeById(cur.momTests, seed.momTests),
+    // 🗓️ 오늘의 일본어 — 같은 이유로 반드시 mergeById(시드가 가져온 내용·회차 기록을 지우지 않게). 교재 유래라 시드는 늘 빈 배열이다.
+    jaDailyContent: mergeById(cur.jaDailyContent, seed.jaDailyContent ?? []),
+    jaDailySessions: mergeById(cur.jaDailySessions, seed.jaDailySessions ?? []),
     // 🔔 알림 구독·발송 기록 — 같은 이유로 기존 것을 지키는 머지(시드는 빈 맵이다)
     pushSubscriptions: { ...cur.pushSubscriptions, ...seed.pushSubscriptions },
     pushLog: { ...cur.pushLog, ...seed.pushLog },

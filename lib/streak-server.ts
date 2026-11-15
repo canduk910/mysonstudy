@@ -3,7 +3,8 @@
  * GET /api/streak — 학습 스트릭 (SPEC §17). 읽기 전용·AI 없음. 서버가 KST "오늘"을 계산해 사람별 StreakInfo를 낸다.
  *
  * 세는 것(§17-1): 은우=영어 단어 시험(VocabQuizRecord) + 자유대화(TalkSessionRecord, 은우 발화≥1 — §17-9 은우 트랙 한정 예외) /
- * 아빠·일본어=일본어 단어 시험(JaQuizRecord)+한자 시험(JaKanjiQuizRecord)+🎙️ 말하기 모의고사 응시(JaSpeakingAttemptRecord — 녹음된 문항≥1, 한 판은 isFullAttempt — japanese.md §15-11-2) /
+ * 아빠·일본어=일본어 단어 시험(JaQuizRecord)+한자 시험(JaKanjiQuizRecord)+🎙️ 말하기 모의고사 응시(JaSpeakingAttemptRecord — 녹음된 문항≥1, 한 판은 isFullAttempt — japanese.md §15-11-2)
+ *   +🗓️ 오늘의 일본어 회차(jaDailySessions — 끝낸 회차, replay 포함, done 칸≥1이 한 판 — ja-daily 설계 §7, 못 읽으면 그것만 빼고) /
  * 아빠·운동=러시안 파이터 루틴을 지킨 날(WorkoutCycleRecord — 운동·실패 기록일 + 계획된 휴식일 + 재측정 끝낸 날, §17-7) /
  * 아빠·영어=토익스피킹 표현 시험(ToeicQuizRecord, 답한 문항≥1) + 모의고사 응시(ToeicAttemptRecord, 녹음된 문항≥1) — toeic.md §0-2
  *   + 소재별 틀 말하기 한 판(toeicFrameDrills, 말한 문항≥1 — toeic.md §20-9, 못 읽으면 이 기록만 빼고 계산).
@@ -52,6 +53,8 @@ import { APPA_BOTH_FROM, STREAK_V2_FROM, badgesOf, kstWeekDays, weekCells, type 
 import { addDays, addRuns, isFullAttempt, isFullFrameDrill, isFullMomLessonRecord, isFullQuiz, isFullTalk } from "@/lib/streak-v2-sources";
 import { appaPersonV2, appaTodayLabel, familyV2, personV2, trackV2, type TrackInput } from "@/lib/streak-v2-assemble";
 import { isCountedJaSpeakingAttempt, jaSpeakingStreakLabel, jaSpeakingStreakSessions } from "@/lib/ja-speaking-streak";
+import { isFullJaDailySession, jaDailyFullRunsOn, jaDailyStreakLabel, jaDailyStreakSessions } from "@/lib/ja-daily-streak";
+import type { JaDailySessionRecord } from "@/lib/ja-daily-contract";
 
 /** 오늘(KST) 실제로 답한 세션만, 최신 먼저. */
 function todaysAnswered<T extends StreakSession>(sessions: T[], today: string): T[] {
@@ -79,7 +82,7 @@ const NEUTRAL_STREAK: PersonStreak = { info: { current: 0, doneToday: false, las
 
 export async function computeStreakResponse(store: StudyStore, today: string): Promise<StreakResponse> {
 
-  const [vocab, jaVocab, jaKanji, workoutCycles, toeicQuizzes, toeicAttempts, talkSessions, toeicFrameDrills, reviewSchedules, momHasContent, momLessons, momTests, jaSpeakingAttempts] = await Promise.all([
+  const [vocab, jaVocab, jaKanji, workoutCycles, toeicQuizzes, toeicAttempts, talkSessions, toeicFrameDrills, reviewSchedules, momHasContent, momLessons, momTests, jaSpeakingAttempts, jaDailySessions] = await Promise.all([
     store.listAllVocabQuizzes(),
     store.listAllJaQuizzes(),
     store.listJaKanjiQuizzes(),
@@ -131,6 +134,11 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
       console.error("[streak] 일본어 말하기 모의고사 응시를 읽지 못했다 — 일본어 트랙은 그것만 빼고 계산한다", err);
       return null;
     }),
+    // 🗓️ 오늘의 일본어(ja-daily 설계 §7) — 못 읽으면 일본어 트랙은 그것만 빼고 계산한다(새 컬렉션의 읽기 실패가 트랙 전체를 죽이지 않게)
+    store.listJaDailySessions().catch((err: unknown): JaDailySessionRecord[] | null => {
+      console.error("[streak] 오늘의 일본어 회차를 읽지 못했다 — 일본어 트랙은 그것만 빼고 계산한다", err);
+      return null;
+    }),
   ]);
   // 영역별로 가른다(트랙 분리 — 은우 영어 복습은 은우 트랙, 일본어 복습은 일본어 트랙, 토익 복습은 영어 트랙)
   const reviewsOf = (area: ReviewArea) => (reviewSchedules ?? []).filter((r) => r.area === area);
@@ -156,16 +164,23 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
   // 라벨은 짧게 — 헤드라인이 "🗾 일본어"를 앞에 붙인다(§17-7).
   // 🎙️ 말하기 모의고사(§15-11-2) — 녹음된 문항 = 답한 문항(못 읽었으면 jaSpeak = [] — 그것만 빼고)
   const jaSpeak = jaSpeakingAttempts ?? [];
-  const jaSessions: StreakSession[] = [...jaVocab, ...jaKanji, ...reviewStreakSessions(reviewsOf("japanese")), ...jaSpeakingStreakSessions(jaSpeak)];
+  // 🗓️ 오늘의 일본어 회차(ja-daily 설계 §7) — 끝낸 회차(replay 포함). 못 읽었으면 jaDaily = []
+  const jaDaily = jaDailySessions ?? [];
+  const jaSessions: StreakSession[] = [...jaVocab, ...jaKanji, ...reviewStreakSessions(reviewsOf("japanese")), ...jaSpeakingStreakSessions(jaSpeak), ...jaDailyStreakSessions(jaDaily)];
   const appa: PersonStreak = { info: computeStreak(jaSessions, today), todayLabel: null };
   const aVocab = todaysAnswered(jaVocab, today)[0];
   const aKanji = todaysAnswered(jaKanji, today)[0];
   const aSpeak = jaSpeak
     .filter((a) => kstDateString(a.startedAt) === today && isCountedJaSpeakingAttempt(a))
     .sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0))[0];
-  // 셋 중 가장 늦게 시작한 것이 라벨(같은 시각이면 단어장 → 한자 → 말하기)
+  const aDaily = jaDailyFullRunsOn(jaDaily, today)[0];
+  // 넷 중 가장 늦게 시작한 것이 라벨(같은 시각이면 단어장 → 한자 → 말하기 → 오늘의 일본어)
   const speakLater = !!aSpeak && (!aVocab || aSpeak.startedAt > aVocab.startedAt) && (!aKanji || aSpeak.startedAt > aKanji.startedAt);
-  if (speakLater) {
+  const dailyLater =
+    !!aDaily && (!aVocab || aDaily.startedAt > aVocab.startedAt) && (!aKanji || aDaily.startedAt > aKanji.startedAt) && (!aSpeak || aDaily.startedAt > aSpeak.startedAt);
+  if (dailyLater) {
+    appa.todayLabel = jaDailyStreakLabel(aDaily);
+  } else if (speakLater) {
     appa.todayLabel = jaSpeakingStreakLabel(await store.getJaSpeakingMock(aSpeak.mockId).catch(() => null));
   } else if (aVocab && (!aKanji || aVocab.startedAt >= aKanji.startedAt)) {
     const book = await store.getJaVocabBook(aVocab.bookId);
@@ -174,7 +189,7 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
     appa.todayLabel = "한자 시험";
   }
   /** 오늘 일본어 기록 중 가장 늦게 시작한 시각(어학 트랙 라벨 고르기용 — 복습만 했으면 null) */
-  const jaLatestToday = [aVocab?.startedAt, aKanji?.startedAt, aSpeak?.startedAt].filter((t): t is string => !!t).sort().pop() ?? null;
+  const jaLatestToday = [aVocab?.startedAt, aKanji?.startedAt, aSpeak?.startedAt, aDaily?.startedAt].filter((t): t is string => !!t).sort().pop() ?? null;
 
   // ── 아빠 · 운동: 루틴을 지킨 날(엔진이 휴식 슬롯까지 접는다) → 시험과 같은 연속 판정 코어 ──
   let appaWorkout: PersonStreak = NEUTRAL_STREAK;
@@ -316,6 +331,12 @@ export async function computeStreakResponse(store: StudyStore, today: string): P
           addRuns(m, jaSpeak.filter(isFullAttempt).map((a) => a.startedAt));
         } catch (err) {
           console.error("[streak] v2 일본어 말하기 판정 실패 — 그것만 빼고 계산한다", err);
+        }
+        // 🗓️ 오늘의 일본어 한 판 = 끝낸 회차(replay 포함) 중 done 칸 ≥ 1(ja-daily 설계 §7). 이상한 기록 하나가 라우트를 죽이지 않게 따로 감싼다
+        try {
+          addRuns(m, jaDaily.filter(isFullJaDailySession).map((r) => r.startedAt));
+        } catch (err) {
+          console.error("[streak] v2 오늘의 일본어 판정 실패 — 그것만 빼고 계산한다", err);
         }
         addDays(m, reviewFullDays(reviewsOf("japanese")));
         addDays(m, reviewFullDays(reviewsOf("toeic")));

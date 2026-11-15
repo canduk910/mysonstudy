@@ -2017,3 +2017,12 @@ JS1 → JS2 → JS3 순서 의존이다(응시는 모의고사가, 채점은 응
 - **활용할 단어**(내 JLPT 단어장 어휘를 모범답변에 넣기 — 토익 "활용할 표현"의 일본어판)는 넣지 않았다(사용자 범위 "모의고사만"). 쓸 신호가 보이면 `docs/BACKLOG.md` 후보로 제안한다.
 - 무응답 문턱 4글자(`JA_SPEAKING_MIN_TRANSCRIPT_CHARS`)는 "はい" 같은 두 글자 답을 무응답으로 본다 — Q5–7에서 짧은 직답만 한 경우 0점이 맞다는 판단이다(토익 2단어 규칙과 같은 자리).
 - 응시 중 후리가나 기본 켬·`ko` 숨김은 화면 기본값이다 — 사용 신호를 보고 바꾼다.
+
+## 16. 🗓️ 오늘의 일본어 — 일일 학습 루틴 (2026-11-15)
+
+교재(다이나믹일본어 회화 음원·JLPT 한끝 N5)로 도는 90회 일일 과정. **새 LLM 호출이 없다** — 그래서 이 문서에 프롬프트·스키마 블록이 없고 spec-sync 대상도 없다. 제품 흐름·저장·비용은 `docs/SPEC.md` §27, 설계 원본은 `docs/superpowers/specs/2026-11-15-ja-daily-design.md`.
+
+- **받아쓰기는 §15 관문 T-ja를 재사용**한다 — 라우트 `POST /api/japanese/daily/transcribe`가 `transcribeJaSpeakingAnswer`(`language: "ja"`, `prompt` 없음)를 부른다. 기대 문장을 받지도 보내지도 않는다(무유도 — §15-8과 같은 원칙). 새 env 없음.
+- **🎤 판정은 §15 Q1–2 대조 함수를 재사용**한다 — `lib/ja-daily-judge.ts`가 `alignJaReadAloud(tokens, transcript)`의 정확도로 맞음(0.8)·아깝다(0.5)·다시를 가른다. 반입 대본 줄의 후리가나 토큰이 §5 규약을 따라야 대조가 성립하므로 반입 zod(`lib/ja-daily-content.ts`)가 같은 `jaTokenSchema`·`tokensJoinEqual`을 값으로 쓴다(화면은 이 모듈을 `import type`으로만).
+- 대본·단어·문제는 교재 유래라 저장소에 없다 — `data/private/ja-daily-v1.json`을 앱 "파일로 가져오기"로만 넣는다. eval(`scripts/eval-ja-daily.ts`, `npm run eval:ja-daily`)의 픽스처는 지어낸 일본어다.
+- 복습 종류 `ja-n5-word`는 §6·§23의 단어 사다리(`ja-word`)와 같고 키가 달라 따로 센다.

@@ -34,6 +34,8 @@ import {
   toeicTemplateItems,
   toeicIslandItems,
   momSentenceItems,
+  jaN5WordItems,
+  type JaN5VocabDayLike,
   type ReviewCard,
   type ReviewSourceItem,
 } from "./review-sources";
@@ -71,6 +73,14 @@ export const REVIEW_SOURCES: Readonly<Record<ReviewArea, readonly ReviewSourceRe
       collect: async (store) => {
         const [kanji, quizzes] = await Promise.all([store.listJaKanji(), store.listJaKanjiQuizzes()]);
         return japaneseKanjiItems(kanji, quizzes);
+      },
+    },
+    {
+      // 🗓️ 오늘의 일본어 N5 단어(ja-daily 설계 §6) — 회차에서 답한 단어, 처음 답한 회차의 다음 날부터(lib/review-sources jaN5WordItems)
+      kind: "ja-n5-word",
+      collect: async (store) => {
+        const [vocab, sessions] = await Promise.all([store.listJaDailyContent("vocab"), store.listJaDailySessions()]);
+        return jaN5WordItems(vocab.map((r) => r.data as JaN5VocabDayLike), sessions);
       },
     },
   ],

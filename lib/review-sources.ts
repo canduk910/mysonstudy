@@ -22,6 +22,10 @@
  * - 엄마 문장(mom-sentence): 단서 = 한국어 뜻(+ 틀) · 힌트1 = 첫 글자 · 힌트2 = 첫 덩어리 + " …". **레슨에서 결과가 난 말하기 문장만**
  *   (넘어감 포함) — 첫 복습일 = 그 문장이 든 레슨을 처음 끝낸 날(KST) + 1(섬과 같은 "담은 다음 날부터").
  *
+ * - 🗓️ 오늘의 일본어 N5 단어(ja-n5-word): ja-word와 같은 사다리(단서 = 한국어 뜻 · 힌트1 = 읽기 첫 글자 · 힌트2 = 읽기 뼈대).
+ *   **회차에서 답한 단어만** — 첫 복습일 = 그 단어를 처음 답한 끝낸 회차(KST) + 1(DAY 앞 절반·뒤 절반이 이틀에 나뉘어 들어온다).
+ *   통계 = 회차 기록의 vocabAnswers(뜻·읽기 모드 합산 — 같은 단어 한 항목). 일본어 단어장의 ja-word와는 키가 달라 따로 센다.
+ *
  * - 은우 오늘의 복습 화면은 힌트 사다리 대신 **5지선다 문제 맞히기**다(§23-11) — 카드는 위와 같고, 보기·순서는 `buildEnglishReviewQuiz`가 붙인다.
  *
  * ⚠️ 서버·eval에서만 부른다(카드는 서버가 만들어 props로 내린다). 런타임 import: ./review-schedule·./toeic-text·./toeic-template·./kst·./mom-content·./vocab-quiz·./review-quiz.
@@ -935,6 +939,73 @@ export function momSentenceItems(blocks: readonly MomBlockLike[], lessons: reado
           sourceKo: `엄마의 생활영어 · ${b.week}주차`,
         },
         stats: { ...st, firstDueOn: shiftDateString(day, 1) },
+      });
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// 🗓️ 오늘의 일본어 N5 단어 (ja-n5-word)
+// ---------------------------------------------------------------------------
+
+export interface JaN5VocabDayLike {
+  day: number;
+  words: readonly { id: string; written: string; reading: string; meaningKo: string }[];
+}
+export interface JaDailySessionLike {
+  startedAt: string;
+  finishedAt: string | null;
+  vocabAnswers: readonly { wordId: string; correct: boolean }[];
+}
+
+/** 표기가 한자만이면 루비 한 조각, 가나 표기·섞인 표기는 루비 없이(읽기는 sub로) */
+function n5Ruby(written: string, reading: string): ReviewRubyToken[] | null {
+  return /^[\u4e00-\u9fff\u3400-\u4dbf\u3005]+$/.test(written) && written !== reading ? [{ surface: written, reading }] : null;
+}
+
+/** N5 단어 — 끝낸 회차에서 답한 단어만, 처음 답한 회차의 다음 날부터 */
+export function jaN5WordItems(days: readonly JaN5VocabDayLike[], sessions: readonly JaDailySessionLike[]): ReviewSourceItem[] {
+  const done = sessions.filter((s) => s.finishedAt !== null);
+  const stats = aggregateReviewStats(
+    done.map((s) => ({ startedAt: s.startedAt, items: s.vocabAnswers.map((a) => ({ word: a.wordId, correct: a.correct, answered: true })) })),
+    (id) => id.trim() || null,
+  );
+  const firstDone = new Map<string, string>();
+  for (const s of done) {
+    const day = kstDateString(s.finishedAt as string);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+    for (const a of s.vocabAnswers) {
+      const k = a.wordId.trim();
+      const cur = firstDone.get(k);
+      if (cur === undefined || day < cur) firstDone.set(k, day);
+    }
+  }
+  const out: ReviewSourceItem[] = [];
+  const seen = new Set<string>();
+  for (const d of [...days].sort((a, b) => a.day - b.day)) {
+    for (const w of d.words) {
+      const id = w.id.trim();
+      if (id === "" || seen.has(id)) continue;
+      const first = firstDone.get(id);
+      const st = stats.get(id);
+      if (first === undefined || !st) continue;
+      seen.add(id);
+      const written = w.written.trim();
+      const kana = w.reading.trim();
+      out.push({
+        card: {
+          itemKey: reviewItemKey("ja-n5-word", id),
+          kind: "ja-n5-word",
+          cue: { emoji: null, main: w.meaningKo.trim() || "?", sub: null, lang: "ko" },
+          hint1: [...kana][0] ?? [...written][0] ?? "",
+          hint2: kanaSkeleton(kana || written),
+          hint2Note: `읽기 ${[...(kana || written)].length}글자`,
+          answer: { main: written, sub: kana && kana !== written ? kana : null, ruby: n5Ruby(written, kana) },
+          speak: { text: written, lang: "ja-JP" },
+          sourceKo: `오늘의 일본어 · N5 DAY ${d.day}`,
+        },
+        stats: { ...st, firstDueOn: shiftDateString(first, 1) },
       });
     }
   }

@@ -402,7 +402,7 @@ const TODAY = "2026-09-21";
   // 은우 계산식 — §17-9부터 단어장 시험 + 자유대화(talkStreakSessions)다. 그 밖의 것(토익·일본어)은 여기 섞이지 않는다(noLeak).
   const eunwooUntouched = /computeStreak\(\[\.\.\.vocab, \.\.\.talkStreakSessions\(talks\), \.\.\.reviewStreakSessions\(reviewsOf\("english"\)\)\], today\)/.test(route);
   // 2026-10-25 일본어 말하기 모의고사(japanese.md §15-11-2) — 일본어 세션에 jaSpeakingStreakSessions(일본어 컬렉션 jaSpeakingAttempts)만 더해졌다. 식 자체는 같다
-  const jaUntouched = /const jaSessions: StreakSession\[\] = \[\.\.\.jaVocab, \.\.\.jaKanji, \.\.\.reviewStreakSessions\(reviewsOf\("japanese"\)\), \.\.\.jaSpeakingStreakSessions\(jaSpeak\)\];/.test(route) && /info: computeStreak\(jaSessions, today\)/.test(route) && /const jaSpeak = jaSpeakingAttempts \?\? \[\];/.test(route);
+  const jaUntouched = /const jaSessions: StreakSession\[\] = \[\.\.\.jaVocab, \.\.\.jaKanji, \.\.\.reviewStreakSessions\(reviewsOf\("japanese"\)\), \.\.\.jaSpeakingStreakSessions\(jaSpeak\), \.\.\.jaDailyStreakSessions\(jaDaily\)\];/.test(route) && /info: computeStreak\(jaSessions, today\)/.test(route) && /const jaSpeak = jaSpeakingAttempts \?\? \[\];/.test(route);
   const noLeak = !/toeicStreakSessions\([^)]*\b(vocab|jaVocab|jaKanji)\b/.test(route) && !/computeStreak\(\[\.\.\.(?:vocab|jaVocab)\b[^\]]*toeic/i.test(route);
   add(
     "영어 트랙",

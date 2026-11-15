@@ -699,6 +699,9 @@ async function main() {
     momContent: [],
     momLessons: [],
     momTests: [],
+    // 🗓️ 오늘의 일본어(ja-daily 설계 §6)도 빈 배열 — 교재 유래 내용은 앱의 "파일로 가져오기"로만 들어온다.
+    jaDailyContent: [],
+    jaDailySessions: [],
     // 🔔 알림 구독·발송 기록(가족 스트릭 §6)도 빈 맵 — 기기에서 켜는 것이다.
     pushSubscriptions: {},
     pushLog: {},

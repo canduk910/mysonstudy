@@ -2045,3 +2045,43 @@ QA 2회차(2026-09-26)는 배포 가능으로 판정했다(P0·P1 0). 그 회차
 ### 26-3. 진행
 - 2026-10-24: 스펙(harness japanese §15) + AI 층(`lib/ai/japanese/speaking-*.ts`·`lib/ja-speaking*.ts`·진입 함수 `generateJaSpeakingPart`·`generateJaSpeakingFeedback`) + eval(`eval:japanese` 오프라인 362 — 말하기 142 포함, 2026-10-25 QA speaking-ai 1 반영). 저장·라우트·응시·채점 화면은 harness §15-13 로드맵 JS1~JS3(app-builder).
 - 2026-10-25: 앱 층 JS1~JS3 — 컬렉션 셋(파일·Firestore 두 백엔드, 판정·적용은 `lib/ja-speaking-record.ts` 한 벌을 원자 단위 안에서, 삭제는 prod-guard `deleteJaSpeakingMock`)·계약 `lib/ja-speaking-contract.ts`·라우트 10개(`app/api/japanese/speaking/**`)·관문 P `lib/ja-speaking-image.ts`(공용 코어)·관문 T-ja `lib/ja-speaking-transcribe.ts`(`language: "ja"`, prompt 없음)·녹음 풀 `"ja"`(기기 전용 — 메모리 폴백은 같은 풀끼리만 비운다)·화면 넷(`/japanese/speaking` 목록·만들기, `[id]` 학습 보기·사진 자동, `[id]/take` 응시, `attempts/[id]` 결과·AI 채점)·허브 카드. 응시 화면은 토익 응시 화면에 **시험 프로필**(`components/take-exam-profile.ts`)을 넘겨 재사용한다 — 프로필이 없으면 토익 그대로(읽는 글 바이트 불변), 일본어는 지시문·멘트·질문을 ja-JP로·시험 창 글에 후리가나(응시 중 켜고 끄기)·서버 업로드와 토익 시작 안내 끔. 응시 경로는 시험 화면(표현 도우미·상단 스트릭 숨김). 스트릭: 끝까지 녹음한 응시가 일본어 트랙 한 판(`lib/ja-speaking-streak.ts`, 라벨 `일본어 · 말하기 모의고사 · {제목}`). eval: `eval:japanese` 오프라인 412(앱 층 50 — `scripts/eval-japanese-speaking-app.ts`), `eval:toeic` 1967·`eval:streak` 202·`eval:phrase` 218·`eval:mom` 85.
+
+## 27. 아빠의 일본어 — 🗓️ 오늘의 일본어 (일일 학습 루틴, 2026-11-15)
+
+사용자 요청(2026-11-15): "`design/japanesse`의 일본어 학습자료로 회화 공부와 JLPT N5 시험 대비를 하려고 한다 — 아빠의 일본어에 신규 메뉴를 추가하고 일일 일본어 학습 루틴을 만들어 줘." 사용자 결정: 회화 음원은 전사해 대본으로 쓰고 **원음은 아빠 폰에만**(파일로 가져오기 — 서버·저장소에 음원 없음), 하루 **30분**, 시험일 없이 **90회 과정**, 본책 없이 이 폴더 자료만. 설계 원본 `docs/superpowers/specs/2026-11-15-ja-daily-design.md`(구현과 달라진 점은 끝 §11·§12 "구현 동기화"가 맞다).
+
+### 27-1. 자료와 저작권
+- 원자료(다이나믹일본어 Step1~3 음원, JLPT 한끝 N5 단어연습장·온라인 모의테스트 2회·해설·청해 음원)는 `design/japanesse/`(gitignore). 음원은 개발 때 한 번 기계 전사했고(회화 gpt-4o-transcribe, 청해 gpt-4o-mini-transcribe — 약 $2), 스캔 PDF는 Claude가 읽어 옮겼다. 앱 반입 파일 둘 — 내용 `data/private/ja-daily-v1.json`(형식 `ja-daily/v1`: 회화 과·N5 단어 날·청해 요령/문항·모의 회차)과 원음 묶음 `data/private/ja-daily-audio.jpack`(형식 `jpack/1`, AAC 48kbps 모노 293트랙 약 77MB) — 모두 git 밖. 변환 스크립트는 저장소에 두지 않는다(토익 선례). 문서·eval의 예시는 지어낸 일본어다.
+- 내용 반입: `/japanese/daily` "파일로 가져오기" → `POST /api/japanese/daily/import`(AI 0, 6MB 상한, 종류별 문서 upsert — 해시가 같으면 그대로, 파일에 없는 것은 지우지 않는다). 원음 반입: 같은 화면에서 jpack 파일을 고르면 브라우저가 `File.slice`로 조각조각 읽어 IndexedDB `eunwoo-ja-audio`에 **바이트로** 넣는다(`lib/ja-audio-pack.ts`·`lib/ja-audio-store.ts` — 서버로 보내지 않는다, 멱등, 읽기 실패는 `read_failed`로 돌아와 다시 가져오기 안내).
+
+### 27-2. 90회 과정 — 완료 순서 (`lib/ja-daily-plan.ts`, 순수·결정적)
+- 진도는 끝낸 회차 수다(엄마 §24-2 선례 — 쉬어도 건너뛰지 않는다). 한 회차 = 네 칸 약 30분: 🗣️ 회화 10 · 📚 N5 단어 8 · 📝 시험 대비 8 · 🔁 복습 4.
+- 배정은 반입 내용 수에서 계산한다. 지금 자료로: 회화는 Step1·2 32과를 **80단위**(kana 과 트랙 6개씩, Step1 과 2단위, Step2 과 3단위)로 1~80회, 81~90회는 약한 과 다시 하기 / 단어는 18 DAY × (카드 둘 + DAY 시험) = 1~54회, 55회부터 약한 단어 시험 / 시험 대비는 청해 요령 7 + 문항 2개씩(1~53회) → 모의 1회 문항 연습(54~75) → 약한 문항(76~80) → **81~84회 모의 2회 실전**(문자·어휘 / 문법·독해 / 청해 / 채점표) → 85·86 오답 다시 풀기 → 87~90 총정리. Step3는 90회 큐에 넣지 않는다(다음 과정).
+- 다음 회차 = 끝낸 진도 회차 최댓값 + 1. 끝낸 회차는 과정표에서 다시 할 수 있다(`replay` — 진도는 그대로).
+
+### 27-3. 회차 화면 (`/japanese/daily/[n]`)
+- 🗣️ 회화: 트랙별 원음 ▶(이 기기에 없으면 "원음 없음 · 합성 음성" 칩 + 문장 합성 이어 읽기) · 문장 목록(후리가나 토큰 `components/ja-ruby.tsx`, 한국어 해석 접기, 문장 탭 = 합성) · 따라 말하기(`speakQueue` — 한국어 1번 → 일본어 N번, 조각 뒤 쉼·전역 속도·잠금 화면 Media Session) · **🎤 핵심 문장 체크**(녹음 → `POST /api/japanese/daily/transcribe`(관문 T-ja `transcribeJaSpeakingAnswer` 재사용 — 기대 문장 미전송, 1MiB, 키 없으면 501, 녹음 저장 안 함) → `lib/ja-daily-judge.ts`(`alignJaReadAloud` 정확도 0.8 이상 맞음 / 0.5 이상 아깝다 / 다시) — 받아쓰기가 안 되면 스스로 판정).
+- 📚 단어: 카드(표기·읽기·뜻·🔊 ja-JP) → 5지선다(뜻 고르기·읽기 고르기 — 보기는 `lib/ja-daily-quiz.ts`가 결정적으로, 같은 뜻·같은 읽기 오답 제외). DAY 시험 25문항(읽기 고르기는 한자 표기 단어만이라 날마다 수가 다르다).
+- 📝 시험 대비: 청해 요령·문항(원음, 문제3·4는 소리 보기 3개를 답한 뒤 글자 공개, 문제1·2는 "들었어요 → 대본·해석") · 모의 문항(밑줄 `[[ ]]`, 보기 4, 정답·해석·해설, 그림 보기는 한국어 설명) · 실전(섹션 연속 풀기 — 푸는 동안 상단 스트릭·표현 도우미 숨김) · 채점표(언어지식·독해와 청해를 반입 파일의 실제 배점 합으로 120·60점 환산, 합격 기준 종합 80/180·기준점 38/120·19/60 안내 — **실전 점수는 81~83회 진도 기록의 답만으로** 계산해 오답 다시 풀기·다시 하기가 바꾸지 않는다).
+- 🔁 복습: 일본어 오늘의 복습 링크와 남은 수.
+- 칸은 건너뛸 수 있고(건너뜀 기록), **끝까지 가야 저장**한다(`POST /api/japanese/daily/sessions` — 클라이언트 id 멱등, 같은 id·다른 본문은 409 `id_conflict` → 화면은 새 id로 다시 저장, 앞질러 저장 400).
+- 허브 `/japanese` 맨 위 🗓️ 카드("Day n · 회화 과 · 단어 DAY · 시험 칸 · 약 30분" / 오늘 완료 ✓), 홈 `/japanese/daily`(시작 · 진행률 · 90칸 과정표 · 원음 상태 · 가져오기 둘 · 실전 점수).
+
+### 27-4. 저장·복습·스트릭
+| 컬렉션 | 내용 |
+|---|---|
+| `jaDailyContent` | 반입 내용 — 문서 id `{kind}:{id}`(lesson·vocab·tip·litem·mock), `{kind, contentId, data, hash, presetKey, importedAt}` |
+| `jaDailySessions` | `{id, n, replay, startedAt, finishedAt, steps, kaiwaChecks, vocabAnswers, examAnswers}` |
+| `reviewSchedules` | 기존(§23) — 영역 `japanese`, 새 종류 **`ja-n5-word`**(단서 한국어 뜻 · 힌트1 읽기 첫 글자 · 힌트2 읽기 뼈대). 입장은 단어 단위 — 처음 답한 끝낸 회차의 KST 다음 날 |
+
+- 스트릭: 끝낸 회차(replay 포함, 칸 하나 이상 done)가 아빠 📚 어학의 **일본어 한 판**이다(`lib/ja-daily-streak.ts`, 날짜 기준 `startedAt` KST — 홈·허브의 "오늘 완료"도 같은 판정). 라벨 `오늘의 일본어 · Day n`.
+
+### 27-5. 비용
+- 반입·진도·퀴즈·채점: AI 0. 화면을 여는 것만으로는 호출 0.
+- 🎤: 문장당 받아쓰기 1회(관문 T-ja, 다시 말하면 +1) — 회차당 최대 3문장.
+- 발음: 일본어 기본 엔진이 기기 음성이라 단어·문장 🔊·따라 말하기의 일본어는 0원, 따라 말하기의 한국어 조각만 ko-KR 클라우드 합성(캐시).
+
+### 27-6. eval·실기기
+- `npm run eval:ja-daily` — 오프라인 171항목(반입 계약 반례·과정 엔진·jpack 파서·판정 경계·5지선다·저장 계약·자정 경계·실전 점수 불변·스트릭·복습). 회귀 `eval:japanese` 412 · `eval:streak` 202 · `eval:review` 118 · `eval:speech` 168 · `eval:phrase` 218.
+- **알려진 한계**: 짧은 문장은 한 낱말이 바뀌어도 정확도 0.8을 넘을 수 있다(글자 정렬 판정) — 실제 녹음을 보고 문턱을 조정한다.
+- 실기기(아빠 iPhone): 원음 묶음 77MB 가져오기(진행률·중단 뒤 다시)·앱 재시작 뒤 원음 재생·따라 말하기 잠금 화면·🎤 마이크 권한과 판정·Day 1 끝 → 🔥.

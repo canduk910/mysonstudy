@@ -42,7 +42,7 @@ export const REVIEW_AREAS = ["english", "japanese", "toeic", "mom"] as const;
 export type ReviewArea = (typeof REVIEW_AREAS)[number];
 
 /** 항목 종류 — 새 출처는 여기 한 줄 + REVIEW_KIND_AREA·REVIEW_KIND_LABEL_KO 한 줄 + 서버 등록부 한 줄 */
-export const REVIEW_KINDS = ["en-word", "ja-word", "ja-kanji", "toeic-expr", "toeic-template", "toeic-island", "mom-sentence"] as const;
+export const REVIEW_KINDS = ["en-word", "ja-word", "ja-kanji", "toeic-expr", "toeic-template", "toeic-island", "mom-sentence", "ja-n5-word"] as const;
 export type ReviewKind = (typeof REVIEW_KINDS)[number];
 
 export const REVIEW_KIND_AREA: Readonly<Record<ReviewKind, ReviewArea>> = {
@@ -53,6 +53,7 @@ export const REVIEW_KIND_AREA: Readonly<Record<ReviewKind, ReviewArea>> = {
   "toeic-template": "toeic",
   "toeic-island": "toeic",
   "mom-sentence": "mom",
+  "ja-n5-word": "japanese",
 };
 
 export const REVIEW_KIND_LABEL_KO: Readonly<Record<ReviewKind, string>> = {
@@ -63,6 +64,7 @@ export const REVIEW_KIND_LABEL_KO: Readonly<Record<ReviewKind, string>> = {
   "toeic-template": "틀",
   "toeic-island": "내 답변",
   "mom-sentence": "엄마 문장",
+  "ja-n5-word": "N5 단어",
 };
 
 /** 영역 → 화면 경로(러너) */
