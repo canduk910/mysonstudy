@@ -1,7 +1,7 @@
 /**
  * POST /api/japanese/daily/transcribe — 🎤 핵심 문장 체크 녹음 → 일본어 글자(설계 §4 회화·§8). **저장하지 않는다.**
  *
- * 관문 T-ja `transcribeJaSpeakingAnswer`(lib/ja-speaking-transcribe.ts — `language:"ja"` 고정)를 **그대로** 부른다. 새 관문을 두지 않는다.
+ * 관문 T-ja의 `transcribeJaDailyLine`(lib/ja-speaking-transcribe.ts — `language:"ja"`, 히라가나 전용 고정 지시)을 부른다. 새 관문을 두지 않는다.
  * 본문은 multipart `audio` 하나 — **기대 문장은 받지 않는다**(받아쓰기 무유도: 전사가 기대 문장 쪽으로 끌려가면 판정이 뜻을 잃는다.
  * 관문 함수에도 그 인자가 없다). 판정(`judgeJaDailyLine` — alignJaReadAloud)은 화면이 돌려받은 `text`로 한다.
  *
@@ -12,7 +12,7 @@
  */
 import { NextResponse } from "next/server";
 import type { JaDailyTranscribeResponse } from "@/lib/ja-daily-contract";
-import { hasJaSpeakingTranscribeApiKey, transcribeJaSpeakingAnswer } from "@/lib/ja-speaking-transcribe";
+import { hasJaSpeakingTranscribeApiKey, transcribeJaDailyLine } from "@/lib/ja-speaking-transcribe";
 import { isAcceptedToeicAudioType, toeicAudioBaseType, toeicAudioFileName, toeicAudioTypeFromName } from "@/lib/toeic-attempt-contract";
 
 export const runtime = "nodejs";
@@ -100,7 +100,7 @@ export async function POST(req: Request) {
 
   // ── 5. 관문 T-ja — 기대 문장 없이, 끊기면 상류도 멈춘다 ──
   const fileName = toeicAudioFileName(type)!;
-  const r = await transcribeJaSpeakingAnswer({ bytes: await audio.arrayBuffer(), fileName, type }, req.signal);
+  const r = await transcribeJaDailyLine({ bytes: await audio.arrayBuffer(), fileName, type }, req.signal);
   if (!r.ok) {
     if (r.error === "aborted") return json({ ok: false, error: "client_closed", messageKo: "요청이 취소됐어요." }, 499);
     if (r.error === "no_api_key") return noKey();

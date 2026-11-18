@@ -551,7 +551,7 @@ void (async () => {
   add(A, "라우트 다섯 — runtime nodejs", routes.every(([, s]) => /export const runtime = "nodejs"/.test(s)));
   add(A, "AI 0 — 받아쓰기 말고는 openai·lib/ai/client·관문 import 없음", routes.filter(([r]) => r !== "transcribe/route.ts").every(([, s]) => !/openai|lib\/ai\/client|transcribe/.test(s.replace(/\/\*[\s\S]*?\*\//g, ""))));
   const tr = codeOnly("../app/api/japanese/daily/transcribe/route.ts");
-  add(A, "받아쓰기 — 관문 T-ja 재사용 · 키 검사(501)가 본문 읽기보다 먼저 · 1MiB · 실제 바이트 상한(읽으며 센다)", /transcribeJaSpeakingAnswer\(/.test(tr) && tr.indexOf("hasJaSpeakingTranscribeApiKey()") < tr.indexOf("await readCappedBody(req") && /1024 \* 1024/.test(tr) && /total > max/.test(tr) && !/req\.formData\(\)/.test(tr));
+  add(A, "받아쓰기 — 관문 T-ja 재사용 · 키 검사(501)가 본문 읽기보다 먼저 · 1MiB · 실제 바이트 상한(읽으며 센다)", /transcribeJaDailyLine\(/.test(tr) && tr.indexOf("hasJaSpeakingTranscribeApiKey()") < tr.indexOf("await readCappedBody(req") && /1024 \* 1024/.test(tr) && /total > max/.test(tr) && !/req\.formData\(\)/.test(tr));
   add(A, "받아쓰기 — 기대 문장(expected·tokens·ja·lineId)을 받지 않는다 · 저장소 import 0", !/form\.get\("(?!audio)/.test(tr) && !/getStore|lib\/store/.test(tr));
   const im = codeOnly("../app/api/japanese/daily/import/route.ts");
   add(A, "가져오기 — 6MB 상한(선언·실제 바이트 두 번) · 키 검사 없음", /6 \* 1024 \* 1024/.test(im) && /Buffer\.byteLength\(text, "utf8"\) > JA_DAILY_IMPORT_MAX_BYTES/.test(im) && !/OPENAI_API_KEY/.test(im));

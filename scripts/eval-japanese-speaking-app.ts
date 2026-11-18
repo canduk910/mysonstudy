@@ -97,16 +97,22 @@ export function runJaSpeakingAppChecks(): JaSpeakingCheckResult[] {
     const t = code("lib/ja-speaking-transcribe.ts");
     push(book, "language = JA_SPEAKING_TRANSCRIBE_LANGUAGE(\"ja\") 고정", /JA_SPEAKING_TRANSCRIBE_LANGUAGE = "ja"/.test(t) && /language: JA_SPEAKING_TRANSCRIBE_LANGUAGE/.test(t));
     {
-      // prompt는 고정 표기 지시 상수 하나뿐 — 입력에서 만든 값(기대 문장)을 넣지 않는다
+      // prompt는 고정 표기 지시 상수 둘 중 하나뿐(타입으로 잠금) — 입력에서 만든 값(기대 문장)을 넣지 않는다
       const promptUses = t.match(/\bprompt\b\s*:[^,}]*/g) ?? [];
-      const constDecl = /export const JA_SPEAKING_TRANSCRIBE_PROMPT = "([^"`$]*)";/.exec(t);
+      const decl = (n: string) => new RegExp(`export const ${n} = "([^"\`$]*)";`).exec(t)?.[1] ?? "";
+      const speak = decl("JA_SPEAKING_TRANSCRIBE_PROMPT");
+      const daily = decl("JA_DAILY_LINE_TRANSCRIBE_PROMPT");
       push(
         book,
-        "prompt = 고정 표기 지시 상수뿐(기대 문장을 넣지 않는다 · 로마자 금지 문구)",
-        promptUses.length === 1 && /prompt: JA_SPEAKING_TRANSCRIBE_PROMPT\b/.test(promptUses[0]) && !!constDecl && /ローマ字/.test(constDecl[1]) && !/\$\{/.test(constDecl[1]),
+        "prompt = 고정 표기 지시 상수뿐(기대 문장을 넣지 않는다 · 모의고사 로마자 금지 · 오늘의 일본어 히라가나 전용)",
+        promptUses.length === 1 && /prompt: fixedPrompt\b/.test(promptUses[0]) &&
+          /type JaTranscribePrompt = typeof JA_SPEAKING_TRANSCRIBE_PROMPT \| typeof JA_DAILY_LINE_TRANSCRIBE_PROMPT;/.test(t) &&
+          /transcribeJa\(input, JA_SPEAKING_TRANSCRIBE_PROMPT, signal\)/.test(t) && /transcribeJa\(input, JA_DAILY_LINE_TRANSCRIBE_PROMPT, signal\)/.test(t) &&
+          /ローマ字/.test(speak) && /ひらがな/.test(daily) && /漢字は使わず/.test(daily),
       );
+      push(book, "오늘의 일본어 받아쓰기 라우트는 transcribeJaDailyLine(히라가나 전용)", /transcribeJaDailyLine\(\{ bytes/.test(code("app/api/japanese/daily/transcribe/route.ts")));
     }
-    push(book, "함수 인자는 (input, signal)뿐 · signal을 SDK에 넘긴다", /export async function transcribeJaSpeakingAnswer\(input: TranscribeAudioInput, signal\?: AbortSignal\)/.test(t) && /\{ signal \}/.test(t));
+    push(book, "함수 인자는 (input, signal)뿐 · signal을 SDK에 넘긴다", /export async function transcribeJaSpeakingAnswer\(input: TranscribeAudioInput, signal\?: AbortSignal\)/.test(t) && /export async function transcribeJaDailyLine\(input: TranscribeAudioInput, signal\?: AbortSignal\)/.test(t) && /\{ signal \}/.test(t));
     push(book, "모델 = resolveToeicTranscribeModel(토익과 같은 env) · maxRetries 1 · 30초 · json", /resolveToeicTranscribeModel\(\)/.test(t) && /maxRetries: 1/.test(t) && /JA_SPEAKING_TRANSCRIBE_TIMEOUT_MS = 30_000/.test(t) && /response_format: "json"/.test(t));
     push(book, "키 없으면 네트워크 없이 no_api_key(클라이언트 만들기 전)", t.indexOf('error: "no_api_key"') > 0 && t.indexOf('error: "no_api_key"') < t.indexOf("getClient(apiKey)"));
     push(book, "로그에 전사문을 싣지 않는다(chars 수만)", /chars=\$\{countJaSpeechChars\(text\)\}/.test(t) && !/console\.\w+\([^)]*\$\{text\}/.test(t));
