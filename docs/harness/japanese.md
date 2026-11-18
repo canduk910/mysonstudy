@@ -1806,6 +1806,7 @@ A realistic candid photograph taken in Japan for a Japanese speaking test pictur
   - 모델: 토익 관문 T와 같은 env `OPENAI_TRANSCRIBE_MODEL`(빈 값이면 `gpt-4o-mini-transcribe`) — `resolveToeicTranscribeModel()`을 그대로 부른다.
   - **`language: "ja"` 고정**(일본어 답을 다른 언어로 적지 않게), `response_format: "json"`, `maxRetries: 1`, 시간 상한 30초.
   - **`prompt`를 넣지 않는다 — 함수에 prompt 인자 자체가 없다.** 기대 문장(지문·모범답변·질문)을 넣으면 전사가 그쪽으로 끌려가 하지 않은 말이 맞게 적힌다(토익 §5-0). Q1–2 대조가 특히 무너진다. eval이 소스에 `prompt` 필드가 없는지·`language: "ja"`인지 정적으로 본다(app-builder 회차에 등록).
+    - *2026-11-18 정정*: `prompt`에는 **고정 표기 지시 상수 `JA_SPEAKING_TRANSCRIBE_PROMPT`**(「ローマ字は使わず、ひらがな・カタカナ・漢字で」) 하나만 보낸다. `language: "ja"`인데도 짧은 단어만 말하면 모델이 로마자로 적었다(실기기 「がっこう さっか」 → "gadko sakka" → 0%). 내용 단서는 없고 입력에서 만들지 않는다 — 함수 인자는 그대로 `(input, signal)`. eval은 "prompt = 그 상수뿐·문구에 ローマ字·보간 없음"을 본다. 판정 쪽 안전망으로 오늘의 일본어 `judgeJaDailyLine`은 라틴 글자가 섞인 받아쓰기를 `lib/ja-romaji.ts`로 가나로 바꿔 대조한다(§16).
   - 라우트는 `req.signal`을 넘긴다(화면이 끊으면 상류 전사도 멈추고 499). 로그에는 모델·바이트·형식·글자 수·ms만(전사문·오디오 없음).
 
 ### 15-9. 저장 모델
@@ -2022,7 +2023,7 @@ JS1 → JS2 → JS3 순서 의존이다(응시는 모의고사가, 채점은 응
 
 교재(다이나믹일본어 회화 음원·JLPT 한끝 N5)로 도는 90회 일일 과정. **새 LLM 호출이 없다** — 그래서 이 문서에 프롬프트·스키마 블록이 없고 spec-sync 대상도 없다. 제품 흐름·저장·비용은 `docs/SPEC.md` §27, 설계 원본은 `docs/superpowers/specs/2026-11-15-ja-daily-design.md`.
 
-- **받아쓰기는 §15 관문 T-ja를 재사용**한다 — 라우트 `POST /api/japanese/daily/transcribe`가 `transcribeJaSpeakingAnswer`(`language: "ja"`, `prompt` 없음)를 부른다. 기대 문장을 받지도 보내지도 않는다(무유도 — §15-8과 같은 원칙). 새 env 없음.
+- **받아쓰기는 §15 관문 T-ja를 재사용**한다 — 라우트 `POST /api/japanese/daily/transcribe`가 `transcribeJaSpeakingAnswer`(`language: "ja"`, `prompt`는 고정 표기 지시뿐 — 2026-11-18 §15-8 정정)를 부른다. 받아쓰기가 로마자로 오면 판정 전에 가나로 바꾼다(`lib/ja-romaji.ts` `jaRomajiToHiragana` — 겹자음 っ·ん·拗音·장음 기호). 기대 문장을 받지도 보내지도 않는다(무유도 — §15-8과 같은 원칙). 새 env 없음.
 - **🎤 판정은 §15 Q1–2 대조 함수를 재사용**한다 — `lib/ja-daily-judge.ts`가 `alignJaReadAloud(tokens, transcript)`의 정확도로 맞음(0.8)·아깝다(0.5)·다시를 가른다. 반입 대본 줄의 후리가나 토큰이 §5 규약을 따라야 대조가 성립하므로 반입 zod(`lib/ja-daily-content.ts`)가 같은 `jaTokenSchema`·`tokensJoinEqual`을 값으로 쓴다(화면은 이 모듈을 `import type`으로만).
 - 대본·단어·문제는 교재 유래라 저장소에 없다 — `data/private/ja-daily-v1.json`을 앱 "파일로 가져오기"로만 넣는다. eval(`scripts/eval-ja-daily.ts`, `npm run eval:ja-daily`)의 픽스처는 지어낸 일본어다.
 - 복습 종류 `ja-n5-word`는 §6·§23의 단어 사다리(`ja-word`)와 같고 키가 달라 따로 센다.

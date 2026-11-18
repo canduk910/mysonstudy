@@ -5,6 +5,7 @@
  * jpack 파서 · 🎤 판정 경계 · 저장 계약 · 채점표 · 회차 풀기 · 스트릭 소스 · 복습 종류 ja-n5-word · 배선 정적 점검.
  * 픽스처는 전부 **지어낸 일본어**다 — 교재 문장·단어·문제를 넣지 않는다(PUBLIC 저장소).
  */
+import { jaRomajiToHiragana } from "../lib/ja-romaji";
 import { readFileSync } from "node:fs";
 import {
   JA_DAILY_IMPORT_FORMAT,
@@ -399,6 +400,14 @@ void (async () => {
   add(A, "한자를 가나로 받아써도 맞음(읽기 갈래)", judgeJaDailyLine(toks, "やまへいきます").verdict === "pass");
   add(A, "빈 받아쓰기 → 0 · 다시", judgeJaDailyLine(toks, "  ").accuracy === 0 && judgeJaDailyLine(toks, "").verdict === "retry");
   add(A, "다른 문장 → 다시", judgeJaDailyLine(toks, "海で泳ぎました").verdict === "retry");
+  {
+    // 받아쓰기가 로마자로 와도 가나로 바꿔 대조(2026-11-18 실기기 "gadko sakka" → 0%)
+    const wt = [{ surface: "がっこう", reading: null }, { surface: "さっか", reading: null }];
+    add(A, "로마자 받아쓰기 → 가나로 바꿔 맞음(gakkou sakka · 장음 기호 gakkō)", judgeJaDailyLine(wt, "gakkou sakka").verdict === "pass" && judgeJaDailyLine(wt, "Gakkō Sakka").verdict === "pass");
+    add(A, "로마자 → 한자 문장의 읽기 갈래로도 맞음(yama e ikimasu)", judgeJaDailyLine(toks, "yama e ikimasu").verdict === "pass");
+    add(A, "로마자가 달라도 그대로 틀림(umi de oyogimashita → 다시)", judgeJaDailyLine(toks, "umi de oyogimashita").verdict === "retry");
+    add(A, "로마자 변환 — ん·っ·拗音", jaRomajiToHiragana("konnichiwa onna sanpo kitte matcha shinbun kyou") === "こんにちわ おんな さんぽ きって まっちゃ しんぶん きょう");
+  }
   add(A, "판정은 alignJaReadAloud 재사용(새 대조 없음)", /alignJaReadAloud\(tokens, transcript\)/.test(codeOnly("../lib/ja-daily-judge.ts")) && /from "\.\/ja-daily-judge"/.test(src("../lib/ja-daily-contract.ts")));
 }
 {

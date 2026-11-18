@@ -6,6 +6,8 @@
  *
  * - 모델: 토익 관문 T와 같은 env `OPENAI_TRANSCRIBE_MODEL`(빈 값이면 gpt-4o-mini-transcribe) — `resolveToeicTranscribeModel()`을 그대로 부른다.
  * - **`language: "ja"` 고정**(일본어 답을 다른 언어로 적지 않게), `response_format: "json"`, `maxRetries: 1`, 시간 상한 30초.
+ * - **표기 지시 하나만 고정 문구로 보낸다(`JA_SPEAKING_TRANSCRIBE_PROMPT`)** — `language:"ja"`인데도 짧은 단어만 말하면 모델이 로마자로
+ *   적는 일이 있어서(2026-11-18 실기기 "gadko sakka") "가나·한자로 적어라"만 말한다. 내용 단서는 하나도 없다 — 상수이고 입력에서 만들지 않는다.
  * - **기대 문장(지문·모범답변·질문)을 넣지 않는다 — 이 함수에는 그 인자 자체가 없다.** 넣으면 전사가 그쪽으로 끌려가 하지 않은 말이 맞게
  *   적힌다(Q1–2 대조가 특히 무너진다). eval(scripts/eval-japanese-speaking.ts)이 소스를 정적으로 본다.
  * - `signal`: 라우트가 `req.signal`을 넘긴다 — 화면이 끊으면 상류 전사도 멈춘다(499).
@@ -20,6 +22,8 @@ import { resolveToeicTranscribeModel, type TranscribeAudioInput, type Transcribe
 
 /** 전사 언어(ISO-639-1) — 일본어 답변만 받는다 */
 export const JA_SPEAKING_TRANSCRIBE_LANGUAGE = "ja";
+/** 표기 지시(고정 문구 — 내용 단서 없음). 로마자 전사를 막는다 */
+export const JA_SPEAKING_TRANSCRIBE_PROMPT = "日本語の音声です。ローマ字は使わず、ひらがな・カタカナ・漢字で書き起こしてください。";
 /** 전사 한 번의 시간 상한(ms) — 채점 요청 전체(전사 + 호출 F)가 60초 상한 안에 들게 */
 export const JA_SPEAKING_TRANSCRIBE_TIMEOUT_MS = 30_000;
 
@@ -46,7 +50,7 @@ export async function transcribeJaSpeakingAnswer(input: TranscribeAudioInput, si
   try {
     const file = await toFile(new Uint8Array(input.bytes), input.fileName, { type: input.type });
     const res = await getClient(apiKey).audio.transcriptions.create(
-      { file, model, language: JA_SPEAKING_TRANSCRIBE_LANGUAGE, response_format: "json" },
+      { file, model, language: JA_SPEAKING_TRANSCRIBE_LANGUAGE, prompt: JA_SPEAKING_TRANSCRIBE_PROMPT, response_format: "json" },
       { signal },
     );
     const text = typeof res?.text === "string" ? res.text.trim() : "";
