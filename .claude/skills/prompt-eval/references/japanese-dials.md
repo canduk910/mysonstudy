@@ -113,13 +113,13 @@ zod 오류 문구는 재요청 프롬프트로 쓰인다. `callWithSchema`는 �
 
 포함 단어 누락이 잦다고 후처리의 일치 판정을 느슨하게 하지 마라. 수학의 `held`를 줄이려고 검산을 풀면 안 되는 것과 같다. 느슨한 일치는 다른 단어를 "넣었다"고 보고한다.
 
-## eval 실행 — 무비용, 오프라인 220항목
+## eval 실행 — 무비용, 오프라인
 
 ```bash
 OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npx tsx scripts/eval-japanese.ts
 ```
 
-`npm run eval:japanese`와 같은 스크립트다. 항목 하나라도 실패하면 exit 1이다. 2026-09-27 기준 16개 영역 220항목이다(2026-09-24 12개 영역 112 — 한국어 꼭 넣을 단어와 같은 단어 판정 네 영역이 더해졌다).
+`npm run eval:japanese`와 같은 스크립트다. 항목 하나라도 실패하면 exit 1이다. 항목 수는 실행 출력이 기준이다.
 
 | 영역 | 항목 수 | 무엇을 잠그나 |
 |---|---|---|
