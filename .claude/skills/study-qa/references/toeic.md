@@ -1,8 +1,7 @@
 # 토익(아빠의 영어 · 토익스피킹) 정합성 매트릭스·체크리스트
 
 > `study-qa` 스킬에서 subject가 `toeic`일 때 읽는다. 은우 영어는 `english.md`, 일본어는 `japanese.md`, 발음 관문·스트릭 코어 같은 과목 공통 기능은 `common.md`가 맡는다.
-> 원문 스펙은 `docs/harness/toeic.md`다. 구현 규칙은 `.claude/skills/ai-harness-impl/references/toeic.md`에 있다. 이 문서의 값은 2026-09-26에 코드를 열어 확인한 것이다(유형별 공략 12절은 2026-09-28, 템플릿 중심 재정렬 13절과 그에 맞춘 2·12절의 줄은 2026-10-02). 검증할 때는 다시 열어 대조하라.
-> 선례 리포트: `_workspace/qa_report_toeic_ai_{1,2}.md`(AI 모듈), `qa_report_toeic_m1_{1,2}.md`(표현집·시험), `qa_report_toeic_m2_1.md`(모의고사·응시·채점 — e2e·실기기 목록의 출처). 그 P2 두 건의 수정은 `build_app-builder_toeic-m2-p2fix_report.md`(2026-09-26)다. 유형별 공략(2026-09-27~28)은 `qa_report_toeic_guides-{foundation_1,s1_1,s2_1,s2_2,s3_1,final_1,final_2,final_3}.md`와 공용 큐 쉼 `qa_report_common_speech-pause_{1,2}.md` — 12절.
+> 원문 스펙은 `docs/harness/toeic.md`다. 구현 규칙은 `.claude/skills/ai-harness-impl/references/toeic.md`에 있다. 이 문서의 값은 작성 당시 코드를 열어 확인한 것이다. 검증할 때는 다시 열어 대조하라.
 
 ## 목차
 
@@ -17,8 +16,8 @@
 9. e2e 요령 — 가짜 마이크·시간 배율·스텁 4종
 10. iPhone 실기기 체크리스트
 11. 리포트 형식과 열린 항목
-12. 유형별 공략 — 템플릿 훈련·틀 테스트·한 문제 연습(2026-09-27)
-13. 템플릿 중심 재정렬 — ① 읽기 접기·③ 👀 틀 시험·④ 답변 흐름(2026-10-02)
+12. 유형별 공략 — 템플릿 훈련·틀 테스트·한 문제 연습
+13. 템플릿 중심 재정렬 — ① 읽기 접기·③ 👀 틀 시험·④ 답변 흐름
 
 ## 1. 검증의 무게중심
 
@@ -85,7 +84,7 @@
 | summaryKo · improvedAnswer | 한국어 · 영어 | 한글 포함 · 라틴 포함·한글 금지 | — |
 | tryExpressions | 목록 중 0~3 | **zod 아님** — `postprocessFeedback`가 목록에 있는 것만·중복 제거·최대 3 | 후처리 |
 
-**채우지 않은 틀 자리**(2026-10-02, §4-9·§5-3): C2~C5 `sampleAnswer`·D `improvedAnswer`·`fixes[].better`에 `~`·`～`·`〜`·`{`·`}`가 남으면 거부한다(`hasUnfilledSlot` 판정 하나 — C·D가 같은 함수, 기존 1회 재요청). C1 지문과 D `said`는 대상 밖이다. 틀 조립을 **덜 따른 것**은 zod가 거부하지 않는다(측정만 — 13절).
+**채우지 않은 틀 자리**(§4-9·§5-3): C2~C5 `sampleAnswer`·D `improvedAnswer`·`fixes[].better`에 `~`·`～`·`〜`·`{`·`}`가 남으면 거부한다(`hasUnfilledSlot` 판정 하나 — C·D가 같은 함수, 기존 1회 재요청). C1 지문과 D `said`는 대상 밖이다. 틀 조립을 **덜 따른 것**은 zod가 거부하지 않는다(측정만 — 13절).
 
 `strengths`·`missingKo`·`fixes[].whyKo`·`fixes[].better`는 빈 값만 보고 언어는 보지 않는다(스펙 §5-3 범위와 같다). 모델이 영어로 whyKo를 내도 통과한다는 사실은 "미검증(품질)"로 남긴다.
 
@@ -123,7 +122,7 @@
 - **사진은 먼저 준비된 것이 이긴다.** ready → ready·failed로 안 바뀜, 장면이 바뀌면 `scene_changed`(409), 쓰지 않은 경우 `toeicImages`에 고아 문서 0. 900,000자 초과 → 압축 50으로 1회 더 → 그래도 넘으면 failed·문서 0.
 - **발화 포인트 빈 자리만.** 저장 직후 자동 호출과 "만들기"를 겹쳐 보내도 먼저 채운 포인트가 남는다(`force=false`). `force=true`만 갈아 끼운다.
 - **가져오기 멱등.** 같은 파일을 두 번(동시에도) 보내면 두 번째는 전부 `skipped`, 세트 수 불변. `presetKey`는 확인과 생성이 한 원자 단위다.
-- **혼합 시험 세션은 모드마다 한 레코드.** 일부 모드만 저장 실패 → "다시 저장"은 **아직 저장 안 된 모드만** 보내고 `finishedAt`은 첫 시도 값 그대로다. 성공한 모드를 다시 보내면 같은 세션이 두 벌이 되어 거짓 졸업이 난다(`qa_report_toeic_m1_2.md` P2-1 재발 여부).
+- **혼합 시험 세션은 모드마다 한 레코드.** 일부 모드만 저장 실패 → "다시 저장"은 **아직 저장 안 된 모드만** 보내고 `finishedAt`은 첫 시도 값 그대로다. 성공한 모드를 다시 보내면 같은 세션이 두 벌이 되어 거짓 졸업이 난다.
 - **삭제 가드.** Firestore 구현의 `deleteToeicSet`·`deleteToeicMock`이 `assertDestructiveAllowed`를 부르는지, 라우트가 403 `prod_guard`로 옮기는지, 연쇄 삭제가 딸린 것 먼저인지 코드로 본다.
 
 ## 5. 응시 화면 — 소리·녹음·시계
@@ -132,8 +131,8 @@
 
 - **오디오 세션 전환 순서.** 녹음마다 `session=play-and-record` → `getUserMedia` → `recorder.start()` → `onstart` → (답변) → `recorder.stop()` → `onstop` → `track.stop()` → **그다음** `session=playback`이어야 한다. 녹음 중 세션 변경은 0이어야 한다(바꾸면 트랙이 끊긴다). `navigator.audioSession`을 만지는 코드는 `lib/mic-session.ts` 한 곳뿐인지 grep한다(`grep -arn audioSession app components lib`). 같은 모듈에 은우 자유대화용 `acquireMicStream`(재생·캡처가 겹치는 전이중 입구)이 더해졌다 — 토익 녹음 `startRecording`은 그대로여야 하고(`git diff`로 추가만인지), 이 모듈을 건드린 변경이면 `eval:toeic`을 다시 돈다. 답변 타이머는 recorder `start` 이벤트에서 시작한다.
 - **재생과 캡처를 겹치지 않는다.** 질문 음성(`speakQueue`, en-US)과 비프(`TOEIC_BEEP_SEC` + 여유)가 끝난 뒤 녹음이 열리는지 타임라인으로 본다.
-- **무음 질문 안전망.** 질문 음성이 끝내 안 나면 일시정지 + "다시 듣기"/"📝 질문 보기"가 떠야 한다(Q8–10은 평소 질문 글을 숨긴다). `speakQueue`는 연속 3조각(`QUEUE_SILENT_STOP`) 무음이어야 `"stopped"`라, 1~2조각인 질문 큐는 전부 무음이어도 `"done"`이다 — 이것이 QA m2_1 P2-A였다. 수정 뒤에는 `onEnd` 둘째 인자 `sounded`를 받아 `toeicSpeechOutcome`(`lib/toeic-mock.ts`)이 판정한다(질문 `sounded < 조각 수` → 일시정지, 지시문 `sounded === 0` → 일시정지). 반례: 기기 음성 엔진 + `speechSynthesis`가 `synthesis-failed`를 내게 하고 Q8–10 유형 연습을 돈다 → Q8 질문에서 멈춰야 한다. "도입만 들리고 질문은 무음"(Q5·Q8의 2조각 큐, `sounded` 1)도 멈춰야 한다. 인자 하나짜리 기존 `onEnd` 호출부(해설 낭독·운동·토익 학습 보기)가 그대로 도는지(eval-speech S5)도 본다. 외부 pause(잠금 화면 ⏸)는 `"stopped"`로 잡힌다.
-- **gUM 상한.** `getUserMedia`가 답하지 않을 때(가짜 마이크 `hang` 모드) 화면은 8초(`MIC_START_WATCHDOG_MS` = `MIC_GUM_TIMEOUT_MS`) 뒤 "시간만 재요"로 넘어가고, **모듈도 스스로 카운트를 되돌리고 세션을 `playback`으로 복귀해야 한다** — 그 뒤 녹음이 정상 종료될 때 세션이 `playback`이어야 한다. 이것이 QA m2_1 P2-B였다(상한 없는 gUM 대기 → `activeCaptures` 누수 → 세션이 `play-and-record`에 갇힘). 수정 뒤 확인할 반례: 답변 중 무응답(8초), 마이크 점검 중 무응답(`MIC_CHECK_GUM_TIMEOUT_MS` 15초 — 점검 버튼이 "듣는 중…"에 영원히 머물지 않는가), 상한 뒤 늦게 도착한 스트림(트랙이 즉시 stop되는가 — 다시 점검하면 곧바로 되는가), `started` 거부(start 이벤트 5초 초과 — 모듈이 스스로 녹음을 버리는가), 점검 중 "녹음 없이 시작"·언마운트(점검 녹음이 abort되는가). eval-toeic "녹음 세션 상한"(가짜 navigator·audioSession·MediaRecorder 위 실제 `startRecording`)이 잠그는 범위와 e2e로 본 범위를 나눠 적는다.
+- **무음 질문 안전망.** 질문 음성이 끝내 안 나면 일시정지 + "다시 듣기"/"📝 질문 보기"가 떠야 한다(Q8–10은 평소 질문 글을 숨긴다). `speakQueue`는 연속 3조각(`QUEUE_SILENT_STOP`) 무음이어야 `"stopped"`라, 1~2조각인 질문 큐는 전부 무음이어도 `"done"`이다 — 그래서 `onEnd` 둘째 인자 `sounded`를 받아 `toeicSpeechOutcome`(`lib/toeic-mock.ts`)이 판정한다(질문 `sounded < 조각 수` → 일시정지, 지시문 `sounded === 0` → 일시정지). 반례: 기기 음성 엔진 + `speechSynthesis`가 `synthesis-failed`를 내게 하고 Q8–10 유형 연습을 돈다 → Q8 질문에서 멈춰야 한다. "도입만 들리고 질문은 무음"(Q5·Q8의 2조각 큐, `sounded` 1)도 멈춰야 한다. 인자 하나짜리 기존 `onEnd` 호출부(해설 낭독·운동·토익 학습 보기)가 그대로 도는지(eval-speech S5)도 본다. 외부 pause(잠금 화면 ⏸)는 `"stopped"`로 잡힌다.
+- **gUM 상한.** `getUserMedia`가 답하지 않을 때(가짜 마이크 `hang` 모드) 화면은 8초(`MIC_START_WATCHDOG_MS` = `MIC_GUM_TIMEOUT_MS`) 뒤 "시간만 재요"로 넘어가고, **모듈도 스스로 카운트를 되돌리고 세션을 `playback`으로 복귀해야 한다** — 그 뒤 녹음이 정상 종료될 때 세션이 `playback`이어야 한다. 상한이 없으면 gUM 대기 → `activeCaptures` 누수 → 세션이 `play-and-record`에 갇힌다. 확인할 반례: 답변 중 무응답(8초), 마이크 점검 중 무응답(`MIC_CHECK_GUM_TIMEOUT_MS` 15초 — 점검 버튼이 "듣는 중…"에 영원히 머물지 않는가), 상한 뒤 늦게 도착한 스트림(트랙이 즉시 stop되는가 — 다시 점검하면 곧바로 되는가), `started` 거부(start 이벤트 5초 초과 — 모듈이 스스로 녹음을 버리는가), 점검 중 "녹음 없이 시작"·언마운트(점검 녹음이 abort되는가). eval-toeic "녹음 세션 상한"(가짜 navigator·audioSession·MediaRecorder 위 실제 `startRecording`)이 잠그는 범위와 e2e로 본 범위를 나눠 적는다.
 - **숨김 중단.** 녹음 중 `visibilitychange → hidden`이면 녹음을 버리고 그 문항 "중단됨" → 돌아오면 "이 문항 다시"/"다음 문항으로". `pagehide`면 비콘 finish.
 - **시계.** 종료 시각(epoch ms) 기반 250ms 틱이고 렌더 중 `Date.now()`를 읽지 않는다. 형식표대로 가는지 본다 — 지시문은 파트 첫 문항만, Q8 앞 표 읽기 45초 1회, Q10 질문 두 번, 준비·답변 초.
 - **녹음 없이 연습.** 마이크 거부·미지원이면 "녹음 없이" 경로로 끝까지 가고, 결과 화면은 "녹음 없음" + AI 채점 버튼 비활성 + 이유를 보여야 한다. 이때 `getUserMedia` 호출은 점검 1회뿐이어야 한다.
@@ -163,7 +162,7 @@
 
 - 대조 기준은 `data/private/`의 전사본이다(**읽기 전용**). 대상은 git이 보는 변경·새 파일 전부(`_workspace` 포함, 이미지·`design/` 제외).
 - 방법(선례는 세션 scratchpad의 `tqm2/leak-scan.cjs` — 세션 전용이라 새로 쓴다): 정확 일치(2단어 이상 표현, 5자 이상 뜻, 예문, 해석, QUIZ, 힌트) + 영어 n-gram(6-gram 선례) + 한국어 12자 창. 스캔 스크립트는 **위치만 출력**한다.
-- 적중은 사람이 판정한다. 흔한 콜로케이션·위치 표현(지어낸 스텁 문장과 우연히 겹친 것)은 오염이 아니다. 문장·해석·QUIZ 복사는 P1이다(이전 회차 P1-1 — 스펙·`prompts.ts`에 교재 문장이 들어갔던 전례가 있다).
+- 적중은 사람이 판정한다. 흔한 콜로케이션·위치 표현(지어낸 스텁 문장과 우연히 겹친 것)은 오염이 아니다. 문장·해석·QUIZ 복사는 P1이다(스펙·`prompts.ts`에 교재 문장이 들어갔던 전례가 있다).
 - `scripts/eval-toeic.ts`는 교재 파일이 있으면 zod·개수만 확인하고 내용은 찍지 않는다. eval 출력에 교재 문장이 보이면 결함이다. 가져오기 400 `issues`에도 값이 실리지 않아야 한다(경로·규칙 문구만).
 - `git status --short`가 시작 때와 같은지, `design/*.jpeg` 스테이징이 그대로인지 본다.
 
@@ -186,25 +185,25 @@
 
 ## 9. e2e 요령 — 가짜 마이크·시간 배율·스텁 4종
 
-선례 스크립트는 2026-09-26 세션 scratchpad의 `tqm2/`(`e2e.cjs`·`init.js`·`stub.cjs`·`e2e-session.cjs`)에 있었다 — 세션 전용 경로라 다음 세션에는 없을 수 있으니 방법은 이 절과 `qa_report_toeic_m2_1.md`를 기준으로 삼는다. **빌더 스크립트를 재사용하지 말고 새로 쓴다** — 검증의 독립성이 깨진다. 스텁 응답 데이터(지어낸 영어)만 읽기 전용으로 빌려도 된다.
+스크립트는 세션 scratchpad에 새로 쓰고, 방법은 이 절을 기준으로 삼는다. **빌더 스크립트를 재사용하지 말고 새로 쓴다** — 검증의 독립성이 깨진다. 스텁 응답 데이터(지어낸 영어)만 읽기 전용으로 빌려도 된다.
 
 - **실행.** dev 서버는 `OPENAI_API_KEY=sk-stub OPENAI_BASE_URL=http://127.0.0.1:<스텁 포트>/v1 STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= K_SERVICE= APP_PIN= npx next dev -p <포트>`. 키 없는 서버 쪽 검증도 `OPENAI_BASE_URL`을 스텁으로 걸어 새는 요청을 잡는다. 데이터를 쓰기 전에 `[store] backend=file (STORE_BACKEND 명시)` 로그를 확인하고, `data/db.json`을 shasum과 함께 백업·복원한다. 관문 P·T도 SDK가 env `OPENAI_BASE_URL`을 읽으므로 같은 스텁으로 간다.
 - **스텁 엔드포인트 4종.** `/v1/responses`(호출 A·B·C1~C5·D — 요청의 `text.format.name`으로 갈라 응답), `/v1/images/generations`(관문 P — 작은 JPEG, 초과·실패·지연 모드), `/v1/audio/transcriptions`(관문 T — multipart를 파싱해 필드·WAV 헤더를 기록, 무응답·환각 said용 전사문 모드), `/v1/audio/speech`(`/api/tts` — 무음 MP3). 모드는 `/__control`로 바꾸고 `/__log`로 요청 기록을 읽는 식으로 둔다. 응답은 전부 지어낸 영어다.
-- **가짜 마이크 스트림.** 이 Mac에서는 Chromium의 `--use-fake-device-for-media-stream`(+ fake UI·`permissions:["microphone"]`)이 `getUserMedia`를 6초 넘게 답하지 않게 만든다(TCC 추정, 재현 3회). 그래서 init script(`page.addInitScript`)가 `navigator.mediaDevices.getUserMedia`를 **Web Audio `MediaStreamDestination`의 진짜 MediaStream**(오실레이터 + LFO)으로 바꾼다. MediaRecorder·AnalyserNode·`decodeAudioData`·WAV 인코딩·업로드는 앱 코드 그대로 돈다. localStorage 스위치로 `deny`(NotAllowedError)·`hang`(영원히 대기 — P2-B 재현)을 고른다. 트랙 `stop`을 감싸 이벤트를 기록한다.
+- **가짜 마이크 스트림.** 이 Mac에서는 Chromium의 `--use-fake-device-for-media-stream`(+ fake UI·`permissions:["microphone"]`)이 `getUserMedia`를 6초 넘게 답하지 않게 만든다(TCC 추정, 재현 3회). 그래서 init script(`page.addInitScript`)가 `navigator.mediaDevices.getUserMedia`를 **Web Audio `MediaStreamDestination`의 진짜 MediaStream**(오실레이터 + LFO)으로 바꾼다. MediaRecorder·AnalyserNode·`decodeAudioData`·WAV 인코딩·업로드는 앱 코드 그대로 돈다. localStorage 스위치로 `deny`(NotAllowedError)·`hang`(영원히 대기 — gUM 상한 재현)을 고른다. 트랙 `stop`을 감싸 이벤트를 기록한다.
 - **가짜 오디오 세션·이벤트 로그.** `navigator.audioSession`을 getter/setter로 흉내 내 세션 변경을 기록하고(녹음 중 변경이면 표시), `MediaRecorder.prototype.start/stop`과 `onstart/onstop`을 감싸 5절의 순서를 타임라인으로 뽑는다.
-- **가짜 speechSynthesis(선택).** 성공/`synthesis-failed` 모드. 무음 질문 안전망(P2-A)을 재현할 때 쓴다. 외부 pause 주입은 빌더의 `forcePauseHook` 방식을 참고해 새로 쓴다.
+- **가짜 speechSynthesis(선택).** 성공/`synthesis-failed` 모드. 무음 질문 안전망을 재현할 때 쓴다. 외부 pause 주입은 빌더의 `forcePauseHook` 방식을 참고해 새로 쓴다.
 - **시간 배율 훅.** localStorage `toeic-debug-timescale`(`TOEIC_DEBUG_TIMESCALE_KEY`, 0.01~1, 예 `"0.05"`)로 단계 종료 시각을 줄인다. **개발 빌드 전용**이다 — `readDebugTimescale`이 `NODE_ENV === "production"`이면 localStorage를 읽기 전에 1을 돌려준다(eval이 잠근다). production 빌드에서 배율이 먹으면 결함이다.
 - **Playwright.** `require('/Users/koscom/.npm/_npx/e41f203b7505f1fb/node_modules/playwright-core')`, `executablePath`는 `chrome-headless-shell-mac-arm64/chrome-headless-shell`(`~/Library/Caches/ms-playwright/chromium_headless_shell-1217/…`). 390×844 모바일 에뮬레이션, 판정은 DOM 실측과 네트워크·이벤트 로그로 한다. fetch·`sendBeacon`을 init script에서 감싸 요청을 기록한다.
-- **흐름 묶음 예**(선례 E1~E5·S1~S3): 실전 11문항 끝까지 → 채점, 유형 연습 한 파트, 마이크 거부 → 녹음 없이, 녹음 중 숨김 → 중단됨, 음성 실패(P2-A), 세션 순서, 점검 중 무응답, 답변 중 무응답(P2-B). 동시 채점·재완료·환각 said·전사 실패·D 실패 재시도는 API 스크립트로 라우트를 직접 친다.
+- **흐름 묶음 예**: 실전 11문항 끝까지 → 채점, 유형 연습 한 파트, 마이크 거부 → 녹음 없이, 녹음 중 숨김 → 중단됨, 음성 실패(무음 질문 안전망), 세션 순서, 점검 중 무응답, 답변 중 무응답(gUM 상한). 동시 채점·재완료·환각 said·전사 실패·D 실패 재시도는 API 스크립트로 라우트를 직접 친다.
 - 끝나면 dev·스텁·브라우저를 전부 끄고 해당 포트 LISTEN 0, `data/db.json` shasum 복원, `db.json.tmp` 없음, `git status --short` 불변을 확인한다.
 
 ## 10. iPhone 실기기 체크리스트
 
-헤드리스는 음소거이고 스텁 MP3는 무음이며, iOS WebKit의 세션·잠금 동작은 재현되지 않는다. 아래는 **"실기기 미검증"으로 남기고 아빠 iPhone 확인 목록으로 넘긴다**(출처: `_workspace/build_app-builder_toeic-m2b_report.md` §6, QA m2_1 미검증 1). 배포본이나 `next dev --experimental-https`에서만 된다 — LAN http에서는 마이크가 열리지 않는다.
+헤드리스는 음소거이고 스텁 MP3는 무음이며, iOS WebKit의 세션·잠금 동작은 재현되지 않는다. 아래는 **"실기기 미검증"으로 남기고 아빠 iPhone 확인 목록으로 넘긴다**. 배포본이나 `next dev --experimental-https`에서만 된다 — LAN http에서는 마이크가 열리지 않는다.
 
 1. 녹음 직후 다음 질문 음성(cloud en-US, 타이머 콜백에서 시작)이 **스피커에서 정상 볼륨**으로 나는가(수화기로 가거나 작아지지 않는가 — play-and-record → playback 전환 뒤, WebKit 218012).
 2. **무음 스위치 ON**에서 비프가 나는가(시작 탭에서 세션을 playback으로 건다). 운동 비프와 비교한다.
-3. 답변마다 `getUserMedia`를 다시 부를 때 권한 창이 다시 뜨는가, 탭 밖(타이머 콜백) 호출이 허용되는가. 안 되면 8초 감시가 "시간만 재기"로 넘어간다 — 진단 캡션·"녹음 실패"로 판정하고 P2-B 발생 빈도로 적는다.
+3. 답변마다 `getUserMedia`를 다시 부를 때 권한 창이 다시 뜨는가, 탭 밖(타이머 콜백) 호출이 허용되는가. 안 되면 8초 감시가 "시간만 재기"로 넘어간다 — 진단 캡션·"녹음 실패"로 판정하고 gUM 상한 발생 빈도로 적는다.
 4. `recorder.mimeType` 실제 값(`audio/mp4` 기대)과 mp4 `decodeAudioData` 성공 여부, 디코드 길이 ≈ 녹음 길이(결과 화면 진단 "→ WAV" / "원본 그대로(이유)").
 5. WAV 업로드 전사가 **끝까지** 나오는가(1~3단어 잘림 없음). 필요하면 원본 mp4 업로드와 비교한다.
 6. 녹음 중 세션 변경이 트랙을 끊지 않는가(구현은 녹음 중 변경을 막는다 — 회귀 확인).
@@ -219,7 +218,7 @@
 
 ## 11. 리포트 형식과 열린 항목
 
-`_workspace/qa_report_toeic_{tag}_{n}.md`(기존 tag: `ai`·`m1`·`m2`·`guides-foundation`·`guides-s1`~`s3`·`guides-final`). SKILL.md 공통 형식에 아래 절을 더한다.
+`_workspace/qa_report_toeic_{tag}_{n}.md`. SKILL.md 공통 형식에 아래 절을 더한다.
 
 ```
 ## 안전 — 실행 접두어·스텁 포트·store 백엔드 로그·db.json shasum(전/후)·git status 전후·data/private 읽기 전용·원문 미기재
@@ -232,12 +231,12 @@
 ## 미검증 — iPhone 목록 · 실호출 · 실제 Firestore · 실제 소리
 ```
 
-회차마다 아래 항목의 상태를 먼저 다시 확인한다(2026-09-26 기준).
+회차마다 아래 항목의 상태를 먼저 다시 확인한다.
 
 | 항목 | 위치 | 요지 | 상태·담당 |
 |---|---|---|---|
-| P2-A 무음 질문 안전망 | `lib/speech.ts` `speakQueue` `onEnd(reason, {sounded})` ↔ `lib/toeic-mock.ts` `toeicSpeechOutcome` ↔ `toeic-take-view.tsx` `playSpeech` | 1~2조각 질문이 전부 무음이어도 `"done"`이던 것 | 수정됨(`build_app-builder_toeic-m2-p2fix_report.md`) · QA 재검증 통과(`qa_report_toeic_m2_2.md`) — 이후엔 5절 반례를 회귀 가드로 쓴다 |
-| P2-B gUM 상한 | `lib/mic-session.ts` `getUserMediaWithin`·상한 상수 4종, `toeic-take-view.tsx` `checkMic` | gUM 무응답 → `activeCaptures` 누수 → 세션이 play-and-record에 갇히던 것 | 수정됨(같은 리포트) · QA 재검증 통과(같은 QA 리포트) |
+| 무음 질문 안전망 | `lib/speech.ts` `speakQueue` `onEnd(reason, {sounded})` ↔ `lib/toeic-mock.ts` `toeicSpeechOutcome` ↔ `toeic-take-view.tsx` `playSpeech` | 1~2조각 질문이 전부 무음이어도 `"done"`이던 것 | 수정됨 — 5절 반례를 회귀 가드로 쓴다 |
+| gUM 상한 | `lib/mic-session.ts` `getUserMediaWithin`·상한 상수 4종, `toeic-take-view.tsx` `checkMic` | gUM 무응답 → `activeCaptures` 누수 → 세션이 play-and-record에 갇히던 것 | 수정됨 — 5절 반례를 회귀 가드로 쓴다 |
 | 공유 모듈 변경의 파급 | `lib/speech.ts`(`SpeakQueueEndInfo` 추가) | 토익 수정이 공통 발음 모듈을 건드렸다 | `common` 검증을 함께 건다(`eval:speech` + 해설 낭독·운동 음성 안내 경로) |
 | O1 두 탭 동시 채점 | 채점 라우트 | 전사·D 두 번 과금, 나중 쓰기가 이김 | 관찰 · 비용 민감하면 서버 합류 |
 | O4 채점 60초 | 전사 30초 × 재시도 1 + D | 상한 초과 가능, 재시도로 회복 | 관찰 · 실호출 때 지연 분포 |
@@ -248,7 +247,7 @@
 
 틀린 점수·통계가 사용자에게 가는 경로(거짓 졸업, 지어낸 said, 오염된 스트릭)와 교재 원문 노출은 P1이다. 드문 이중 실패·실기기 조건에서만 나는 것은 P2로 두고 조건을 함께 적는다.
 
-## 12. 유형별 공략 — 템플릿 훈련·틀 테스트·한 문제 연습 (2026-09-27, 스펙 `docs/harness/toeic.md` §12)
+## 12. 유형별 공략 — 템플릿 훈련·틀 테스트·한 문제 연습 (스펙 `docs/harness/toeic.md` §12)
 
 새 AI 호출·새 컬렉션이 없는 대신 **기존 컬렉션·라우트·공용 모듈에 갈래가 더해졌다.** 검증의 무게는 ① 섞이지 않는가(표현집 ↔ 공략 ↔ 틀 ↔ 연습) ② 거짓 졸업이 없는가(한 판 한 틀·첫 유효 시도·같은 날 ○ 접기) ③ 정답이 새지 않는가((나) 영어 0·페이로드) ④ 비용이 버튼 뒤에만 있는가 ⑤ 교재·틀 원본이 저장소로 새지 않는가다. 구현 규칙은 `ai-harness-impl/references/toeic.md` 14절.
 
@@ -261,7 +260,7 @@
 | 제자리 갱신 여섯 갈래 | §12-2-5 | `decideGuideUpsert`(`lib/ai/toeic/guide-import.ts`) → 스토어 `upsertToeicGuides` | 같은 내용 unchanged(키 순서만 다른 입력도), 교정 updated(id·createdAt·sortIndex·presetKey 유지, 시험·틀 세션 무접촉), 다른 키로 같은 유형 `part_taken`, 틀 은행 키를 유형 자리에 `part_mismatch`, 표현집 키 `preset_key_is_book`, 충돌 하나면 쓰기 0. 건너뜀 이유만 고친 파일은 unchanged |
 | Firestore 배열 속 배열 | §12-3 | `lib/toeic-firestore-codec.ts` | 실제 가져오기 파일의 쓸 문서 전부 "인코딩 뒤 배열 속 배열 0 · 왕복 불변". 실제 Firestore 쓰기는 미검증(에뮬레이터 없음 — 배포 뒤 첫 가져오기가 첫 확인) |
 | 목록 가리기 순서 | §12-3 표 | `isToeicGuideSet`·`isToeicDrill` → 그다음 `skippedCount` | 공략 4·틀 은행·연습 3이 있을 때 표현집·모의고사 목록의 "열지 못한 n개" = 0. 모의고사 제목 번호·주제 칩·`POST /mocks` 활용할 표현이 공략·연습·공략 세션을 무시(`bookSetIds.has(q.setId)`) — 지금 eval은 소스 순서를 보므로(이월 P3) e2e 수치로 한 번 더 |
-| 모드 분리 | §12-3·§12-5-6 | `isToeicQuizModeSession`·`TOEIC_TEMPLATE_QUIZ_MODES` | 틀 세션이 세트 화면(시험·오답·기록)·표현 시험 통계에 섞이지 않는다. 틀 두 모드가 서로의 통계에 섞이지 않는다. 2026-10-02: 👀 고르기·빈칸 세 모드도 말하기 두 모드와 **양방향으로** 섞이지 않는다(13절). 공통 틀은 어느 폴더에서 풀어도 통계 하나 |
+| 모드 분리 | §12-3·§12-5-6 | `isToeicQuizModeSession`·`TOEIC_TEMPLATE_QUIZ_MODES` | 틀 세션이 세트 화면(시험·오답·기록)·표현 시험 통계에 섞이지 않는다. 틀 두 모드가 서로의 통계에 섞이지 않는다. 👀 고르기·빈칸 세 모드도 말하기 두 모드와 **양방향으로** 섞이지 않는다(13절). 공통 틀은 어느 폴더에서 풀어도 통계 하나 |
 | 거짓 졸업 | §12-5-3·§12-5-6 | `buildTemplateTestQuestions`·`aggregateToeicTemplateStats`·`isValidTemplateAttempt` | 한 판에 같은 틀 두 번 0, 기록 라우트가 세션 안 `word` 중복을 400. 같은 KST 날 ○○ → 연속 1("오늘 ○ — 내일 한 번 더"), 다른 날 ○○ → 🎓. 정답 공개 뒤 "🗣️ 한 번 더"가 전사·판정을 바꾸지 않는다. `words ≥ 1`이어도 `noSpeech`면 무효(정답 비공개 유지) |
 | 멱등 기록 | §12-5-6 | `addToeicQuizWithId`·`decideToeicQuizWithId` | 같은 id·같은 판 두 번 → 한 건·`reused:true`, 같은 id·다른 판 → 원 문서 그대로 + 새 id. `clientSessionId` 대문자 UUID·`/` 든 값·datetime 아님 → 400. 이탈 저장(keepalive)과 "다시 저장"이 겹쳐도 한 벌. bfcache 이탈(`persisted=true`)은 저장 0 |
 | 틀 비교 | §12-5-5 | `compareTemplateAnswer`·`alignWordSeq(…, { substitutionCost: 2 })` | 어순 바뀜 → 빠짐 1 + 더함 1(0.5) → ✕, 관사만 들린 자리 → `filled:false`, 7개 중 1 빠짐 ○ / 6개 중 1 ✕, `It's` ↔ `It has been`·`I'd` ↔ `I would`, `alignReadAloud`는 옵션 없이 옛 결과와 글자까지 같다(무작위 400쌍) |
@@ -269,7 +268,7 @@
 | (나) 영어 0 · 페이로드 | §12-5-3 | `templateSwapClue`·`templateTestPromptMeta`·`maskLatinForTestKo` | (나) 화면의 라틴 글자 = 채움 칩뿐(단서 줄·묶음 이름·`useKo` 가림). ② 탭·테스트 페이지 HTML·RSC에 다른 예문·테스트 전용 채움 0, 틀 점검 자료(`toeicTemplateCheckData` — 옛 이름 `toeicDrillCheckData`는 별칭)에 예문·`testFills` 0. 시작 화면 범위 줄(`묶음 · {이름}`)은 아직 가림을 지나지 않는다(이월 P3) |
 | 연습 범위·상태코드 | §12-7-4 | `decideAttemptScope(…, drillPart)` → `attempt.questions` | 사진 연습 `questions=[3]` — 끝내기 Q4 400(`answers.0.q`), 채점 Q4 404 `question_not_found`(전사 0), 사진 slot 1 404 `picture_not_found`(관문 P 0), regenerate 409 `is_drill`, 공략 세트 rename·points 409 `is_guide`, 연습에 `scope:"full"` 400. 옛 응시 문서 `questions` = 파트 문항. 지시문 세 곳이 `toeicPartDirections`(사진 1장 문장) |
 | 녹음 풀 | §12-7-6 | `pickAttemptsToEvictByPool` | 연습 6회 뒤에도 채점 전 실전 녹음이 남는다, 옛 메타 = mock. WebKit 임시 컨텍스트는 IndexedDB에 Blob을 못 넣어 메타 풀 값은 Chromium으로 본다 |
-| 연습 입력 | §12-7-2·§12-7-9 (2026-10-02 대체 → §12-13-3, 13절) | `pickExpressionsForDrill`(서버) | (옛 기준 — 지금은 틀이 활용할 표현에 **없어야** 하고 답변 흐름 칸으로 간다, 13절) 틀 `~` 형태가 맨 앞(단계마다 하나 — 단계 5개 유형에서 다 든다)·`{}` 0, 다른 유형 틀 0, 공략 세션만 틀린 표현이 표현집 순위를 안 움직임(반대도), 보낸 목록 = 저장 목록, 24 상한 |
+| 연습 입력 | §12-7-2·§12-7-9 (대체 → §12-13-3, 13절) | `pickExpressionsForDrill`(서버) | (옛 기준 — 지금은 틀이 활용할 표현에 **없어야** 하고 답변 흐름 칸으로 간다, 13절) 틀 `~` 형태가 맨 앞(단계마다 하나 — 단계 5개 유형에서 다 든다)·`{}` 0, 다른 유형 틀 0, 공략 세션만 틀린 표현이 표현집 순위를 안 움직임(반대도), 보낸 목록 = 저장 목록, 24 상한 |
 | 스트릭 | §12-9, SPEC §17-8 | `toeicQuizStreakLabel`·`toeicAttemptStreakLabel` | 라벨 `템플릿 훈련 · {모드}`(유형 이름 없음)·`공략 표현 · {유형}`·`공략 연습 · {유형}`. 따라 말하기만 한 날은 늘지 않는다. 녹음 0 연습 응시는 안 센다. `eval:streak` ⑥ 배선 정규식 불변 |
 
 **비용 경로(키를 비운 서버에서 전부 501·스텁 상류 0, 스텁 키에서는 버튼 뒤에만)**: 폴더 목록·가져오기 AI 0 · ② 탭 열기 = 영어 예문 프리페치(≤90)만, ▶ 따라 말하기 = 고유 조각 준비(≤90, 반복은 캐시, 무음 쉼 합성 0) · 🧩 틀 테스트 = 문항당 전사 ≤2·판당 ≤20(열기만으로 0 — 전사 요청 multipart는 `audio` 하나) · ① 읽기 = 열린 섹션의 영어만 프리페치(한국어는 재생 때 look-ahead) · ③ = 표현 영어 ≤60 · ④ 열기 **0**, 새 문제 = 호출 C 1(+ Q3–4 사진 1 — 같은 버튼 흐름), 다시 연 pending 사진은 자동 요청 0 · 연습 채점 = 문항당 T 1 + D 1(버튼), 🧩 틀 점검 0. 선례 실측표: `qa_report_toeic_guides-final_3.md` "비용 경로 총점검".
@@ -280,11 +279,11 @@
 
 **iPhone 실기기(10절에 더해 — SPEC §20-10 실기기 1~12)**: 잠그고 이어폰으로 들을 때 틈 뒤 다음 예문이 탭 없이 이어지는가(§12-12 23의 갈림길), 잠금 화면 ⏯·⏭·⏮, 다른 앱에서 돌아온 뒤 이어 듣기가 예문 머리부터인가, Wake Lock(준비·재생 동안), 틀 테스트 🎤마다 권한 창·녹음 직후 정답 🔊 볼륨·받아쓰기 대기 p90 5초·**일부러 한 낱말 바꿔 말했을 때 전사가 그대로 적는가**, 테스트 중 잠금 → 그 문항 처음부터, 연습 사진 1장 지시문·연습 여섯 번 뒤 실전 녹음 보존, 📘 → 그 블록 스크롤(앱 안·탭 되살림)·목차 칩 → 섹션 머리·긴 "넣었으면 좋았을 표현" 칩 줄바꿈.
 
-**열린 항목(2026-09-28, QA final 3 — 배포를 막지 않는다)**: 이월 P3 17건(`ai-harness-impl/references/toeic.md` 14절 "알려진 틈"과 같은 목록 — 접기 동률 깨기·범위 줄 가림·이탈 저장 짧은 창·전사 본문 사후 검사·깨진 문서 다시 가져오기·goto 주소 등), 공용 큐 쉼 QA의 살아남은 변이 3(스펙 성질이 eval에 안 잠김 — `qa_report_common_speech-pause_2.md`). 회차마다 아직 남았는지 다시 확인한다.
+**열린 항목(배포를 막지 않는다)**: 이월 P3 17건(`ai-harness-impl/references/toeic.md` 14절 "알려진 틈"과 같은 목록 — 접기 동률 깨기·범위 줄 가림·이탈 저장 짧은 창·전사 본문 사후 검사·깨진 문서 다시 가져오기·goto 주소 등), 공용 큐 쉼의 살아남은 변이 3(스펙 성질이 eval에 안 잠김). 회차마다 아직 남았는지 다시 확인한다.
 
-## 13. 템플릿 중심 재정렬 — ① 읽기 접기 · ③ 👀 틀 시험 · ④ 답변 흐름 (2026-10-02, 스펙 `docs/harness/toeic.md` §12-13)
+## 13. 템플릿 중심 재정렬 — ① 읽기 접기 · ③ 👀 틀 시험 · ④ 답변 흐름 (스펙 `docs/harness/toeic.md` §12-13)
 
-사용자 요구는 "시험장에서 1초의 망설임도 없이 연습한 틀대로"다 — 폴더 네 탭과 실전 모의고사가 틀 은행 하나를 중심으로 돈다. 검증의 무게는 ① **접은 것이 정말 소리에서 빠지는가**(그리고 접기 안 🔊는 나는가) ② **고르기와 말하기 숙련도가 양방향으로 섞이지 않는가** ③ **요청 본문의 "답변 흐름" 칸이 폴더의 틀과 같은 집합이고 저장 흐름과 글자까지 같은가 — 흐름 틀이 `활용할 표현:` 줄에 없는가** ④ 호출 수가 그대로인가 ⑤ 틀·교재 글이 저장소로 새지 않는가다. 구현 규칙은 `ai-harness-impl/references/toeic.md` 15절, 구현이 정한 동작·남은 틈은 스펙 §12-13-7. 선례: `_workspace/qa_report_toeic_template-centric-ai_1.md`(AI 층) · `qa_report_toeic_template-centric-full_1.md`(전체 — P1·P2 0, P3 6).
+사용자 요구는 "시험장에서 1초의 망설임도 없이 연습한 틀대로"다 — 폴더 네 탭과 실전 모의고사가 틀 은행 하나를 중심으로 돈다. 검증의 무게는 ① **접은 것이 정말 소리에서 빠지는가**(그리고 접기 안 🔊는 나는가) ② **고르기와 말하기 숙련도가 양방향으로 섞이지 않는가** ③ **요청 본문의 "답변 흐름" 칸이 폴더의 틀과 같은 집합이고 저장 흐름과 글자까지 같은가 — 흐름 틀이 `활용할 표현:` 줄에 없는가** ④ 호출 수가 그대로인가 ⑤ 틀·교재 글이 저장소로 새지 않는가다. 구현 규칙은 `ai-harness-impl/references/toeic.md` 15절, 구현이 정한 동작·남은 틈은 스펙 §12-13-7.
 
 **오프라인 eval — 먼저 돌린다.** `eval:toeic` **1167**(재정렬 영역: ① 외울 틀 강조·같은 자리 접기·① 대본 접은 것 빼기·① 같은 자리 다른 표현 가져오기·① 파일 저장소 왕복 / ③ 틀 시험·③ 통계·기록 / 답변 흐름·모범답변 점검·🧩 틀 점검 새 순서 / 템플릿 중심 — 레코드·라우트 소스·앱 소스(26)·번들 경계·실제 파일 / 템플릿 중심 — 호출 C·D 흐름), `eval:streak` **56**(⑦ 라벨 다섯 모드). spec-sync 원문은 **15**(흐름 규칙 블록 포함)이고 eval이 개수를 단언한다. 항목 수가 이보다 적으면 회귀다.
 
@@ -315,4 +314,4 @@
 
 **iPhone 실기기(SPEC §20-10 실기기 13~16)**: 같은 파일 다시 가져오기 뒤 ① 접기·잠금 화면 이어 듣기가 접은 줄을 건너뛰는가, ③ 보기 다섯이 한 화면에 드는가·답한 뒤 영어 틀 소리가 탭 한 번에 나는가·빈칸 보기 대소문자, ④·모의고사 결과의 틀 점검 접기·머리 한 줄·일부 파트 뒤 "이 파트 만들기"의 틀 조립. 실호출 확인 15(모범답변이 실제로 틀대로 조립되는가 — `EVAL_TOEIC=1`, 사용자 동의 뒤)는 스텁이 대신하지 못한다.
 
-**열린 항목(2026-10-02, QA full 1 — 배포를 막지 않는다)**: P3-A ③ 끝 화면이 저장 중에도 "틀린 틀만 다시"·"다시 풀기"를 받는다(② 끝 화면처럼 저장 중 링크를 막아야 한다 — 저장 POST를 늦춘 반례로 재현) · P3-B 채점 전 접기 요약 "모범답변의 틀 n"(제안 수, 상한 5)과 점검 줄 "틀 n개"(저장 흐름)가 다르다 · P3-C·D·E(① 섞인 list/text 통째 접기, ③ 빈칸 자리 붙은 조각, 빈 흐름 정규화 — 실데이터 0건·손상 문서 한정) · P3-F(스펙 산문 두 곳)는 문서에서 고쳤다(§12-13-7). 회차마다 아직 남았는지 다시 확인한다.
+**열린 항목(배포를 막지 않는다)**: P3-A ③ 끝 화면이 저장 중에도 "틀린 틀만 다시"·"다시 풀기"를 받는다(② 끝 화면처럼 저장 중 링크를 막아야 한다 — 저장 POST를 늦춘 반례로 재현) · P3-B 채점 전 접기 요약 "모범답변의 틀 n"(제안 수, 상한 5)과 점검 줄 "틀 n개"(저장 흐름)가 다르다 · P3-C·D·E(① 섞인 list/text 통째 접기, ③ 빈칸 자리 붙은 조각, 빈 흐름 정규화 — 실데이터 0건·손상 문서 한정) 회차마다 아직 남았는지 다시 확인한다.
