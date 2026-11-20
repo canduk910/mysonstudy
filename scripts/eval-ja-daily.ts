@@ -634,6 +634,11 @@ function report() {
   const ex = src("../components/ja-daily-exam.tsx");
   add(A, "실전(mockSection) 풀이 중 블록 → 상단 스트릭·도우미 숨김(isExamScreen의 blockCount) · 끝나면 풂", /usePhraseHelperBlock\(!finished\)/.test(ex));
   add(A, "채점표 오답 보기는 답하지 않는다(86회 오답 다시 풀기를 지킨다)", /view\.type === "mockScore"[\s\S]{0,900}onPick=\{null\}/.test(ex));
+  const kw = codeOnly("../components/ja-daily-kaiwa.tsx");
+  const shd = codeOnly("../components/use-ja-daily-shadow.tsx");
+  add(A, "따라 말하기는 한 곳(use-ja-daily-shadow) — 회화·요령 대본이 같이 쓰고 각자 큐를 만들지 않는다", /useJaDailyShadow\(repeat\)/.test(kw) && /useJaDailyShadow\(repeat\)/.test(ex) && !/speakQueue|bindMediaSession/.test(kw) && !/speakQueue|bindMediaSession/.test(codeOnly("../components/ja-daily-exam.tsx")) && /buildJaDailyShadowItems\(target\.lines, repeat, from\)/.test(shd) && /pauseAllMedia\(\);\s*unlockSpeechPlayback\(\);/.test(shd));
+  add(A, "요령 원음 대본은 접지 않은 독립 카드(📜 원음 대본) · \"다음\"에서 따라 말하기를 멈추고 바인딩을 푼다", /data-testid="ja-daily-tip-drills"/.test(ex) && !/<details[^>]*ja-daily-tip-drills/.test(ex) && /sh\.stopShadow\(true\);\s*pauseAllMedia\(\);\s*onDone\(answers\)/.test(ex));
+  add(A, "따라 말하기 마운트만으로 합성을 미리 받지 않는다(prefetch 없음)", !/prefetchSpeech/.test(shd + kw + codeOnly("../components/ja-daily-exam.tsx")));
   const lc = codeOnly("../components/ja-daily-line-check.tsx");
   add(A, "🎤 — 판정은 lib/ja-daily-judge(계약 파일 값 import 없음) · 받아쓰기에 기대 문장 안 보냄 · 501이면 스스로 판정", /from "@\/lib\/ja-daily-judge"/.test(lc) && !/import \{[^}]*\} from "@\/lib\/ja-daily-contract"/.test(lc) && /fd\.append\("audio"/.test(lc) && !/fd\.append\("(?!audio)/.test(lc) && /status === 501/.test(lc));
   add(A, "🎤 결과를 보고 넘어가도 잰 정확도를 남긴다(QA daily-full P3-2)", /accuracy: p\.kind === "result" \? p\.accuracy : null, verdict: "skipped"/.test(lc));
@@ -641,7 +646,7 @@ function report() {
   add(A, "저장 409 id_conflict → 새 클라이언트 id로 바꿔 둔다(같은 409 반복 없음, QA P3-4)", /body\.error === "id_conflict"[\s\S]{0,200}recordRef\.current = \{ \.\.\.rec, id: newClientId\(\) \}/.test(sv));
   const md = codeOnly("../components/ja-daily-media.tsx");
   add(A, "원음 URL — 읽는 도중 정리됐으면 방금 만든 URL을 놓는다(QA P3-5)", /if \(!alive\) \{\s*if \(url\) URL\.revokeObjectURL\(url\);\s*break;/.test(md));
-  const comps = ["ja-daily-home", "ja-daily-hub-card", "ja-daily-session-view", "ja-daily-kaiwa", "ja-daily-vocab", "ja-daily-exam", "ja-daily-line-check", "ja-daily-media"].map((f) => codeOnly(`../components/${f}.tsx`)).join("\n");
+  const comps = ["ja-daily-home", "ja-daily-hub-card", "ja-daily-session-view", "ja-daily-kaiwa", "ja-daily-vocab", "ja-daily-exam", "ja-daily-line-check", "ja-daily-media", "use-ja-daily-shadow"].map((f) => codeOnly(`../components/${f}.tsx`)).join("\n");
   add(A, "화면은 계약·내용 모듈을 타입으로만(zod·일본어 스키마가 폰 번들로 안 감)", !/import \{[^}]*\} from "@\/lib\/ja-daily-(contract|content|session|plan)"/.test(comps));
   add(A, "원음은 서버로 보내지 않는다 — 화면에서 jpack·원음을 fetch body로 보내는 곳 없음", !/fetch\([^)]*import[^)]*jpack/.test(comps) && !/body: file\b/.test(comps));
   const st = codeOnly("../lib/ja-audio-store.ts");

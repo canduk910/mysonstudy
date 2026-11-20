@@ -3,7 +3,9 @@
 /**
  * components/ja-daily-exam.tsx — 🗓️ 오늘의 일본어 **📝 시험 대비 칸**(설계 §3-1·§4).
  *
- * - tip: 청해 요령(원음 + pointsKo + 접힌 원음 대본 drills — 먼저 듣고 펼쳐 확인) + 같은 원음의 예제 문항(기록하지 않는다)
+ * - tip: 청해 요령(원음 + pointsKo) + **📜 원음 대본** 카드(drills — 회화 트랙과 같은 학습 형태: 해석 숨기기/보기 · 따라 말하기
+ *   반복 수(회화와 같은 저장값) · 🗣️ 따라 말하기 ▶/⏸/이어서/⏹(번호 묶음을 넘어 전체 문장 순서대로, `components/use-ja-daily-shadow`)
+ *   · 번호별 묶음(번호 + noteKo 머리) · 문장 탭 = 그 문장 일본어 발음) + 같은 원음의 예제 문항(기록하지 않는다)
  * - litems: 청해 문항 — 원음 ▶(없으면 대본 합성). 문제3·4는 보기 3개(보기 글자는 답한 뒤 공개 — 소리로 듣고 번호로 고른다),
  *   문제1·2는 "들었어요 → 대본·해석" 스스로 확인(choice·correct null). 답한 뒤 대본·해석·해설.
  * - mockItems·mockReview·weakItems·final: 모의 문항 연습 — 문제(`[[ ]]` 밑줄) + 보기 4 → 바로 정답·해석·해설. 청해는 원음,
@@ -13,13 +15,15 @@
  *   86회 "오답 다시 풀기"가 이 답들을 그대로 쓴다).
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import JaRuby from "@/components/ja-ruby";
-import { JaDailyAudio } from "@/components/ja-daily-media";
+import { JaDailyAudio, pauseAllMedia } from "@/components/ja-daily-media";
+import { JaDailyShadowControls, JaDailyShadowRepeatSelect, useJaDailyShadow, useJaDailyShadowRepeat } from "@/components/use-ja-daily-shadow";
 import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
 import type { JaDailyExamView, JaDailyMockItemView, JaDailyMockScore } from "@/lib/ja-daily-contract";
-import type { JaDailyListeningItem } from "@/lib/ja-daily-content";
+import type { JaDailyListeningItem, JaDailyTipDrill } from "@/lib/ja-daily-content";
 import { JA_DAILY_SECTION_KO, splitJaDailyUnderline, stripJaDailyUnderline } from "@/lib/ja-daily-quiz";
+import { speak } from "@/lib/speech";
 
 export type JaDailyExamAnswer = { itemId: string; choice: number | null; correct: boolean | null };
 type Urls = Record<string, string | null>;
@@ -413,14 +417,102 @@ function ScoreTable({ score }: { score: JaDailyMockScore }) {
 }
 
 // ---------------------------------------------------------------------------
+// 청해 요령 원음 대본
+// ---------------------------------------------------------------------------
+
+const DRILLS_KEY = "tip-drills";
+
+type Shadow = ReturnType<typeof useJaDailyShadow>;
+
+/** 📜 원음 대본 — 회화 트랙과 같은 학습 형태. 따라 말하기는 번호 묶음을 넘어 전체 문장을 순서대로 */
+function TipDrills({ drills, titleKo, sh, repeat, setRepeat }: { drills: readonly JaDailyTipDrill[]; titleKo: string; sh: Shadow; repeat: number; setRepeat: (v: number) => void }) {
+  const [showKo, setShowKo] = useState(true);
+  const { lines, offsets } = useMemo(() => {
+    const offs: number[] = [];
+    let n = 0;
+    for (const d of drills) {
+      offs.push(n);
+      n += d.items.length;
+    }
+    return { lines: drills.flatMap((d) => d.items.map((it) => ({ ja: it.ja, ko: it.ko }))), offsets: offs };
+  }, [drills]);
+  const target = { key: DRILLS_KEY, lines, artist: `청해 요령 · ${titleKo}` };
+  const active = sh.shadow?.key === DRILLS_KEY ? sh.shadow : null;
+  return (
+    <section className="u-card p-4" data-testid="ja-daily-tip-drills">
+      <p className="t-section-title">📜 원음 대본</p>
+      <p className="t-caption mt-1 text-ink-3">위 원음에 나오는 문장이에요. 문장을 누르면 그 문장을 들려줘요.</p>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <button type="button" className="u-chip" onClick={() => setShowKo((v) => !v)} aria-pressed={showKo}>
+          {showKo ? "해석 숨기기" : "해석 보기"}
+        </button>
+        <JaDailyShadowRepeatSelect repeat={repeat} onChange={setRepeat} />
+      </div>
+      <JaDailyShadowControls
+        active={active}
+        onStart={() => sh.startShadow(target, 0)}
+        onPause={sh.pauseShadow}
+        onResume={(line) => sh.startShadow(target, line)}
+        onStop={() => sh.stopShadow(true)}
+        testId="ja-daily-tip-shadow"
+      />
+      <ol className="mt-3 flex flex-col gap-4">
+        {drills.map((d, di) => (
+          <li key={`${d.no}-${di}`} data-testid="ja-daily-tip-drill">
+            <p className="t-caption text-ink-3">
+              <span className="font-bold text-ink-2">{d.no}.</span>
+              {d.noteKo ? <span className="ml-1 text-accent-ink">{d.noteKo}</span> : null}
+            </p>
+            <ol className="mt-1 flex flex-col gap-2">
+              {d.items.map((it, i) => {
+                const idx = offsets[di] + i;
+                return (
+                  <li key={i}>
+                    <button
+                      type="button"
+                      className={`w-full rounded-[var(--radius-box)] border px-3 py-2 text-left ${active && active.line === idx ? "border-accent bg-accent-soft" : "border-line bg-surface"}`}
+                      data-testid="ja-daily-tip-line"
+                      onClick={() => {
+                        if (sh.shadowRef.current) sh.stopShadow(true);
+                        pauseAllMedia();
+                        speak(it.ja, "ja-JP");
+                      }}
+                    >
+                      <JaRuby tokens={it.tokens} className="text-lg" />
+                      {showKo ? <span className="t-caption mt-0.5 block text-ink-2">{it.ko}</span> : null}
+                    </button>
+                  </li>
+                );
+              })}
+            </ol>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 칸
 // ---------------------------------------------------------------------------
 
 export default function JaDailyExam({ view, urls, onDone }: { view: JaDailyExamView; urls: Urls; onDone: (answers: JaDailyExamAnswer[]) => void }) {
   const [answers, setAnswers] = useState<JaDailyExamAnswer[]>([]);
   const record = (a: JaDailyExamAnswer) => setAnswers((cur) => [...cur.filter((x) => x.itemId !== a.itemId), a]);
+  /** 청해 요령 원음 대본의 따라 말하기 — 칸을 떠나면(언마운트) 훅이, "다음" 탭이면 여기서 멈추고 잠금 화면 바인딩을 푼다 */
+  const { repeat, setRepeat } = useJaDailyShadowRepeat();
+  const sh = useJaDailyShadow(repeat);
   const finishBtn = (label = "다음 칸 →") => (
-    <button type="button" className="u-btn u-btn-primary" data-testid="ja-daily-exam-done" onClick={() => onDone(answers)}>
+    <button
+      type="button"
+      className="u-btn u-btn-primary"
+      data-testid="ja-daily-exam-done"
+      onClick={() => {
+        sh.stopShadow(true);
+        pauseAllMedia();
+        onDone(answers);
+      }}
+    >
       {label}
     </button>
   );
@@ -463,28 +555,8 @@ export default function JaDailyExam({ view, urls, onDone }: { view: JaDailyExamV
                 <li key={i}>{p}</li>
               ))}
             </ul>
-            {view.tip.drills && view.tip.drills.length > 0 ? (
-              <details className="mt-4 rounded-[var(--radius-box)] border border-line bg-surface-2 p-3" data-testid="ja-daily-tip-drills">
-                <summary className="cursor-pointer t-caption">🔎 음원 대본 보기 ({view.tip.drills.length}개) — 먼저 듣고 펼쳐 보세요</summary>
-                <ol className="mt-3 flex flex-col gap-3">
-                  {view.tip.drills.map((d) => (
-                    <li key={d.no} className="flex gap-2">
-                      <span className="t-caption text-ink-3 w-5 shrink-0 pt-1">{d.no}.</span>
-                      <div className="flex-1 min-w-0">
-                        {d.noteKo ? <p className="t-caption text-accent">{d.noteKo}</p> : null}
-                        {d.items.map((it, i) => (
-                          <div key={i} className="mt-1">
-                            <JaRuby tokens={it.tokens} className="text-lg" />
-                            <p className="t-caption text-ink-3">{it.ko}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </li>
-                  ))}
-                </ol>
-              </details>
-            ) : null}
           </section>
+          {view.tip.drills && view.tip.drills.length > 0 ? <TipDrills drills={view.tip.drills} titleKo={view.tip.titleKo} sh={sh} repeat={repeat} setRepeat={setRepeat} /> : null}
           {view.examples.map((it) => (
             <LitemCard key={it.id} item={it} url={urls[it.audioKey]} onAnswer={null} label="예제" />
           ))}
