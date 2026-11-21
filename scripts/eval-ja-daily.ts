@@ -47,6 +47,7 @@ import { jaDailyMockRealAnswers, resolveJaDailySession } from "../lib/ja-daily-s
 import {
   JA_DAILY_VOCAB_CHOICES,
   buildJaDailyShadowItems,
+  jaDailyLineGroups,
   buildJaDailyVocabQuestion,
   buildJaDailyVocabQuestions,
   isJaDailyReadingTrivial,
@@ -624,6 +625,11 @@ function report() {
   const sh = buildJaDailyShadowItems([{ ja: "山へ行きます。", ko: "산에 갑니다." }, { ja: " ", ko: "빈 문장" }, { ja: "川です。", ko: "" }], 2);
   add(A, "따라 말하기 — 문장마다 한국어 1번 → 일본어 N번(일본어 뒤에만 틈) · 빈 문장 건너뜀 · 한국어 없으면 일본어만", sh.map((x) => `${x.lang}:${x.line}:${x.pauseAfterMs ? "p" : "-"}`).join(",") === "ko-KR:0:-,ja-JP:0:p,ja-JP:0:p,ja-JP:2:p,ja-JP:2:p");
   add(A, "따라 말하기 — from부터 · 반복 1~5로 자른다 · 일본어 조각은 trim만(캐시 키 = 🔊 단발과 같은 글)", buildJaDailyShadowItems([{ ja: "a", ko: "가" }, { ja: " 川です。 ", ko: "강" }], 9, 1).filter((x) => x.lang === "ja-JP").length === 5 && buildJaDailyShadowItems([{ ja: " 川です。 ", ko: "강" }], 1)[1].text === "川です。");
+  const sp = (s: string) => [...s].map((c) => ({ speaker: c === "-" ? null : c }));
+  const g16 = jaDailyLineGroups("renshu1", sp("ABBAABBAABBAABBA"));
+  add(A, "회화 연습 번호 묶음 — 4로 나뉘고 화자 순서가 네 번 같으면 例·1番·2番·3番 4등분", JSON.stringify(g16) === JSON.stringify([{ label: "例", start: 0, end: 4 }, { label: "1番", start: 4, end: 8 }, { label: "2番", start: 8, end: 12 }, { label: "3番", start: 12, end: 16 }]) && jaDailyLineGroups("renshu2", sp("ABABBABABBABABBABABB"))?.[3].start === 15);
+  add(A, "회화 연습 번호 묶음 — 회화·소리 칸 · 4로 안 나뉨 · 화자 순서가 어긋남 · 8문장 미만 · 화자 정보 없음/한 사람 · 첫 묶음만 어긋남은 null(한 덩어리)", jaDailyLineGroups("kaiwa1", sp("ABBAABBAABBAABBA")) === null && jaDailyLineGroups("sound", sp("--------")) === null && jaDailyLineGroups("renshu1", sp("ABABABABABAB-")) === null && jaDailyLineGroups("renshu1", sp("ABBAABBAABBAABAB")) === null && jaDailyLineGroups("renshu1", sp("ABAB")) === null && jaDailyLineGroups("renshu1", sp("--------")) === null && jaDailyLineGroups("renshu1", sp("AAAAAAAAAAAA")) === null && jaDailyLineGroups("renshu1", sp("ABAABBABABABABAB")) === null);
+  add(A, "회화 칸이 번호 묶음 머리를 그린다(jaDailyLineGroups · testid ja-daily-line-group)", /jaDailyLineGroups\(t\.part, t\.lines\)/.test(codeOnly("../components/ja-daily-kaiwa.tsx")) && /data-testid="ja-daily-line-group"/.test(src("../components/ja-daily-kaiwa.tsx")));
   add(A, "틈 길이 1.5~8초 · 길수록 길다", jaDailyShadowPauseMs("あ") === 1500 && jaDailyShadowPauseMs("あ".repeat(100)) === 8000 && jaDailyShadowPauseMs("あいうえおかきくけこ") > jaDailyShadowPauseMs("あいう"));
   add(A, "밑줄 [[ ]] 쪼개기 · 떼기", JSON.stringify(splitJaDailyUnderline("わたしは[[毎朝]]行く")) === JSON.stringify([{ text: "わたしは", underline: false }, { text: "毎朝", underline: true }, { text: "行く", underline: false }]) && stripJaDailyUnderline("[[山]]と[[川]]") === "山と川");
   add(A, "칸 이름 — 시험 칸 여덟 종류 전부 · 단어 셋", ["tip", "litems", "mockItems", "mockSection", "mockScore", "mockReview", "weakItems", "final"].every((t) => jaDailyExamLabel({ type: t, round: 2, itemIds: [], sections: ["moji"], tipId: "x" } as never).length > 0) && jaDailyVocabLabel({ type: "cards", day: 3, from: 1, to: 13 }) === "단어 DAY 3 (1~13)");

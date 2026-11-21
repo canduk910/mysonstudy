@@ -162,6 +162,33 @@ export function buildJaDailyShadowItems(lines: readonly Pick<JaDailyLine, "ja" |
 }
 
 // ---------------------------------------------------------------------------
+// 회화 연습 번호 묶음(例 · 1番 · 2番 · 3番)
+// ---------------------------------------------------------------------------
+
+export interface JaDailyLineGroup {
+  /** 화면 머리 — "例" · "1番" · "2番" · "3番" */
+  label: string;
+  /** 0부터, end는 포함하지 않음 */
+  start: number;
+  end: number;
+}
+
+/**
+ * 교재 회화 연습(renshu)은 원음이 「例 → 1番 → 2番 → 3番」 네 묶음으로 읽힌다(대본에 표시가 남은 트랙은 모두 그렇고 묶음 크기가 같다).
+ * 반입 파일에는 번호가 없으므로 **문장 수가 4로 나뉘고(8 이상) 화자가 둘 이상이며 화자 순서가 네 묶음 모두 같을 때만** 4등분한다 — 아니면 null(한 덩어리 그대로).
+ */
+export function jaDailyLineGroups(part: JaDailyTrackPart, lines: readonly Pick<JaDailyLine, "speaker">[]): JaDailyLineGroup[] | null {
+  if (part !== "renshu1" && part !== "renshu2") return null;
+  const n = lines.length;
+  if (n < 8 || n % 4 !== 0) return null;
+  const size = n / 4;
+  // 화자가 둘 이상(null 제외)일 때만 — 화자 정보가 없으면 반복 순서를 근거로 삼을 수 없다
+  if (new Set(lines.map((l) => l.speaker).filter((x): x is string => !!x)).size < 2) return null;
+  for (let i = size; i < n; i++) if ((lines[i].speaker ?? "") !== (lines[i % size].speaker ?? "")) return null;
+  return ["例", "1番", "2番", "3番"].map((label, g) => ({ label, start: g * size, end: (g + 1) * size }));
+}
+
+// ---------------------------------------------------------------------------
 // 밑줄 [[ ]]
 // ---------------------------------------------------------------------------
 

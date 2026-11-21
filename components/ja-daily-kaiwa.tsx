@@ -18,7 +18,7 @@ import { JaDailyAudio, pauseAllMedia } from "@/components/ja-daily-media";
 import { JaDailyShadowControls, JaDailyShadowRepeatSelect, useJaDailyShadow, useJaDailyShadowRepeat, type JaDailyShadowTarget } from "@/components/use-ja-daily-shadow";
 import type { JaDailyKaiwaCheck, JaDailyKaiwaView } from "@/lib/ja-daily-contract";
 import type { JaDailyTrack } from "@/lib/ja-daily-content";
-import { JA_DAILY_PART_KO } from "@/lib/ja-daily-quiz";
+import { JA_DAILY_PART_KO, jaDailyLineGroups } from "@/lib/ja-daily-quiz";
 import { speak } from "@/lib/speech";
 
 type Unit = Extract<JaDailyKaiwaView, { type: "unit" }>;
@@ -39,6 +39,16 @@ export default function JaDailyKaiwa({ view, urls, onDone }: { view: Unit; urls:
     return view.keyLineIds.map((id) => all.find((l) => l.id === id)).filter((l): l is NonNullable<typeof l> => l !== undefined);
   }, [view]);
   const keySet = useMemo(() => new Set(view.keyLineIds), [view.keyLineIds]);
+  /** 회화 연습 트랙의 번호 묶음 머리(例·1番…) — 묶음이 시작하는 문장 index → 이름 */
+  const groupStarts = useMemo(() => {
+    const m = new Map<string, Map<number, string>>();
+    for (const t of view.tracks) {
+      const g = jaDailyLineGroups(t.part, t.lines);
+      if (g) m.set(t.audioKey, new Map(g.map((x) => [x.start, x.label])));
+    }
+    return m;
+  }, [view.tracks]);
+  const groupAt = (t: JaDailyTrack, i: number) => groupStarts.get(t.audioKey)?.get(i) ?? null;
 
   return (
     <div className="flex flex-col gap-4">
@@ -85,6 +95,12 @@ export default function JaDailyKaiwa({ view, urls, onDone }: { view: Unit; urls:
                 <ol className="mt-3 flex flex-col gap-2">
                   {t.lines.map((l, i) => (
                     <li key={l.id}>
+                      {groupAt(t, i) ? (
+                        <p lang="ja" className={`t-caption font-semibold text-accent-ink ${i > 0 ? "mt-3" : ""}`} data-testid="ja-daily-line-group">
+                          {groupAt(t, i)}
+                          {groupAt(t, i) === "例" ? <span lang="ko"> · 예시</span> : null}
+                        </p>
+                      ) : null}
                       <button
                         type="button"
                         className={`w-full rounded-[var(--radius-box)] border px-3 py-2 text-left ${active && active.line === i ? "border-accent bg-accent-soft" : "border-line bg-surface"}`}
