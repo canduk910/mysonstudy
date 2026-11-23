@@ -22,7 +22,7 @@ import { JaDailyShadowControls, JaDailyShadowRepeatSelect, useJaDailyShadow, use
 import { usePhraseHelperBlock } from "@/components/use-phrase-helper-block";
 import type { JaDailyExamView, JaDailyMockItemView, JaDailyMockScore } from "@/lib/ja-daily-contract";
 import type { JaDailyListeningItem, JaDailyTipDrill } from "@/lib/ja-daily-content";
-import { JA_DAILY_SECTION_KO, splitJaDailyUnderline, stripJaDailyUnderline } from "@/lib/ja-daily-quiz";
+import { JA_DAILY_SECTION_KO, flattenJaDailyTipDrills, splitJaDailyUnderline, stripJaDailyUnderline } from "@/lib/ja-daily-quiz";
 import { speak } from "@/lib/speech";
 
 export type JaDailyExamAnswer = { itemId: string; choice: number | null; correct: boolean | null };
@@ -427,15 +427,7 @@ type Shadow = ReturnType<typeof useJaDailyShadow>;
 /** 📜 원음 대본 — 회화 트랙과 같은 학습 형태. 따라 말하기는 번호 묶음을 넘어 전체 문장을 순서대로 */
 function TipDrills({ drills, titleKo, sh, repeat, setRepeat }: { drills: readonly JaDailyTipDrill[]; titleKo: string; sh: Shadow; repeat: number; setRepeat: (v: number) => void }) {
   const [showKo, setShowKo] = useState(true);
-  const { lines, offsets } = useMemo(() => {
-    const offs: number[] = [];
-    let n = 0;
-    for (const d of drills) {
-      offs.push(n);
-      n += d.items.length;
-    }
-    return { lines: drills.flatMap((d) => d.items.map((it) => ({ ja: it.ja, ko: it.ko }))), offsets: offs };
-  }, [drills]);
+  const { lines, offsets } = useMemo(() => flattenJaDailyTipDrills(drills), [drills]);
   const target = { key: DRILLS_KEY, lines, artist: `청해 요령 · ${titleKo}` };
   const active = sh.shadow?.key === DRILLS_KEY ? sh.shadow : null;
   return (

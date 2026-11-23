@@ -48,6 +48,7 @@ import {
   JA_DAILY_VOCAB_CHOICES,
   buildJaDailyShadowItems,
   jaDailyLineGroups,
+  flattenJaDailyTipDrills,
   buildJaDailyVocabQuestion,
   buildJaDailyVocabQuestions,
   isJaDailyReadingTrivial,
@@ -643,6 +644,14 @@ function report() {
   const kw = codeOnly("../components/ja-daily-kaiwa.tsx");
   const shd = codeOnly("../components/use-ja-daily-shadow.tsx");
   add(A, "따라 말하기는 한 곳(use-ja-daily-shadow) — 회화·요령 대본이 같이 쓰고 각자 큐를 만들지 않는다", /useJaDailyShadow\(repeat\)/.test(kw) && /useJaDailyShadow\(repeat\)/.test(ex) && !/speakQueue|bindMediaSession/.test(kw) && !/speakQueue|bindMediaSession/.test(codeOnly("../components/ja-daily-exam.tsx")) && /buildJaDailyShadowItems\(target\.lines, repeat, from\)/.test(shd) && /pauseAllMedia\(\);\s*unlockSpeechPlayback\(\);/.test(shd));
+  const it = (ja: string) => ({ ja, tokens: [{ surface: ja, reading: null }], ko: `뜻${ja}` });
+  const fl = flattenJaDailyTipDrills([{ items: [it("あ"), it("い")] }, { items: [it("う")] }, { items: [it("え"), it("お"), it("か")] }]);
+  add(A, "요령 대본 평탄화 — 묶음을 넘어 전체 순서 · offsets = 묶음 첫 문장의 전체 index(강조와 큐 line이 같은 기준)", fl.lines.map((x) => x.ja).join("") === "あいうえおか" && JSON.stringify(fl.offsets) === "[0,2,3]" && fl.lines[5].ko === "뜻か" && flattenJaDailyTipDrills([]).lines.length === 0);
+  const exc = codeOnly("../components/ja-daily-exam.tsx");
+  add(A, "요령 대본 화면이 평탄화 함수를 쓰고 강조 index = offsets[di] + i", /flattenJaDailyTipDrills\(drills\)/.test(exc) && /const idx = offsets\[di\] \+ i;/.test(exc) && /active\.line === idx/.test(exc));
+  add(A, "문장 탭(회화·요령 대본) — 따라 말하기 중이면 멈추고 바인딩을 푼 뒤 원음 정지 → 그 문장 발음", /if \(shadowRef\.current\) stopShadow\(true\);\s*pauseAllMedia\(\);\s*speak\(l\.ja, "ja-JP"\)/.test(kw) && /if \(sh\.shadowRef\.current\) sh\.stopShadow\(true\);\s*pauseAllMedia\(\);\s*speak\(it\.ja, "ja-JP"\)/.test(exc));
+  add(A, "칸을 떠나면(언마운트) 큐를 멈추고 잠금 화면 바인딩을 푼다", /useEffect\(\s*\(\) => \(\) => \{\s*runRef\.current \+= 1;\s*stopRef\.current\?\.\(\);\s*stopRef\.current = null;\s*unbindRef\.current\?\.\(\);\s*unbindRef\.current = null;\s*\},\s*\[\],?\s*\)/.test(shd));
+  add(A, "잠금 화면 ⏸/▶ 가드 — ⏸는 재생 중일 때만, ▶는 멈춘 따라 말하기가 있을 때만(끝난 뒤·재생 중 ▶는 무시)", /pause: \(\) => \{\s*if \(shadowRef\.current\?\.state !== "playing"\) return;/.test(shd) && /play: \(\) => \{\s*const s = shadowRef\.current;\s*if \(!s \|\| s\.state === "playing"\) return;/.test(shd));
   add(A, "잠금 화면 ▶(이어 듣기)도 원음 <audio>를 먼저 멈춘다 — 원음과 따라 말하기가 겹치지 않는다", /play: \(\) => \{[\s\S]{0,200}?state === "playing"\) return;\s*pauseAllMedia\(\);\s*playFrom\(target, s\.line\)/.test(shd));
   add(A, "요령 원음 대본은 접지 않은 독립 카드(📜 원음 대본) · \"다음\"에서 따라 말하기를 멈추고 바인딩을 푼다", /data-testid="ja-daily-tip-drills"/.test(ex) && !/<details[^>]*ja-daily-tip-drills/.test(ex) && /sh\.stopShadow\(true\);\s*pauseAllMedia\(\);\s*onDone\(answers\)/.test(ex));
   add(A, "따라 말하기 마운트만으로 합성을 미리 받지 않는다(prefetch 없음)", !/prefetchSpeech/.test(shd + kw + codeOnly("../components/ja-daily-exam.tsx")));

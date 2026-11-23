@@ -10,7 +10,7 @@
  *
  * 일본어 조각은 trim만 한다 — 🔊 단발·큐가 같은 문자열을 써야 발음 캐시를 같이 쓴다(app-patterns §8 "낭독 대본").
  */
-import type { JaDailyLine, JaDailyTrackPart, JaDailyWord, JaDailyMockSectionName } from "./ja-daily-content";
+import type { JaDailyLine, JaDailyTipDrill, JaDailyTrackPart, JaDailyWord, JaDailyMockSectionName } from "./ja-daily-content";
 import type { JaDailyContentIndex, JaDailyExamSlot, JaDailyKaiwaSlot, JaDailySession, JaDailyVocabSlot } from "./ja-daily-plan";
 
 // ---------------------------------------------------------------------------
@@ -159,6 +159,20 @@ export function buildJaDailyShadowItems(lines: readonly Pick<JaDailyLine, "ja" |
     for (let k = 0; k < n; k++) out.push({ text: ja, lang: "ja-JP", pauseAfterMs: jaDailyShadowPauseMs(ja), line: i });
   }
   return out;
+}
+
+/**
+ * 청해 요령 원음 대본 → 따라 말하기 한 줄 목록. 번호 묶음을 넘어 전체 문장 순서로 잇고,
+ * offsets[di] = di번째 묶음 첫 문장의 전체 index(화면 강조 = offsets[di] + i — 큐의 line과 같은 기준).
+ */
+export function flattenJaDailyTipDrills(drills: readonly Pick<JaDailyTipDrill, "items">[]): { lines: { ja: string; ko: string }[]; offsets: number[] } {
+  const lines: { ja: string; ko: string }[] = [];
+  const offsets: number[] = [];
+  for (const d of drills) {
+    offsets.push(lines.length);
+    for (const it of d.items) lines.push({ ja: it.ja, ko: it.ko });
+  }
+  return { lines, offsets };
 }
 
 // ---------------------------------------------------------------------------
