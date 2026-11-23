@@ -459,7 +459,7 @@ function TipDrills({ drills, titleKo, sh, repeat, setRepeat }: { drills: readonl
               {d.items.map((it, i) => {
                 const idx = offsets[di] + i;
                 return (
-                  <li key={i}>
+                  <li key={`${d.no}-${i}`}>
                     <button
                       type="button"
                       className={`w-full rounded-[var(--radius-box)] border px-3 py-2 text-left ${active && active.line === idx ? "border-accent bg-accent-soft" : "border-line bg-surface"}`}

@@ -44,3 +44,4 @@
 | 2026-11-21 | 오늘의 일본어 회화 연습 트랙을 원음처럼 「例 · 1番 · 2番 · 3番」 머리로 나눠 보임 — 반입 파일에 번호가 없어 순수 함수 `jaDailyLineGroups`가 문장 수 4의 배수·화자 순서 네 번 같음일 때만 4등분(실데이터 연습 트랙 60/60), eval 점검 3개 | lib/ja-daily-quiz.ts · components/ja-daily-kaiwa.tsx · scripts/eval-ja-daily.ts · docs/SPEC.md §27-3 · docs/harness/japanese.md §16 | 아빠 요청 — Day 7 회화 연습이 한 덩어리로 보이는데 녹음은 이치방·니방·산방으로 나뉨 |
 | 2026-11-23 | 오늘의 일본어 따라 말하기 — 잠금 화면 ▶(이어 듣기)도 원음 `<audio>`를 먼저 멈춘다(원음 재생 중 잠금 화면 ▶로 둘이 겹치던 것 — 회화·요령 대본 공통), eval 점검 1개 | components/use-ja-daily-shadow.tsx · scripts/eval-ja-daily.ts | 청해 대본 QA P3-1 |
 | 2026-11-23 | 오늘의 일본어 eval 보강 — 요령 대본 평탄화를 순수 함수 `flattenJaDailyTipDrills`로 뽑아 검증, 배선 점검 4개(강조 index offsets, 문장 탭 따라 말하기 정지, 언마운트 정리, 잠금 화면 ⏸/▶ 가드) — 변이 7종 모두 FAIL 확인 | lib/ja-daily-quiz.ts · components/ja-daily-exam.tsx · scripts/eval-ja-daily.ts | 청해 대본 QA P3-2 |
+| 2026-11-23 | 오늘의 일본어 요령 원음 대본 문장 목록 key를 번호 포함(`${d.no}-${i}`)으로 — 동작 무변경 | components/ja-daily-exam.tsx | 청해 대본 QA P3-3 |
