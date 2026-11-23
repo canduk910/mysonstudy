@@ -643,6 +643,7 @@ function report() {
   const kw = codeOnly("../components/ja-daily-kaiwa.tsx");
   const shd = codeOnly("../components/use-ja-daily-shadow.tsx");
   add(A, "따라 말하기는 한 곳(use-ja-daily-shadow) — 회화·요령 대본이 같이 쓰고 각자 큐를 만들지 않는다", /useJaDailyShadow\(repeat\)/.test(kw) && /useJaDailyShadow\(repeat\)/.test(ex) && !/speakQueue|bindMediaSession/.test(kw) && !/speakQueue|bindMediaSession/.test(codeOnly("../components/ja-daily-exam.tsx")) && /buildJaDailyShadowItems\(target\.lines, repeat, from\)/.test(shd) && /pauseAllMedia\(\);\s*unlockSpeechPlayback\(\);/.test(shd));
+  add(A, "잠금 화면 ▶(이어 듣기)도 원음 <audio>를 먼저 멈춘다 — 원음과 따라 말하기가 겹치지 않는다", /play: \(\) => \{[\s\S]{0,200}?state === "playing"\) return;\s*pauseAllMedia\(\);\s*playFrom\(target, s\.line\)/.test(shd));
   add(A, "요령 원음 대본은 접지 않은 독립 카드(📜 원음 대본) · \"다음\"에서 따라 말하기를 멈추고 바인딩을 푼다", /data-testid="ja-daily-tip-drills"/.test(ex) && !/<details[^>]*ja-daily-tip-drills/.test(ex) && /sh\.stopShadow\(true\);\s*pauseAllMedia\(\);\s*onDone\(answers\)/.test(ex));
   add(A, "따라 말하기 마운트만으로 합성을 미리 받지 않는다(prefetch 없음)", !/prefetchSpeech/.test(shd + kw + codeOnly("../components/ja-daily-exam.tsx")));
   const lc = codeOnly("../components/ja-daily-line-check.tsx");

@@ -141,6 +141,8 @@ export function useJaDailyShadow(repeat: number) {
         play: () => {
           const s = shadowRef.current;
           if (!s || s.state === "playing") return;
+          // 원음 <audio>가 그사이 재생 중이면 겹치지 않게 먼저 멈춘다(화면 ▶와 같은 규칙)
+          pauseAllMedia();
           playFrom(target, s.line);
         },
       },
