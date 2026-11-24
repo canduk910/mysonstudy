@@ -19,6 +19,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFileSync, readdirSync, statSync } from "node:fs";
+import { collectStrictSchemas } from "./provider-schemas";
 import { join, relative } from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
@@ -31,6 +32,7 @@ import {
   resolveAiFallbackEnabled,
   resolveAiProvider,
   resolveAnthropicModel,
+  resolveAnthropicVerifyModel,
   resolveProviderPlan,
 } from "../lib/ai/provider";
 import {
@@ -43,8 +45,13 @@ import {
   interpretClaudeResponse,
   sanitizeSchemaForClaude,
   toClaudeUserContent,
+  validateClaudeSchema,
+  CLAUDE_MIN_MAX_TOKENS,
+  CLAUDE_MAX_IMAGE_BASE64_CHARS,
+  CLAUDE_MAX_TOTAL_IMAGE_BASE64_CHARS,
 } from "../lib/ai/provider-anthropic";
-import { AiRefusalError, AiValidationError, decideFallback } from "../lib/ai/provider-errors";
+import { AiRefusalError, AiValidationError, attachPrimaryError, decideFallback, summarizeProviderError } from "../lib/ai/provider-errors";
+import { resolveAnthropicToeicModel } from "../lib/ai/toeic/model";
 
 interface CheckResult {
   book: string;
@@ -54,6 +61,16 @@ interface CheckResult {
 }
 const results: CheckResult[] = [];
 const add = (book: string, check: string, pass: boolean, detail = "") => results.push({ book, check, pass, detail });
+/** 점검 본문이 던져도 FAIL 행으로 남긴다(변이에서 eval이 예외로 죽지 않게 — QA P3-2) */
+const addSafe = (book: string, check: string, fn: () => boolean | [boolean, string]) => {
+  try {
+    const r = fn();
+    if (Array.isArray(r)) add(book, check, r[0], r[1]);
+    else add(book, check, r);
+  } catch (e) {
+    add(book, check, false, `예외: ${e instanceof Error ? e.message : String(e)}`);
+  }
+};
 const ROOT = new URL("..", import.meta.url).pathname;
 const read = (rel: string) => readFileSync(join(ROOT, rel), "utf-8");
 const stripComments = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
@@ -102,32 +119,16 @@ function runSchemaChecks(): void {
   add(B, "뗀 자리 목록(removed)이 경로와 함께 남는다", removed.includes("$.name:minLength") && removed.includes("$.nested.deep.x:exclusiveMinimum") && removed.includes("$.choice:oneOf→anyOf"), `${removed.length}곳`);
 }
 
-/** 저장소의 모든 strict 스키마 상수(이름·strict·schema 모양)를 모아 정리해도 아무것도 떼지 않는지 — 스펙 스키마가 이미 Claude 호환 */
+/** 저장소의 모든 strict 스키마 상수를 모아 — ① 정리해도 떼는 키 0(스펙 원문이 이미 호환) ② 정리 결과가 Claude 구조화 출력 제약을 만족(QA 후속 8) */
 async function runRepoSchemaChecks(): Promise<void> {
   const B = "스키마 정리";
-  const files: string[] = [];
-  const walk = (dir: string) => {
-    for (const name of readdirSync(dir)) {
-      const p = join(dir, name);
-      if (statSync(p).isDirectory()) walk(p);
-      else if (/\.ts$/.test(name) && /JSON_SCHEMA/.test(readFileSync(p, "utf-8"))) files.push(p);
-    }
-  };
-  walk(join(ROOT, "lib/ai"));
-  const found: { where: string; schema: Record<string, unknown> }[] = [];
-  const isStrict = (v: unknown): v is { name: string; strict: true; schema: Record<string, unknown> } =>
-    typeof v === "object" && v !== null && (v as any).strict === true && typeof (v as any).name === "string" && typeof (v as any).schema === "object";
-  for (const f of files) {
-    if (/calls\.ts$|client\.ts$/.test(f)) continue; // 진입 함수 모듈은 스키마를 import만 한다(서버 클라이언트 생성 회피)
-    const mod = (await import(f)) as Record<string, unknown>;
-    for (const [k, v] of Object.entries(mod)) {
-      if (isStrict(v)) found.push({ where: `${relative(ROOT, f)}:${k}`, schema: v.schema });
-      else if (typeof v === "object" && v !== null && !Array.isArray(v)) {
-        for (const [k2, v2] of Object.entries(v)) if (isStrict(v2)) found.push({ where: `${relative(ROOT, f)}:${k}.${k2}`, schema: v2.schema });
-      }
-    }
+  let unique: Awaited<ReturnType<typeof collectStrictSchemas>> = [];
+  try {
+    unique = await collectStrictSchemas();
+  } catch (e) {
+    add(B, "저장소 strict 스키마 수집", false, e instanceof Error ? e.message : String(e));
+    return;
   }
-  const unique = [...new Map(found.map((x) => [x.schema, x])).values()];
   const lossy = unique
     .map((x) => ({ where: x.where, removed: sanitizeSchemaForClaude(x.schema).removed }))
     .filter((x) => x.removed.length > 0);
@@ -137,6 +138,34 @@ async function runRepoSchemaChecks(): Promise<void> {
     unique.length >= 30 && lossy.length === 0,
     `${unique.length}개 스키마 · ${lossy.map((x) => `${x.where}(${x.removed.join(",")})`).join(" / ") || "제거 0"}`,
   );
+  const violating = unique
+    .map((x) => ({ where: x.where, issues: validateClaudeSchema(sanitizeSchemaForClaude(x.schema).schema) }))
+    .filter((x) => x.issues.length > 0);
+  add(
+    B,
+    "저장소 strict 스키마 전부: 정리 뒤 Claude 구조화 출력 제약 만족(지원 안 하는 키 0 · 모든 객체 additionalProperties:false · 재귀 없음 · 노드마다 type/enum/anyOf/$ref)",
+    unique.length >= 30 && violating.length === 0,
+    violating.map((x) => `${x.where}: ${x.issues.slice(0, 3).join("; ")}`).join(" / ") || `${unique.length}개 통과`,
+  );
+  const names = unique.map((x) => x.name);
+  add(B, "스키마 이름 중복 없음(스모크 게이트 보고서가 이름으로 갈린다)", new Set(names).size === names.length, names.filter((n, i) => names.indexOf(n) !== i).join(", ") || "ok");
+}
+
+/** validateClaudeSchema 반례 — 점검기가 실제로 거부하는지 */
+function runClaudeSchemaValidatorChecks(): void {
+  const B = "스키마 정리";
+  const okSchema = { type: "object", properties: { a: { type: ["string", "null"] }, b: { $ref: "#/$defs/B" } }, required: ["a", "b"], additionalProperties: false, $defs: { B: { type: "object", properties: { c: { type: "integer" } }, required: ["c"], additionalProperties: false } } };
+  const rows: Array<[string, Record<string, unknown>, boolean]> = [
+    ["정상(타입 배열·비재귀 $defs)", okSchema, true],
+    ["객체에 additionalProperties 없음", { type: "object", properties: { a: { type: "object", properties: {} } }, additionalProperties: false }, false],
+    ["지원 안 하는 키(maxLength)", { type: "object", properties: { a: { type: "string", maxLength: 3 } }, additionalProperties: false }, false],
+    ["루트 자기 참조 $ref \"#\"", { type: "object", properties: { a: { $ref: "#" } }, additionalProperties: false }, false],
+    ["$defs 순환(A → B → A)", { type: "object", properties: { a: { $ref: "#/$defs/A" } }, additionalProperties: false, $defs: { A: { type: "object", properties: { b: { $ref: "#/$defs/B" } }, additionalProperties: false }, B: { type: "object", properties: { a: { $ref: "#/$defs/A" } }, additionalProperties: false } } }, false],
+    ["type 없는 노드", { type: "object", properties: { a: { description: "x" } }, additionalProperties: false }, false],
+    ["minItems 2", { type: "object", properties: { a: { type: "array", items: { type: "string" }, minItems: 2 } }, additionalProperties: false }, false],
+  ];
+  const bad = rows.filter(([, sch, wantOk]) => (validateClaudeSchema(sch).length === 0) !== wantOk).map(([l]) => l);
+  add(B, `validateClaudeSchema 반례 ${rows.length}행 — 위반을 실제로 잡는다`, bad.length === 0, bad.join(" / ") || "ok");
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +187,7 @@ function runAdapterChecks(): void {
         { type: "text", text: "읽어 줘" },
       ]),
   );
-  add(B, "media_type: image/jpg → image/jpeg, png 유지", dataUrlToClaudeImageSource("data:image/jpg;base64,QQ==").media_type === "image/jpeg" && dataUrlToClaudeImageSource("data:image/png;base64,QQ==").media_type === "image/png");
+  addSafe(B, "media_type: image/jpg → image/jpeg, png 유지", () => dataUrlToClaudeImageSource("data:image/jpg;base64,QQ==").media_type === "image/jpeg" && dataUrlToClaudeImageSource("data:image/png;base64,QQ==").media_type === "image/png");
   const throwsInput = (f: () => unknown) => {
     try {
       f();
@@ -167,12 +196,24 @@ function runAdapterChecks(): void {
       return e instanceof ClaudeInputError;
     }
   };
-  add(B, "Claude가 받지 않는 형식(heic)·data URL 아님 → ClaudeInputError(백업 대상)", throwsInput(() => dataUrlToClaudeImageSource("data:image/heic;base64,QQ==")) && throwsInput(() => dataUrlToClaudeImageSource("https://x/y.png")) && decideFallback(new ClaudeInputError("x")).fallback);
+  addSafe(B, "Claude가 받지 않는 형식(heic)·data URL 아님 → ClaudeInputError(백업 대상)", () => throwsInput(() => dataUrlToClaudeImageSource("data:image/heic;base64,QQ==")) && throwsInput(() => dataUrlToClaudeImageSource("https://x/y.png")) && decideFallback(new ClaudeInputError("x")).fallback);
+  addSafe(B, `이미지 크기: 장당 ${CLAUDE_MAX_IMAGE_BASE64_CHARS}자(5MB) 초과 → 요청 전 ClaudeInputError(백업 대상), 한도 안은 통과`, () => {
+    const big = "data:image/jpeg;base64," + "A".repeat(CLAUDE_MAX_IMAGE_BASE64_CHARS + 4);
+    const edge = "data:image/jpeg;base64," + "A".repeat(CLAUDE_MAX_IMAGE_BASE64_CHARS);
+    return CLAUDE_MAX_IMAGE_BASE64_CHARS === 5 * 1024 * 1024 && throwsInput(() => dataUrlToClaudeImageSource(big)) && dataUrlToClaudeImageSource(edge).data.length === CLAUDE_MAX_IMAGE_BASE64_CHARS;
+  });
+  addSafe(B, `이미지 합계: 요청당 ${CLAUDE_MAX_TOTAL_IMAGE_BASE64_CHARS}자 초과 → ClaudeInputError(장마다 한도 안이어도)`, () => {
+    const four = "data:image/jpeg;base64," + "A".repeat(4 * 1024 * 1024);
+    const parts = Array.from({ length: 8 }, () => ({ type: "input_image" as const, image_url: four }));
+    return throwsInput(() => toClaudeUserContent(parts)) && toClaudeUserContent(parts.slice(0, 7)).length === 7;
+  });
 
   const schema = { type: "object", properties: { a: { type: "string", minLength: 1 } }, required: ["a"], additionalProperties: false };
   const req = buildClaudeRequest({ model: "claude-x", system: "SYS", user: [{ type: "input_text", text: "U" }], schema, maxOutputTokens: 1234, effort: "low" }) as any;
   add(B, "요청: temperature·thinking·top_p 없음(claude-opus-5-5는 temperature 400, thinking 끄기 불가)", !("temperature" in req) && !("thinking" in req) && !("top_p" in req));
-  add(B, "요청: max_tokens = maxOutputTokens, system 문자열, model 그대로", req.max_tokens === 1234 && req.system === "SYS" && req.model === "claude-x");
+  add(B, `요청: max_tokens = max(maxOutputTokens, ${CLAUDE_MIN_MAX_TOKENS}) — thinking이 한도를 함께 써서 짧은 호출이 잘리지 않게, system·model 그대로`, CLAUDE_MIN_MAX_TOKENS === 8_000 && req.max_tokens === 8_000 && req.system === "SYS" && req.model === "claude-x");
+  const bigReq = buildClaudeRequest({ model: "m", system: "S", user: [{ type: "input_text", text: "U" }], schema, maxOutputTokens: 16_000, effort: "low" }) as any;
+  add(B, "요청: 하한보다 큰 maxOutputTokens(16,000)는 그대로", bigReq.max_tokens === 16_000);
   add(B, "요청: output_config = { effort, format: json_schema(정리된 사본) }", req.output_config.effort === "low" && req.output_config.format.type === "json_schema" && !("minLength" in req.output_config.format.schema.properties.a));
   add(B, `요청: 서버 측 거절 폴백 beta(${CLAUDE_SERVER_FALLBACK_BETA}) + fallbacks "default"`, JSON.stringify(req.betas) === JSON.stringify([CLAUDE_SERVER_FALLBACK_BETA]) && req.fallbacks === "default");
   add(B, "요청: 첫 요청은 user 한 턴", req.messages.length === 1 && req.messages[0].role === "user");
@@ -238,6 +279,30 @@ function runSelectionChecks(): void {
   const keyBad = keyRows.filter(([env, want]) => hasLlmKey(env) !== want).map(([env]) => JSON.stringify(env));
   add(B, "hasLlmKey: 실제로 부를 공급자의 키가 있을 때만 참(백업 off면 메인 키만)", keyBad.length === 0, keyBad.join(" / ") || "ok");
   add(B, "providerHasKey: 공급자별 env 키", providerHasKey("openai", O) && !providerHasKey("anthropic", O) && providerHasKey("anthropic", A));
+  add(
+    B,
+    "Claude 호출별 모델: ANTHROPIC_MODEL_VERIFY(검산) → 비면 ANTHROPIC_MODEL → 비면 claude-opus-5-5",
+    resolveAnthropicVerifyModel({}) === "claude-opus-5-5" && resolveAnthropicVerifyModel({ ANTHROPIC_MODEL: "claude-a" }) === "claude-a" && resolveAnthropicVerifyModel({ ANTHROPIC_MODEL: "claude-a", ANTHROPIC_MODEL_VERIFY: " claude-v " }) === "claude-v" && resolveAnthropicVerifyModel({ ANTHROPIC_MODEL_VERIFY: "  " }) === "claude-opus-5-5",
+  );
+  {
+    const saved = { t: process.env.ANTHROPIC_TOEIC_MODEL, m: process.env.ANTHROPIC_MODEL };
+    const got: string[] = [];
+    try {
+      for (const [t, m] of [[undefined, undefined], ["", " claude-a "], [" claude-t ", "claude-a"]] as const) {
+        if (t === undefined) delete process.env.ANTHROPIC_TOEIC_MODEL;
+        else process.env.ANTHROPIC_TOEIC_MODEL = t;
+        if (m === undefined) delete process.env.ANTHROPIC_MODEL;
+        else process.env.ANTHROPIC_MODEL = m;
+        got.push(resolveAnthropicToeicModel());
+      }
+    } finally {
+      for (const [k, v] of [["ANTHROPIC_TOEIC_MODEL", saved.t], ["ANTHROPIC_MODEL", saved.m]] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+    add(B, "Claude 호출별 모델: ANTHROPIC_TOEIC_MODEL(토익 출제·채점) → 비면 ANTHROPIC_MODEL → 비면 claude-opus-5-5", got.join("|") === "claude-opus-5-5|claude-a|claude-t", got.join("|"));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +323,9 @@ function runFallbackDecisionChecks(): void {
     ["Anthropic 401", new Anthropic.AuthenticationError(401, undefined, "auth", h), false],
     ["Anthropic 403", new Anthropic.PermissionDeniedError(403, undefined, "perm", h), false],
     ["Anthropic 404", new Anthropic.NotFoundError(404, undefined, "nf", h), false],
+    ["Anthropic 413(요청 크기 한도 — 다른 공급자는 받을 수 있다)", new Anthropic.ContentTooLargeError(413, undefined, "big", h), true],
+    ["OpenAI 413", new OpenAI.APIError(413, undefined, "big", h), true],
+    ["OpenAI 422", new OpenAI.UnprocessableEntityError(422, undefined, "u", h), false],
     ["Anthropic 사용자 취소", new Anthropic.APIUserAbortError(), false],
     ["OpenAI 500", new OpenAI.InternalServerError(500, undefined, "boom", h), true],
     ["OpenAI 429", new OpenAI.RateLimitError(429, undefined, "rl", h), true],
@@ -371,7 +439,9 @@ async function runFlowChecks(): Promise<void> {
   };
   console.warn = () => {};
 
-  const { callWithSchema } = await import("../lib/ai/client");
+  const clientMod = await import("../lib/ai/client");
+  const { callWithSchema } = clientMod;
+  clientConsts = { timeout: clientMod.LLM_CLIENT_TIMEOUT_MS, retries: clientMod.LLM_CLIENT_MAX_RETRIES };
   const jsonSchema = { name: "stub_out", strict: true as const, schema: { type: "object", properties: { a: { type: "string" } }, required: ["a"], additionalProperties: false } };
   const zodSchema = z.object({ a: z.string().min(1) });
   const base = { system: "SYS", user: [{ type: "input_text" as const, text: "U" }], jsonSchema, zodSchema, temperature: 0.2, maxOutputTokens: 300 };
@@ -407,17 +477,52 @@ async function runFlowChecks(): Promise<void> {
     const beta = String(hits[0]?.headers["anthropic-beta"] ?? "");
     add(
       B,
-      "anthropic 메인 → Claude 1회, model=ANTHROPIC_MODEL 기본(args.model은 OpenAI용이라 안 씀), temperature 없음, effort·format·max_tokens",
-      (r.out as any)?.a === "y" && count("/anthropic/v1/messages") === 1 && count("/openai") === 0 && cBody.model === "claude-opus-5-5" && !("temperature" in cBody) && !("thinking" in cBody) && cBody.output_config?.effort === "high" && cBody.output_config?.format?.type === "json_schema" && cBody.max_tokens === 300,
+      "anthropic 메인 → Claude 1회, model=ANTHROPIC_MODEL 기본(args.model은 OpenAI용이라 안 씀), temperature 없음, effort·format·max_tokens(300 → 하한 8000)",
+      (r.out as any)?.a === "y" && count("/anthropic/v1/messages") === 1 && count("/openai") === 0 && cBody.model === "claude-opus-5-5" && !("temperature" in cBody) && !("thinking" in cBody) && cBody.output_config?.effort === "high" && cBody.output_config?.format?.type === "json_schema" && cBody.max_tokens === CLAUDE_MIN_MAX_TOKENS,
       JSON.stringify({ model: cBody.model, oc: cBody.output_config?.effort }),
     );
     add(B, "Claude 요청: anthropic-beta 헤더에 서버 측 거절 폴백, 본문 fallbacks \"default\"", beta.includes(CLAUDE_SERVER_FALLBACK_BETA) && cBody.fallbacks === "default", beta);
     add(B, "로그: provider anthropic · 실제 응답 모델(서버 폴백 반영) · 토큰", logs[0]?.provider === "anthropic" && logs[0]?.model === "claude-stub-served" && logs[0]?.inputTokens === 7 && logs[0]?.fallback === null, JSON.stringify(logs[0]));
 
+    // (b2) 호출별 Claude 모델(anthropicModel) — OpenAI 쪽 model은 그대로 무시. 짧은 한도도 Claude 요청에선 하한으로 올라간다
+    r = await run("t-claude-model", { openai: [], anthropic: [claudeMsg('{"a":"m"}')] }, { AI_PROVIDER: "anthropic" }, { anthropicModel: "claude-verify-x", model: "gpt-x", maxOutputTokens: 400 });
+    add(B, "anthropicModel 지정 → Claude 요청 model이 그 값 · maxOutputTokens 400 → max_tokens 8000(하한)", hits[0]?.body?.model === "claude-verify-x" && hits[0]?.body?.max_tokens === CLAUDE_MIN_MAX_TOKENS, JSON.stringify({ m: hits[0]?.body?.model, t: hits[0]?.body?.max_tokens }));
+    r = await run("t-oa-short", { openai: [openaiOk('{"a":"s"}')], anthropic: [] }, { ANTHROPIC_API_KEY: "" }, { maxOutputTokens: 400, anthropicModel: "claude-ignored" });
+    add(B, "OpenAI 요청은 불변: max_output_tokens = maxOutputTokens(400, 하한 없음) · anthropicModel 무시", hits[0]?.body?.max_output_tokens === 400 && hits[0]?.body?.model === "gpt-4.1-mini");
+
     // (c) 529 → SDK 재시도 1회 → 백업 OpenAI
     r = await run("t-529", { openai: [openaiOk('{"a":"z"}')], anthropic: [claudeErr(529, "overloaded_error"), claudeErr(529, "overloaded_error")] }, { AI_PROVIDER: "anthropic" });
     add(B, "Claude 529(재시도 소진) → 백업 OpenAI가 답한다, 로그 fallback {from: anthropic, reason: overloaded}", (r.out as any)?.a === "z" && count("/openai") === 1 && logs[0]?.provider === "openai" && logs[0]?.fallback?.from === "anthropic" && logs[0]?.fallback?.reason === "overloaded", `anthropic ${count("/anthropic")}회 · ${JSON.stringify(logs[0]?.fallback)}`);
-    add(B, "Claude SDK 재시도는 1회(클라이언트 maxRetries 1 → 요청 최대 2회)", count("/anthropic") <= 2, `${count("/anthropic")}회`);
+    add(B, "로그 토큰은 공급자별(합산 금지): 맨 위 = 답한 OpenAI 몫(5), 메인 몫은 fallback.inputTokens(529라 0)·fallback.error(오류 요약)", logs[0]?.inputTokens === 5 && logs[0]?.fallback?.inputTokens === 0 && /OverloadedError 529/.test(String(logs[0]?.fallback?.error)), JSON.stringify(logs[0]));
+
+    // (c2) 클라이언트 재시도 값을 행동으로 잠근다(QA P3-1) — 재시도 허용 응답(x-should-retry 없음)이 이어지면 요청은 정확히 1 + LLM_CLIENT_MAX_RETRIES
+    const retryable = (status: number, type: string): StubReply => ({ status, body: { type: "error", error: { type, message: "x" } }, headers: { "retry-after-ms": "1" } });
+    r = await run("t-529-retry", { openai: [openaiOk('{"a":"z"}')], anthropic: [retryable(529, "overloaded_error"), retryable(529, "overloaded_error"), retryable(529, "overloaded_error")] }, { AI_PROVIDER: "anthropic" });
+    add(B, "Claude 529 연속 → SDK 요청 정확히 2회(maxRetries 1) 뒤 백업", count("/anthropic") === 2 && count("/openai") === 1 && (r.out as any)?.a === "z", `anthropic ${count("/anthropic")}회`);
+    r = await run("t-oa-500", { openai: [retryable(500, "server_error"), retryable(500, "server_error"), retryable(500, "server_error")], anthropic: [] }, { ANTHROPIC_API_KEY: "" });
+    add(B, "OpenAI 500 연속(기본 설정) → SDK 요청 정확히 2회(maxRetries 1) 뒤 던짐", count("/openai") === 2 && r.err instanceof OpenAI.InternalServerError, `openai ${count("/openai")}회`);
+
+    // (c3) 백업까지 실패 — 백업 오류 클래스 그대로 + 메인 오류를 cause·primaryError로 보존(QA P3-4)
+    r = await run("t-both", { openai: [{ status: 400, body: { error: { message: "bad" } } }], anthropic: [claudeErr(529, "overloaded_error")] }, { AI_PROVIDER: "anthropic" });
+    const errAny = r.err as any;
+    add(
+      B,
+      "백업도 실패 → 백업 오류(OpenAI 400)를 클래스 그대로 던지고 메인 오류(Claude 529)를 cause·primaryError로 붙인다",
+      r.err instanceof OpenAI.BadRequestError && errAny?.primaryError instanceof Anthropic.OverloadedError && errAny?.cause === errAny?.primaryError && logs[0]?.fallback?.reason === "overloaded",
+      summarizeProviderError(r.err),
+    );
+    // attachPrimaryError 단위: cause가 비면 메인 오류를 cause에도, 이미 있으면(연결 오류의 원인 등) 덮지 않고 primaryError에만
+    addSafe(B, "attachPrimaryError: cause 비면 cause = 메인 오류 · 기존 cause는 보존 · Error 아닌 값은 그대로", () => {
+      const primary = new Anthropic.OverloadedError(529, undefined, "o", new Headers());
+      const a = attachPrimaryError(new OpenAI.BadRequestError(400, undefined, "b", new Headers()), primary) as any;
+      const orig = new Error("원래 원인");
+      const withCause = new OpenAI.APIConnectionError({ message: "c", cause: orig });
+      const b = attachPrimaryError(withCause, primary) as any;
+      return [
+        a.primaryError === primary && a.cause === primary && b.primaryError === primary && b.cause === orig && attachPrimaryError("x", primary) === "x",
+        `a.cause=${a.cause === primary} b.cause보존=${b.cause === orig}`,
+      ];
+    });
 
     // (d) 400 → 던짐, 백업 0
     r = await run("t-400", { openai: [openaiOk('{"a":"z"}')], anthropic: [claudeErr(400, "invalid_request_error")] }, { AI_PROVIDER: "anthropic" });
@@ -434,6 +539,12 @@ async function runFlowChecks(): Promise<void> {
       B,
       "Claude zod 재요청: 두 번째 요청에 assistant(이전 출력) + user(오류 요약) — 재요청까지 실패하면 백업(reason: validation)",
       count("/anthropic") === 2 && retryBody.messages?.length === 3 && retryBody.messages?.[1]?.role === "assistant" && /다음 검증 오류를 고쳐 다시 출력해/.test(JSON.stringify(retryBody.messages?.[2])) && (r.out as any)?.a === "ok" && logs[0]?.fallback?.reason === "validation",
+    );
+    add(
+      B,
+      "로그 토큰 분리: 답한 OpenAI 5/2, 메인 Claude 2회분은 fallback에 14/6 + 메인 모델 이름(합산 19가 아니다)",
+      logs[0]?.inputTokens === 5 && logs[0]?.outputTokens === 2 && logs[0]?.fallback?.inputTokens === 14 && logs[0]?.fallback?.outputTokens === 6 && logs[0]?.fallback?.model === "claude-stub-served",
+      JSON.stringify(logs[0]),
     );
 
     // (g) max_tokens → 재요청으로 회복(백업 없음)
@@ -474,6 +585,45 @@ async function runFlowChecks(): Promise<void> {
 // ---------------------------------------------------------------------------
 // 5) 정적
 // ---------------------------------------------------------------------------
+let clientConsts = { timeout: -1, retries: -1 };
+
+/** 기본 Claude 모델 문자열이 lib/ai/provider.ts 한 곳에만 정의되는지 — 다른 모듈은 resolveAnthropicModel()을 재사용(QA 2차 P3-A) */
+function runDefaultModelSingleSourceChecks(): void {
+  const B = "정적";
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (/\.ts$/.test(name)) files.push(relative(ROOT, p));
+    }
+  };
+  walk(join(ROOT, "lib"));
+  walk(join(ROOT, "app"));
+  const hits = files.filter((f) => /["'`]claude-(?:opus|sonnet|haiku|fable|mythos)-[\w.-]+["'`]/.test(stripComments(readFileSync(join(ROOT, f), "latin1"))));
+  add(B, "기본 Claude 모델 문자열은 lib/ai/provider.ts(DEFAULT_ANTHROPIC_MODEL) 한 곳에만 — lib·app 전수", hits.length === 1 && hits[0] === "lib/ai/provider.ts", hits.join(", ") || "0곳");
+  const toeicModel = stripComments(read("lib/ai/toeic/model.ts"));
+  add(B, "토익 Claude 모델은 resolveAnthropicModel() 재사용(ANTHROPIC_MODEL 해석을 따로 갖지 않음)", /\|\| resolveAnthropicModel\(\)/.test(toeicModel) && !/ANTHROPIC_MODEL\b(?!_)/.test(toeicModel.replace(/ANTHROPIC_TOEIC_MODEL/g, "")));
+}
+
+/** 스모크 게이트(실호출 — 에이전트는 실행하지 않는다)가 네트워크·SDK import 전에 끝나는지 소스로 잠근다 */
+function runSmokeGateChecks(): void {
+  const B = "스모크 게이트";
+  const src = read("scripts/smoke-anthropic-schemas.ts");
+  const code = stripComments(src);
+  const gateAt = code.indexOf("if (!gateOn || !hasKey)");
+  const exitAt = code.indexOf("process.exit(0)", gateAt);
+  const firstImport = code.search(/\bimport\s*\(|^import\s/m);
+  add(
+    B,
+    "smoke-anthropic-schemas: SMOKE_ANTHROPIC=1 + ANTHROPIC_API_KEY 둘 다 아니면 즉시 exit(0) — 정적 import 0, 동적 import는 게이트 뒤",
+    /process\.env\.SMOKE_ANTHROPIC === "1"/.test(code) && /ANTHROPIC_API_KEY\?\.trim\(\)/.test(code) && gateAt > 0 && exitAt > gateAt && firstImport > exitAt && !/^import\s/m.test(code),
+    `gate ${gateAt} · exit ${exitAt} · 첫 import ${firstImport}`,
+  );
+  const pkg = JSON.parse(read("package.json")) as { scripts: Record<string, string> };
+  add(B, "스모크는 npm 스크립트로 등록하지 않는다(eval 묶음 실행에 섞여 실호출이 나지 않게)", !Object.values(pkg.scripts).some((v) => /smoke-anthropic/.test(v)));
+}
+
 function runStaticChecks(): void {
   const B = "정적";
   for (const f of ["lib/ai/provider.ts", "lib/ai/provider-anthropic.ts"]) {
@@ -484,6 +634,9 @@ function runStaticChecks(): void {
   const client = stripComments(read("lib/ai/client.ts"));
   add(B, "client.ts: 라벨(call)로 공급자·분기를 고르지 않는다(call === 없음)", !/\bcall\s*===|===\s*call\b|args\.call\s*[=!]==/.test(client));
   add(B, "client.ts: Anthropic 클라이언트 지연 생성 + timeout·maxRetries 지정, OpenAI 클라이언트에도 timeout·maxRetries", /new Anthropic\(\{[^}]*timeout: LLM_CLIENT_TIMEOUT_MS[^}]*maxRetries: LLM_CLIENT_MAX_RETRIES/.test(client) && /new OpenAI\(\{ apiKey, timeout: LLM_CLIENT_TIMEOUT_MS, maxRetries: LLM_CLIENT_MAX_RETRIES \}\)/.test(client));
+  add(B, "클라이언트 상한 값: LLM_CLIENT_TIMEOUT_MS = 120,000 · LLM_CLIENT_MAX_RETRIES = 1(값을 바꾸면 FAIL — QA P3-1)", clientConsts.timeout === 120_000 && clientConsts.retries === 1, JSON.stringify(clientConsts));
+  add(B, "짧은 출력 호출(단어 뜻·유의어 추천·엄마 총평)은 Claude effort low", /maxOutputTokens: WORD_MEANING_CALL_OPTIONS\.maxOutputTokens,\s*effort: "low"/.test(client) && /maxOutputTokens: RELATED_SUGGEST_CALL_OPTIONS\.maxOutputTokens,\s*effort: "low"/.test(client) && /effort: "low"/.test(stripComments(read("lib/ai/mom/calls.ts"))));
+  add(B, "Claude 호출별 모델 배선: 검산 anthropicModel: resolveAnthropicVerifyModel() · 토익 C·D(+틀 판정·보충) 4곳 anthropicModel: resolveAnthropicToeicModel()", /anthropicModel: resolveAnthropicVerifyModel\(\)/.test(stripComments(read("lib/ai/math/pipeline.ts"))) && (stripComments(read("lib/ai/toeic/calls.ts")).match(/anthropicModel: resolveAnthropicToeicModel\(\)/g) ?? []).length === 4);
   const talk = client.slice(client.indexOf("export async function generateTalkCards("));
   add(B, "호출 J(generateTalkCards): provider: \"openai\" 고정(6초 상한 — Claude로 넘기지 않음)", /provider: "openai"/.test(talk.slice(0, talk.indexOf("sanitizeTalkScreenCards("))));
   add(B, "client.ts: 백업 판정은 decideFallback(typed 오류 클래스) 하나 — 신호를 함께 넘긴다", /decideFallback\(err, args\.signal\)/.test(client));
@@ -572,11 +725,14 @@ function runRouteKeyChecks(): void {
 async function main(): Promise<void> {
   runSchemaChecks();
   await runRepoSchemaChecks();
+  runClaudeSchemaValidatorChecks();
   runAdapterChecks();
   runSelectionChecks();
   runFallbackDecisionChecks();
   await runFlowChecks();
   runStaticChecks();
+  runSmokeGateChecks();
+  runDefaultModelSingleSourceChecks();
   runRouteKeyChecks();
 
   console.log("");

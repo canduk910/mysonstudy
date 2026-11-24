@@ -44,6 +44,14 @@ export function resolveAnthropicModel(env: Env = process.env): string {
   return envValue(env, "ANTHROPIC_MODEL") || DEFAULT_ANTHROPIC_MODEL;
 }
 
+/**
+ * 수학 검산(호출 C) 전용 Claude 모델 — env `ANTHROPIC_MODEL_VERIFY`, 비면 resolveAnthropicModel().
+ * OpenAI 쪽 `OPENAI_MODEL_VERIFY`(심판만 더 강한 모델로 올릴 여지)와 짝이다. 호출부(검산)가 `anthropicModel`로 넘긴다 — 래퍼는 라벨로 고르지 않는다.
+ */
+export function resolveAnthropicVerifyModel(env: Env = process.env): string {
+  return envValue(env, "ANTHROPIC_MODEL_VERIFY") || resolveAnthropicModel(env);
+}
+
 /** 그 공급자의 키가 있는가(빈 값·공백 = 없음) */
 export function providerHasKey(provider: AiProvider, env: Env = process.env): boolean {
   return envValue(env, provider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY") !== "";

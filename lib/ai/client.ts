@@ -28,7 +28,23 @@ import {
   incompleteErrorSummary,
   interpretClaudeResponse,
 } from "./provider-anthropic";
-import { AiRefusalError, AiValidationError, decideFallback } from "./provider-errors";
+import {
+  AiRefusalError,
+  AiValidationError,
+  attachPrimaryError,
+  decideFallback,
+  summarizeProviderError,
+} from "./provider-errors";
+
+/** 로그의 fallback 필드 — 메인 쪽 시도(백업이 돌기 전 메인이 쓴 모델·토큰·오류 요약). 백업이 안 돌았으면 null. */
+type FallbackLog = {
+  from: AiProvider;
+  reason: string;
+  model: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  error: string | null;
+};
 import {
   BOOK_EXTRACTION_JSON_SCHEMA,
   CHAPTERIZATION_JSON_SCHEMA,
@@ -339,6 +355,12 @@ export interface CallWithSchemaArgs<T> {
    * 판독·전사류는 low, 수학 검산·채점은 high를 호출부가 넘긴다 — 라벨로 고르지 않는다.
    */
   effort?: AiEffort;
+  /**
+   * 이 호출에만 쓸 **Claude** 모델(`model`의 짝 — `model`은 OpenAI 모델 ID라 Claude 경로에서 쓰지 않는다). 생략·빈 값이면 `ANTHROPIC_MODEL`.
+   * 수학 검산이 `resolveAnthropicVerifyModel()`(env ANTHROPIC_MODEL_VERIFY), 토익 출제·채점이 `resolveAnthropicToeicModel()`(env
+   * ANTHROPIC_TOEIC_MODEL)을 넘긴다 — OpenAI 쪽 호출별 모델 env와 짝. 과목 분기가 아니라 일반 파라미터다.
+   */
+  anthropicModel?: string;
 }
 
 /** `callWithSchema`가 SDK에 넘기는 요청 옵션(`responses.create`의 둘째 인자) 중 이 래퍼가 싣는 두 키. */
@@ -447,11 +469,13 @@ export async function callWithSchema<T>(args: CallWithSchemaArgs<T>): Promise<T>
   const startedAt = Date.now();
   let inputTokens = 0;
   let outputTokens = 0;
-  // 로그용 — 실제로 쓴 공급자·모델(백업이 돌면 백업 쪽), 백업이 돌았는지와 그 이유
+  // 로그용 — 실제로 쓴 공급자·모델(백업이 돌면 백업 쪽), 백업이 돌았는지와 그 이유.
+  // 토큰은 공급자별로 나눈다(합산 금지, QA P3-3): 맨 위 inputTokens·outputTokens는 마지막으로 돈(답한) 공급자 몫,
+  // 메인이 실패해 백업이 돌았으면 메인 몫은 fallback.{model, inputTokens, outputTokens}에 따로 남는다.
   let usedProvider: AiProvider = plan.primary;
   let usedModel = "";
-  let fallback: { from: AiProvider; reason: string } | null = plan.primaryNoKey
-    ? { from: otherProvider(plan.primary), reason: "primary_no_key" }
+  let fallback: FallbackLog | null = plan.primaryNoKey
+    ? { from: otherProvider(plan.primary), reason: "primary_no_key", model: null, inputTokens: 0, outputTokens: 0, error: null }
     : null;
 
   // OpenAI 흐름(기존 그대로): Responses API 1회 → 검증 → 실패 시 1회 재요청 → 재실패 throw.
@@ -536,7 +560,7 @@ export async function callWithSchema<T>(args: CallWithSchemaArgs<T>): Promise<T>
   // 요청 조립·응답 해석은 순수 함수(lib/ai/provider-anthropic.ts). 모델은 ANTHROPIC_MODEL — args.model(OpenAI 모델 ID)은 쓰지 않는다.
   // 거절(refusal)은 재요청하지 않고 곧바로 던진다(백업 대상) — 서버 측 폴백까지 거절한 요청을 같은 공급자에 다시 보내 봐야 같다.
   const runAnthropic = async (): Promise<T> => {
-    const claudeModel = resolveAnthropicModel();
+    const claudeModel = args.anthropicModel?.trim() || resolveAnthropicModel();
     usedModel = claudeModel;
     const once = async (retry: { raw: string; errorSummary: string } | null): Promise<ValidationOutcome<T>> => {
       const params = buildClaudeRequest({
@@ -574,6 +598,9 @@ export async function callWithSchema<T>(args: CallWithSchemaArgs<T>): Promise<T>
 
   const runProvider = (provider: AiProvider): Promise<T> => {
     usedProvider = provider;
+    usedModel = "";
+    inputTokens = 0;
+    outputTokens = 0;
     return provider === "anthropic" ? runAnthropic() : runOpenAI();
   };
 
@@ -586,11 +613,15 @@ export async function callWithSchema<T>(args: CallWithSchemaArgs<T>): Promise<T>
       if (!plan.backup) throw err;
       const decision = decideFallback(err, args.signal);
       if (!decision.fallback) throw err;
-      console.warn(
-        `[ai:${call}] ${plan.primary} 실패(${decision.reason}) — 백업 ${plan.backup}로 다시 부릅니다: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      fallback = { from: plan.primary, reason: decision.reason };
-      return await runProvider(plan.backup);
+      const primaryError = summarizeProviderError(err);
+      console.warn(`[ai:${call}] ${plan.primary} 실패(${decision.reason}) — 백업 ${plan.backup}로 다시 부릅니다: ${primaryError}`);
+      fallback = { from: plan.primary, reason: decision.reason, model: usedModel || null, inputTokens, outputTokens, error: primaryError };
+      try {
+        return await runProvider(plan.backup);
+      } catch (backupErr) {
+        // 백업도 실패 — 백업 오류를 그대로 던지되(클래스 보존 — 라우트의 instanceof 판정) 메인 오류를 cause·primaryError로 붙인다(QA P3-4)
+        throw attachPrimaryError(backupErr, err);
+      }
     }
   } finally {
     console.log(
@@ -683,6 +714,7 @@ export async function suggestRelatedWords(input: {
     zodSchema: relatedSuggestionSchema,
     temperature: RELATED_SUGGEST_CALL_OPTIONS.temperature,
     maxOutputTokens: RELATED_SUGGEST_CALL_OPTIONS.maxOutputTokens,
+    effort: "low", // Claude 경로만 — 짧은 후보 목록(출력 800토큰)이라 깊은 추론이 필요 없다(QA P2-2)
   });
   return { candidates: postprocessRelatedCandidates(candidates, word) };
 }
@@ -1134,6 +1166,7 @@ export async function lookupWordMeaning(
     zodSchema: wordMeaningSchema,
     temperature: WORD_MEANING_CALL_OPTIONS.temperature,
     maxOutputTokens: WORD_MEANING_CALL_OPTIONS.maxOutputTokens,
+    effort: "low", // Claude 경로만 — 한 낱말 뜻(출력 600토큰)이라 깊은 추론이 필요 없다(QA P2-2)
   });
 }
 

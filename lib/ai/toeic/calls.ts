@@ -16,7 +16,7 @@
  */
 
 import { callWithSchema, imagePart, resolveModel, textPart } from "../client";
-import { resolveToeicModel } from "./model";
+import { resolveAnthropicToeicModel, resolveToeicModel } from "./model";
 import {
   TOEIC_EXTRACT_CALL_OPTIONS,
   TOEIC_EXTRACT_SYSTEM_PROMPT,
@@ -141,6 +141,7 @@ export async function generateMockPart<P extends ToeicMockPart>(
     temperature: TOEIC_MOCK_CALL_OPTIONS.temperature,
     maxOutputTokens: TOEIC_MOCK_CALL_OPTIONS.maxOutputTokens,
     model: resolveToeicModel(),
+    anthropicModel: resolveAnthropicToeicModel(), // Claude 경로의 출제·채점 모델(ANTHROPIC_TOEIC_MODEL, 비면 ANTHROPIC_MODEL)
   });
   // 허용 목록 = 흐름 틀(앞) + 정규화한 활용할 표현 — 합친 목록을 다시 normalizeMockExpressions에 넣지 않는다(검토 S4)
   return toMockRecordPart(part, raw, [...answerFlowExpressions(answerFlow), ...normalizeMockExpressions(input.expressions)]);
@@ -162,6 +163,7 @@ export async function generateFeedback(input: ToeicFeedbackInput): Promise<Toeic
     temperature: TOEIC_FEEDBACK_CALL_OPTIONS.temperature,
     maxOutputTokens: TOEIC_FEEDBACK_CALL_OPTIONS.maxOutputTokens,
     model: resolveToeicModel(),
+    anthropicModel: resolveAnthropicToeicModel(), // Claude 경로의 출제·채점 모델(ANTHROPIC_TOEIC_MODEL, 비면 ANTHROPIC_MODEL)
     effort: "high", // Claude 경로만(docs/HARNESS.md §5) — 채점
   });
   // 허용 목록 = 흐름 틀(앞) + 활용할 표현 — 흐름은 input.expressions에 섞지 않는다(D `활용할 표현:` 줄에 찍히지 않게, 검토 S4)
@@ -188,6 +190,7 @@ export async function judgeFrameDrill(input: ToeicFrameJudgeInput): Promise<Toei
     temperature: TOEIC_FRAME_JUDGE_CALL_OPTIONS.temperature,
     maxOutputTokens: TOEIC_FRAME_JUDGE_CALL_OPTIONS.maxOutputTokens,
     model: resolveToeicModel(),
+    anthropicModel: resolveAnthropicToeicModel(), // Claude 경로의 출제·채점 모델(ANTHROPIC_TOEIC_MODEL, 비면 ANTHROPIC_MODEL)
   });
 }
 
@@ -207,6 +210,7 @@ export async function supplyFrameDrillItems(plan: ToeicFrameDrillSupplyPlan): Pr
     temperature: TOEIC_FRAME_SUPPLY_CALL_OPTIONS.temperature,
     maxOutputTokens: TOEIC_FRAME_SUPPLY_CALL_OPTIONS.maxOutputTokens,
     model: resolveToeicModel(),
+    anthropicModel: resolveAnthropicToeicModel(), // Claude 경로의 출제·채점 모델(ANTHROPIC_TOEIC_MODEL, 비면 ANTHROPIC_MODEL)
   });
 }
 

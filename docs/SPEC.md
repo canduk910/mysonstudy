@@ -294,6 +294,8 @@ AI_PROVIDER=         # 선택. 텍스트·이미지 판독 LLM 호출(callWithSc
 AI_FALLBACK=         # 선택. on(기본)|off — 메인이 가용성 실패(과부하·5xx·429·연결·타임아웃·거절·재요청까지 검증 실패)면 다른 공급자로 한 번 더(그 키가 있을 때만) — docs/HARNESS.md §5
 ANTHROPIC_API_KEY=   # 선택. 서버 전용. Claude 키 — AI_PROVIDER=anthropic의 메인, 또는 OpenAI 메인일 때의 백업 — docs/HARNESS.md §5
 ANTHROPIC_MODEL=     # 선택. Claude 모델, 기본 claude-opus-5-5 — docs/HARNESS.md §5
+ANTHROPIC_MODEL_VERIFY= # 선택. Claude 경로의 수학 검산(호출 C) 모델, 비면 ANTHROPIC_MODEL(OPENAI_MODEL_VERIFY의 짝) — docs/HARNESS.md §5
+ANTHROPIC_TOEIC_MODEL= # 선택. Claude 경로의 토익 출제·채점(호출 C·D·틀 판정·보충) 모델, 비면 ANTHROPIC_MODEL(OPENAI_TOEIC_MODEL의 짝) — docs/HARNESS.md §5
 TOEIC_REC_BUCKET=    # 선택. 아빠의 영어 내 녹음 보관 GCS 버킷 이름, 기본 eunwoo-bookcard-toeic-rec(스토어가 firestore일 때만 쓴다) — §20-11·docs/harness/toeic.md §13-1
 TOEIC_REC_DIR=       # 선택. 파일 백엔드(STORE_BACKEND=file)의 녹음 디렉터리, 기본 data/recordings(git·배포 업로드 밖) — §20-11
 WORKOUT_REST_TASKS_QUEUE= # 선택. 운동 휴식 알림을 예약할 Cloud Tasks 큐 전체 이름 projects/<p>/locations/<l>/queues/<q> — 비거나 형식이 틀리면 휴식 알림 501(꺼짐) — §19-9

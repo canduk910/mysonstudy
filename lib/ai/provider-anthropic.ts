@@ -23,6 +23,24 @@ type BetaContentBlockParam = Anthropic.Beta.Messages.BetaContentBlockParam;
 type BetaMessageParam = Anthropic.Beta.Messages.BetaMessageParam;
 type ClaudeImageMediaType = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
 
+/**
+ * Claude 요청의 max_tokens 하한(2026-11-25, QA common_provider_1 P2-2).
+ * claude-opus-5-5는 thinking을 끌 수 없고(adaptive 고정) thinking 토큰이 max_tokens를 함께 쓴다. 과목 옵션의 maxOutputTokens는
+ * OpenAI 기준으로 잡혀 400~1,500인 호출(엄마 총평·단어 뜻·유의어 추천·문장 설명)이 있어, 그대로 보내면 thinking만으로 한도가 차서
+ * 잘림 → 같은 한도로 재요청 → 또 잘림 → 백업으로 번져 지연·비용이 3배가 된다. max_tokens는 상한일 뿐 과금은 실제 생성분이라
+ * 하한을 올려도 비용은 늘지 않는다. 8,000은 SDK 비스트리밍 계산(약 21,333토큰 초과 시 "Streaming is required")에 한참 못 미친다.
+ * OpenAI 경로·과목 옵션 상수(spec-sync 대상)는 건드리지 않는다 — Claude 요청 조립에서만 `max(maxOutputTokens, 하한)`.
+ */
+export const CLAUDE_MIN_MAX_TOKENS = 8_000;
+
+/**
+ * Claude 이미지 한도(base64 문자열 길이 기준 — 디코드 크기보다 커서 보수적). 이미지 1장 5MB, 요청 전체 32MB(이미지 외 텍스트 여유를 둬 30MB).
+ * 서버 상한(`MAX_IMAGE_DATA_URL_CHARS` 8,000,000자 ≈ 6MB)이 Claude 1장 한도보다 크고, 사진 여러 장 판독은 요청 한도를 넘을 수 있다.
+ * 넘으면 요청 전에 ClaudeInputError(백업 대상) — 400·413 왕복 없이 OpenAI로 넘긴다(QA P3-5).
+ */
+export const CLAUDE_MAX_IMAGE_BASE64_CHARS = 5 * 1024 * 1024;
+export const CLAUDE_MAX_TOTAL_IMAGE_BASE64_CHARS = 30 * 1024 * 1024;
+
 /** 서버 측 거절 폴백 beta 헤더 — `fallbacks: "default"`(거절 분류별로 서버가 대체 모델을 고른다)와 짝 */
 export const CLAUDE_SERVER_FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
@@ -138,6 +156,69 @@ export function sanitizeSchemaForClaude(schema: Record<string, unknown>): Saniti
   return { schema: out, removed };
 }
 
+/**
+ * 정리된 스키마가 Claude 구조화 출력 제약을 만족하는지 — 순수 점검(위반 목록, 빈 배열이 통과).
+ * ① 지원 안 하는 키 0(minItems는 0·1만, format은 지원 목록만, oneOf 없음) ② 모든 객체 노드 additionalProperties === false
+ * ③ 재귀 없음(`$ref`가 `#`이거나 `$defs` 참조 그래프에 순환) ④ 각 노드에 type·enum·const·anyOf·allOf·$ref 중 하나(SDK 변환과 같은 요구).
+ * 실호출 없이 "스키마 컴파일 400"의 흔한 원인을 미리 잡는다 — 수용 여부 자체는 스모크 게이트(scripts/smoke-anthropic-schemas.ts)가 본다.
+ */
+export function validateClaudeSchema(schema: Record<string, unknown>): string[] {
+  const issues: string[] = [];
+  const defs = (isPlainObject(schema.$defs) ? schema.$defs : isPlainObject(schema.definitions) ? schema.definitions : {}) as Record<string, unknown>;
+  const refEdges = new Map<string, Set<string>>();
+  const refTarget = (ref: string): string | null => {
+    const m = /^#\/(?:\$defs|definitions)\/(.+)$/.exec(ref);
+    return m ? m[1] : null;
+  };
+  const visit = (node: unknown, path: string, owner: string): void => {
+    if (Array.isArray(node)) {
+      node.forEach((v, i) => visit(v, `${path}[${i}]`, owner));
+      return;
+    }
+    if (!isPlainObject(node)) return;
+    for (const key of Object.keys(node)) {
+      if (CLAUDE_UNSUPPORTED_SCHEMA_KEYS.includes(key)) issues.push(`${path}: 지원 안 하는 키 ${key}`);
+    }
+    if ("oneOf" in node) issues.push(`${path}: oneOf`);
+    if ("minItems" in node && node.minItems !== 0 && node.minItems !== 1) issues.push(`${path}: minItems ${String(node.minItems)}`);
+    if ("format" in node && (typeof node.format !== "string" || !CLAUDE_SUPPORTED_STRING_FORMATS.has(node.format))) issues.push(`${path}: format ${String(node.format)}`);
+    if (isObjectNode(node) && node.additionalProperties !== false) issues.push(`${path}: additionalProperties가 false가 아님`);
+    if (typeof node.$ref === "string") {
+      if (node.$ref === "#") issues.push(`${path}: 루트 자기 참조($ref "#") — 재귀`);
+      const t = refTarget(node.$ref);
+      if (t !== null) {
+        if (!refEdges.has(owner)) refEdges.set(owner, new Set());
+        refEdges.get(owner)!.add(t);
+        if (!(t in defs)) issues.push(`${path}: 없는 $defs 참조 ${node.$ref}`);
+      }
+    } else if (!("type" in node) && !("enum" in node) && !("const" in node) && !("anyOf" in node) && !("allOf" in node)) {
+      issues.push(`${path}: type·enum·const·anyOf·allOf·$ref 중 아무것도 없음`);
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "properties" && isPlainObject(value)) {
+        for (const [k, v] of Object.entries(value)) visit(v, `${path}.${k}`, owner);
+      } else if (key === "items" || key === "anyOf" || key === "allOf" || key === "prefixItems") {
+        visit(value, `${path}.${key}`, owner);
+      }
+    }
+  };
+  const { $defs: _d, definitions: _f, ...root } = schema;
+  visit(root, "$", "$root");
+  for (const [name, def] of Object.entries(defs)) visit(def, `$defs.${name}`, name);
+  // $defs 참조 순환(재귀) — 깊이 우선
+  const state = new Map<string, 1 | 2>();
+  const dfs = (n: string, trail: string[]): void => {
+    state.set(n, 1);
+    for (const m of refEdges.get(n) ?? []) {
+      if (state.get(m) === 1) issues.push(`재귀 참조: ${[...trail, m].join(" → ")}`);
+      else if (!state.get(m)) dfs(m, [...trail, m]);
+    }
+    state.set(n, 2);
+  };
+  for (const n of Object.keys(defs)) if (!state.get(n)) dfs(n, [n]);
+  return issues;
+}
+
 const sanitizedCache = new WeakMap<object, SanitizedSchema>();
 
 /** 같은 스키마 상수를 호출마다 다시 걷지 않게 — 스키마 객체 단위 기억(결과는 같은 순수 함수 결과) */
@@ -168,7 +249,11 @@ export function dataUrlToClaudeImageSource(dataUrl: string): { type: "base64"; m
   if (media !== "image/jpeg" && media !== "image/png" && media !== "image/gif" && media !== "image/webp") {
     throw new ClaudeInputError(`Claude가 받지 않는 이미지 형식입니다: ${raw}`);
   }
-  return { type: "base64", media_type: media, data: m[2].replace(/\s+/g, "") };
+  const data = m[2].replace(/\s+/g, "");
+  if (data.length > CLAUDE_MAX_IMAGE_BASE64_CHARS) {
+    throw new ClaudeInputError(`이미지가 Claude 한도(장당 ${CLAUDE_MAX_IMAGE_BASE64_CHARS}자)를 넘습니다: ${data.length}자`);
+  }
+  return { type: "base64", media_type: media, data };
 }
 
 /** 공유 래퍼의 사용자 파트(OpenAI Responses 모양) — 구조만 본다(런타임 import 없이) */
@@ -178,11 +263,18 @@ export type ProviderNeutralPart =
 
 /** 사용자 파트 → Claude content 블록. 순서 보존(이미지가 텍스트보다 먼저인 관용구 그대로). */
 export function toClaudeUserContent(parts: readonly ProviderNeutralPart[]): BetaContentBlockParam[] {
-  return parts.map((part): BetaContentBlockParam => {
+  let totalImageChars = 0;
+  const blocks = parts.map((part): BetaContentBlockParam => {
     if (part.type === "input_text") return { type: "text", text: part.text };
     if (typeof part.image_url !== "string") throw new ClaudeInputError("이미지 파트에 data URL이 없습니다.");
-    return { type: "image", source: dataUrlToClaudeImageSource(part.image_url) };
+    const source = dataUrlToClaudeImageSource(part.image_url);
+    totalImageChars += source.data.length;
+    return { type: "image", source };
   });
+  if (totalImageChars > CLAUDE_MAX_TOTAL_IMAGE_BASE64_CHARS) {
+    throw new ClaudeInputError(`이미지 합계가 Claude 요청 한도(${CLAUDE_MAX_TOTAL_IMAGE_BASE64_CHARS}자)를 넘습니다: ${totalImageChars}자`);
+  }
+  return blocks;
 }
 
 /** 재요청 user 턴 문구 — OpenAI 경로(`callWithSchema`)와 같은 문장 */
@@ -205,7 +297,7 @@ export interface ClaudeRequestInput {
 }
 
 /**
- * Claude 요청 조립 — 순수 함수. temperature·thinking 없음, max_tokens = maxOutputTokens, effort는 output_config에.
+ * Claude 요청 조립 — 순수 함수. temperature·thinking 없음, max_tokens = max(maxOutputTokens, CLAUDE_MIN_MAX_TOKENS), effort는 output_config에.
  * 재요청은 원래 user 턴 뒤에 assistant(이전 출력) + user(오류 요약)를 덧붙인다(마지막이 user라 프리필이 아니다).
  */
 export function buildClaudeRequest(input: ClaudeRequestInput): BetaCreateParams {
@@ -218,7 +310,7 @@ export function buildClaudeRequest(input: ClaudeRequestInput): BetaCreateParams 
   }
   return {
     model: input.model,
-    max_tokens: input.maxOutputTokens,
+    max_tokens: Math.max(input.maxOutputTokens, CLAUDE_MIN_MAX_TOKENS),
     system: input.system,
     messages,
     output_config: {

@@ -13,10 +13,21 @@
  * (진입 함수 calls.ts와 레코드 `model`을 남기는 라우트가 이 함수를 부른다.)
  */
 
+import { resolveAnthropicModel } from "../provider";
+
 /** 토익 호출 C·D 기본 모델. 설치된 SDK의 `ChatModel` 목록에 아직 없어 string이다. */
 export const DEFAULT_TOEIC_MODEL: string = "gpt-6.1-sol";
 
 /** 토익 호출 C·D 모델 — env `OPENAI_TOEIC_MODEL`, 비면 DEFAULT_TOEIC_MODEL */
 export function resolveToeicModel(): string {
   return process.env.OPENAI_TOEIC_MODEL?.trim() || DEFAULT_TOEIC_MODEL;
+}
+
+/**
+ * 토익 호출 C·D의 Claude 모델(공급자 층, docs/HARNESS.md §5) — env `ANTHROPIC_TOEIC_MODEL`(앞뒤 공백 무시), 비면 `resolveAnthropicModel()`
+ * (env `ANTHROPIC_MODEL`, 비면 기본 Claude 모델 — 기본값 정의는 lib/ai/provider.ts `DEFAULT_ANTHROPIC_MODEL` 한 곳). `OPENAI_TOEIC_MODEL`과 짝이다.
+ * Claude 경로에서만 쓰인다(callWithSchema `anthropicModel`). provider.ts도 import 0인 순수 모듈이라 이 모듈의 "SDK·client.ts 미의존"은 그대로다.
+ */
+export function resolveAnthropicToeicModel(): string {
+  return process.env.ANTHROPIC_TOEIC_MODEL?.trim() || resolveAnthropicModel();
 }

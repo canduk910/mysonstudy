@@ -16,6 +16,7 @@
 
 import { z } from "zod";
 import { callWithSchema, resolveVerifyModel, textPart, type UserContentPart } from "../client";
+import { resolveAnthropicVerifyModel } from "../provider";
 import type { AnswerItem, SceneTier } from "../../scene/types";
 import { compare, formatAnswer, verifyScene } from "../../scene/verify";
 import {
@@ -190,6 +191,7 @@ export async function callAnswerCheck(input: VerifyUserMessageInput): Promise<An
     maxOutputTokens: VERIFY_CALL_OPTIONS.maxOutputTokens,
     model: resolveVerifyModel(),
     effort: "high", // Claude 경로만(docs/HARNESS.md §5) — 독립 검산은 깊이를 산다(OpenAI 경로에는 싣지 않는다)
+    anthropicModel: resolveAnthropicVerifyModel(), // Claude 경로의 심판 모델(ANTHROPIC_MODEL_VERIFY, 비면 ANTHROPIC_MODEL)
   });
 }
 
