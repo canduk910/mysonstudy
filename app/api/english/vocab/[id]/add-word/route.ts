@@ -151,7 +151,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         ok: false,
         error: "no_api_key",
         messageKo:
-          "단어는 담았어요! OpenAI API 키가 설정되면 '다시 만들기'로 뜻을 채울 수 있어요.",
+          "단어는 담았어요! AI API 키가 설정되면 '다시 만들기'로 뜻을 채울 수 있어요.",
         added: true,
       },
       501,

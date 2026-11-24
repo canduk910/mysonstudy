@@ -14,9 +14,9 @@
  * - 녹음은 요청 메모리에서만 쓰고 저장하지 않는다. 로그에는 모델·바이트·ms·낱말 수만(전사문·오디오 없음 — 아이 목소리·말은 남기지 않는다).
  */
 
-import OpenAI, { toFile } from "openai";
 import { KID_SPEAK_TRANSCRIBE_TIMEOUT_MS } from "./kid-speak-contract";
 import { resolveToeicTranscribeModel } from "./toeic-transcribe";
+import { makeTranscribeClientGetter, runTranscription } from "./transcribe-core";
 
 /** 전사 언어(ISO-639-1) — 영어 단어를 말한다 */
 export const KID_SPEAK_TRANSCRIBE_LANGUAGE = "en";
@@ -33,14 +33,8 @@ export function hasKidSpeakTranscribeApiKey(): boolean {
   return Boolean(process.env.OPENAI_API_KEY);
 }
 
-let cachedClient: OpenAI | null = null;
-
-function getClient(apiKey: string): OpenAI {
-  if (!cachedClient) {
-    cachedClient = new OpenAI({ apiKey, maxRetries: KID_SPEAK_TRANSCRIBE_SDK_MAX_RETRIES, timeout: KID_SPEAK_TRANSCRIBE_TIMEOUT_MS });
-  }
-  return cachedClient;
-}
+/** 전사 전용 OpenAI 클라이언트(캐시 — lib/transcribe-core.ts) */
+const getClient = makeTranscribeClientGetter({ maxRetries: KID_SPEAK_TRANSCRIBE_SDK_MAX_RETRIES, timeout: KID_SPEAK_TRANSCRIBE_TIMEOUT_MS });
 
 export interface KidSpeakAudioInput {
   bytes: ArrayBuffer;
@@ -56,25 +50,16 @@ export type KidSpeakTranscribeResult =
 
 /** 아이 음성 → 영어 글자. 앞뒤 공백만 걷는다(판정은 화면의 순수 함수가 정규화한다). */
 export async function transcribeKidWord(input: KidSpeakAudioInput, signal?: AbortSignal): Promise<KidSpeakTranscribeResult> {
-  const model = resolveKidSpeakTranscribeModel();
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return { ok: false, error: "no_api_key", model, detail: "OPENAI_API_KEY 없음" };
-
-  const started = Date.now();
-  try {
-    const file = await toFile(new Uint8Array(input.bytes), input.fileName, { type: input.type });
-    const res = await getClient(apiKey).audio.transcriptions.create(
-      { file, model, language: KID_SPEAK_TRANSCRIBE_LANGUAGE, response_format: "json" },
-      { signal },
-    );
-    const text = typeof res?.text === "string" ? res.text.trim() : "";
-    const words = text === "" ? 0 : text.split(/\s+/).length;
-    console.log(`[kid_speak:transcribe] model=${model} bytes=${input.bytes.byteLength} type=${input.type} words=${words} ms=${Date.now() - started}`);
-    return { ok: true, text, model };
-  } catch (err) {
-    if (signal?.aborted) return { ok: false, error: "aborted", model, detail: "client closed" };
-    const detail = err instanceof Error ? `${err.name}: ${err.message}`.slice(0, 200) : String(err).slice(0, 200);
-    console.error(`[kid_speak:transcribe] 실패 model=${model} bytes=${input.bytes.byteLength} type=${input.type} ms=${Date.now() - started}: ${detail}`);
-    return { ok: false, error: "failed", model, detail };
-  }
+  // 몸통(키 없으면 네트워크 없이 no_api_key · json · aborted/failed)은 lib/transcribe-core.ts. 정답 인자 없음.
+  return runTranscription(
+    {
+      logTag: "kid_speak",
+      model: resolveKidSpeakTranscribeModel(),
+      language: KID_SPEAK_TRANSCRIBE_LANGUAGE,
+      getClient,
+      measure: (text) => `words=${text === "" ? 0 : text.split(/\s+/).length}`,
+    },
+    input,
+    { signal },
+  );
 }

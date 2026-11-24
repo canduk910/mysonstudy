@@ -15,8 +15,8 @@
  * 로그에는 모델·바이트·ms·단어 수만 남긴다(전사문·오디오는 남기지 않는다).
  */
 
-import OpenAI, { toFile } from "openai";
 import { countWords } from "./toeic-text";
+import { makeTranscribeClientGetter, runTranscription } from "./transcribe-core";
 
 /** 기본 전사 모델(§1-1 관문 표). env `OPENAI_TRANSCRIBE_MODEL`로 바꾼다. */
 export const DEFAULT_TOEIC_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe";
@@ -35,13 +35,8 @@ export function hasToeicTranscribeApiKey(): boolean {
   return Boolean(process.env.OPENAI_API_KEY);
 }
 
-let cachedClient: OpenAI | null = null;
-
-/** 전사 전용 OpenAI 클라이언트(캐시). 재시도 1회 — 60초 상한 안에서 두 번 이상 기다리지 않는다. */
-function getTranscribeClient(apiKey: string): OpenAI {
-  if (!cachedClient) cachedClient = new OpenAI({ apiKey, maxRetries: 1, timeout: TOEIC_TRANSCRIBE_TIMEOUT_MS });
-  return cachedClient;
-}
+/** 전사 전용 OpenAI 클라이언트(캐시 — lib/transcribe-core.ts). 재시도 1회 — 60초 상한 안에서 두 번 이상 기다리지 않는다. */
+const getTranscribeClient = makeTranscribeClientGetter({ maxRetries: 1, timeout: TOEIC_TRANSCRIBE_TIMEOUT_MS });
 
 export interface TranscribeAudioInput {
   /** 오디오 바이트(업로드 파일 그대로 — WAV 정규화본이거나 원본) */
@@ -68,26 +63,16 @@ export type TranscribeResult =
  * Q1–2 대조와 호출 D의 said 대조가 정규화를 따로 한다).
  */
 export async function transcribeAnswer(input: TranscribeAudioInput, signal?: AbortSignal): Promise<TranscribeResult> {
-  const model = resolveToeicTranscribeModel();
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return { ok: false, error: "no_api_key", model, detail: "OPENAI_API_KEY 없음" };
-
-  const started = Date.now();
-  try {
-    const file = await toFile(new Uint8Array(input.bytes), input.fileName, { type: input.type });
-    const res = await getTranscribeClient(apiKey).audio.transcriptions.create(
-      { file, model, language: TOEIC_TRANSCRIBE_LANGUAGE, response_format: "json" },
-      { signal },
-    );
-    const text = typeof res?.text === "string" ? res.text.trim() : "";
-    console.log(
-      `[toeic:transcribe] model=${model} bytes=${input.bytes.byteLength} type=${input.type} words=${countWords(text)} ms=${Date.now() - started}`,
-    );
-    return { ok: true, text, model };
-  } catch (err) {
-    if (signal?.aborted) return { ok: false, error: "aborted", model, detail: "client closed" };
-    const detail = err instanceof Error ? `${err.name}: ${err.message}`.slice(0, 200) : String(err).slice(0, 200);
-    console.error(`[toeic:transcribe] 실패 model=${model} bytes=${input.bytes.byteLength} type=${input.type} ms=${Date.now() - started}: ${detail}`);
-    return { ok: false, error: "failed", model, detail };
-  }
+  // 몸통(키 없으면 네트워크 없이 no_api_key · json · aborted/failed)은 lib/transcribe-core.ts. 기대 문장 인자 없음.
+  return runTranscription(
+    {
+      logTag: "toeic",
+      model: resolveToeicTranscribeModel(),
+      language: TOEIC_TRANSCRIBE_LANGUAGE,
+      getClient: getTranscribeClient,
+      measure: (text) => `words=${countWords(text)}`,
+    },
+    input,
+    { signal },
+  );
 }

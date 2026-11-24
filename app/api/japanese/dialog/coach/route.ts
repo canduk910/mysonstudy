@@ -50,7 +50,7 @@ export async function POST(req: Request) {
   }
 
   if (!hasLlmKey()) {
-    return json({ ok: false, error: "no_api_key", messageKo: "해설을 만들려면 OpenAI API 키가 필요해요." }, 501);
+    return json({ ok: false, error: "no_api_key", messageKo: "해설을 만들려면 AI API 키가 필요해요." }, 501);
   }
 
   // 저장된 대화(재생성) vs 전사(생성만)를 가른다.

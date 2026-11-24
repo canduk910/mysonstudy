@@ -30,6 +30,8 @@
  */
 
 import { NextResponse } from "next/server";
+import { captureLlmMeta } from "@/lib/ai/client";
+import { answeredModel, type LlmCallMeta } from "@/lib/ai/provider";
 import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { resolveToeicModel } from "@/lib/ai/toeic/model";
@@ -81,7 +83,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ part: s
       {
         ok: false,
         error: "no_api_key",
-        messageKo: "OpenAI API 키가 아직 설정되지 않아 연습 문제를 만들 수 없어요. 공략 읽기·템플릿 훈련은 그대로 쓸 수 있어요.",
+        messageKo: "AI API 키가 아직 설정되지 않아 연습 문제를 만들 수 없어요. 공략 읽기·템플릿 훈련은 그대로 쓸 수 있어요.",
       },
       501,
     );
@@ -169,8 +171,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ part: s
   // ── 호출 C 파트 하나(프롬프트·스키마·zod·옵션 §4 그대로) → 레코드 파트 → 사진이면 한 장면만 ──
   const topicHints = [topic];
   let parts: ToeicMockParts;
+  let llmCalls: LlmCallMeta[] = [];
   try {
-    const recordPart = await generateMockPart(mockPart, { targetGrade, topicHints, expressions, answerFlow });
+    const captured = await captureLlmMeta(() => generateMockPart(mockPart, { targetGrade, topicHints, expressions, answerFlow }));
+    const recordPart = captured.value;
+    llmCalls = captured.calls;
     parts = { read: null, picture: null, respond: null, info: null, opinion: null };
     (parts as Record<string, unknown>)[mockPart] = toDrillRecordPart(mockPart, recordPart);
   } catch (err) {
@@ -195,7 +200,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ part: s
       parts,
       drillPart: mockPart,
       answerFlows: answerFlow ? [answerFlow] : [],
-      model: resolveToeicModel(), // 출제 모델(호출 C) — OPENAI_TOEIC_MODEL
+      model: answeredModel(llmCalls, resolveToeicModel()), // 출제 모델(호출 C) — 실제 답한 모델, 답이 없으면 OPENAI_TOEIC_MODEL(공급자 층 2단계)
     });
     return json({ ok: true, id: record.id, titleKo: record.titleKo, mockPart, expressionsCount: expressions.length });
   } catch (err) {

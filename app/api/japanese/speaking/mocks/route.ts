@@ -21,7 +21,8 @@
 import { NextResponse } from "next/server";
 import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
-import { generateJaSpeakingPart, resolveModel } from "@/lib/ai/client";
+import { captureLlmMeta, generateJaSpeakingPart, resolveModel } from "@/lib/ai/client";
+import { answeredModel } from "@/lib/ai/provider";
 import { JLPT_LEVELS } from "@/lib/ai/japanese/schemas";
 import { normalizeJaSpeakingTopicHints } from "@/lib/ai/japanese/speaking-prompts";
 import { JA_SPEAKING_LIMITS } from "@/lib/ai/japanese/speaking-schemas";
@@ -63,7 +64,7 @@ function json(body: JaSpeakingCreateResponse, status = 200) {
 
 export async function POST(req: Request) {
   if (!hasLlmKey()) {
-    return json({ ok: false, error: "no_api_key", messageKo: "OpenAI API 키가 아직 설정되지 않아 모의고사를 만들 수 없어요." }, 501);
+    return json({ ok: false, error: "no_api_key", messageKo: "AI API 키가 아직 설정되지 않아 모의고사를 만들 수 없어요." }, 501);
   }
 
   let raw: unknown;
@@ -100,7 +101,7 @@ export async function POST(req: Request) {
   }
 
   console.info(`[/api/japanese/speaking/mocks] 입력: 레벨 ${level} · 파트 ${chosen.length} · 주제 ${topicHints.length}`);
-  const settled = await Promise.allSettled(chosen.map((part) => generateJaSpeakingPart(part, { level, topicHints })));
+  const { value: settled, calls: llmCalls } = await captureLlmMeta(() => Promise.allSettled(chosen.map((part) => generateJaSpeakingPart(part, { level, topicHints }))));
 
   const parts: JaSpeakingParts = { read: null, picture: null, respond: null, info: null, opinion: null };
   const createdParts: JaSpeakingPart[] = [];
@@ -127,7 +128,7 @@ export async function POST(req: Request) {
       level,
       topicHints,
       parts,
-      model: resolveModel(),
+      model: answeredModel(llmCalls, resolveModel()), // 실제 답한 모델(공급자 층 2단계)
     });
     return json({ ok: true, id: record.id, titleKo: record.titleKo, createdParts, failedParts });
   } catch (err) {

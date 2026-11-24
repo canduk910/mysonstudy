@@ -88,7 +88,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       {
         ok: false,
         error: "no_api_key",
-        messageKo: "OpenAI API 키가 아직 설정되지 않아 발화 포인트를 만들 수 없어요. 카드와 시험(뜻·표현)은 그대로 쓸 수 있어요.",
+        messageKo: "AI API 키가 아직 설정되지 않아 발화 포인트를 만들 수 없어요. 카드와 시험(뜻·표현)은 그대로 쓸 수 있어요.",
       },
       501,
     );

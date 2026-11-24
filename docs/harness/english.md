@@ -1070,7 +1070,8 @@ zod 추가 검증(스키마가 못 잡는 것):
   · definitionKo도 독립적으로 같은 규칙 — definitionKo === null인 자리에만 결과 해석이 non-null일 때만 채운다.
     정의는 있고 해석만 null인 구 레코드가 이 경로로 KO를 얻는다(EN은 손대지 않는다).
   · imageEmoji도 독립적으로 같은 규칙 — 정의는 있고 이모지만 null이면 이모지만 채운다.
-  · result에 없는 단어는 그대로 둔다(부분 실패 허용). 매칭키: no 우선, 없으면 word 소문자.
+  · result에 없는 단어는 그대로 둔다(부분 실패 허용). 매칭: word 소문자(trim)가 같아야 한다 — no가 같고 word도 같으면
+    그 결과, no가 같아도 word가 다르면 붙이지 않고 word로 다시 찾는다(2026-11-25 — 번호가 겹친 다른 단어에 정의가 붙던 반례).
   · enriched = 모든 entry의 definitionEn !== null(빈 배열은 false). **해석(KO)·이모지 null은 판정에서 제외** —
     시험 게이트는 EN 하나에만 매달리므로 KO는 additive다(게이트를 바꾸지 않는다).
 - isVocabBookEnriched(entries): enriched의 단일 정의처(definitionEn 기준) — mergeEnrichment도 이걸 쓴다.

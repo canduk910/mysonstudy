@@ -50,7 +50,7 @@ const TOO_LARGE_KO = "보낸 글이 너무 커요.";
 export async function POST(req: Request) {
   // ── 1. 키 — 맨 먼저 ──
   if (!hasLlmKey()) {
-    return json({ ok: false, error: "no_api_key", messageKo: "OpenAI API 키가 아직 설정되지 않아 표현 도우미를 쓸 수 없어요." }, 501);
+    return json({ ok: false, error: "no_api_key", messageKo: "AI API 키가 아직 설정되지 않아 표현 도우미를 쓸 수 없어요." }, 501);
   }
 
   // ── 2. 본문 크기 — 선언 길이로 먼저, 읽은 뒤 실제 바이트로 한 번 더 ──

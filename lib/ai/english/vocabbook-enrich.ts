@@ -73,20 +73,26 @@ function wordKeyOf(item: { word: string }): string {
 }
 
 /**
- * 한 entry에 대응하는 보강 결과를 찾는다. 번호(no)로 먼저 잇고, 못 찾으면 표제어(소문자)로 잇는다
- * — 모델이 번호를 빠뜨렸어도 단어로 회수한다(부분 실패에 강하게).
+ * 한 entry에 대응하는 보강 결과를 찾는다. **표제어(소문자·trim)가 같아야만** 잇는다.
+ * - 번호(no)가 맞고 표제어도 같으면 그 결과(같은 표제어가 두 번 실린 DAY에서 번호로 가른다).
+ * - 번호가 같아도 표제어가 다르면 **붙이지 않는다**(2026-11-25 QA 반례) — 담기 단어·여러 사진 병합으로
+ *   번호가 같은 서로 다른 단어 둘이 생기면, 예전 "번호 먼저" 매칭은 한 단어의 정의를 다른 단어에 붙였다.
+ *   정의 불변이라 한 번 잘못 붙은 정의는 자동으로 고쳐지지 않으므로, 틀리게 붙이느니 비워 두는 쪽이 낫다
+ *   (비면 "남은 N개 다시 만들기"로 다시 채운다).
+ * - 번호로 못 찾으면 표제어로 잇는다 — 모델이 번호를 빠뜨렸어도 단어로 회수한다(부분 실패에 강하게).
  */
 function findResultFor(
   entry: VocabEntry,
   byNo: Map<string, VocabEnrichItem>,
   byWord: Map<string, VocabEnrichItem>,
 ): VocabEnrichItem | undefined {
+  const wk = wordKeyOf(entry);
   const nk = noKeyOf(entry);
   if (nk) {
     const hit = byNo.get(nk);
-    if (hit) return hit;
+    if (hit && wordKeyOf(hit) === wk) return hit;
   }
-  return byWord.get(wordKeyOf(entry));
+  return byWord.get(wk);
 }
 
 /**

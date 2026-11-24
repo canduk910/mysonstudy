@@ -14,7 +14,8 @@
 
 import { NextResponse } from "next/server";
 import { hasLlmKey } from "@/lib/ai/provider";
-import { generateKanjiInfo, resolveModel } from "@/lib/ai/client";
+import { captureLlmMeta, generateKanjiInfo, resolveModel } from "@/lib/ai/client";
+import { answeredModel } from "@/lib/ai/provider";
 import { JA_KANJI_BATCH_SIZE } from "@/lib/ai/japanese/schemas";
 import {
   applyKanjiPostprocess,
@@ -36,7 +37,7 @@ export async function POST() {
 
   // ── 키 없음 (501) — 생성은 AI 필수. 검사를 호출 앞에 둬 실호출을 구조적으로 막는다. ──
   if (!hasLlmKey()) {
-    return json({ ok: false, error: "no_api_key", messageKo: "한자 정보를 만들려면 OpenAI API 키가 필요해요." }, 501);
+    return json({ ok: false, error: "no_api_key", messageKo: "한자 정보를 만들려면 AI API 키가 필요해요." }, 501);
   }
 
   // ── 수집 → 정보 없는 한자만 선별(§12-1·§12-2 불변) ──
@@ -54,14 +55,14 @@ export async function POST() {
     batchesInput.push(toEnrich.slice(i, i + JA_KANJI_BATCH_SIZE));
   }
 
-  const settled = await Promise.allSettled(
+  const { value: settled, calls: llmCalls } = await captureLlmMeta(() => Promise.allSettled(
     batchesInput.map(async (batch) => {
       const gen = await generateKanjiInfo({ items: batch });
       return applyKanjiPostprocess(gen.items, batch.map((b) => b.kanji));
     }),
-  );
+  ));
 
-  const model = resolveModel();
+  const model = answeredModel(llmCalls, resolveModel()); // 실제 답한 모델(공급자 층 2단계)
   const toSave: NewJaKanji[] = [];
   const batches: JaKanjiEnrichBatch[] = [];
   const allMissing: string[] = [];

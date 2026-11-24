@@ -21,6 +21,8 @@
  */
 
 import { NextResponse } from "next/server";
+import { captureLlmMeta } from "@/lib/ai/client";
+import { answeredModel } from "@/lib/ai/provider";
 import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { resolveModel } from "@/lib/ai/client";
@@ -62,7 +64,7 @@ export async function POST(req: Request) {
       {
         ok: false,
         error: "no_api_key",
-        messageKo: "OpenAI API 키가 아직 설정되지 않았어요. .env.local에 OPENAI_API_KEY를 넣고 서버를 다시 켜 주세요.",
+        messageKo: "AI API 키가 아직 설정되지 않았어요. .env.local에 OPENAI_API_KEY 또는 ANTHROPIC_API_KEY를 넣고 서버를 다시 켜 주세요.",
       },
       501,
     );
@@ -89,7 +91,7 @@ export async function POST(req: Request) {
   const images = parsed.data.images;
 
   // 사진 1장 = 호출 1회(§2-0). 한 장이 실패해도 그 장만 잃고 나머지는 살린다.
-  const settled = await Promise.allSettled(images.map((dataUrl) => extractToeicPage(dataUrl)));
+  const { value: settled, calls: llmCalls } = await captureLlmMeta(() => Promise.allSettled(images.map((dataUrl) => extractToeicPage(dataUrl))));
 
   const pagesForMerge: ToeicPhotoExtraction[] = [];
   const pages: ToeicExtractPhotoOutcome[] = [];
@@ -143,6 +145,6 @@ export async function POST(req: Request) {
     failedPhotoCount,
     notExpressionPhotoCount: merged.notExpressionPhotoIndexes.length,
     pages,
-    model: resolveModel(),
+    model: answeredModel(llmCalls, resolveModel()), // 실제 답한 모델(Claude·백업이면 그 이름 — 공급자 층 2단계)
   });
 }

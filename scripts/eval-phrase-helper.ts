@@ -1001,15 +1001,22 @@ async function runAppChecks(): Promise<CheckResult[]> {
 
   // ── 관문 K ──
   const k = read("lib/phrase-helper-transcribe.ts");
-  const kCall = k.slice(k.indexOf("transcriptions.create("), k.indexOf("transcriptions.create(") + 240);
+  // 2026-11-25 — 전사 몸통은 관문 넷 공용 lib/transcribe-core.ts(json·signal·prompt는 받았을 때만). 관문 K 호출 인자와 함께 본다.
+  const core = read("lib/transcribe-core.ts");
+  const kCall = k.slice(k.indexOf("return runTranscription("), k.indexOf("return runTranscription(") + 400);
+  const coreCall = core.slice(core.indexOf("transcriptions.create("), core.indexOf("transcriptions.create(") + 320);
   add(
     "관문 K: language ko · prompt 없음(호출 인자·입력 타입) · signal 전달 · SDK 재시도 0 · json",
     PHRASE_HELPER_TRANSCRIBE_LANGUAGE === "ko" &&
+      k.includes("return runTranscription(") &&
       /language:\s*PHRASE_HELPER_TRANSCRIBE_LANGUAGE/.test(kCall) &&
       !/\bprompt\s*:/.test(kCall) &&
       !/prompt/.test(k.slice(k.indexOf("interface KoreanAudioInput"), k.indexOf("export type KoreanTranscribeResult"))) &&
       /\{\s*signal\s*\}/.test(kCall) &&
-      /response_format:\s*"json"/.test(kCall) &&
+      /\.\.\.\(spec\.prompt !== undefined \? \{ prompt: spec\.prompt \} : \{\}\)/.test(coreCall) &&
+      /\{\s*signal\s*\}/.test(coreCall) &&
+      /response_format:\s*"json"/.test(coreCall) &&
+      /maxRetries: PHRASE_HELPER_TRANSCRIBE_SDK_MAX_RETRIES/.test(k) &&
       PHRASE_HELPER_TRANSCRIBE_SDK_MAX_RETRIES === 0,
     kCall.replace(/\s+/g, " ").slice(0, 160),
   );
@@ -1209,10 +1216,15 @@ const LIVE_INPUTS: Readonly<Record<PhraseHelperMode, string>> = {
 async function runLiveChecks(): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   const add = makeAdder(results, "실호출(게이트)");
-  if (!process.env.OPENAI_API_KEY) {
-    add("OPENAI_API_KEY", false, "키가 없어 실호출을 할 수 없습니다");
+  // 공급자 층 2단계 — 공급자 설정(AI_PROVIDER·AI_FALLBACK)의 키 기준, 어느 공급자로 도는지 리포트에 남긴다(키 값은 찍지 않는다)
+  const { hasLlmKey, describeProviderPlan } = await import("../lib/ai/provider");
+  const planLine = describeProviderPlan(process.env.OPENAI_MODEL?.trim() || "OPENAI_MODEL 기본값");
+  console.log(`실호출 공급자: ${planLine}`);
+  if (!hasLlmKey()) {
+    add("LLM 키(공급자 설정)", false, `키가 없어 실호출을 할 수 없습니다 — ${planLine}`);
     return results;
   }
+  add("실호출 공급자", true, planLine);
   const { explainPhrase } = await import("../lib/ai/phrase-helper/calls");
   const only = process.env.EVAL_PHRASE_MODE;
   const modes = isPhraseHelperMode(only) ? [only] : [...PHRASE_HELPER_MODES];

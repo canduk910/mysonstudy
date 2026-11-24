@@ -113,8 +113,10 @@ export function runJaSpeakingAppChecks(): JaSpeakingCheckResult[] {
       push(book, "오늘의 일본어 받아쓰기 라우트는 transcribeJaDailyLine(히라가나 전용)", /transcribeJaDailyLine\(\{ bytes/.test(code("app/api/japanese/daily/transcribe/route.ts")));
     }
     push(book, "함수 인자는 (input, signal)뿐 · signal을 SDK에 넘긴다", /export async function transcribeJaSpeakingAnswer\(input: TranscribeAudioInput, signal\?: AbortSignal\)/.test(t) && /export async function transcribeJaDailyLine\(input: TranscribeAudioInput, signal\?: AbortSignal\)/.test(t) && /\{ signal \}/.test(t));
-    push(book, "모델 = resolveToeicTranscribeModel(토익과 같은 env) · maxRetries 1 · 30초 · json", /resolveToeicTranscribeModel\(\)/.test(t) && /maxRetries: 1/.test(t) && /JA_SPEAKING_TRANSCRIBE_TIMEOUT_MS = 30_000/.test(t) && /response_format: "json"/.test(t));
-    push(book, "키 없으면 네트워크 없이 no_api_key(클라이언트 만들기 전)", t.indexOf('error: "no_api_key"') > 0 && t.indexOf('error: "no_api_key"') < t.indexOf("getClient(apiKey)"));
+    // 2026-11-25 — 전사 몸통(json·no_api_key·aborted/failed)은 관문 넷 공용 lib/transcribe-core.ts로 옮겼다. 그 몸통을 함께 본다.
+    const core = code("lib/transcribe-core.ts");
+    push(book, "모델 = resolveToeicTranscribeModel(토익과 같은 env) · maxRetries 1 · 30초 · json(공용 몸통)", /resolveToeicTranscribeModel\(\)/.test(t) && /makeTranscribeClientGetter\(\{ maxRetries: 1, timeout: JA_SPEAKING_TRANSCRIBE_TIMEOUT_MS \}\)/.test(t) && /JA_SPEAKING_TRANSCRIBE_TIMEOUT_MS = 30_000/.test(t) && /response_format: "json"/.test(core) && /return runTranscription\(/.test(t));
+    push(book, "키 없으면 네트워크 없이 no_api_key(클라이언트 만들기 전 — 공용 몸통)", core.indexOf('error: "no_api_key"') > 0 && core.indexOf('error: "no_api_key"') < core.indexOf("spec.getClient(apiKey)") && !/new OpenAI|transcriptions\.create/.test(t));
     push(book, "로그에 전사문을 싣지 않는다(chars 수만)", /chars=\$\{countJaSpeechChars\(text\)\}/.test(t) && !/console\.\w+\([^)]*\$\{text\}/.test(t));
     push(book, "토익 관문 T는 그대로 en", /TOEIC_TRANSCRIBE_LANGUAGE = "en"/.test(code("lib/toeic-transcribe.ts")));
   }
@@ -138,7 +140,7 @@ export function runJaSpeakingAppChecks(): JaSpeakingCheckResult[] {
     const create = code("app/api/japanese/speaking/mocks/route.ts");
     push(book, "만들기: 키 검사(501)가 맨 먼저(본문 읽기 앞) · 파트 병렬 allSettled · 전부 실패만 500(저장 안 함)", create.indexOf("hasLlmKey()") >= 0 && create.indexOf("hasLlmKey()") < create.indexOf("req.json()") && /Promise\.allSettled\(chosen\.map\(\(part\) => generateJaSpeakingPart\(part/.test(create) && create.indexOf("createdParts.length === 0") < create.indexOf("createJaSpeakingMock("));
     push(book, "만들기: 주제는 normalizeJaSpeakingTopicHints 결과를 저장(보낸 것 = 저장)", /const topicHints = normalizeJaSpeakingTopicHints\(/.test(create) && /generateJaSpeakingPart\(part, \{ level, topicHints \}\)/.test(create) && /topicHints,\n\s*parts,/.test(create));
-    push(book, "만들기: 모델은 메인 resolveModel(토익 출제 모델 아님)", /model: resolveModel\(\)/.test(create) && !/resolveToeicModel|OPENAI_TOEIC_MODEL/.test(create));
+    push(book, "만들기: 모델은 메인 resolveModel(토익 출제 모델 아님) — 실제 답한 모델 answeredModel(llmCalls, resolveModel())(공급자 층 2단계)", /model: answeredModel\(llmCalls, resolveModel\(\)\)/.test(create) && !/resolveToeicModel|OPENAI_TOEIC_MODEL/.test(create));
     const regen = code("app/api/japanese/speaking/mocks/[id]/regenerate/route.ts");
     push(book, "다시 만들기: part_exists(409) → 키(501) → 호출 E → 원자 단위 채우기(exists면 409)", regen.indexOf("part_exists") < regen.indexOf("hasLlmKey()") && regen.indexOf("hasLlmKey()") < regen.indexOf("generateJaSpeakingPart(") && /fillJaSpeakingMockPart\(id, part, value\)/.test(regen) && /level: mock\.level, topicHints: mock\.topicHints/.test(regen));
     const score = code("app/api/japanese/speaking/attempts/[id]/score/route.ts");

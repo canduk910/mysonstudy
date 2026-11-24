@@ -56,7 +56,9 @@
 import { NextResponse } from "next/server";
 import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
-import { resolveModel } from "@/lib/ai/client";
+import { captureLlmMeta, resolveModel } from "@/lib/ai/client";
+import { EXPLAIN_CALL_OPTIONS } from "@/lib/ai/math/prompts";
+import { answeredModel } from "@/lib/ai/provider";
 import { type ExplainProblemInput, explainProblem } from "@/lib/ai/math/pipeline";
 import { renderSceneHtml } from "@/lib/ai/math/player";
 import { MATH_IMAGE_DATA_URL_PATTERN } from "@/lib/ai/math/prompts";
@@ -174,7 +176,7 @@ export async function POST(req: Request) {
         ok: false,
         error: "no_api_key",
         messageKo:
-          "OpenAI API 키가 아직 설정되지 않았어요. .env.local에 OPENAI_API_KEY를 넣고 서버를 다시 켜 주세요.",
+          "AI API 키가 아직 설정되지 않았어요. .env.local에 OPENAI_API_KEY 또는 ANTHROPIC_API_KEY를 넣고 서버를 다시 켜 주세요.",
       },
       { status: 501 },
     );
@@ -233,7 +235,7 @@ export async function POST(req: Request) {
 
   try {
     // [M2.5] 2단 렌더러 주입 — 파일 상단 주석 참조. 호출 E가 실제로 나가는 유일한 자리다.
-    const result = await explainProblem(explainInput, { renderSceneHtml });
+    const { value: result, calls: llmCalls } = await captureLlmMeta(() => explainProblem(explainInput, { renderSceneHtml }));
 
     // [M4 §9-3] 자동 저장 — best-effort. 여기서 던져도 설명은 그대로 내려간다.
     let id: string | null = null;
@@ -246,7 +248,8 @@ export async function POST(req: Request) {
         verify: result.verify,
         // 기록에 남길 모델은 **호출 B(설명)를 만든 모델**이다. 검산(호출 C)은
         // `OPENAI_MODEL_VERIFY`로 따로 갈 수 있지만, 저장하는 `content`를 지은 것은 B다.
-        model: resolveModel(),
+        // 공급자 층 2단계: 실제 답한 모델 — 호출 B(설명, 라벨 EXPLAIN_CALL_OPTIONS.call)의 메타만 본다(라우트 쪽 필터 — 래퍼는 라벨로 분기하지 않는다)
+        model: answeredModel(llmCalls.filter((c) => c.call === EXPLAIN_CALL_OPTIONS.call), resolveModel()),
       });
       id = saved.id;
     } catch (err) {

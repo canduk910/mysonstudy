@@ -1882,11 +1882,16 @@ async function main(): Promise<void> {
   }
 
   const fixtures = selectFixtures();
-  if (!process.env.OPENAI_API_KEY) {
-    console.error(
-      "OPENAI_API_KEY가 없습니다. 실호출 없이 정의 동기화만 보려면 EVAL_OFFLINE_ONLY=1로 돌리세요.",
-    );
-    process.exit(1);
+  // 실호출 게이트(공급자 층 2단계) — 공급자 설정(AI_PROVIDER·AI_FALLBACK)의 키 기준. 어느 공급자로 도는지 먼저 찍는다.
+  {
+    const { hasLlmKey, describeProviderPlan } = await import("../lib/ai/provider");
+    console.log(`실호출 공급자: ${describeProviderPlan(process.env.OPENAI_MODEL?.trim() || "OPENAI_MODEL 기본값")}`);
+    if (!hasLlmKey()) {
+      console.error(
+        "LLM 키가 없습니다(공급자 설정의 키 — OPENAI_API_KEY 또는 ANTHROPIC_API_KEY). 실호출 없이 정의 동기화만 보려면 EVAL_OFFLINE_ONLY=1로 돌리세요.",
+      );
+      process.exit(1);
+    }
   }
   const twoTier = fixtures.filter((f) => f.expectSceneHtmlRequest).length;
   console.log(

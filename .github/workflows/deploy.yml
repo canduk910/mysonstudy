@@ -27,7 +27,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22 # Cloud Run Buildpacks 기본과 맞춤
+          # Cloud Run Buildpacks와 같은 메이저 — package.json engines.node(24.x)가 둘을 함께 고정한다(2026-11-25).
+          # 그 전에는 engines가 없어 빌드팩이 "최신 런타임"(빌드 로그 실측 v24.22.2)을, CI는 22를 써 서로 달랐다.
+          node-version: 24
           cache: npm
       - run: npm ci
       - run: npx tsc --noEmit
@@ -92,5 +94,7 @@ jobs:
       #
       # 권한: github-deployer SA에 roles/firebasehosting.admin 이 필요하다.
       # firebase-tools는 google-github-actions/auth 가 설정한 자격증명을 그대로 쓴다.
+      # 버전 고정(2026-11-25): `@15`면 배포마다 그날의 최신 15.x를 받아 실행한다 — 공급망 사고가 곧바로
+      # 배포 자격증명(WIF)으로 이어진다. 게시 2주 이상 지난 정확한 버전을 쓰고, 올릴 때는 사람이 바꾼다.
       - name: Purge Hosting CDN
-        run: npx --yes firebase-tools@15 deploy --only hosting --project eunwoo-bookcard --non-interactive
+        run: npx --yes firebase-tools@15.36.0 deploy --only hosting --project eunwoo-bookcard --non-interactive

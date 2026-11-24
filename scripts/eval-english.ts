@@ -1624,6 +1624,43 @@ function runVocabbookChecks(): CheckResult[] {
     );
   }
 
+  // --- mergeEnrichment D(2026-11-25 QA 반례): 번호가 같은 서로 다른 단어 — 표제어가 다르면 붙이지 않는다 ---
+  // 예전 "번호 먼저" 매칭은 0007 kite의 결과를 0007 lion에도 붙였다(정의 불변이라 영영 고쳐지지 않는다).
+  {
+    const entries: VocabEntry[] = [
+      ventry({ no: "0007", word: "kite" }),
+      ventry({ no: "0007", word: "lion" }), // 번호 겹침(여러 사진 병합·담기)
+      ventry({ no: "0009", word: "Run" }), // 모델이 번호를 틀리게 줘도 표제어로 회수
+    ];
+    const result: VocabEnrichItem[] = [
+      { no: "0007", word: "kite", definitionEn: "A toy that flies in the wind.", definitionKo: "바람에 나는 장난감이에요.", imageEmoji: "🪁" },
+      { no: "0001", word: "run", definitionEn: "To move fast on your legs.", definitionKo: "다리로 빠르게 움직여요.", imageEmoji: "🏃" },
+    ];
+    const m = mergeEnrichment(entries, result);
+    const [kite, lion, run] = m.entries;
+    add(
+      "호출 D §8. mergeEnrichment: 번호가 같아도 표제어가 다르면 붙이지 않음 · 번호가 틀려도 표제어로 회수",
+      kite.definitionEn === "A toy that flies in the wind." &&
+        lion.definitionEn === null && lion.definitionKo === null && lion.imageEmoji === null &&
+        run.definitionEn === "To move fast on your legs.",
+      `kite=${JSON.stringify(kite.definitionEn)} lion=${JSON.stringify(lion.definitionEn)}/${lion.imageEmoji} run=${JSON.stringify(run.definitionEn)}`,
+    );
+  }
+  // 같은 표제어가 번호를 달리해 두 번 실린 DAY — 번호가 맞는 결과를 각자 받는다(번호로 가르기 유지)
+  {
+    const entries: VocabEntry[] = [ventry({ no: "0002", word: "bank" }), ventry({ no: "0005", word: "bank" })];
+    const result: VocabEnrichItem[] = [
+      { no: "0002", word: "bank", definitionEn: "A place that keeps money.", definitionKo: "돈을 맡기는 곳이에요.", imageEmoji: "🏦" },
+      { no: "0005", word: "bank", definitionEn: "The land beside a river.", definitionKo: "강가의 땅이에요.", imageEmoji: null },
+    ];
+    const m = mergeEnrichment(entries, result);
+    add(
+      "호출 D §8. mergeEnrichment: 같은 표제어 두 번(번호 다름)은 번호로 가른다",
+      m.entries[0].definitionEn === "A place that keeps money." && m.entries[1].definitionEn === "The land beside a river.",
+      `0002=${JSON.stringify(m.entries[0].definitionEn)} 0005=${JSON.stringify(m.entries[1].definitionEn)}`,
+    );
+  }
+
   // --- mergeEnrichment C: 번호 없는 단어는 word(대소문자 무시)로 매칭 (EN·KO 함께 채움) ---
   {
     const entries: VocabEntry[] = [ventry({ no: null, word: "Fix", definitionEn: null, definitionKo: null })];
@@ -7498,6 +7535,17 @@ async function main(): Promise<void> {
     }
     console.log(`PASS — 오프라인 ${allResults.length}개 항목 통과 (실호출 미실행).`);
     return;
+  }
+
+  // 실호출 게이트(공급자 층 2단계) — 지금 설정(AI_PROVIDER·AI_FALLBACK)에서 부를 공급자의 키가 없으면 네트워크 전에 멈춘다.
+  // 어느 공급자로 도는지 먼저 찍는다(리포트에 남게). 키 값은 찍지 않는다.
+  {
+    const { hasLlmKey, describeProviderPlan } = await import("../lib/ai/provider");
+    console.log(`실호출 공급자: ${describeProviderPlan(resolveModel())}`);
+    if (!hasLlmKey()) {
+      console.error("LLM 키가 없어 실호출을 건너뜁니다(공급자 설정의 키 — OPENAI_API_KEY 또는 ANTHROPIC_API_KEY). 정의 동기화만 보려면 EVAL_OFFLINE_ONLY=1.");
+      process.exit(1);
+    }
   }
 
   // 낭독 자막 grounding 실호출 게이트 — **EVAL_TRANSCRIPT=1일 때만** 실호출 1회. (오프라인 게이트가

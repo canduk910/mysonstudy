@@ -32,7 +32,8 @@
 import { NextResponse } from "next/server";
 import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
-import { generateCard, resolveModel } from "@/lib/ai/client";
+import { captureLlmMeta, generateCard, resolveModel } from "@/lib/ai/client";
+import { answeredModel } from "@/lib/ai/provider";
 import type { CardUserMessageInput } from "@/lib/ai/english/prompts";
 import {
   attachSceneDigest,
@@ -149,10 +150,11 @@ function aiFailed() {
 /** AI 호출 — throw(재시도 소진)를 500 응답으로 변환하기 위한 래핑 */
 async function tryGenerate(
   meta: CardUserMessageInput,
-): Promise<{ ok: true; card: LearningCard } | { ok: false }> {
+): Promise<{ ok: true; card: LearningCard; model: string } | { ok: false }> {
   try {
-    const card = await generateCard(meta);
-    return { ok: true, card };
+    // 실제 답한 모델(Claude·백업이면 그 이름)을 카드 레코드에 남긴다(공급자 층 2단계)
+    const { value: card, calls } = await captureLlmMeta(() => generateCard(meta));
+    return { ok: true, card, model: answeredModel(calls, resolveModel()) };
   } catch (err) {
     console.error("[/api/card] 카드 생성 실패:", err);
     return { ok: false };
@@ -208,7 +210,7 @@ export async function POST(req: Request) {
         ok: false,
         error: "no_api_key",
         messageKo:
-          "OpenAI API 키가 아직 설정되지 않았어요. .env.local에 OPENAI_API_KEY를 넣고 서버를 다시 켜 주세요. (시드 데모 카드는 키 없이도 볼 수 있어요)",
+          "AI API 키가 아직 설정되지 않았어요. .env.local에 OPENAI_API_KEY 또는 ANTHROPIC_API_KEY를 넣고 서버를 다시 켜 주세요. (시드 데모 카드는 키 없이도 볼 수 있어요)",
       },
       { status: 501 },
     );
@@ -225,7 +227,6 @@ export async function POST(req: Request) {
   }
 
   const store = getStore();
-  const model = resolveModel();
 
   // --- 재생성 경로: 같은 book으로 새 카드 (기존 카드는 유지) ---
   if (typeof body === "object" && body !== null && "bookId" in body) {
@@ -246,7 +247,7 @@ export async function POST(req: Request) {
     // 장면 메모는 호출 B의 출력이 아니다 — book에 보관한 원본을 카드에 그대로 복사한다
     // (HARNESS §2A-6: 모델에게 되돌려 받으면 출력 토큰만 늘고 요약이 변조된다)
     const content: Card = attachSceneDigest(gen.card, book.sceneDigest);
-    const card = await store.createCard({ bookId: book.id, content, model });
+    const card = await store.createCard({ bookId: book.id, content, model: gen.model });
     // 재생성은 저장된 transcript를 그대로 재사용하므로 새로 fetch하지 않는다(안내도 없음)
     return NextResponse.json({ ok: true, bookId: book.id, cardId: card.id, transcriptNotice: null });
   }
@@ -358,6 +359,6 @@ export async function POST(req: Request) {
   }
 
   const content: Card = attachSceneDigest(gen.card, sceneDigest);
-  const card = await store.createCard({ bookId: book.id, content, model });
+  const card = await store.createCard({ bookId: book.id, content, model: gen.model });
   return NextResponse.json({ ok: true, bookId: book.id, cardId: card.id, transcriptNotice });
 }

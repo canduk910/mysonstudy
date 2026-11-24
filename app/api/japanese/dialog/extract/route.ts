@@ -15,7 +15,8 @@
 import { NextResponse } from "next/server";
 import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
-import { extractJaDialog, resolveModel } from "@/lib/ai/client";
+import { captureLlmMeta, extractJaDialog, resolveModel } from "@/lib/ai/client";
+import { answeredModel } from "@/lib/ai/provider";
 import { planJaDialogBatches, mergeJaDialogBatches } from "@/lib/ai/japanese/dialog";
 import type { JaDialogExtraction } from "@/lib/ai/japanese/schemas";
 import type { JaDialogExtractResponse } from "@/lib/japanese-dialog-contract";
@@ -71,14 +72,14 @@ export async function POST(req: Request) {
   const images = parsed.data.images;
 
   if (!hasLlmKey()) {
-    return json({ ok: false, error: "no_api_key", messageKo: "대화를 읽으려면 OpenAI API 키가 필요해요." }, 501);
+    return json({ ok: false, error: "no_api_key", messageKo: "대화를 읽으려면 AI API 키가 필요해요." }, 501);
   }
 
   // 배치별 병렬 판독(부분 실패 격리).
   const batches = planJaDialogBatches(images.length);
-  const settled = await Promise.allSettled(
+  const { value: settled, calls: llmCalls } = await captureLlmMeta(() => Promise.allSettled(
     batches.map((group) => extractJaDialog({ images: group.map((i) => images[i]) })),
-  );
+  ));
 
   const okBatches: JaDialogExtraction[] = [];
   let anyFailed = false;
@@ -103,6 +104,6 @@ export async function POST(req: Request) {
     partial: merged.partial || anyFailed,
     mergedCount: merged.mergedCount,
     allUnknown: merged.allUnknown,
-    model: resolveModel(),
+    model: answeredModel(llmCalls, resolveModel()), // 실제 답한 모델(공급자 층 2단계)
   });
 }

@@ -80,7 +80,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       {
         ok: false,
         error: "no_api_key",
-        messageKo: "추천을 받으려면 OpenAI API 키가 필요해요. 직접 입력으로 단어를 이어 줄 수도 있어요.",
+        messageKo: "추천을 받으려면 AI API 키가 필요해요. 직접 입력으로 단어를 이어 줄 수도 있어요.",
       },
       501,
     );

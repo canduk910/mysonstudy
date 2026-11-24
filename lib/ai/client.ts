@@ -11,6 +11,7 @@
  * 성공/실패 무관하게 { call, model, inputTokens, outputTokens, ms, provider, fallback }를 서버 로그로 남긴다.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import type { z } from "zod";
@@ -21,6 +22,7 @@ import {
   resolveProviderPlan,
   type AiEffort,
   type AiProvider,
+  type LlmCallMeta,
 } from "./provider";
 import {
   buildClaudeRequest,
@@ -361,6 +363,36 @@ export interface CallWithSchemaArgs<T> {
    * ANTHROPIC_TOEIC_MODEL)을 넘긴다 — OpenAI 쪽 호출별 모델 env와 짝. 과목 분기가 아니라 일반 파라미터다.
    */
   anthropicModel?: string;
+  /**
+   * 성공해 답했을 때 실제 공급자·모델을 받는 콜백(선택). 반환 타입(T)을 바꾸지 않고 메타를 돌려주는 길 — 진입 함수를 거치는 라우트는
+   * `captureLlmMeta`로 같은 정보를 모은다. 실패하면 부르지 않는다. 콜백이 던져도 결과는 그대로 돌려준다.
+   */
+  onMeta?: (meta: LlmCallMeta) => void;
+}
+
+/** 요청(비동기 흐름) 단위로 답한 호출 메타를 모으는 저장소 — captureLlmMeta 안에서만 값이 있다 */
+const llmMetaStore = new AsyncLocalStorage<LlmCallMeta[]>();
+
+/**
+ * `fn` 안에서 성공한 callWithSchema 호출들의 메타(공급자·실제 모델)를 모아 결과와 함께 돌려준다 — 진입 함수 시그니처를 바꾸지 않고
+ * 레코드 `model` 칸을 실제 답한 모델로 남기는 길(2단계). 병렬 호출(Promise.allSettled)도 같은 배열에 모인다. 중첩되면 안쪽이 따로 모은다.
+ * 라우트: `const { value, calls } = await captureLlmMeta(() => generateMockPart(...)); … model: answeredModel(calls, resolveToeicModel())`.
+ */
+export async function captureLlmMeta<R>(fn: () => Promise<R>): Promise<{ value: R; calls: LlmCallMeta[] }> {
+  const calls: LlmCallMeta[] = [];
+  const value = await llmMetaStore.run(calls, fn);
+  return { value, calls };
+}
+
+function reportLlmMeta(meta: LlmCallMeta, onMeta?: (meta: LlmCallMeta) => void): void {
+  llmMetaStore.getStore()?.push(meta);
+  if (onMeta) {
+    try {
+      onMeta(meta);
+    } catch {
+      // 콜백 실패가 답을 버리게 하지 않는다
+    }
+  }
 }
 
 /** `callWithSchema`가 SDK에 넘기는 요청 옵션(`responses.create`의 둘째 인자) 중 이 래퍼가 싣는 두 키. */
@@ -596,12 +628,15 @@ export async function callWithSchema<T>(args: CallWithSchemaArgs<T>): Promise<T>
     );
   };
 
-  const runProvider = (provider: AiProvider): Promise<T> => {
+  const runProvider = async (provider: AiProvider): Promise<T> => {
     usedProvider = provider;
     usedModel = "";
     inputTokens = 0;
     outputTokens = 0;
-    return provider === "anthropic" ? runAnthropic() : runOpenAI();
+    const out = await (provider === "anthropic" ? runAnthropic() : runOpenAI());
+    // 성공해 답한 공급자·모델을 호출부에 알린다(onMeta·captureLlmMeta) — 반환 타입 불변
+    reportLlmMeta({ call, provider, model: usedModel, fallback: fallback !== null }, args.onMeta);
+    return out;
   };
 
   try {
@@ -1188,6 +1223,7 @@ export async function explainTalkSentence(input: TalkExplainInput): Promise<Talk
     throw new Error(`[ai:${TALK_EXPLAIN_CALL_OPTIONS.call}] 범위 밖 문장입니다 (turn ${input.turnIndex}, sentence ${input.sentenceIndex}).`);
   }
   const model = resolveModel();
+  let answered = model;
   const out = await callWithSchema({
     call: TALK_EXPLAIN_CALL_OPTIONS.call,
     system: TALK_EXPLAIN_SYSTEM_PROMPT,
@@ -1206,6 +1242,10 @@ export async function explainTalkSentence(input: TalkExplainInput): Promise<Talk
     temperature: TALK_EXPLAIN_CALL_OPTIONS.temperature,
     maxOutputTokens: TALK_EXPLAIN_CALL_OPTIONS.maxOutputTokens,
     model,
+    // 실제 답한 모델(Claude 경로·백업이면 그 이름)을 저장 레코드 TalkExplanation.model에 남긴다(공급자 층 2단계)
+    onMeta: (meta) => {
+      answered = meta.model;
+    },
   });
   return {
     turnIndex: input.turnIndex,
@@ -1215,7 +1255,7 @@ export async function explainTalkSentence(input: TalkExplainInput): Promise<Talk
     script: out.script,
     betterEn: out.betterEn,
     keyWords: out.keyWords,
-    model,
+    model: answered,
   };
 }
 

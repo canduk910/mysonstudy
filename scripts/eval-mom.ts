@@ -312,6 +312,12 @@ void (async () => {
   } else if (LIVE) {
     // 실호출 M1 1회 — 지어낸 5문항(교재 문장 아님)
     const A = "실호출 M1";
+    // 공급자 층 2단계 — 공급자 설정의 키 기준(없으면 네트워크 전에 FAIL 행), 어느 공급자로 도는지 리포트에 남긴다
+    const { hasLlmKey, describeProviderPlan } = await import("../lib/ai/provider");
+    const planLine = describeProviderPlan(process.env.OPENAI_MODEL?.trim() || "OPENAI_MODEL 기본값");
+    console.log(`실호출 공급자: ${planLine}`);
+    add(A, "실호출 공급자(LLM 키)", hasLlmKey(), planLine);
+    if (hasLlmKey()) {
     const items = [
       { ko: "창가 자리로 주세요.", en: "A window seat, please.", transcript: "a window seat please", verdict: "pass" as const },
       { ko: "이거 얼마예요?", en: "How much is this?", transcript: "how much is this", verdict: "pass" as const },
@@ -327,6 +333,7 @@ void (async () => {
     } catch (err) {
       live = 1;
       add(A, "summarizeMomTest 성공", false, err instanceof Error ? err.message : String(err));
+    }
     }
     for (const r of results.slice(offline)) console.log(`| ${r.pass ? "PASS" : "FAIL"} | ${r.area} | ${r.check} | ${r.detail.replace(/\|/g, "\\|").slice(0, 160)} |`);
   }

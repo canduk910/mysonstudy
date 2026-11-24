@@ -21,6 +21,7 @@
  *   채우므로 덜 따른 모범답변을 바꿀 길이 없다, 외울 것은 흐름이다). 모범답변 속 강조는 틀 글자에서 온 구간을 🧩 색으로 따로 보인다.
  */
 
+import { requestPictureImage } from "@/lib/picture-image-request";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
@@ -39,7 +40,6 @@ import {
   toeicMockPartLabelKo,
   toeicTakeHref,
   type ToeicMockGetResponse,
-  type ToeicMockImageResponse,
   type ToeicMockRecord,
   type ToeicMockRegenerateResponse,
   type ToeicMockRenameResponse,
@@ -276,48 +276,28 @@ export default function ToeicMockDetailView({
     if (inFlight.current.has(slot)) return;
     inFlight.current.add(slot);
     setJob(slot, { phase: "making" });
-    let status = 0;
-    let data: ToeicMockImageResponse | null = null;
     try {
-      const res = await fetch(`/api/toeic/mocks/${encodeURIComponent(id)}/image`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ slot }),
+      // 요청·501·409·실패 시 한 번 다시 읽기 판정은 공용 헬퍼(lib/picture-image-request.ts — 세 화면 공용)
+      const out = await requestPictureImage({
+        url: `/api/toeic/mocks/${encodeURIComponent(id)}/image`,
+        slot,
+        reread: async () => {
+          const current = await rereadImage(slot, imagePrompt);
+          return current?.status === "ready" && current.imageId ? current.imageId : null;
+        },
+        noResponseMessageKo: "사진 응답을 받지 못했어요. 서버가 아직 그리는 중일 수 있어요 — 잠시 뒤 새로 읽거나 다시 만들어 보세요.",
       });
-      status = res.status;
-      data = (await res.json().catch(() => null)) as ToeicMockImageResponse | null;
-    } catch {
-      data = null; // 네트워크가 끊겼다 — 아래에서 다시 읽어 확인
-    }
-    try {
-      if (data?.ok && data.image.imageId) {
-        setJob(slot, { phase: "ready", imageId: data.image.imageId });
+      if (out.kind === "ready") {
+        setJob(slot, { phase: "ready", imageId: out.imageId });
         router.refresh();
-        return;
-      }
-      if (status === 501 && data && !data.ok) {
-        setJob(slot, { phase: "nokey", message: data.messageKo });
-        return;
-      }
-      if (status === 409) {
+      } else if (out.kind === "nokey") {
+        setJob(slot, { phase: "nokey", message: out.message });
+      } else if (out.kind === "conflict") {
         setJob(slot, null);
         router.refresh();
-        return;
+      } else {
+        setJob(slot, { phase: "failed", message: out.message });
       }
-      // 실패로 받았다 — 이미 저장됐는지 한 번 새로 읽은 뒤에만 실패로 보인다
-      const current = await rereadImage(slot, imagePrompt);
-      if (current?.status === "ready" && current.imageId) {
-        setJob(slot, { phase: "ready", imageId: current.imageId });
-        router.refresh();
-        return;
-      }
-      setJob(slot, {
-        phase: "failed",
-        message:
-          data && !data.ok
-            ? data.messageKo
-            : "사진 응답을 받지 못했어요. 서버가 아직 그리는 중일 수 있어요 — 잠시 뒤 새로 읽거나 다시 만들어 보세요.",
-      });
     } finally {
       inFlight.current.delete(slot);
     }

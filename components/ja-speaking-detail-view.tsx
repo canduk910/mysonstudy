@@ -10,6 +10,7 @@
  * - 응시: 실전(다섯 파트가 모두 있을 때) · 유형 연습(파트 하나). 응시 기록은 결과 화면으로.
  */
 
+import { requestPictureImage } from "@/lib/picture-image-request";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -26,7 +27,6 @@ import {
   jaSpeakingScopeLabelKo,
   jaSpeakingTakeHref,
   type JaSpeakingAttemptSummary,
-  type JaSpeakingImageResponse,
   type JaSpeakingMockGetResponse,
   type JaSpeakingMockRecord,
   type JaSpeakingRegenerateResponse,
@@ -147,41 +147,28 @@ export default function JaSpeakingDetailView({
     if (inFlight.current.has(slot)) return;
     inFlight.current.add(slot);
     setJob(slot, { phase: "making" });
-    let status = 0;
-    let data: JaSpeakingImageResponse | null = null;
     try {
-      const res = await fetch(`/api/japanese/speaking/mocks/${encodeURIComponent(id)}/image`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ slot }),
+      // 요청·501·409·실패 시 한 번 다시 읽기 판정은 공용 헬퍼(lib/picture-image-request.ts — 토익 화면과 공용)
+      const out = await requestPictureImage({
+        url: `/api/japanese/speaking/mocks/${encodeURIComponent(id)}/image`,
+        slot,
+        reread: async () => {
+          const current = await reread(slot, imagePrompt);
+          return current?.status === "ready" && current.imageId ? current.imageId : null;
+        },
+        noResponseMessageKo: "사진 응답을 받지 못했어요. 잠시 뒤 새로 읽거나 다시 만들어 보세요.",
       });
-      status = res.status;
-      data = (await res.json().catch(() => null)) as JaSpeakingImageResponse | null;
-    } catch {
-      data = null;
-    }
-    try {
-      if (data?.ok && data.image.imageId) {
-        setJob(slot, { phase: "ready", imageId: data.image.imageId });
+      if (out.kind === "ready") {
+        setJob(slot, { phase: "ready", imageId: out.imageId });
         router.refresh();
-        return;
-      }
-      if (status === 501 && data && !data.ok) {
-        setJob(slot, { phase: "nokey", message: data.messageKo });
-        return;
-      }
-      if (status === 409) {
+      } else if (out.kind === "nokey") {
+        setJob(slot, { phase: "nokey", message: out.message });
+      } else if (out.kind === "conflict") {
         setJob(slot, null);
         router.refresh();
-        return;
+      } else {
+        setJob(slot, { phase: "failed", message: out.message });
       }
-      const current = await reread(slot, imagePrompt);
-      if (current?.status === "ready" && current.imageId) {
-        setJob(slot, { phase: "ready", imageId: current.imageId });
-        router.refresh();
-        return;
-      }
-      setJob(slot, { phase: "failed", message: data && !data.ok ? data.messageKo : "사진 응답을 받지 못했어요. 잠시 뒤 새로 읽거나 다시 만들어 보세요." });
     } finally {
       inFlight.current.delete(slot);
     }

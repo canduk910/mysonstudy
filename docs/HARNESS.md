@@ -175,3 +175,46 @@ docs/harness/phrase-helper.md # 표현 도우미 스펙(과목 공통)
   - **Claude 호출별 모델**: `CallWithSchemaArgs.anthropicModel`(OpenAI `model`의 짝)이다. 수학 검산은 `resolveAnthropicVerifyModel()`(env `ANTHROPIC_MODEL_VERIFY`), 토익 출제·채점 4곳은 `resolveAnthropicToeicModel()`(env `ANTHROPIC_TOEIC_MODEL`)이다. 둘 다 비면 `ANTHROPIC_MODEL`이다. 토익 레코드의 `model` 칸은 여전히 OpenAI 모델 이름을 남긴다(2단계 과제).
   - **클라이언트 상한 값**(120초·재시도 1회)은 eval이 값과 스텁 요청 횟수로 잠근다.
   - **스모크 게이트** `scripts/smoke-anthropic-schemas.ts`: 스키마 39개를 Claude에 1회씩(effort low) 보낸다. `SMOKE_ANTHROPIC=1` + `ANTHROPIC_API_KEY`가 없으면 네트워크 전에 종료하고, npm 스크립트로 등록하지 않는다. **비용이 드는 실호출이라 사용자 동의 후 오케스트레이터가 `AI_PROVIDER=anthropic` 전환 전에 돌린다.** 오프라인 짝은 eval:provider의 `validateClaudeSchema` 점검이다(정리 뒤 지원 안 하는 키 0·additionalProperties:false·재귀 없음 — 현재 39개 통과).
+- **2단계 준비(2026-11-25).**
+  - **레코드 `model` = 실제 답한 모델**: `callWithSchema`는 성공하면 `{call, provider, model, fallback}` 메타(`LlmCallMeta`, `lib/ai/provider.ts`)를 알린다. 반환 타입은 그대로이고, 직접 호출은 `onMeta` 콜백으로 받는다. 진입 함수를 거치는 라우트는 `captureLlmMeta(fn)`(AsyncLocalStorage — 병렬 호출도 한 배열에 모인다)으로 모은다. 저장값은 `answeredModel(calls, 설정상 모델)`이다(중복 없이 `+`로 잇고, 답이 없으면 설정상 모델).
+    - 배선한 곳: 토익 판독·모의고사·한 문제 연습·틀 판정, 영어 카드, 일본어 단어 생성·대화 전사·한자, 일본어 말하기 출제, 수학 설명(호출 B 메타만 — 라벨 필터는 라우트에 둔다), 자유대화 문장 설명(`onMeta`).
+    - 판독과 저장이 다른 요청인 영어 단어장은 `plannedModel(resolveModel())`(계획의 메인이 Claude면 Claude 이름)을 쓴다.
+    - OpenAI가 답하면 기존과 같이 요청한 모델 이름이고, Claude가 답하면 응답의 모델 이름(서버 측 폴백이면 대체 모델)이다.
+    - 저장 스키마에 provider 칸은 더하지 않았다. 모델 이름이 공급자를 드러내고(`claude-`·`gpt-`), 레코드 정규화 함수 여러 곳을 넓히지 않기 위해서다.
+    - 표현 도우미 결과의 `model`은 저장되지 않는 표시값이라 설정상 모델 그대로다.
+  - **실호출 eval 게이트**(english 기본·math·`EVAL_TOEIC`·`EVAL_PHRASE`·`EVAL_MOM`, `EVAL_TALK`·`EVAL_TRANSCRIPT`는 english 게이트 뒤)는 `hasLlmKey()`(공급자 설정의 키)로 판정한다. 시작할 때 `describeProviderPlan()` 한 줄(메인·백업 공급자와 모델, 키 값 없음)을 찍는다.
+  - **LLM 라우트의 키 없음(501) 문구**는 공급자 중립("AI API 키가 …", 로컬 안내는 `OPENAI_API_KEY 또는 ANTHROPIC_API_KEY`)으로 바꿨다. TTS·전사·사진·실시간 음성 문구는 "OpenAI API 키" 그대로다.
+
+### Anthropic 켜기 체크리스트 (운영 — 사람·오케스트레이터 몫)
+
+모든 gcloud 명령에 `--project eunwoo-bookcard`를 붙인다(로컬 기본 프로젝트가 다르다). 키 값은 어디에도 출력하거나 기록하지 않는다.
+
+1. **비밀 등록**(값은 표준 입력으로만):
+   ```bash
+   printf '%s' "$ANTHROPIC_KEY_VALUE" | gcloud secrets create anthropic-api-key --data-file=- --replication-policy=automatic --project eunwoo-bookcard
+   gcloud secrets add-iam-policy-binding anthropic-api-key --member="serviceAccount:273068330044-compute@developer.gserviceaccount.com" --role=roles/secretmanager.secretAccessor --project eunwoo-bookcard
+   ```
+2. **서비스에 연결**(한 번이면 재배포 뒤에도 유지 — `.github/workflows/deploy.yml`의 `gcloud run deploy --source`는 env·secret을 건드리지 않으므로 워크플로는 고칠 것이 없다. CI 오프라인 eval 단계는 이미 `ANTHROPIC_API_KEY: ""`):
+   ```bash
+   gcloud run services update eunwoo-bookcard --region asia-northeast3 --project eunwoo-bookcard --update-secrets ANTHROPIC_API_KEY=anthropic-api-key:latest
+   ```
+   이 시점은 `AI_PROVIDER`가 비어 있어 **OpenAI 메인 + Claude 백업**이다(OpenAI 장애 때만 Claude가 답한다).
+3. **스키마 스모크**(사용자 동의 후, 로컬에서 키를 명시해 1회):
+   ```bash
+   SMOKE_ANTHROPIC=1 ANTHROPIC_API_KEY=<키> OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= APP_PIN= npx tsx scripts/smoke-anthropic-schemas.ts
+   ```
+   예상 비용(claude-opus-5-5 $4/MTok 입력·$20/MTok 출력): 스키마 39개 × 1요청에 입력 약 0.5~1.5k토큰(지시문 + 스키마), 출력 약 0.5~2k토큰(effort low thinking 포함)이다. 합계 입력 약 60k·출력 약 80k 토큰으로 **약 $2(넉넉히 잡아 $4 이하)**다. FAIL 스키마가 있으면 전환하지 않는다. 400(스키마 거부)은 백업으로 넘기지 않으므로 그 기능이 Anthropic 모드에서 통째로 깨진다.
+4. **과목별 단계 검증**(로컬, 사용자 동의 후 — `AI_PROVIDER=anthropic ANTHROPIC_API_KEY=<키>`와 안전 접두(`STORE_BACKEND=file` 등)를 함께 준다). 각 리포트 첫 줄의 "실호출 공급자"가 `메인 anthropic(…)`인지 먼저 본다. 순서와 게이트:
+
+   | 순서 | 과목 | 게이트 | 대략의 호출 수 |
+   |---|---|---|---|
+   | 1 | 엄마 | `EVAL_MOM=1 npm run eval:mom` | M1 1회 |
+   | 2 | 표현 도우미 | `EVAL_PHRASE=1 npm run eval:phrase` | 모드 3개 × 1(되묻기 시 +1) |
+   | 3 | 일본어 | 실호출 게이트가 아직 없다(`EVAL_JAPANESE`는 자리만) | dev 서버(`STORE_BACKEND=file`)에서 단어 생성·대화 전사·해설·한자·말하기 출제를 1회씩 손으로 확인 |
+   | 4 | 토익 | `EVAL_TOEIC=1 npm run eval:toeic`(사진은 `EVAL_TOEIC_PHOTO`) | B·C·D 각 1(+ A 1) |
+   | 5 | 영어 | `npm run eval:english`(기본 3회) → `EVAL_TALK=1`(2회) → `EVAL_TRANSCRIPT=1`(1회) | 3~6 |
+   | 6 | 수학 | `npm run eval:math` | B·C 픽스처 8~16회 + 호출 E 1~2 |
+
+   `AI_PROVIDER`는 **전역 스위치**다. 과목별 단계 적용은 위 순서로 로컬 검증을 쌓은 뒤 프로덕션을 한 번에 바꾸는 방식이다. 프로덕션에서 과목별로 따로 켜려면 호출부(과목 진입 함수)가 과목 env를 읽어 `provider`를 넘기는 배선이 필요한데, 아직 없다.
+5. **전환**: `gcloud run services update eunwoo-bookcard --region asia-northeast3 --project eunwoo-bookcard --update-env-vars AI_PROVIDER=anthropic`(선택: `ANTHROPIC_MODEL`·`ANTHROPIC_MODEL_VERIFY`·`ANTHROPIC_TOEIC_MODEL`). 이때부터 OpenAI는 백업이다. 로그에서 `"provider":"anthropic"`, `fallback`의 빈도, `ms`(Opus 지연)를 지켜본다.
+6. **되돌리기**: `--update-env-vars AI_PROVIDER=` 하나로 OpenAI 메인이 된다(키는 남겨 두면 Claude 백업). Claude를 완전히 끄려면 `--remove-secrets ANTHROPIC_API_KEY`.

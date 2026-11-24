@@ -122,7 +122,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   // ── 3. 키(AI 앞) ──
   if (!hasLlmKey()) {
-    return json({ ok: false, error: "no_api_key", messageKo: "OpenAI API 키가 아직 설정되지 않아 AI 채점을 할 수 없어요. 녹음은 이 기기에 그대로 있어요." }, 501);
+    return json({ ok: false, error: "no_api_key", messageKo: "AI API 키가 아직 설정되지 않아 AI 채점을 할 수 없어요. 녹음은 이 기기에 그대로 있어요." }, 501);
   }
 
   const nowIso = new Date().toISOString();

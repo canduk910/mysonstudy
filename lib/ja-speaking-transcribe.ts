@@ -20,9 +20,9 @@
  * 로그에는 모델·바이트·형식·글자 수·ms만(전사문·오디오 없음).
  */
 
-import OpenAI, { toFile } from "openai";
 import { countJaSpeechChars } from "./ja-speaking";
 import { resolveToeicTranscribeModel, type TranscribeAudioInput, type TranscribeResult } from "./toeic-transcribe";
+import { makeTranscribeClientGetter, runTranscription } from "./transcribe-core";
 
 /** 전사 언어(ISO-639-1) — 일본어 답변만 받는다 */
 export const JA_SPEAKING_TRANSCRIBE_LANGUAGE = "ja";
@@ -34,13 +34,8 @@ type JaTranscribePrompt = typeof JA_SPEAKING_TRANSCRIBE_PROMPT | typeof JA_DAILY
 /** 전사 한 번의 시간 상한(ms) — 채점 요청 전체(전사 + 호출 F)가 60초 상한 안에 들게 */
 export const JA_SPEAKING_TRANSCRIBE_TIMEOUT_MS = 30_000;
 
-let cachedClient: OpenAI | null = null;
-
-/** 전사 전용 OpenAI 클라이언트(캐시). 재시도 1회 */
-function getClient(apiKey: string): OpenAI {
-  if (!cachedClient) cachedClient = new OpenAI({ apiKey, maxRetries: 1, timeout: JA_SPEAKING_TRANSCRIBE_TIMEOUT_MS });
-  return cachedClient;
-}
+/** 전사 전용 OpenAI 클라이언트(캐시 — lib/transcribe-core.ts). 재시도 1회 */
+const getClient = makeTranscribeClientGetter({ maxRetries: 1, timeout: JA_SPEAKING_TRANSCRIBE_TIMEOUT_MS });
 
 /** 키가 있는가 — 라우트가 501을 낼지 판정한다 */
 export function hasJaSpeakingTranscribeApiKey(): boolean {
@@ -57,28 +52,18 @@ export async function transcribeJaDailyLine(input: TranscribeAudioInput, signal?
   return transcribeJa(input, JA_DAILY_LINE_TRANSCRIBE_PROMPT, signal);
 }
 
-/** 공통 몸통 — prompt는 위 두 고정 상수만 받는다(타입으로 잠금) */
+/** 공통 몸통 — prompt는 위 두 고정 상수만 받는다(타입으로 잠금). 전사 자체는 lib/transcribe-core.ts */
 async function transcribeJa(input: TranscribeAudioInput, fixedPrompt: JaTranscribePrompt, signal?: AbortSignal): Promise<TranscribeResult> {
-  const model = resolveToeicTranscribeModel();
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return { ok: false, error: "no_api_key", model, detail: "OPENAI_API_KEY 없음" };
-
-  const started = Date.now();
-  try {
-    const file = await toFile(new Uint8Array(input.bytes), input.fileName, { type: input.type });
-    const res = await getClient(apiKey).audio.transcriptions.create(
-      { file, model, language: JA_SPEAKING_TRANSCRIBE_LANGUAGE, prompt: fixedPrompt, response_format: "json" },
-      { signal },
-    );
-    const text = typeof res?.text === "string" ? res.text.trim() : "";
-    console.log(
-      `[ja_speaking:transcribe] model=${model} bytes=${input.bytes.byteLength} type=${input.type} chars=${countJaSpeechChars(text)} ms=${Date.now() - started}`,
-    );
-    return { ok: true, text, model };
-  } catch (err) {
-    if (signal?.aborted) return { ok: false, error: "aborted", model, detail: "client closed" };
-    const detail = err instanceof Error ? `${err.name}: ${err.message}`.slice(0, 200) : String(err).slice(0, 200);
-    console.error(`[ja_speaking:transcribe] 실패 model=${model} bytes=${input.bytes.byteLength} type=${input.type} ms=${Date.now() - started}: ${detail}`);
-    return { ok: false, error: "failed", model, detail };
-  }
+  return runTranscription(
+    {
+      logTag: "ja_speaking",
+      model: resolveToeicTranscribeModel(),
+      language: JA_SPEAKING_TRANSCRIBE_LANGUAGE,
+      prompt: fixedPrompt,
+      getClient,
+      measure: (text) => `chars=${countJaSpeechChars(text)}`,
+    },
+    input,
+    { signal },
+  );
 }

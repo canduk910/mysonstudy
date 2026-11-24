@@ -1960,12 +1960,17 @@ async function runAttemptChecks(): Promise<CheckResult[]> {
     }
   }
   const tSrc = readFileSync(new URL("../lib/toeic-transcribe.ts", import.meta.url), "utf-8");
-  const createCall = tSrc.slice(tSrc.indexOf("transcriptions.create("), tSrc.indexOf("transcriptions.create(") + 240);
+  // 2026-11-25 — 전사 몸통은 관문 넷 공용 lib/transcribe-core.ts. 관문 T 쪽은 runTranscription 호출 인자에 prompt가 없어야 하고,
+  // 공용 몸통은 prompt를 **받았을 때만** 싣는다(일본어 관문의 고정 표기 지시용) — 둘을 함께 본다.
+  const coreSrc = readFileSync(new URL("../lib/transcribe-core.ts", import.meta.url), "utf-8");
+  const tCall = tSrc.slice(tSrc.indexOf("return runTranscription("), tSrc.indexOf("return runTranscription(") + 400);
+  const createCall = coreSrc.slice(coreSrc.indexOf("transcriptions.create("), coreSrc.indexOf("transcriptions.create(") + 320);
   add(
     "관문 T: 기대 문장을 prompt로 넣지 않는다(전사 호출 인자에 prompt 없음·함수가 prompt를 받지 않는다) + signal 전달",
-    tSrc.includes("transcriptions.create(") && !/\bprompt\s*:/.test(createCall) && !/prompt\??\s*:/.test(tSrc.slice(tSrc.indexOf("interface TranscribeAudioInput"), tSrc.indexOf("export type TranscribeResult"))) &&
-      /\{\s*signal\s*\}/.test(createCall) && /language:\s*TOEIC_TRANSCRIBE_LANGUAGE/.test(createCall) && /response_format:\s*"json"/.test(createCall),
-    createCall.replace(/\s+/g, " ").slice(0, 160),
+    tSrc.includes("return runTranscription(") && !/\bprompt\s*:/.test(tCall) && !/prompt\??\s*:/.test(tSrc.slice(tSrc.indexOf("interface TranscribeAudioInput"), tSrc.indexOf("export type TranscribeResult"))) &&
+      /\{\s*signal\s*\}/.test(tCall) && /language:\s*TOEIC_TRANSCRIBE_LANGUAGE/.test(tCall) &&
+      /\.\.\.\(spec\.prompt !== undefined \? \{ prompt: spec\.prompt \} : \{\}\)/.test(createCall) && /\{\s*signal\s*\}/.test(createCall) && /response_format:\s*"json"/.test(createCall),
+    tCall.replace(/\s+/g, " ").slice(0, 160),
   );
   const routeSrc = readFileSync(new URL("../app/api/toeic/attempts/[id]/score/route.ts", import.meta.url), "utf-8");
   const keyAt = routeSrc.indexOf("if (!hasLlmKey())"); // 2026-11-25 공급자 층 — AI 앞 LLM 키 판정(전사 키는 관문 T의 no_api_key → 501)
@@ -2947,9 +2952,9 @@ function runTemplateFlowAiChecks(): CheckResult[] {
     );
     const routeModel = ["app/api/toeic/mocks/route.ts", "app/api/toeic/guides/[part]/drills/route.ts"].map((rel) => {
       const src = readFileSync(new URL(`../${rel}`, import.meta.url), "utf-8");
-      return /model: resolveToeicModel\(\)/.test(src) && !/resolveModel\(/.test(src);
+      return /model: answeredModel\(llmCalls, resolveToeicModel\(\)\)/.test(src) && !/resolveModel\(/.test(src); // 공급자 층 2단계 — 실제 답한 모델, 답이 없으면 출제 모델
     });
-    add("모의고사·한 문제 연습 레코드 model = resolveToeicModel()(실제로 출제한 모델을 남긴다)", routeModel.every(Boolean), JSON.stringify(routeModel));
+    add("모의고사·한 문제 연습 레코드 model = answeredModel(llmCalls, resolveToeicModel())(실제로 출제·답한 모델을 남긴다)", routeModel.every(Boolean), JSON.stringify(routeModel));
     const savedToeic = process.env.OPENAI_TOEIC_MODEL;
     const savedMain = process.env.OPENAI_MODEL;
     try {
@@ -3127,10 +3132,15 @@ function runJsonSchemaSyncChecks(): CheckResult[] {
 async function runLiveChecks(): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   const add = makeAdder(results, "실호출(게이트)");
-  if (!process.env.OPENAI_API_KEY) {
-    add("OPENAI_API_KEY", false, "키가 없어 실호출을 할 수 없습니다");
+  // 공급자 층 2단계 — 공급자 설정(AI_PROVIDER·AI_FALLBACK)의 키 기준, 어느 공급자로 도는지 리포트에 남긴다(키 값은 찍지 않는다)
+  const { hasLlmKey, describeProviderPlan } = await import("../lib/ai/provider");
+  const planLine = describeProviderPlan(process.env.OPENAI_MODEL?.trim() || "OPENAI_MODEL 기본값");
+  console.log(`실호출 공급자: ${planLine}`);
+  if (!hasLlmKey()) {
+    add("LLM 키(공급자 설정)", false, `키가 없어 실호출을 할 수 없습니다 — ${planLine}`);
     return results;
   }
+  add("실호출 공급자", true, planLine);
   // 게이트 안에서만 로드한다 — 오프라인 경로는 openai 클라이언트 모듈을 건드리지 않는다
   const calls = await import("../lib/ai/toeic/calls");
 

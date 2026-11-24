@@ -34,6 +34,10 @@ import {
   resolveAnthropicModel,
   resolveAnthropicVerifyModel,
   resolveProviderPlan,
+  answeredModel,
+  plannedModel,
+  describeProviderPlan,
+  type LlmCallMeta,
 } from "../lib/ai/provider";
 import {
   CLAUDE_SERVER_FALLBACK_BETA,
@@ -278,6 +282,22 @@ function runSelectionChecks(): void {
   ];
   const keyBad = keyRows.filter(([env, want]) => hasLlmKey(env) !== want).map(([env]) => JSON.stringify(env));
   add(B, "hasLlmKey: 실제로 부를 공급자의 키가 있을 때만 참(백업 off면 메인 키만)", keyBad.length === 0, keyBad.join(" / ") || "ok");
+  {
+    const m = (provider: "openai" | "anthropic", model: string): LlmCallMeta => ({ call: "x", provider, model, fallback: false });
+    add(
+      B,
+      "answeredModel: 답한 모델을 순서대로 중복 없이 + 로 잇고, 답이 없으면 설정상 모델",
+      answeredModel([], "gpt-a") === "gpt-a" && answeredModel([m("anthropic", "claude-x"), m("anthropic", "claude-x")], "gpt-a") === "claude-x" && answeredModel([m("anthropic", "claude-x"), m("openai", "gpt-a")], "gpt-z") === "claude-x+gpt-a",
+    );
+    add(
+      B,
+      "plannedModel: 계획의 메인이 Claude면 Claude 모델(호출별 → ANTHROPIC_MODEL → 기본), 아니면 OpenAI 모델",
+      plannedModel("gpt-a", undefined, { ...O }) === "gpt-a" && plannedModel("gpt-a", undefined, { ...O, ...A, AI_PROVIDER: "anthropic" }) === "claude-opus-5-5" && plannedModel("gpt-a", "claude-t", { ...A, AI_PROVIDER: "anthropic" }) === "claude-t" && plannedModel("gpt-a", undefined, { ...O, AI_PROVIDER: "anthropic" }) === "gpt-a",
+    );
+    const d1 = describeProviderPlan("gpt-a", { ...O, ...A, AI_PROVIDER: "anthropic" });
+    const d0 = describeProviderPlan("gpt-a", {});
+    add(B, "describeProviderPlan: 메인·백업 공급자와 모델을 한 줄로(키 값 없음), 키가 없으면 LLM 키 없음", d1 === "메인 anthropic(claude-opus-5-5) · 백업 openai(gpt-a)" && /^LLM 키 없음/.test(d0) && !/sk-/.test(d1), `${d1} / ${d0}`);
+  }
   add(B, "providerHasKey: 공급자별 env 키", providerHasKey("openai", O) && !providerHasKey("anthropic", O) && providerHasKey("anthropic", A));
   add(
     B,
@@ -484,6 +504,33 @@ async function runFlowChecks(): Promise<void> {
     add(B, "Claude 요청: anthropic-beta 헤더에 서버 측 거절 폴백, 본문 fallbacks \"default\"", beta.includes(CLAUDE_SERVER_FALLBACK_BETA) && cBody.fallbacks === "default", beta);
     add(B, "로그: provider anthropic · 실제 응답 모델(서버 폴백 반영) · 토큰", logs[0]?.provider === "anthropic" && logs[0]?.model === "claude-stub-served" && logs[0]?.inputTokens === 7 && logs[0]?.fallback === null, JSON.stringify(logs[0]));
 
+    // (b1) 답한 공급자·모델 메타 — captureLlmMeta(진입 함수용)와 onMeta(직접 호출용), 실패면 메타 없음
+    {
+      const { captureLlmMeta } = clientMod;
+      const seen: string[] = [];
+      script = { openai: [], anthropic: [claudeMsg('{"a":"m1"}')] };
+      hits.length = 0;
+      Object.assign(process.env, { AI_PROVIDER: "anthropic", AI_FALLBACK: "", OPENAI_API_KEY: "sk-stub", ANTHROPIC_API_KEY: "sk-stub" });
+      const cap = await captureLlmMeta(() => callWithSchema({ ...base, call: "t-meta", onMeta: (m) => seen.push(`${m.provider}:${m.model}`) }));
+      add(B, "captureLlmMeta·onMeta: Claude가 답하면 {provider: anthropic, model: 응답 모델, fallback: false} — 반환값(T)은 그대로", (cap.value as any)?.a === "m1" && cap.calls.length === 1 && cap.calls[0].provider === "anthropic" && cap.calls[0].model === "claude-stub-served" && !cap.calls[0].fallback && seen.join() === "anthropic:claude-stub-served", JSON.stringify(cap.calls));
+      script = { openai: [openaiOk('{"a":"m2"}'), openaiOk('{"a":"m3"}')], anthropic: [claudeErr(529, "overloaded_error"), claudeErr(529, "overloaded_error"), claudeErr(400, "invalid_request_error")] };
+      const cap2 = await captureLlmMeta(() => Promise.allSettled([callWithSchema({ ...base, call: "t-meta-fb" }), callWithSchema({ ...base, call: "t-meta-fb2" })]));
+      const fbModels = cap2.calls.map((c) => `${c.provider}:${c.fallback}`).sort().join(",");
+      add(B, "captureLlmMeta: 병렬 호출 메타가 한 배열에 모이고, 백업이 답하면 provider openai·fallback true · answeredModel이 레코드 모델(OpenAI는 요청한 모델 이름 — 기존 레코드와 같은 모양)이 된다", cap2.calls.length >= 1 && cap2.calls.every((c) => c.provider === "openai" && c.fallback) && answeredModel(cap2.calls, "x") === "gpt-4.1-mini", `${fbModels} · ${answeredModel(cap2.calls, "x")}`);
+      script = { openai: [], anthropic: [claudeErr(400, "invalid_request_error")] };
+      const metas: LlmCallMeta[] = [];
+      const cap3 = await captureLlmMeta(async () => {
+        try {
+          return await callWithSchema({ ...base, call: "t-meta-err", onMeta: (m) => metas.push(m) });
+        } catch {
+          return null;
+        }
+      });
+      add(B, "실패한 호출은 메타를 남기지 않는다(onMeta 미호출 · captureLlmMeta 0건)", cap3.value === null && cap3.calls.length === 0 && metas.length === 0);
+      const outside = await callWithSchema({ ...base, call: "t-meta-out" }).catch(() => null);
+      void outside;
+    }
+
     // (b2) 호출별 Claude 모델(anthropicModel) — OpenAI 쪽 model은 그대로 무시. 짧은 한도도 Claude 요청에선 하한으로 올라간다
     r = await run("t-claude-model", { openai: [], anthropic: [claudeMsg('{"a":"m"}')] }, { AI_PROVIDER: "anthropic" }, { anthropicModel: "claude-verify-x", model: "gpt-x", maxOutputTokens: 400 });
     add(B, "anthropicModel 지정 → Claude 요청 model이 그 값 · maxOutputTokens 400 → max_tokens 8000(하한)", hits[0]?.body?.model === "claude-verify-x" && hits[0]?.body?.max_tokens === CLAUDE_MIN_MAX_TOKENS, JSON.stringify({ m: hits[0]?.body?.model, t: hits[0]?.body?.max_tokens }));
@@ -604,6 +651,49 @@ function runDefaultModelSingleSourceChecks(): void {
   add(B, "기본 Claude 모델 문자열은 lib/ai/provider.ts(DEFAULT_ANTHROPIC_MODEL) 한 곳에만 — lib·app 전수", hits.length === 1 && hits[0] === "lib/ai/provider.ts", hits.join(", ") || "0곳");
   const toeicModel = stripComments(read("lib/ai/toeic/model.ts"));
   add(B, "토익 Claude 모델은 resolveAnthropicModel() 재사용(ANTHROPIC_MODEL 해석을 따로 갖지 않음)", /\|\| resolveAnthropicModel\(\)/.test(toeicModel) && !/ANTHROPIC_MODEL\b(?!_)/.test(toeicModel.replace(/ANTHROPIC_TOEIC_MODEL/g, "")));
+}
+
+/** 2단계 — 레코드 model 배선·실호출 게이트·LLM 라우트 문구 */
+function runStage2StaticChecks(): void {
+  const B = "2단계 배선";
+  const recordRoutes: Array<[string, RegExp]> = [
+    ["app/api/toeic/sets/extract/route.ts", /model: answeredModel\(llmCalls, resolveModel\(\)\)/],
+    ["app/api/toeic/mocks/route.ts", /model: answeredModel\(llmCalls, resolveToeicModel\(\)\)/],
+    ["app/api/toeic/guides/[part]/drills/route.ts", /model: answeredModel\(llmCalls, resolveToeicModel\(\)\)/],
+    ["app/api/toeic/frame-drill/sessions/[id]/judge/route.ts", /model: answeredModel\(llmCalls, resolveToeicModel\(\)\)/],
+    ["app/api/card/route.ts", /model: answeredModel\(calls, resolveModel\(\)\)/],
+    ["app/api/japanese/vocab/generate/route.ts", /model: answeredModel\(llmCalls, resolveModel\(\)\)/],
+    ["app/api/japanese/dialog/extract/route.ts", /model: answeredModel\(llmCalls, resolveModel\(\)\)/],
+    ["app/api/japanese/kanji/enrich/route.ts", /answeredModel\(llmCalls, resolveModel\(\)\)/],
+    ["app/api/japanese/speaking/mocks/route.ts", /model: answeredModel\(llmCalls, resolveModel\(\)\)/],
+    ["app/api/math/explain/route.ts", /answeredModel\(llmCalls\.filter\(\(c\) => c\.call === EXPLAIN_CALL_OPTIONS\.call\), resolveModel\(\)\)/],
+  ];
+  const recBad = recordRoutes.filter(([f, re]) => {
+    const src = stripComments(read(f));
+    return !re.test(src) || !/captureLlmMeta\(/.test(src);
+  }).map(([f]) => f);
+  add(B, `레코드 model 칸: AI를 부르는 라우트 ${recordRoutes.length}곳이 captureLlmMeta로 실제 답한 모델을 남긴다(답이 없으면 설정상 모델)`, recBad.length === 0, recBad.join(", ") || "ok");
+  add(B, "영어 단어장 저장(판독은 앞 요청): plannedModel(resolveModel()) — Claude 메인이면 Claude 이름", /model: plannedModel\(resolveModel\(\)\)/.test(stripComments(read("app/api/english/vocab/route.ts"))));
+  add(B, "자유대화 문장 설명: onMeta로 답한 모델을 TalkExplanation.model에", /onMeta: \(meta\) => \{\s*answered = meta\.model;/.test(stripComments(read("lib/ai/client.ts"))) && /model: answered,/.test(stripComments(read("lib/ai/client.ts"))));
+  const gates: Array<[string, RegExp]> = [
+    ["scripts/eval-english.ts", /if \(!hasLlmKey\(\)\) \{\s*console\.error/],
+    ["scripts/eval-math.ts", /if \(!hasLlmKey\(\)\) \{\s*console\.error/],
+    ["scripts/eval-toeic.ts", /if \(!hasLlmKey\(\)\) \{\s*add\(/],
+    ["scripts/eval-phrase-helper.ts", /if \(!hasLlmKey\(\)\) \{\s*add\(/],
+    ["scripts/eval-mom.ts", /if \(hasLlmKey\(\)\) \{/],
+  ];
+  const gateBad = gates.filter(([f, re]) => {
+    const src = read(f);
+    return !re.test(src) || !/describeProviderPlan\(/.test(src);
+  }).map(([f]) => f);
+  add(B, "실호출 eval 게이트 5곳: hasLlmKey()(공급자 설정의 키) + 어느 공급자로 도는지 출력(describeProviderPlan)", gateBad.length === 0, gateBad.join(", ") || "ok");
+  // LLM 라우트의 키 없음(501) 문구는 공급자 중립 — hasLlmKey() 블록 안에 "OpenAI API 키"가 없다(OpenAI 전용 기능 문구는 그대로)
+  const msgBad = LLM_KEY_ROUTES.concat(["app/api/toeic/attempts/[id]/score/route.ts", "app/api/japanese/speaking/attempts/[id]/score/route.ts"]).filter((f) => {
+    const src = stripComments(readFileSync(join(ROOT, f), "utf-8"));
+    const at = src.indexOf("if (!hasLlmKey())");
+    return at >= 0 && /OpenAI API 키/.test(src.slice(at, at + 600).split(/\n\s*}\n/)[0]);
+  });
+  add(B, "LLM 라우트 키 없음 문구: 공급자 중립(\"AI API 키…\") — OpenAI 전용(TTS·전사·사진) 문구는 그대로", msgBad.length === 0 && /OpenAI API 키/.test(read("app/api/toeic/mocks/[id]/image/route.ts")), msgBad.join(", ") || "ok");
 }
 
 /** 스모크 게이트(실호출 — 에이전트는 실행하지 않는다)가 네트워크·SDK import 전에 끝나는지 소스로 잠근다 */
@@ -733,6 +823,7 @@ async function main(): Promise<void> {
   runStaticChecks();
   runSmokeGateChecks();
   runDefaultModelSingleSourceChecks();
+  runStage2StaticChecks();
   runRouteKeyChecks();
 
   console.log("");

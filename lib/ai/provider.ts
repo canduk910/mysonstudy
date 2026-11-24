@@ -96,3 +96,43 @@ export function resolveProviderPlan(fixed?: AiProvider, env: Env = process.env):
 export function hasLlmKey(env: Env = process.env): boolean {
   return providerHasKey(resolveProviderPlan(undefined, env).primary, env);
 }
+
+/** callWithSchema 한 번이 **성공해 답한** 공급자·모델(2단계 — 레코드 `model` 칸을 실제 답한 모델로 남기기 위해). */
+export interface LlmCallMeta {
+  call: string;
+  provider: AiProvider;
+  /** 실제 답한 모델(Claude 서버 측 폴백이 돌면 대체 모델 이름) */
+  model: string;
+  /** 메인이 실패해 백업이 답했는지(primary_no_key 포함) */
+  fallback: boolean;
+}
+
+/**
+ * 레코드에 남길 모델 이름 — 순수 함수. 이 요청에서 답한 호출들의 모델을 순서대로 중복 없이 `+`로 잇는다(여러 파트를 병렬로 만들다
+ * 일부만 백업이 답하면 `claude-opus-5-5+gpt-6-luna`처럼 둘 다 남는다). 답한 호출이 없으면 `fallbackModel`(설정상 모델) 그대로.
+ * 저장 스키마에 provider 칸을 더하지 않는다 — 모델 이름이 공급자를 스스로 드러내고(claude-·gpt-), 레코드 정규화 함수 여러 곳을 넓히지 않는다.
+ */
+export function answeredModel(calls: readonly LlmCallMeta[], fallbackModel: string): string {
+  const models = [...new Set(calls.map((c) => c.model).filter((m) => m.trim() !== ""))];
+  return models.length > 0 ? models.join("+") : fallbackModel;
+}
+
+/**
+ * 호출이 같은 요청 안에 없을 때(예: 사진 판독은 앞 요청, 저장은 뒤 요청) 레코드에 남길 **설정상** 모델 — 지금 계획의 메인이 Claude면
+ * Claude 모델(`anthropicModel`, 비면 ANTHROPIC_MODEL), 아니면 `openaiModel`. 백업이 실제로 답했는지는 모른다(그건 answeredModel의 몫).
+ */
+export function plannedModel(openaiModel: string, anthropicModel?: string, env: Env = process.env): string {
+  return resolveProviderPlan(undefined, env).primary === "anthropic" ? anthropicModel?.trim() || resolveAnthropicModel(env) : openaiModel;
+}
+
+/**
+ * 실호출 eval 게이트·리포트용 한 줄 — 지금 설정에서 LLM 호출이 어느 공급자로 도는지(키 값은 담지 않는다).
+ * 예: `메인 anthropic(claude-opus-5-5) · 백업 openai(호출부 model 또는 OPENAI_MODEL)`, 키가 없으면 `LLM 키 없음`.
+ * `openaiModel`은 리포트에 찍을 OpenAI 쪽 모델 이름(호출부가 아는 값 — 이 모듈은 OPENAI_MODEL 기본값을 모른다).
+ */
+export function describeProviderPlan(openaiModel: string, env: Env = process.env): string {
+  if (!hasLlmKey(env)) return "LLM 키 없음(OPENAI_API_KEY·ANTHROPIC_API_KEY 모두 비었거나 메인 키만 없고 백업이 꺼짐)";
+  const plan = resolveProviderPlan(undefined, env);
+  const name = (p: AiProvider) => (p === "anthropic" ? `anthropic(${resolveAnthropicModel(env)})` : `openai(${openaiModel})`);
+  return `메인 ${name(plan.primary)}${plan.primaryNoKey ? "(설정상 메인의 키가 없어 올라옴)" : ""} · 백업 ${plan.backup ? name(plan.backup) : "없음"}`;
+}

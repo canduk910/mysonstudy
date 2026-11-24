@@ -28,6 +28,8 @@
  */
 
 import { NextResponse } from "next/server";
+import { captureLlmMeta } from "@/lib/ai/client";
+import { answeredModel } from "@/lib/ai/provider";
 import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { resolveToeicModel } from "@/lib/ai/toeic/model";
@@ -128,7 +130,7 @@ export async function POST(req: Request) {
       {
         ok: false,
         error: "no_api_key",
-        messageKo: "OpenAI API 키가 아직 설정되지 않아 모의고사를 만들 수 없어요. 표현집은 그대로 쓸 수 있어요.",
+        messageKo: "AI API 키가 아직 설정되지 않아 모의고사를 만들 수 없어요. 표현집은 그대로 쓸 수 있어요.",
       },
       501,
     );
@@ -190,9 +192,9 @@ export async function POST(req: Request) {
       .map((f) => `${f.part} 흐름 단계 ${f.steps.length} · 틀 ${f.steps.reduce((n, st) => n + st.frames.length, 0) + f.banks.length}`)
       .join(" / ") || "없음"}`,
   );
-  const settled = await Promise.allSettled(
+  const { value: settled, calls: llmCalls } = await captureLlmMeta(() => Promise.allSettled(
     chosen.map((part) => generateMockPart(part, { targetGrade, topicHints, expressions, answerFlow: flowOf(part) })),
-  );
+  ));
 
   const parts: ToeicMockParts = { read: null, picture: null, respond: null, info: null, opinion: null };
   const createdParts: ToeicMockPart[] = [];
@@ -225,7 +227,7 @@ export async function POST(req: Request) {
       parts,
       drillPart: null,
       answerFlows,
-      model: resolveToeicModel(), // 출제 모델(호출 C) — OPENAI_TOEIC_MODEL
+      model: answeredModel(llmCalls, resolveToeicModel()), // 출제 모델(호출 C) — 실제 답한 모델, 답이 없으면 OPENAI_TOEIC_MODEL(공급자 층 2단계)
     });
     return json({
       ok: true,

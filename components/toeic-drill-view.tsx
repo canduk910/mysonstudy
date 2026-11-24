@@ -21,6 +21,7 @@
  * 판단은 lib/toeic-drill-view 순수 함수가 하고 여기서는 소비만 한다. 공략이 없어도 연습은 된다(§12-8).
  */
 
+import { requestPictureImage } from "@/lib/picture-image-request";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -40,7 +41,6 @@ import {
   TOEIC_TARGET_GRADE_DESC_KO,
   toeicTakeHref,
   type ToeicMockGetResponse,
-  type ToeicMockImageResponse,
 } from "@/lib/toeic-mock-contract";
 import { TOEIC_TARGET_GRADES, type ToeicTargetGrade } from "@/lib/toeic-mock";
 import { frameSlotNames } from "@/lib/toeic-template";
@@ -160,46 +160,25 @@ export default function ToeicDrillView({
     if (inFlight.current.has(id)) return;
     inFlight.current.add(id);
     setJob(id, { phase: "making", startedAt: Date.now() });
-    let status = 0;
-    let res: ToeicMockImageResponse | null = null;
     try {
-      const r = await fetch(`/api/toeic/mocks/${encodeURIComponent(id)}/image`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ slot: 0 }),
+      // 요청·501·409·실패 시 한 번 다시 읽기 판정은 공용 헬퍼(lib/picture-image-request.ts — 세 화면 공용)
+      const out = await requestPictureImage({
+        url: `/api/toeic/mocks/${encodeURIComponent(id)}/image`,
+        slot: 0,
+        reread: async () => ((await rereadReady(id)) ? "ready" : null),
+        noResponseMessageKo: "사진 응답을 받지 못했어요. 서버가 아직 그리는 중일 수 있어요 — 잠시 뒤 다시 만들어 보거나 사진 없이 시작해요.",
       });
-      status = r.status;
-      res = (await r.json().catch(() => null)) as ToeicMockImageResponse | null;
-    } catch {
-      res = null; // 네트워크가 끊겼다 — 아래에서 다시 읽어 확인
-    }
-    try {
-      if (res?.ok && res.image.imageId) {
+      if (out.kind === "ready") {
         setJob(id, { phase: "ready" });
         router.refresh();
-        return;
-      }
-      if (status === 501 && res && !res.ok) {
-        setJob(id, { phase: "nokey", message: res.messageKo });
-        return;
-      }
-      if (status === 409) {
+      } else if (out.kind === "nokey") {
+        setJob(id, { phase: "nokey", message: out.message });
+      } else if (out.kind === "conflict") {
         setJob(id, null);
         router.refresh();
-        return;
+      } else {
+        setJob(id, { phase: "failed", message: out.message });
       }
-      if (await rereadReady(id)) {
-        setJob(id, { phase: "ready" });
-        router.refresh();
-        return;
-      }
-      setJob(id, {
-        phase: "failed",
-        message:
-          res && !res.ok
-            ? res.messageKo
-            : "사진 응답을 받지 못했어요. 서버가 아직 그리는 중일 수 있어요 — 잠시 뒤 다시 만들어 보거나 사진 없이 시작해요.",
-      });
     } finally {
       inFlight.current.delete(id);
     }

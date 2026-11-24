@@ -15,8 +15,8 @@
  * - 녹음은 요청 메모리에서만 쓰고 저장하지 않는다. 로그에는 모델·바이트·ms·글자 수만(전사문·오디오 없음).
  */
 
-import OpenAI, { toFile } from "openai";
 import { resolveToeicTranscribeModel } from "./toeic-transcribe";
+import { makeTranscribeClientGetter, runTranscription } from "./transcribe-core";
 
 /** 전사 언어(ISO-639-1) — 표현 도우미 입력은 한국어다 */
 export const PHRASE_HELPER_TRANSCRIBE_LANGUAGE = "ko";
@@ -35,14 +35,8 @@ export function hasPhraseHelperTranscribeApiKey(): boolean {
   return Boolean(process.env.OPENAI_API_KEY);
 }
 
-let cachedClient: OpenAI | null = null;
-
-function getClient(apiKey: string): OpenAI {
-  if (!cachedClient) {
-    cachedClient = new OpenAI({ apiKey, maxRetries: PHRASE_HELPER_TRANSCRIBE_SDK_MAX_RETRIES, timeout: PHRASE_HELPER_TRANSCRIBE_TIMEOUT_MS });
-  }
-  return cachedClient;
-}
+/** 전사 전용 OpenAI 클라이언트(캐시 — lib/transcribe-core.ts) */
+const getClient = makeTranscribeClientGetter({ maxRetries: PHRASE_HELPER_TRANSCRIBE_SDK_MAX_RETRIES, timeout: PHRASE_HELPER_TRANSCRIBE_TIMEOUT_MS });
 
 export interface KoreanAudioInput {
   bytes: ArrayBuffer;
@@ -58,24 +52,16 @@ export type KoreanTranscribeResult =
 
 /** 한국어 음성 → 글자. 앞뒤 공백만 걷는다(입력 칸에서 사람이 고친다). */
 export async function transcribeKorean(input: KoreanAudioInput, signal?: AbortSignal): Promise<KoreanTranscribeResult> {
-  const model = resolvePhraseHelperTranscribeModel();
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return { ok: false, error: "no_api_key", model, detail: "OPENAI_API_KEY 없음" };
-
-  const started = Date.now();
-  try {
-    const file = await toFile(new Uint8Array(input.bytes), input.fileName, { type: input.type });
-    const res = await getClient(apiKey).audio.transcriptions.create(
-      { file, model, language: PHRASE_HELPER_TRANSCRIBE_LANGUAGE, response_format: "json" },
-      { signal },
-    );
-    const text = typeof res?.text === "string" ? res.text.trim() : "";
-    console.log(`[phrase_helper:transcribe] model=${model} bytes=${input.bytes.byteLength} type=${input.type} chars=${[...text].length} ms=${Date.now() - started}`);
-    return { ok: true, text, model };
-  } catch (err) {
-    if (signal?.aborted) return { ok: false, error: "aborted", model, detail: "client closed" };
-    const detail = err instanceof Error ? `${err.name}: ${err.message}`.slice(0, 200) : String(err).slice(0, 200);
-    console.error(`[phrase_helper:transcribe] 실패 model=${model} bytes=${input.bytes.byteLength} type=${input.type} ms=${Date.now() - started}: ${detail}`);
-    return { ok: false, error: "failed", model, detail };
-  }
+  // 몸통(키 없으면 네트워크 없이 no_api_key · json · aborted/failed)은 lib/transcribe-core.ts. prompt 없음.
+  return runTranscription(
+    {
+      logTag: "phrase_helper",
+      model: resolvePhraseHelperTranscribeModel(),
+      language: PHRASE_HELPER_TRANSCRIBE_LANGUAGE,
+      getClient,
+      measure: (text) => `chars=${[...text].length}`,
+    },
+    input,
+    { signal },
+  );
 }

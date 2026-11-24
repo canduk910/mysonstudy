@@ -55,7 +55,7 @@ export async function POST(req: Request) {
         ok: false,
         error: "no_api_key",
         messageKo:
-          "OpenAI API 키가 아직 설정되지 않았어요. .env.local에 OPENAI_API_KEY를 넣고 서버를 다시 켜 주세요. (시드 데모 카드는 키 없이도 볼 수 있어요)",
+          "AI API 키가 아직 설정되지 않았어요. .env.local에 OPENAI_API_KEY 또는 ANTHROPIC_API_KEY를 넣고 서버를 다시 켜 주세요. (시드 데모 카드는 키 없이도 볼 수 있어요)",
       },
       { status: 501 },
     );

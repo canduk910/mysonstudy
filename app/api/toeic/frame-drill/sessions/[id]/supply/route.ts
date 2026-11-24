@@ -73,7 +73,7 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
   // 키 검사 — AI 호출 직전. 잡아 둔 표시는 failed로 되돌린다(다음에 다시 잡게)
   if (!hasLlmKey()) {
     await store.finishToeicFrameDrillSupply(id, null, "no_api_key", nowIso()).catch(() => null);
-    return json({ ok: false, error: "no_api_key", messageKo: "OpenAI API 키가 아직 설정되지 않아 새 문제를 만들 수 없어요." }, 501);
+    return json({ ok: false, error: "no_api_key", messageKo: "AI API 키가 아직 설정되지 않아 새 문제를 만들 수 없어요." }, 501);
   }
 
   const plan = bank ? planFrameDrillSupply(bank, start.scopeFrameKeys, start.count) : null;

@@ -35,6 +35,8 @@ import { getStore } from "@/lib/store";
 import type { ToeicPictureImage } from "@/lib/ai/toeic/schemas";
 import { generateSceneImage } from "@/lib/toeic-image";
 import type { ToeicMockImageRequest, ToeicMockImageResponse } from "@/lib/toeic-mock-contract";
+import { runPictureImageJob, settlePictureImageJob, type PictureJobOutcome } from "@/lib/picture-image-job";
+import type { ToeicMockRecord } from "@/lib/store";
 import { isRenderableToeicMock } from "@/lib/toeic-record";
 import { toToeicIssues, toeicZodErrorKo } from "@/lib/toeic-zod-ko";
 
@@ -53,52 +55,29 @@ function json(body: ToeicMockImageResponse, status = 200) {
   return NextResponse.json(body, { status });
 }
 
-/** 작업 결과 — 라우트가 응답으로 바꾼다(합류한 요청도 같은 값을 받는다) */
-type JobOutcome =
-  | { kind: "ready"; image: ToeicPictureImage; reused: boolean }
-  | { kind: "failed"; image: ToeicPictureImage | null; reason: "failed" | "too_large" }
-  | { kind: "no_api_key" }
-  | { kind: "stale"; image: ToeicPictureImage | null }
-  | { kind: "missing" };
-
 /**
  * 진행 중인 생성 — 키는 `모의고사:칸:장면`. 같은 인스턴스의 중복 생성을 합친다(비용 가드). 작업이 끝나면 지운다.
  * 모듈 전역이라 한 인스턴스 안에서만 유효하다 — 인스턴스 사이는 저장 판정(먼저 준비된 사진이 이긴다)이 막는다.
+ * 합류·저장·결과 → 응답 변환 몸통은 일본어 말하기 사진 라우트와 공용(lib/picture-image-job.ts).
  */
-const IN_FLIGHT = new Map<string, Promise<JobOutcome>>();
+const IN_FLIGHT = new Map<string, Promise<PictureJobOutcome<ToeicPictureImage>>>();
 
-async function runImageJob(mockId: string, slot: 0 | 1, imagePrompt: string): Promise<JobOutcome> {
+function runImageJob(mockId: string, slot: 0 | 1, imagePrompt: string): Promise<PictureJobOutcome<ToeicPictureImage>> {
   const store = getStore();
-  const result = await generateSceneImage(imagePrompt, AbortSignal.timeout(IMAGE_JOB_TIMEOUT_MS));
-  if (!result.ok && result.error === "no_api_key") return { kind: "no_api_key" };
-
-  if (result.ok) {
-    const saved = await store.saveToeicPictureImage({ mockId, slot, imagePrompt, dataUrl: result.dataUrl, model: result.model });
-    switch (saved.outcome) {
-      case "saved":
-        return { kind: "ready", image: { status: "ready", imageId: saved.image.id }, reused: false };
-      case "kept": // 다른 요청이 먼저 저장했다 — 그 사진을 쓴다(이 사진은 쓰지 않았다)
-        return { kind: "ready", image: saved.record.parts.picture!.items[slot].image, reused: true };
-      case "stale":
-        return { kind: "stale", image: saved.record.parts.picture?.items[slot]?.image ?? null };
-      case "missing":
-        return { kind: "missing" };
-    }
-  }
-
-  const reason = result.error === "too_large" ? "too_large" : "failed";
-  console.error(`[/api/toeic/mocks/${mockId}/image] slot ${slot} 생성 실패(${reason}):`, result.detail);
-  const marked = await store.markToeicPictureImageFailed(mockId, slot, imagePrompt);
-  switch (marked.outcome) {
-    case "marked":
-      return { kind: "failed", image: { status: "failed", imageId: null }, reason };
-    case "kept": // 그사이 다른 요청이 사진을 준비했다 — 실패로 내리지 않고 그 사진을 돌려준다
-      return { kind: "ready", image: marked.record.parts.picture!.items[slot].image, reused: true };
-    case "stale":
-      return { kind: "stale", image: marked.record.parts.picture?.items[slot]?.image ?? null };
-    case "missing":
-      return { kind: "missing" };
-  }
+  return runPictureImageJob<ToeicPictureImage, ToeicMockRecord>(
+    {
+      logPath: `/api/toeic/mocks/${mockId}/image`,
+      // 요청 신호를 넘기지 않는다 — 서버 시간 상한만(응답이 끊겨도 끝까지 만들고 저장한다, §4-10)
+      generate: (prompt) => generateSceneImage(prompt, AbortSignal.timeout(IMAGE_JOB_TIMEOUT_MS)),
+      save: (input) => store.saveToeicPictureImage(input),
+      markFailed: (m, s, prompt) => store.markToeicPictureImageFailed(m, s, prompt),
+      keptImage: (record, s) => record.parts.picture!.items[s].image,
+      slotImage: (record, s) => record.parts.picture?.items[s]?.image ?? null,
+    },
+    mockId,
+    slot,
+    imagePrompt,
+  );
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -136,48 +115,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   const key = `${id}:${slot}:${item.imagePrompt}`;
-  let job = IN_FLIGHT.get(key);
-  if (!job) {
-    job = runImageJob(id, slot, item.imagePrompt).finally(() => IN_FLIGHT.delete(key));
-    IN_FLIGHT.set(key, job);
-  }
-
-  let outcome: JobOutcome;
-  try {
-    outcome = await job;
-  } catch (err) {
-    console.error(`[/api/toeic/mocks/${id}/image] slot ${slot} 저장 실패:`, err);
-    return json({ ok: false, error: "save_failed", messageKo: "사진을 저장하지 못했어요. 잠시 후 다시 시도해 주세요.", image: null }, 500);
-  }
-
-  switch (outcome.kind) {
-    case "ready":
-      return json({ ok: true, slot, image: outcome.image, reused: outcome.reused });
-    case "failed":
-      return json(
-        {
-          ok: false,
-          error: "image_failed",
-          messageKo:
-            outcome.reason === "too_large"
-              ? "사진이 너무 커서 저장하지 못했어요 — 다시 만들어 볼까요?"
-              : "사진을 만들지 못했어요. 장면 설명으로 연습하거나 다시 만들어 보세요.",
-          image: outcome.image,
-          retriable: true,
-        },
-        500,
-      );
-    case "no_api_key":
-      return json(
-        { ok: false, error: "no_api_key", messageKo: "OpenAI API 키가 아직 설정되지 않아 사진을 만들 수 없어요.", image: null },
-        501,
-      );
-    case "stale":
-      return json(
-        { ok: false, error: "scene_changed", messageKo: "그사이 장면이 바뀌어 만든 사진을 쓰지 않았어요 — 화면을 새로 읽을게요.", image: outcome.image },
-        409,
-      );
-    case "missing":
-      return json({ ok: false, error: "mock_not_found", messageKo: "그사이 지워진 모의고사예요.", image: null }, 404);
-  }
+  const settled = await settlePictureImageJob(IN_FLIGHT, key, () => runImageJob(id, slot, item.imagePrompt), {
+    logPath: `/api/toeic/mocks/${id}/image`,
+    slot,
+  });
+  return json(settled.body, settled.status);
 }

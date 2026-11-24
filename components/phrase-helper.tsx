@@ -103,7 +103,7 @@ const ADULT_BASE = {
   sending: "묻는 중…",
   empty: "물어본 표현이 여기에 쌓여요(저장하지 않아요).",
   retry: "다시 물어보기",
-  noKeyKo: "OpenAI API 키가 설정되지 않아 지금은 쓸 수 없어요.",
+  noKeyKo: "AI API 키가 설정되지 않아 지금은 쓸 수 없어요.",
   failKo: "답을 받지 못했어요. 다시 물어봐 주세요.",
   lockedKo: "잠금이 풀려 있지 않아요 — 새로고침한 뒤 PIN을 넣어 주세요.",
   micStart: "🎤",

@@ -16,6 +16,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { plannedModel } from "@/lib/ai/provider";
 import { z } from "zod";
 import { resolveModel } from "@/lib/ai/client";
 import {
@@ -141,7 +142,7 @@ export async function POST(req: Request) {
       entries: input.entries,
       photoCount: input.photoCount ?? 0,
       enriched: false, // V1은 정의·이모지 없이 저장 — V3 호출 D가 채운다
-      model: resolveModel(),
+      model: plannedModel(resolveModel()), // 판독은 앞 요청(/extract)이라 설정상 모델 — Claude 메인이면 그 이름(공급자 층 2단계)
     });
     return json({ ok: true, id: record.id });
   } catch (err) {

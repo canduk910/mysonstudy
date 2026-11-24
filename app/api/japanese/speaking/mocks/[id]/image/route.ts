@@ -17,7 +17,8 @@ import type { JaSpeakingImageSlot } from "@/lib/ai/japanese/speaking-schemas";
 import type { JaSpeakingImageRequest, JaSpeakingImageResponse } from "@/lib/ja-speaking-contract";
 import { generateJaSpeakingSceneImage } from "@/lib/ja-speaking-image";
 import { isRenderableJaSpeakingMock } from "@/lib/japanese-record";
-import { getStore } from "@/lib/store";
+import { runPictureImageJob, settlePictureImageJob, type PictureJobOutcome } from "@/lib/picture-image-job";
+import { getStore, type JaSpeakingMockRecord } from "@/lib/store";
 import { toToeicIssues, toeicZodErrorKo } from "@/lib/toeic-zod-ko";
 
 export const runtime = "nodejs";
@@ -34,46 +35,25 @@ function json(body: JaSpeakingImageResponse, status = 200) {
   return NextResponse.json(body, { status });
 }
 
-type JobOutcome =
-  | { kind: "ready"; image: JaSpeakingImageSlot; reused: boolean }
-  | { kind: "failed"; image: JaSpeakingImageSlot | null; reason: "failed" | "too_large" }
-  | { kind: "no_api_key" }
-  | { kind: "stale"; image: JaSpeakingImageSlot | null }
-  | { kind: "missing" };
+/** 같은 칸·같은 장면의 진행 중 작업(이 인스턴스) — 두 요청이 사진을 두 장 만들지 않게. 몸통은 토익과 공용(lib/picture-image-job.ts) */
+const IN_FLIGHT = new Map<string, Promise<PictureJobOutcome<JaSpeakingImageSlot>>>();
 
-/** 같은 칸·같은 장면의 진행 중 작업(이 인스턴스) — 두 요청이 사진을 두 장 만들지 않게 */
-const IN_FLIGHT = new Map<string, Promise<JobOutcome>>();
-
-async function runImageJob(mockId: string, slot: 0 | 1, imagePrompt: string): Promise<JobOutcome> {
+function runImageJob(mockId: string, slot: 0 | 1, imagePrompt: string): Promise<PictureJobOutcome<JaSpeakingImageSlot>> {
   const store = getStore();
-  const result = await generateJaSpeakingSceneImage(imagePrompt, AbortSignal.timeout(IMAGE_JOB_TIMEOUT_MS));
-  if (!result.ok && result.error === "no_api_key") return { kind: "no_api_key" };
-  if (result.ok) {
-    const saved = await store.saveJaSpeakingPictureImage({ mockId, slot, imagePrompt, dataUrl: result.dataUrl, model: result.model });
-    switch (saved.outcome) {
-      case "saved":
-        return { kind: "ready", image: { status: "ready", imageId: saved.image.id }, reused: false };
-      case "kept":
-        return { kind: "ready", image: saved.record.parts.picture!.items[slot].image, reused: true };
-      case "stale":
-        return { kind: "stale", image: saved.record.parts.picture?.items[slot]?.image ?? null };
-      case "missing":
-        return { kind: "missing" };
-    }
-  }
-  const reason = result.error === "too_large" ? "too_large" : "failed";
-  console.error(`[/api/japanese/speaking/mocks/${mockId}/image] slot ${slot} 생성 실패(${reason}):`, result.detail);
-  const marked = await store.markJaSpeakingPictureImageFailed(mockId, slot, imagePrompt);
-  switch (marked.outcome) {
-    case "marked":
-      return { kind: "failed", image: { status: "failed", imageId: null }, reason };
-    case "kept":
-      return { kind: "ready", image: marked.record.parts.picture!.items[slot].image, reused: true };
-    case "stale":
-      return { kind: "stale", image: marked.record.parts.picture?.items[slot]?.image ?? null };
-    case "missing":
-      return { kind: "missing" };
-  }
+  return runPictureImageJob<JaSpeakingImageSlot, JaSpeakingMockRecord>(
+    {
+      logPath: `/api/japanese/speaking/mocks/${mockId}/image`,
+      // 요청 신호를 넘기지 않는다 — 서버 시간 상한만
+      generate: (prompt) => generateJaSpeakingSceneImage(prompt, AbortSignal.timeout(IMAGE_JOB_TIMEOUT_MS)),
+      save: (input) => store.saveJaSpeakingPictureImage(input),
+      markFailed: (m, s, prompt) => store.markJaSpeakingPictureImageFailed(m, s, prompt),
+      keptImage: (record, s) => record.parts.picture!.items[s].image,
+      slotImage: (record, s) => record.parts.picture?.items[s]?.image ?? null,
+    },
+    mockId,
+    slot,
+    imagePrompt,
+  );
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -101,37 +81,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   const key = `${id}:${slot}:${item.imagePrompt}`;
-  let job = IN_FLIGHT.get(key);
-  if (!job) {
-    job = runImageJob(id, slot, item.imagePrompt).finally(() => IN_FLIGHT.delete(key));
-    IN_FLIGHT.set(key, job);
-  }
-  let outcome: JobOutcome;
-  try {
-    outcome = await job;
-  } catch (err) {
-    console.error(`[/api/japanese/speaking/mocks/${id}/image] slot ${slot} 저장 실패:`, err);
-    return json({ ok: false, error: "save_failed", messageKo: "사진을 저장하지 못했어요. 잠시 후 다시 시도해 주세요.", image: null }, 500);
-  }
-  switch (outcome.kind) {
-    case "ready":
-      return json({ ok: true, slot, image: outcome.image, reused: outcome.reused });
-    case "failed":
-      return json(
-        {
-          ok: false,
-          error: "image_failed",
-          messageKo: outcome.reason === "too_large" ? "사진이 너무 커서 저장하지 못했어요 — 다시 만들어 볼까요?" : "사진을 만들지 못했어요. 장면 설명으로 연습하거나 다시 만들어 보세요.",
-          image: outcome.image,
-          retriable: true,
-        },
-        500,
-      );
-    case "no_api_key":
-      return json({ ok: false, error: "no_api_key", messageKo: "OpenAI API 키가 아직 설정되지 않아 사진을 만들 수 없어요.", image: null }, 501);
-    case "stale":
-      return json({ ok: false, error: "scene_changed", messageKo: "그사이 장면이 바뀌어 만든 사진을 쓰지 않았어요 — 화면을 새로 읽을게요.", image: outcome.image }, 409);
-    case "missing":
-      return json({ ok: false, error: "mock_not_found", messageKo: "그사이 지워진 모의고사예요.", image: null }, 404);
-  }
+  const settled = await settlePictureImageJob(IN_FLIGHT, key, () => runImageJob(id, slot, item.imagePrompt), {
+    logPath: `/api/japanese/speaking/mocks/${id}/image`,
+    slot,
+  });
+  return json(settled.body, settled.status);
 }
