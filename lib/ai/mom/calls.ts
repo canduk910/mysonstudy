@@ -20,6 +20,5 @@ export async function summarizeMomTest(
     zodSchema: momSummaryZod,
     model: resolveModel(),
     signal,
-    effort: "low", // Claude 경로만(docs/HARNESS.md §5) — 두 줄 총평(출력 400토큰)이라 깊은 추론이 필요 없다(QA P2-2)
   });
 }

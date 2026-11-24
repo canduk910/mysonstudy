@@ -70,6 +70,5 @@ export async function callWorksheetExtract(imageDataUrl: string): Promise<Worksh
     zodSchema: worksheetExtractionSchema,
     temperature: WORKSHEET_EXTRACT_CALL_OPTIONS.temperature,
     maxOutputTokens: WORKSHEET_EXTRACT_CALL_OPTIONS.maxOutputTokens,
-    effort: "low", // Claude 경로만(docs/HARNESS.md §5) — 문제지 판독
   });
 }

@@ -766,8 +766,16 @@ function runStaticChecks(): void {
   add(B, "client.ts: 라벨(call)로 공급자·분기를 고르지 않는다(call === 없음)", !/\bcall\s*===|===\s*call\b|args\.call\s*[=!]==/.test(client));
   add(B, "client.ts: Anthropic 클라이언트 지연 생성 + timeout·maxRetries 지정, OpenAI 클라이언트에도 timeout·maxRetries", /new Anthropic\(\{[^}]*timeout: LLM_CLIENT_TIMEOUT_MS[^}]*maxRetries: LLM_CLIENT_MAX_RETRIES/.test(client) && /new OpenAI\(\{ apiKey, timeout: LLM_CLIENT_TIMEOUT_MS, maxRetries: LLM_CLIENT_MAX_RETRIES \}\)/.test(client));
   add(B, "클라이언트 상한 값: LLM_CLIENT_TIMEOUT_MS = 120,000 · LLM_CLIENT_MAX_RETRIES = 1(값을 바꾸면 FAIL — QA P3-1)", clientConsts.timeout === 120_000 && clientConsts.retries === 1, JSON.stringify(clientConsts));
-  add(B, "짧은 출력 호출(단어 뜻·유의어 추천·엄마 총평)은 Claude effort low", /maxOutputTokens: WORD_MEANING_CALL_OPTIONS\.maxOutputTokens,\s*effort: "low"/.test(client) && /maxOutputTokens: RELATED_SUGGEST_CALL_OPTIONS\.maxOutputTokens,\s*effort: "low"/.test(client) && /effort: "low"/.test(stripComments(read("lib/ai/mom/calls.ts"))));
-  add(B, "Claude 호출별 모델 배선: 검산 anthropicModel: resolveAnthropicVerifyModel() · 토익 C·D(+틀 판정·보충) 4곳 anthropicModel: resolveAnthropicToeicModel()", /anthropicModel: resolveAnthropicVerifyModel\(\)/.test(stripComments(read("lib/ai/math/pipeline.ts"))) && (stripComments(read("lib/ai/toeic/calls.ts")).match(/anthropicModel: resolveAnthropicToeicModel\(\)/g) ?? []).length === 4);
+  {
+    // 2026-11-25 사용자 결정 — Claude 호출은 전부 기본 effort(medium). 호출부의 low/high 덮어쓰기가 다시 생기면 붉다.
+    const files = ["lib/ai/client.ts", "lib/ai/toeic/calls.ts", "lib/ai/math/extract.ts", "lib/ai/math/pipeline.ts", "lib/ai/mom/calls.ts", "lib/ai/phrase-helper/calls.ts"].filter((f) => { try { read(f); return true; } catch { return false; } });
+    add(B, "Claude effort 덮어쓰기 없음(전부 기본 medium)", files.every((f) => !/effort: "(low|high)"/.test(stripComments(read(f)))), files.join(","));
+    const pipe = stripComments(read("lib/ai/math/pipeline.ts"));
+    const explainBody = pipe.slice(pipe.indexOf("export async function callExplain"), pipe.indexOf("export async function callExplain") + 1500);
+    const verifyBody = pipe.slice(pipe.indexOf("export async function callAnswerCheck"), pipe.indexOf("export async function callAnswerCheck") + 1500);
+    add(B, "수학 설명(B)·검산(C)은 OpenAI 고정(설명 스키마는 Claude 문법 한도 초과 400)", /provider: "openai"/.test(explainBody.split("});")[0]) && /provider: "openai"/.test(verifyBody.split("});")[0]) && /model: resolveVerifyModel\(\)/.test(verifyBody));
+  }
+  add(B, "Claude 호출별 모델 배선: 토익 C·D(+틀 판정·보충) 4곳 anthropicModel: resolveAnthropicToeicModel() (검산은 2026-11-25부터 OpenAI 고정)", (stripComments(read("lib/ai/toeic/calls.ts")).match(/anthropicModel: resolveAnthropicToeicModel\(\)/g) ?? []).length === 4);
   const talk = client.slice(client.indexOf("export async function generateTalkCards("));
   add(B, "호출 J(generateTalkCards): provider: \"openai\" 고정(6초 상한 — Claude로 넘기지 않음)", /provider: "openai"/.test(talk.slice(0, talk.indexOf("sanitizeTalkScreenCards("))));
   add(B, "client.ts: 백업 판정은 decideFallback(typed 오류 클래스) 하나 — 신호를 함께 넘긴다", /decideFallback\(err, args\.signal\)/.test(client));

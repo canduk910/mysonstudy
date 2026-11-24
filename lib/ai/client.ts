@@ -354,7 +354,7 @@ export interface CallWithSchemaArgs<T> {
   provider?: AiProvider;
   /**
    * Claude 경로의 깊이(`output_config.effort`). 생략하면 DEFAULT_AI_EFFORT(medium). **OpenAI 경로에는 싣지 않는다**(기존 요청 모양 불변).
-   * 판독·전사류는 low, 수학 검산·채점은 high를 호출부가 넘긴다 — 라벨로 고르지 않는다.
+   * 2026-11-25 사용자 결정으로 모든 Claude 호출이 기본 medium이다(호출부의 low/high 덮어쓰기 제거). 라벨로 고르지 않는다.
    */
   effort?: AiEffort;
   /**
@@ -679,7 +679,6 @@ export async function extractBook(imageDataUrls: string[]): Promise<BookExtracti
     jsonSchema: BOOK_EXTRACTION_JSON_SCHEMA,
     zodSchema: bookExtractionSchema,
     ...EXTRACT_CALL_OPTIONS,
-    effort: "low", // Claude 경로만 — 판독(전사)이라 깊은 추론이 필요 없다(docs/HARNESS.md §5)
   });
 }
 
@@ -749,7 +748,6 @@ export async function suggestRelatedWords(input: {
     zodSchema: relatedSuggestionSchema,
     temperature: RELATED_SUGGEST_CALL_OPTIONS.temperature,
     maxOutputTokens: RELATED_SUGGEST_CALL_OPTIONS.maxOutputTokens,
-    effort: "low", // Claude 경로만 — 짧은 후보 목록(출력 800토큰)이라 깊은 추론이 필요 없다(QA P2-2)
   });
   return { candidates: postprocessRelatedCandidates(candidates, word) };
 }
@@ -826,7 +824,6 @@ export async function extractJaDialog(input: { images: readonly string[] }): Pro
     zodSchema: jaDialogExtractionSchema,
     temperature: JA_DIALOG_EXTRACT_CALL_OPTIONS.temperature,
     maxOutputTokens: JA_DIALOG_EXTRACT_CALL_OPTIONS.maxOutputTokens,
-    effort: "low", // Claude 경로만 — 스크린샷 전사
   });
 }
 
@@ -886,7 +883,6 @@ export async function generateJaSpeakingFeedback(input: JaSpeakingFeedbackInput)
     temperature: JA_SPEAKING_FEEDBACK_CALL_OPTIONS.temperature,
     maxOutputTokens: JA_SPEAKING_FEEDBACK_CALL_OPTIONS.maxOutputTokens,
     model: resolveModel(),
-    effort: "high", // Claude 경로만 — 채점
   });
 }
 
@@ -1024,7 +1020,6 @@ export async function digestPages(args: DigestPagesArgs): Promise<DigestPagesRes
         jsonSchema: PAGE_DIGEST_JSON_SCHEMA,
         zodSchema: makePageDigestSchema({ sourceKind, imageCount: batchImages.length }),
         ...PAGES_CALL_OPTIONS,
-        effort: "low", // Claude 경로만 — 사진 판독
       });
     }),
   );
@@ -1201,7 +1196,6 @@ export async function lookupWordMeaning(
     zodSchema: wordMeaningSchema,
     temperature: WORD_MEANING_CALL_OPTIONS.temperature,
     maxOutputTokens: WORD_MEANING_CALL_OPTIONS.maxOutputTokens,
-    effort: "low", // Claude 경로만 — 한 낱말 뜻(출력 600토큰)이라 깊은 추론이 필요 없다(QA P2-2)
   });
 }
 
