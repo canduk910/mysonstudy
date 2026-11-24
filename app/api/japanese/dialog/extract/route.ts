@@ -13,6 +13,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { extractJaDialog, resolveModel } from "@/lib/ai/client";
 import { planJaDialogBatches, mergeJaDialogBatches } from "@/lib/ai/japanese/dialog";
@@ -69,7 +70,7 @@ export async function POST(req: Request) {
   }
   const images = parsed.data.images;
 
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return json({ ok: false, error: "no_api_key", messageKo: "대화를 읽으려면 OpenAI API 키가 필요해요." }, 501);
   }
 

@@ -24,6 +24,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { callWithSchema, imagePart, textPart } from "@/lib/ai/client";
 import {
@@ -71,7 +72,7 @@ function json(body: VocabExtractResponse, status = 200) {
 export async function POST(req: Request) {
   // 키가 없으면 어떤 작업도 하지 않고 명시적으로 알린다 (영어 `/api/extract`와 같은 정책).
   // 호출 C는 vision이라 이미지 토큰이 붙는다 — 키가 빈 로컬에서 실호출이 나가지 않는 것이 요점.
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return json(
       {
         ok: false,
@@ -123,6 +124,7 @@ export async function POST(req: Request) {
         zodSchema: vocabExtractionSchema,
         temperature: VOCAB_EXTRACT_CALL_OPTIONS.temperature, // 0
         maxOutputTokens: VOCAB_EXTRACT_CALL_OPTIONS.maxOutputTokens,
+        effort: "low", // Claude 경로만(docs/HARNESS.md §5) — 교재 사진 전사
       }),
     ),
   );

@@ -22,7 +22,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
 import { getStorage } from "firebase-admin/storage";
-import { assertDestructiveAllowed } from "./prod-guard";
+import { assertDestructiveAllowed, isCloudRunRuntime } from "./prod-guard";
 import { resolveStoreBackend } from "./store-backend";
 import { TOEIC_REC_PREFIX_RE, isToeicRecObjectKey, toeicRecObjectPrefix } from "./toeic-rec-rules";
 
@@ -228,7 +228,7 @@ export function getToeicRecBlobStore(): ToeicRecBlobStore {
   if (!globalThis.__toeicRecBlobStore) {
     const backend = resolveStoreBackend();
     globalThis.__toeicRecBlobStore = backend === "firestore" ? new GcsRecBlobStore(toeicRecBucketName()) : new FileRecBlobStore(toeicRecFileDir());
-    if (backend === "firestore" && process.env.NODE_ENV !== "production") {
+    if (backend === "firestore" && !isCloudRunRuntime()) {
       console.warn(
         "[toeic-rec] ⚠️  개발 환경인데 **프로덕션 녹음 버킷**을 잡았어요(스토어가 firestore).\n" +
           "         여기서 올린 녹음은 가족 버킷에 그대로 남습니다. 지우기는 prod-guard가 막습니다.\n" +

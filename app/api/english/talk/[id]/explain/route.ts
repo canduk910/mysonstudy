@@ -23,6 +23,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { explainTalkSentence } from "@/lib/ai/client";
 import { getStore } from "@/lib/store";
@@ -84,7 +85,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const existing = findTalkExplanation(record, turnIndex, sentenceIndex);
   if (existing) return json({ ok: true, explanation: existing, cached: true, saved: true });
 
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return json({ ok: false, error: "no_api_key", messageKo: "AI 키가 설정되지 않아 설명을 만들 수 없어요." }, 501);
   }
 

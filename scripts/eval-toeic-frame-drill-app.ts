@@ -350,6 +350,7 @@ function runFileBackendChecks(): FrameDrillAppCheckResult[] {
         GOOGLE_CLOUD_PROJECT: "",
         K_SERVICE: "",
         OPENAI_API_KEY: "",
+        ANTHROPIC_API_KEY: "", // 공급자 층(2026-11-25) — Claude 키도 비워 실호출을 구조적으로 막는다
         EVAL_STORE_URL: pathToFileURL(path.join(ROOT, "lib/store.ts")).href,
         EVAL_FILE: JSON.stringify(fixtureFile(2)),
       },
@@ -392,11 +393,11 @@ function runSourceChecks(): FrameDrillAppCheckResult[] {
   const imp = read("app/api/toeic/frame-drill/import/route.ts");
   const sess = read("app/api/toeic/frame-drill/sessions/route.ts");
   const keyBefore = (src: string, call: string) => {
-    const k = src.indexOf("process.env.OPENAI_API_KEY");
+    const k = src.indexOf("hasLlmKey()"); // 2026-11-25 공급자 층 — LLM 키 판정(docs/HARNESS.md §5)
     const c = src.indexOf(call + "(");
     return k > 0 && c > 0 && k < c;
   };
-  add("판정 라우트: 키 검사가 호출 E보다 앞(call일 때만 — already·no_ai는 키 없이)", keyBefore(judge, "judgeFrameDrill") && /if \(decision === "call"\) \{\s*\/\/[^\n]*\n\s*if \(!process\.env\.OPENAI_API_KEY\)/.test(judge));
+  add("판정 라우트: 키 검사가 호출 E보다 앞(call일 때만 — already·no_ai는 키 없이)", keyBefore(judge, "judgeFrameDrill") && /if \(decision === "call"\) \{\s*\/\/[^\n]*\n\s*if \(!hasLlmKey\(\)\)/.test(judge));
   add("보충 라우트: 키 검사가 호출 F보다 앞 · 키 없음이면 잡은 표시를 failed로 되돌림", keyBefore(supply, "supplyFrameDrillItems") && /finishToeicFrameDrillSupply\(id, null, "no_api_key"/.test(supply));
   add("가져오기·판 저장 라우트: AI·키 검사 없음(키 없이도 저장)", !/OPENAI_API_KEY|lib\/ai\/toeic\/calls/.test(imp) && !/OPENAI_API_KEY|lib\/ai\/toeic\/calls/.test(sess));
   add("라우트 4개 모두 runtime nodejs", [judge, supply, imp, sess].every((src) => /export const runtime = "nodejs";/.test(src)));

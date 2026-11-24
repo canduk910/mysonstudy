@@ -19,6 +19,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { generateJaSpeakingPart, resolveModel } from "@/lib/ai/client";
 import { JLPT_LEVELS } from "@/lib/ai/japanese/schemas";
@@ -61,7 +62,7 @@ function json(body: JaSpeakingCreateResponse, status = 200) {
 }
 
 export async function POST(req: Request) {
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return json({ ok: false, error: "no_api_key", messageKo: "OpenAI API 키가 아직 설정되지 않아 모의고사를 만들 수 없어요." }, 501);
   }
 

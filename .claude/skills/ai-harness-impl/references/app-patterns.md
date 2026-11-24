@@ -92,11 +92,11 @@
 6. **사건만 저장하고, 파생 상태(현재 Day·진행률·스트릭)는 읽을 때 계산한다.** 파생 상태까지 저장하면 진실이 두 개가 되어 갈린다.
 7. 결과를 상태 코드로 옮긴다. ok는 200, not_found는 404, conflict·stale_state·not_active·empty는 409다.
 
-저장소 전체에서 Firestore 트랜잭션은 운동이 처음이다. 토익이 7개를 더했다(가져오기 멱등·발화 포인트 병합·빈 파트 채우기·사진 저장/실패 기록·응시 끝·문항별 채점 — `toeic.md` 10절). 자유대화는 설명 append 하나를 더했다(`addTalkExplanation` — `decideTalkExplanation`으로 "같은 키가 없을 때만"). 반대로 **확인과 생성만 원자적이면 되는 멱등 생성은 트랜잭션 대신 `batch.create`**로 한다 — 문서가 이미 있으면 배치 전체가 ALREADY_EXISTS로 거부되기 때문이다(자유대화 저장, §16). 새로 트랜잭션을 쓰면 이유를 주석으로 남긴다(`lib/store-firestore.ts` 운동 절·토익 절 주석이 견본이다).
+저장소 전체에서 Firestore 트랜잭션은 운동이 처음이다. 토익이 7개를 더했다(가져오기 멱등·발화 포인트 병합·빈 파트 채우기·사진 저장/실패 기록·응시 끝·문항별 채점 — `toeic.md` 10절). 자유대화는 설명 append 하나를 더했다(`addTalkExplanation` — `decideTalkExplanation`으로 "같은 키가 없을 때만"). 단어장 entries 변경 4개(보강 저장 `updateVocabBookEnrichment`·단어 담기 `appendVocabEntry`·연결/해제 `applyLink`·일본어 담기 `appendJaVocabEntry`)도 2026-11-25에 트랜잭션이 됐다 — 특히 보강은 AI 호출 동안 담기·연결이 끼어들 창이 커서, 라우트가 병합하지 않고 호출 D 결과(items)를 넘기면 저장 계층이 트랜잭션(파일은 `mutate`) 안에서 현재 entries에 `planVocabEnrichmentSave`(`lib/vocabbook-enrich-save.ts`, 안은 `mergeEnrichment`)로 얹는다. 반대로 **확인과 생성만 원자적이면 되는 멱등 생성은 트랜잭션 대신 `batch.create`**로 한다 — 문서가 이미 있으면 배치 전체가 ALREADY_EXISTS로 거부되기 때문이다(자유대화 저장, §16). 새로 트랜잭션을 쓰면 이유를 주석으로 남긴다(`lib/store-firestore.ts` 운동 절·토익 절 주석이 견본이다).
 
 ## 6. prod-guard (`lib/prod-guard.ts`)
 
-- `assertDestructiveAllowed(op)`은 `NODE_ENV === "production"`이거나 `ALLOW_PROD_DESTRUCTIVE === "1"`일 때만 통과시키고, 그 밖에는 `ProdGuardError`(code `"prod_guard"`)를 던진다. 라우트는 `isProdGuardError(e)`로 판별해 403 `prod_guard`를 준다.
+- `assertDestructiveAllowed(op)`은 Cloud Run 위(`isCloudRunRuntime()` — `K_SERVICE` 존재)이거나 `ALLOW_PROD_DESTRUCTIVE === "1"`일 때만 통과시키고(2026-11-25부터 — 예전 기준 `NODE_ENV === "production"`은 로컬 `next start`에서도 참이라 구멍이었다. `getStore()`의 Firestore 경고도 같은 함수를 본다), 그 밖에는 `ProdGuardError`(code `"prod_guard"`)를 던진다. 라우트는 `isProdGuardError(e)`로 판별해 403 `prod_guard`를 준다.
 - 가드를 부르는 곳은 **Firestore 구현(`lib/store-firestore.ts`)뿐이다.** 파일 백엔드는 로컬 데이터라 가드하지 않는 것이 관용구다.
 - `DestructiveOp`는 11종이다. `deleteBook`·`deleteCard`·`deleteExplanation`·`deleteVocabBook`·`deleteJaVocabBook`(대화 삭제 `deleteJaDialog`도 이 이름으로 막는다)·`undoWorkoutEvent`·`closeWorkoutCycle`·`deleteToeicSet`(세트 + 그 시험 세션)·`deleteToeicMock`(모의고사 + 생성 사진 + 응시 기록)·`deleteToeicRecordings`(그 응시들의 녹음 — GCS 보관소의 접두사 지우기가 스스로 부른다, 문서보다 먼저 — toeic.md §13-7)·`deleteTalkSession`(은우 자유대화 기록 + 딸린 주제 일러스트 `talkImages` — 연쇄 삭제를 이 op 하나로 막는다).
 - 대상을 가르는 기준은 "삭제 API냐"가 아니라 **"가족 기록을 되돌릴 수 없게 잃느냐"**다. 그래서 운동 기록 취소(`undoWorkoutEvent`, 첫 줄에서 가드)와 사건 있는 활성 사이클 닫기(`startWorkoutCycle` 트랜잭션 안, `tx.set` 전에 `closedHadEvents`일 때)가 대상이다. 최초 생성, 사건 0개 사이클의 제자리 교체, 기록(append), 편집(이름·재정렬·해설 재생성)은 대상이 아니다.

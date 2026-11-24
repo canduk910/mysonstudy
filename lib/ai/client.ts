@@ -1,17 +1,34 @@
 /**
- * lib/ai/client.ts — OpenAI 클라이언트 + callWithSchema() 공통 래퍼
+ * lib/ai/client.ts — OpenAI·Anthropic 클라이언트 + callWithSchema() 공통 래퍼
  *
  * **과목 공유 모듈이다.** 래퍼 계약(Structured Outputs → zod → 1회 재요청 → 로깅)은
  * docs/HARNESS.md(과목 공통 규약), 영어 호출의 상세는 docs/harness/english.md §4를 따른다.
  * 과목별 분기는 이 파일이 아니라 호출부에 둔다.
  *
  * 서버 전용 모듈이다. 클라이언트 컴포넌트/클라이언트 번들에서 import 금지 (API 키 노출 방지).
- * 호출 흐름: Responses API(Structured Outputs) → JSON.parse → zod → 실패 시 1회 재요청 → 재실패 throw.
- * 성공/실패 무관하게 { call, model, inputTokens, outputTokens, ms }를 서버 로그로 남긴다.
+ * 호출 흐름: 메인 공급자(env AI_PROVIDER — 기본 OpenAI Responses API, 또는 Claude Messages API)의 Structured Outputs →
+ * JSON.parse → zod → 실패 시 1회 재요청 → 재실패 throw. 메인이 가용성 실패면 백업 공급자로 같은 흐름 한 번(docs/HARNESS.md §5).
+ * 성공/실패 무관하게 { call, model, inputTokens, outputTokens, ms, provider, fallback }를 서버 로그로 남긴다.
  */
 
+import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import type { z } from "zod";
+import {
+  DEFAULT_AI_EFFORT,
+  otherProvider,
+  resolveAnthropicModel,
+  resolveProviderPlan,
+  type AiEffort,
+  type AiProvider,
+} from "./provider";
+import {
+  buildClaudeRequest,
+  claudeUsageTokens,
+  incompleteErrorSummary,
+  interpretClaudeResponse,
+} from "./provider-anthropic";
+import { AiRefusalError, AiValidationError, decideFallback } from "./provider-errors";
 import {
   BOOK_EXTRACTION_JSON_SCHEMA,
   CHAPTERIZATION_JSON_SCHEMA,
@@ -191,6 +208,19 @@ export function resolveTalkCardsModel(): string {
 
 let cachedClient: OpenAI | null = null;
 
+/**
+ * 텍스트 LLM 클라이언트의 요청 시간 상한(ms) — OpenAI·Anthropic 공통(2026-11-25).
+ * SDK 기본(10분·재시도 2)이면 화면은 60초 안팎에 실패로 접는데 서버는 수 분 더 기다리며 과금됐다. 120초면 가장 긴 호출
+ * (챕터화 16,000토큰)도 정상 범위에서 끝나고, 넘으면 끊어 백업 공급자로 넘긴다. 호출별 `signal`(호출 J 6초)은 그대로 먼저 끊는다.
+ */
+export const LLM_CLIENT_TIMEOUT_MS = 120_000;
+
+/**
+ * 텍스트 LLM 클라이언트의 SDK 자동 재시도 기본값 — 1회(SDK 기본 2회에서 줄임). 429·5xx·연결 오류를 한 번만 다시 해 보고,
+ * 그래도 실패하면 래퍼가 백업 공급자로 넘긴다. 호출별 `maxRetries`(호출 J 0)는 요청 옵션으로 이 값을 덮는다.
+ */
+export const LLM_CLIENT_MAX_RETRIES = 1;
+
 /** OpenAI 클라이언트 (지연 생성 — 빌드 시점에 키를 요구하지 않기 위해) */
 export function getOpenAIClient(): OpenAI {
   if (!cachedClient) {
@@ -198,9 +228,32 @@ export function getOpenAIClient(): OpenAI {
     if (!apiKey) {
       throw new Error("OPENAI_API_KEY가 설정되지 않았습니다 (서버 전용 env).");
     }
-    cachedClient = new OpenAI({ apiKey });
+    cachedClient = new OpenAI({ apiKey, timeout: LLM_CLIENT_TIMEOUT_MS, maxRetries: LLM_CLIENT_MAX_RETRIES });
   }
   return cachedClient;
+}
+
+let cachedAnthropicClient: Anthropic | null = null;
+
+/**
+ * Anthropic 클라이언트 (지연 생성 — 빌드 시점에 키를 요구하지 않는다). 키는 env `ANTHROPIC_API_KEY`만 쓴다 —
+ * SDK가 env의 다른 자격(ANTHROPIC_AUTH_TOKEN·로그인 프로필)을 집어 가지 않게 `authToken: null`로 막는다.
+ * base URL은 SDK가 env `ANTHROPIC_BASE_URL`을 읽는다(로컬 스텁용).
+ */
+export function getAnthropicClient(): Anthropic {
+  if (!cachedAnthropicClient) {
+    const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+    if (!apiKey) {
+      throw new Error("ANTHROPIC_API_KEY가 설정되지 않았습니다 (서버 전용 env).");
+    }
+    cachedAnthropicClient = new Anthropic({
+      apiKey,
+      authToken: null,
+      timeout: LLM_CLIENT_TIMEOUT_MS,
+      maxRetries: LLM_CLIENT_MAX_RETRIES,
+    });
+  }
+  return cachedAnthropicClient;
 }
 
 /** 호출별 파라미터 (HARNESS §1 표) */
@@ -275,6 +328,17 @@ export interface CallWithSchemaArgs<T> {
    * — 영어 호출 J(`TALK_CARDS_SDK_MAX_RETRIES`). zod 재요청(아래 1회)과는 별개다. 과목 분기가 아니라 일반 파라미터다.
    */
   maxRetries?: number;
+  /**
+   * 이 호출의 공급자 **고정**. 생략하면 env `AI_PROVIDER`(메인) + `AI_FALLBACK`(백업) 계획을 따른다(`resolveProviderPlan`).
+   * 고정하면 그 공급자 하나만 부르고 백업으로 넘기지 않는다 — 영어 호출 J(화면 카드, 6초 상한)가 `"openai"`로 고정한다(Claude 지연 위험).
+   * 과목 분기가 아니라 일반 파라미터다 — 고정 여부는 호출부가 정한다.
+   */
+  provider?: AiProvider;
+  /**
+   * Claude 경로의 깊이(`output_config.effort`). 생략하면 DEFAULT_AI_EFFORT(medium). **OpenAI 경로에는 싣지 않는다**(기존 요청 모양 불변).
+   * 판독·전사류는 low, 수학 검산·채점은 high를 호출부가 넘긴다 — 라벨로 고르지 않는다.
+   */
+  effort?: AiEffort;
 }
 
 /** `callWithSchema`가 SDK에 넘기는 요청 옵션(`responses.create`의 둘째 인자) 중 이 래퍼가 싣는 두 키. */
@@ -321,6 +385,11 @@ function validateResponse<T>(
       errorSummary: `출력이 완성되지 않았습니다 (status: incomplete, reason: ${res.incomplete_details?.reason ?? "unknown"}). 전체 JSON을 한도 안에서 다시 출력해`,
     };
   }
+  return validateRaw(raw, zodSchema);
+}
+
+/** 출력 원문 → JSON.parse → zod. 두 공급자가 같은 판정을 쓴다. */
+function validateRaw<T>(raw: string, zodSchema: z.ZodType<T>): ValidationOutcome<T> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -340,7 +409,9 @@ function validateResponse<T>(
  * 2. JSON 파싱 → zodSchema.safeParse()
  * 3. 실패 시: 원래 메시지 + 검증 오류를 첨부해 1회만 재요청
  * 4. 재요청도 실패하면 throw (라우트에서 재시도 버튼 노출)
- * 5. 성공/실패 무관 로깅: { call, model, inputTokens, outputTokens, ms }
+ * 5. 성공/실패 무관 로깅: { call, model, inputTokens, outputTokens, ms, provider, fallback }
+ * 공급자: 메인(env AI_PROVIDER, 기본 openai)으로 1~4를 돌고, 가용성 실패면 백업 공급자(AI_FALLBACK on + 백업 키)로 1~4를 한 번 더(docs/HARNESS.md §5).
+ * Claude 경로는 같은 계약을 Messages API로 — 1의 형식은 output_config.format(json_schema, 지원 안 하는 키를 뗀 사본), temperature 없음, effort.
  */
 // 추론 계열 모델은 temperature 파라미터 자체를 400으로 거부한다.
 // 한 번 거부한 모델은 기억해 두고 이후 호출에서는 처음부터 파라미터를 뺀다.
@@ -371,58 +442,69 @@ function isTemperatureUnsupportedError(err: unknown): boolean {
 
 export async function callWithSchema<T>(args: CallWithSchemaArgs<T>): Promise<T> {
   const { call, system, user, jsonSchema, zodSchema, temperature, maxOutputTokens } = args;
-  // 호출별 모델 override(없으면 OPENAI_MODEL). 로그의 model 필드도 실제 쓴 모델을 그대로 남긴다 —
-  // 검산만 다른 모델로 돌릴 때 비용·품질을 호출 단위로 갈라 봐야 하기 때문이다.
-  const model = args.model ?? resolveModel();
+  // 공급자 계획(메인·백업) — env AI_PROVIDER·AI_FALLBACK과 키 유무, 호출부 고정(args.provider)만 본다. 라벨(call)로 고르지 않는다.
+  const plan = resolveProviderPlan(args.provider);
   const startedAt = Date.now();
   let inputTokens = 0;
   let outputTokens = 0;
+  // 로그용 — 실제로 쓴 공급자·모델(백업이 돌면 백업 쪽), 백업이 돌았는지와 그 이유
+  let usedProvider: AiProvider = plan.primary;
+  let usedModel = "";
+  let fallback: { from: AiProvider; reason: string } | null = plan.primaryNoKey
+    ? { from: otherProvider(plan.primary), reason: "primary_no_key" }
+    : null;
 
-  const requestOnce = async (
-    input: OpenAI.Responses.ResponseInput,
-  ): Promise<OpenAI.Responses.Response> => {
-    const params: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
-      model,
-      input,
-      text: {
-        format: {
-          type: "json_schema",
-          name: jsonSchema.name,
-          strict: jsonSchema.strict,
-          schema: jsonSchema.schema,
+  // OpenAI 흐름(기존 그대로): Responses API 1회 → 검증 → 실패 시 1회 재요청 → 재실패 throw.
+  const runOpenAI = async (): Promise<T> => {
+    // 호출별 모델 override(없으면 OPENAI_MODEL). 로그의 model 필드도 실제 쓴 모델을 그대로 남긴다 —
+    // 검산만 다른 모델로 돌릴 때 비용·품질을 호출 단위로 갈라 봐야 하기 때문이다.
+    const model = args.model ?? resolveModel();
+    usedModel = model;
+
+    const requestOnce = async (
+      input: OpenAI.Responses.ResponseInput,
+    ): Promise<OpenAI.Responses.Response> => {
+      const params: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
+        model,
+        input,
+        text: {
+          format: {
+            type: "json_schema",
+            name: jsonSchema.name,
+            strict: jsonSchema.strict,
+            schema: jsonSchema.schema,
+          },
         },
-      },
-      max_output_tokens: maxOutputTokens,
+        max_output_tokens: maxOutputTokens,
+      };
+      // 알려진 추론 계열(이름) 또는 이 프로세스에서 이미 거부한 모델이면 처음부터 뺀다. 나머지는 싣고, 거부되면 아래에서 1회 재시도.
+      if (!modelsRejectingTemperature.has(model) && !isKnownTemperatureRejectingModel(model)) params.temperature = temperature;
+      // 끊는 신호·SDK 재시도 횟수가 있으면 요청마다 넘긴다(재요청·temperature 재시도까지 같은 값 — 호출 전체 상한).
+      // 둘 다 없으면 옵션 없이(기존 동작 그대로). 조립 규칙은 순수 함수 하나(buildCallRequestOptions)에 있고 eval이 행동으로 잠근다.
+      const requestOptions = buildCallRequestOptions(args);
+
+      let res: OpenAI.Responses.Response;
+      try {
+        res = await getOpenAIClient().responses.create(params, requestOptions);
+      } catch (err) {
+        // 스펙(HARNESS §1)의 temperature 다이얼은 이 계열 모델에는 적용 자체가 불가하므로,
+        // 파라미터를 빼는 것이 스펙 의도를 유지하는 최소 변형이다.
+        if (params.temperature === undefined || !isTemperatureUnsupportedError(err)) throw err;
+        modelsRejectingTemperature.add(model);
+        delete params.temperature;
+        res = await getOpenAIClient().responses.create(params, requestOptions);
+      }
+      // 재요청이 발생하면 두 호출의 토큰을 합산해 기록한다
+      inputTokens += res.usage?.input_tokens ?? 0;
+      outputTokens += res.usage?.output_tokens ?? 0;
+      return res;
     };
-    // 알려진 추론 계열(이름) 또는 이 프로세스에서 이미 거부한 모델이면 처음부터 뺀다. 나머지는 싣고, 거부되면 아래에서 1회 재시도.
-    if (!modelsRejectingTemperature.has(model) && !isKnownTemperatureRejectingModel(model)) params.temperature = temperature;
-    // 끊는 신호·SDK 재시도 횟수가 있으면 요청마다 넘긴다(재요청·temperature 재시도까지 같은 값 — 호출 전체 상한).
-    // 둘 다 없으면 옵션 없이(기존 동작 그대로). 조립 규칙은 순수 함수 하나(buildCallRequestOptions)에 있고 eval이 행동으로 잠근다.
-    const requestOptions = buildCallRequestOptions(args);
 
-    let res: OpenAI.Responses.Response;
-    try {
-      res = await getOpenAIClient().responses.create(params, requestOptions);
-    } catch (err) {
-      // 스펙(HARNESS §1)의 temperature 다이얼은 이 계열 모델에는 적용 자체가 불가하므로,
-      // 파라미터를 빼는 것이 스펙 의도를 유지하는 최소 변형이다.
-      if (params.temperature === undefined || !isTemperatureUnsupportedError(err)) throw err;
-      modelsRejectingTemperature.add(model);
-      delete params.temperature;
-      res = await getOpenAIClient().responses.create(params, requestOptions);
-    }
-    // 재요청이 발생하면 두 호출의 토큰을 합산해 기록한다
-    inputTokens += res.usage?.input_tokens ?? 0;
-    outputTokens += res.usage?.output_tokens ?? 0;
-    return res;
-  };
+    const baseInput: OpenAI.Responses.ResponseInput = [
+      { role: "system", content: [{ type: "input_text", text: system }] },
+      { role: "user", content: user },
+    ];
 
-  const baseInput: OpenAI.Responses.ResponseInput = [
-    { role: "system", content: [{ type: "input_text", text: system }] },
-    { role: "user", content: user },
-  ];
-
-  try {
     const firstRes = await requestOnce(baseInput);
     const first = validateResponse(firstRes, zodSchema);
     if (first.ok) return first.data;
@@ -445,12 +527,74 @@ export async function callWithSchema<T>(args: CallWithSchemaArgs<T>): Promise<T>
     const second = validateResponse(secondRes, zodSchema);
     if (second.ok) return second.data;
 
-    throw new Error(
+    throw new AiValidationError(
       `[ai:${call}] 응답 검증에 재요청까지 2회 실패했습니다: ${second.errorSummary}`,
     );
+  };
+
+  // Claude 흐름: Messages API(beta — 서버 측 거절 폴백) 1회 → 검증 → 실패 시 1회 재요청 → 재실패 throw.
+  // 요청 조립·응답 해석은 순수 함수(lib/ai/provider-anthropic.ts). 모델은 ANTHROPIC_MODEL — args.model(OpenAI 모델 ID)은 쓰지 않는다.
+  // 거절(refusal)은 재요청하지 않고 곧바로 던진다(백업 대상) — 서버 측 폴백까지 거절한 요청을 같은 공급자에 다시 보내 봐야 같다.
+  const runAnthropic = async (): Promise<T> => {
+    const claudeModel = resolveAnthropicModel();
+    usedModel = claudeModel;
+    const once = async (retry: { raw: string; errorSummary: string } | null): Promise<ValidationOutcome<T>> => {
+      const params = buildClaudeRequest({
+        model: claudeModel,
+        system,
+        user,
+        schema: jsonSchema.schema,
+        maxOutputTokens,
+        effort: args.effort ?? DEFAULT_AI_EFFORT,
+        retry,
+      });
+      const res = await getAnthropicClient().beta.messages.create(params, buildCallRequestOptions(args));
+      const used = claudeUsageTokens(res.usage);
+      inputTokens += used.inputTokens;
+      outputTokens += used.outputTokens;
+      usedModel = res.model || claudeModel; // 서버 측 폴백이 돌면 대체 모델 이름이 온다
+      const outcome = interpretClaudeResponse(res);
+      if (outcome.kind === "refusal") {
+        throw new AiRefusalError("anthropic", outcome.category, `[ai:${call}] 모델이 요청을 거절했습니다 (category: ${outcome.category ?? "null"}).`);
+      }
+      if (outcome.kind === "incomplete") {
+        return { ok: false, raw: outcome.raw, errorSummary: incompleteErrorSummary(outcome.reason) };
+      }
+      return validateRaw(outcome.raw, zodSchema);
+    };
+
+    const first = await once(null);
+    if (first.ok) return first.data;
+    const second = await once({ raw: first.raw, errorSummary: first.errorSummary });
+    if (second.ok) return second.data;
+    throw new AiValidationError(
+      `[ai:${call}] 응답 검증에 재요청까지 2회 실패했습니다: ${second.errorSummary}`,
+    );
+  };
+
+  const runProvider = (provider: AiProvider): Promise<T> => {
+    usedProvider = provider;
+    return provider === "anthropic" ? runAnthropic() : runOpenAI();
+  };
+
+  try {
+    try {
+      return await runProvider(plan.primary);
+    } catch (err) {
+      // 백업: 가용성 실패(과부하·5xx·429·연결·타임아웃·거절·재요청까지 검증 실패)만, 사용자 취소는 절대 아님(decideFallback).
+      // 400·401·403 같은 요청/설정 오류는 숨기지 않고 그대로 던진다.
+      if (!plan.backup) throw err;
+      const decision = decideFallback(err, args.signal);
+      if (!decision.fallback) throw err;
+      console.warn(
+        `[ai:${call}] ${plan.primary} 실패(${decision.reason}) — 백업 ${plan.backup}로 다시 부릅니다: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      fallback = { from: plan.primary, reason: decision.reason };
+      return await runProvider(plan.backup);
+    }
   } finally {
     console.log(
-      JSON.stringify({ call, model, inputTokens, outputTokens, ms: Date.now() - startedAt }),
+      JSON.stringify({ call, model: usedModel, inputTokens, outputTokens, ms: Date.now() - startedAt, provider: usedProvider, fallback }),
     );
   }
 }
@@ -469,6 +613,7 @@ export async function extractBook(imageDataUrls: string[]): Promise<BookExtracti
     jsonSchema: BOOK_EXTRACTION_JSON_SCHEMA,
     zodSchema: bookExtractionSchema,
     ...EXTRACT_CALL_OPTIONS,
+    effort: "low", // Claude 경로만 — 판독(전사)이라 깊은 추론이 필요 없다(docs/HARNESS.md §5)
   });
 }
 
@@ -614,6 +759,7 @@ export async function extractJaDialog(input: { images: readonly string[] }): Pro
     zodSchema: jaDialogExtractionSchema,
     temperature: JA_DIALOG_EXTRACT_CALL_OPTIONS.temperature,
     maxOutputTokens: JA_DIALOG_EXTRACT_CALL_OPTIONS.maxOutputTokens,
+    effort: "low", // Claude 경로만 — 스크린샷 전사
   });
 }
 
@@ -673,6 +819,7 @@ export async function generateJaSpeakingFeedback(input: JaSpeakingFeedbackInput)
     temperature: JA_SPEAKING_FEEDBACK_CALL_OPTIONS.temperature,
     maxOutputTokens: JA_SPEAKING_FEEDBACK_CALL_OPTIONS.maxOutputTokens,
     model: resolveModel(),
+    effort: "high", // Claude 경로만 — 채점
   });
 }
 
@@ -810,6 +957,7 @@ export async function digestPages(args: DigestPagesArgs): Promise<DigestPagesRes
         jsonSchema: PAGE_DIGEST_JSON_SCHEMA,
         zodSchema: makePageDigestSchema({ sourceKind, imageCount: batchImages.length }),
         ...PAGES_CALL_OPTIONS,
+        effort: "low", // Claude 경로만 — 사진 판독
       });
     }),
   );
@@ -1053,7 +1201,8 @@ export function talkCardsAbortSignal(external?: AbortSignal | null, ms: number =
  * 과목 분기 없이 `callWithSchema`만 부르고(로그 라벨 `talk_cards`), 결과는 **후처리(`sanitizeTalkScreenCards`)를 지난 값**이다 —
  * 라우트는 그대로 200 본문으로 내리면 된다. zod는 타입·폭만(재요청으로 카드를 늦추지 않게), 근거 검사는 후처리가 항목 단위로 거른다.
  *
- * - 모델: `resolveTalkCardsModel()`(env `OPENAI_TALK_CARDS_MODEL`, 빈 값이면 DEFAULT_TALK_CARDS_MODEL).
+ * - 모델: `resolveTalkCardsModel()`(env `OPENAI_TALK_CARDS_MODEL`, 빈 값이면 DEFAULT_TALK_CARDS_MODEL). 공급자는 OpenAI 고정(`provider: "openai"`
+ *   — AI_PROVIDER=anthropic이어도 이 호출은 OpenAI만, 백업 없음).
  * - 시간 상한: 6초(재요청 포함 전체). `options.signal`(라우트의 req.signal)이 끊겨도 멈춘다 — 둘 다 `APIUserAbortError`로 던진다.
  *   SDK 자동 재시도는 끈다(`TALK_CARDS_SDK_MAX_RETRIES` = 0) — `retry-after` 대기가 신호를 보지 않아 상한을 뚫기 때문이다(QA P3-A).
  *   그래서 상류 429·5xx는 곧바로 던진다(라우트 500).
@@ -1076,6 +1225,8 @@ export async function generateTalkCards(input: TalkCardsInput, options: { signal
     model: resolveTalkCardsModel(),
     signal: talkCardsAbortSignal(options.signal),
     maxRetries: TALK_CARDS_SDK_MAX_RETRIES,
+    // 공급자 고정 — 6초 상한 안에서 도는 호출이라 Claude(지연이 긴 추론 모델)로 넘기지 않는다. 백업도 없다(docs/HARNESS.md §5).
+    provider: "openai",
   });
   return sanitizeTalkScreenCards(out, { teacherLine: input.teacherLine, words: input.words, shown: input.shown });
 }

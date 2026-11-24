@@ -9,6 +9,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { generateJaSpeakingPart } from "@/lib/ai/client";
 import type { JaSpeakingPartRecordMap } from "@/lib/ai/japanese/speaking-schemas";
 import { JA_SPEAKING_PARTS, type JaSpeakingPart } from "@/lib/ja-speaking";
@@ -40,7 +41,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!mock || !isRenderableJaSpeakingMock(mock)) return json({ ok: false, error: "mock_not_found", messageKo: "없거나 열 수 없는 모의고사예요." }, 404);
   if (mock.parts[part] !== null) return json({ ok: false, error: "part_exists", messageKo: EXISTS_KO }, 409);
 
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return json({ ok: false, error: "no_api_key", messageKo: "OpenAI API 키가 아직 설정되지 않아 파트를 만들 수 없어요. 이미 있는 파트는 그대로 볼 수 있어요." }, 501);
   }
 

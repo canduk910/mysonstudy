@@ -21,6 +21,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { generatePointsChunk } from "@/lib/ai/toeic/calls";
 import { planPointsChunks } from "@/lib/ai/toeic/points";
@@ -82,7 +83,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return json({ ok: true, filled: 0, remaining: 0, enriched: set.enriched, failedChunks: 0, totalChunks: 0, nothingToFill: true });
   }
 
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return json(
       {
         ok: false,

@@ -301,6 +301,7 @@ function runFileBackendChecks(): IslandCheckResult[] {
         GOOGLE_CLOUD_PROJECT: "",
         K_SERVICE: "",
         OPENAI_API_KEY: "",
+        ANTHROPIC_API_KEY: "", // 공급자 층(2026-11-25) — Claude 키도 비워 실호출을 구조적으로 막는다
         EVAL_STORE_URL: pathToFileURL(path.join(ROOT, "lib/store.ts")).href,
         EVAL_TR_URL: pathToFileURL(path.join(ROOT, "lib/toeic-island-translate-server.ts")).href,
         EVAL_ENTRY: JSON.stringify(entry()),
@@ -389,8 +390,8 @@ function runWiringChecks(): IslandCheckResult[] {
   );
   const aiImports = [...trSrv.matchAll(/^import (?!type )([^;]*?) from "(?:\.\/ai\/|@\/lib\/ai\/)([^"]+)";/gm)].map((m) => `${m[2]}:${m[1].replace(/\s+/g, " ").trim()}`);
   add(
-    "해석 서버 모듈: lib/ai에서 translateIslandSentences(메인 모델 진입 함수)만 — 공유 래퍼·출제/채점 모델·openai 직접 사용 없음",
-    eqJson(aiImports, ["toeic/calls:{ translateIslandSentences }"]) && !/callWithSchema|resolveToeicModel|resolveModel|from "openai"|"gpt-/.test(trSrv) && /await translateIslandSentences\(batch\.map\(\(t\) => t\.en\)\)/.test(trSrv),
+    "해석 서버 모듈: lib/ai에서 translateIslandSentences(메인 모델 진입 함수)와 키 판정 hasLlmKey(공급자 층, 2026-11-25)만 — 공유 래퍼·출제/채점 모델·openai 직접 사용 없음",
+    eqJson(aiImports, ["provider:{ hasLlmKey }", "toeic/calls:{ translateIslandSentences }"]) && !/callWithSchema|resolveToeicModel|resolveModel|from "openai"|"gpt-/.test(trSrv) && /await translateIslandSentences\(batch\.map\(\(t\) => t\.en\)\)/.test(trSrv),
     aiImports.join(" , "),
   );
   add(

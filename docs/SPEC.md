@@ -290,6 +290,10 @@ OPENAI_REALTIME_VOICE= # 선택. 자유대화 선생님 음성, 기본 marin —
 OPENAI_REALTIME_TRANSCRIBE_MODEL= # 선택. 자유대화 중 은우 발화 전사 모델, 기본 gpt-4o-mini-transcribe(전사 언어는 영어 고정) — §21
 OPENAI_TALK_CARDS_MODEL= # 선택. 자유대화 화면 카드(호출 J — 선생님 줄마다 도움·그림 카드), 기본 gpt-6-luna(OPENAI_MODEL과 따로 — 카드만 비추론 소형으로 바꿀 길, 예: gpt-4.1-mini) — §21-7·docs/harness/english.md §12-7
 OPENAI_PHRASE_HELPER_MODEL= # 선택. 표현 도우미(한국어 → 가장 회화적인 표현 + 예문, 세 모드 공통), 기본 gpt-6-luna(OPENAI_MODEL로 폴백하지 않는다) — §22·docs/harness/phrase-helper.md §7
+AI_PROVIDER=         # 선택. 텍스트·이미지 판독 LLM 호출(callWithSchema)의 메인 공급자 openai|anthropic, 빈 값·모르는 값은 openai — docs/HARNESS.md §5 (TTS·전사·실시간 음성·사진은 이 값과 무관하게 OpenAI)
+AI_FALLBACK=         # 선택. on(기본)|off — 메인이 가용성 실패(과부하·5xx·429·연결·타임아웃·거절·재요청까지 검증 실패)면 다른 공급자로 한 번 더(그 키가 있을 때만) — docs/HARNESS.md §5
+ANTHROPIC_API_KEY=   # 선택. 서버 전용. Claude 키 — AI_PROVIDER=anthropic의 메인, 또는 OpenAI 메인일 때의 백업 — docs/HARNESS.md §5
+ANTHROPIC_MODEL=     # 선택. Claude 모델, 기본 claude-opus-5-5 — docs/HARNESS.md §5
 TOEIC_REC_BUCKET=    # 선택. 아빠의 영어 내 녹음 보관 GCS 버킷 이름, 기본 eunwoo-bookcard-toeic-rec(스토어가 firestore일 때만 쓴다) — §20-11·docs/harness/toeic.md §13-1
 TOEIC_REC_DIR=       # 선택. 파일 백엔드(STORE_BACKEND=file)의 녹음 디렉터리, 기본 data/recordings(git·배포 업로드 밖) — §20-11
 WORKOUT_REST_TASKS_QUEUE= # 선택. 운동 휴식 알림을 예약할 Cloud Tasks 큐 전체 이름 projects/<p>/locations/<l>/queues/<q> — 비거나 형식이 틀리면 휴식 알림 501(꺼짐) — §19-9

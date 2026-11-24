@@ -97,6 +97,7 @@ export async function extractToeicPage(dataUrl: string): Promise<ToeicExprExtrac
     temperature: TOEIC_EXTRACT_CALL_OPTIONS.temperature,
     maxOutputTokens: TOEIC_EXTRACT_CALL_OPTIONS.maxOutputTokens,
     model: resolveModel(),
+    effort: "low", // Claude 경로만(docs/HARNESS.md §5) — 사진 판독
   });
 }
 
@@ -161,6 +162,7 @@ export async function generateFeedback(input: ToeicFeedbackInput): Promise<Toeic
     temperature: TOEIC_FEEDBACK_CALL_OPTIONS.temperature,
     maxOutputTokens: TOEIC_FEEDBACK_CALL_OPTIONS.maxOutputTokens,
     model: resolveToeicModel(),
+    effort: "high", // Claude 경로만(docs/HARNESS.md §5) — 채점
   });
   // 허용 목록 = 흐름 틀(앞) + 활용할 표현 — 흐름은 input.expressions에 섞지 않는다(D `활용할 표현:` 줄에 찍히지 않게, 검토 S4)
   return postprocessFeedback(raw, [...answerFlowExpressions(input.answerFlow), ...input.expressions]);

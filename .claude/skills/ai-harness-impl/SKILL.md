@@ -67,6 +67,7 @@ const raw = res.output_text; // SDK 편의 getter
 - 재요청은 원래 `input` 뒤에 assistant 턴(이전 출력 원문)과 user 턴(`다음 검증 오류를 고쳐 다시 출력해: {오류 요약}`)을 덧붙여 다시 호출한다. 오류 요약은 zod issue의 path + message를 최대 8개만 짧게(`summarizeZodError`).
 - 로깅은 `finally`에서 `{ call, model, inputTokens, outputTokens, ms }` 한 줄. 재요청이 나면 두 호출의 토큰을 합산한다. `model`은 실제로 쓴 모델이다 — 검산만 다른 모델로 돌릴 때 비용을 호출 단위로 가르기 위해서다.
 - 재실패 throw는 라우트가 받아 상태코드로 바꾼다. 래퍼 안에서 삼키지 않는다.
+- **공급자 층(2026-11-25, `docs/HARNESS.md` §5).** 메인 공급자는 env `AI_PROVIDER`(빈 값 = openai, `anthropic` = Claude Messages API), 메인이 가용성 실패(529·5xx·429·연결·타임아웃·거절·재요청까지 검증 실패)면 `AI_FALLBACK`(기본 on) + 백업 키가 있을 때 다른 공급자로 같은 흐름 한 번. 선택·키 판정은 `lib/ai/provider.ts`, Claude 변환은 `lib/ai/provider-anthropic.ts`(순수), 넘김 판정은 `lib/ai/provider-errors.ts`(typed 오류). 호출부는 `provider`(고정 — 호출 J는 `"openai"`)·`effort`(Claude 깊이 — 판독 low·채점/검산 high, OpenAI엔 안 실림)만 넘긴다. 로그에 `provider`·`fallback`이 붙는다. 회귀 가드 `eval:provider`.
 
 ## zod 스키마 작성
 
@@ -89,7 +90,7 @@ const raw = res.output_text; // SDK 편의 getter
 
 과목별 라우트 표는 레퍼런스에 있다. 여기는 모든 AI 라우트가 공유하는 모양이다.
 
-- **키 검사는 AI 호출 앞에서 한다.** `if (!process.env.OPENAI_API_KEY)` → **501** `{ ok:false, error:"no_api_key", messageKo }`. 로컬에서 키를 비우면 실호출이 구조적으로 불가능해지는 것이 이 줄 덕분이다. AI가 필요 없는 라우트(저장·rename·reorder·시험 세션 저장)에는 키 검사를 두지 않는다 — 키가 없어도 저장은 되어야 한다.
+- **키 검사는 AI 호출 앞에서 한다.** LLM(`callWithSchema`)만 부르는 라우트는 `if (!hasLlmKey())`(`lib/ai/provider.ts` — 2026-11-25 공급자 층), TTS·전사·실시간 음성·사진 같은 OpenAI 전용 기능은 `if (!process.env.OPENAI_API_KEY)` → **501** `{ ok:false, error:"no_api_key", messageKo }`. 새 AI 라우트는 `scripts/eval-provider.ts`의 `LLM_KEY_ROUTES`·`OPENAI_ONLY_KEY_ROUTES`에 한 줄 더한다(전수 점검이 미분류를 실패로 잡는다). 로컬에서 키를 비우면 실호출이 구조적으로 불가능해지는 것이 이 줄 덕분이다. AI가 필요 없는 라우트(저장·rename·reorder·시험 세션 저장)에는 키 검사를 두지 않는다 — 키가 없어도 저장은 되어야 한다.
 - **판독 실패는 정상 흐름이다.** 사진이 대상이 아니거나 읽을 것이 없으면 **200** `{ ok:false, reason:"retake", messageKo }`(영어 표지 `isBookCover=false`/`title=null`, 영어 단어장 0단어, 수학 `isWorksheet=false`, 토익 표현이 하나도 없는 판독). 500은 재요청까지 소진한 throw에만 쓴다 — 둘을 같은 코드로 내리면 "사진이 틀림"과 "AI가 죽음"이 화면에서 구분되지 않는다.
 - 나머지 관용구: **400** `invalid_input`(+ `issues: {path,message}[]`), **404** `not_found`·`*_not_found`, **500** `ai_failed` 또는 `*_failed`(재시도 가치가 있다는 뜻 — 판독·생성 라우트인 영어 `/api/extract`·`/api/pages`·`/api/card`·`/api/chapterize`·단어장 `/extract`·`/enrich`와 수학 `/extract`·`/explain`, 토익 판독·모의고사·재생성·사진·채점은 `retriable:true`를 함께 싣고, 일본어·뜻 조회·추천·토익 발화 포인트 라우트는 싣지 않는다), **403** `prod_guard`(개발 환경에서 실데이터 삭제 차단 — `isProdGuardError`로 판별). PIN 게이트는 `proxy.ts`가 `/api/*` 앞에서(예외는 `/api/unlock`) **401** `locked` / **503** `not_configured`로 처리하므로 라우트에 인증 코드를 두지 않는다.
 - **여러 장·여러 레벨은 병렬 + 부분 실패 격리.** `Promise.allSettled`로 나눠 부르고, 한 배치가 실패해도 나머지를 살려 200으로 내린다(`failedBatchCount`·`failedPhotoCount`·`partial`·`perLevel[].failed`로 사실대로 알린다). **전부 실패일 때만 500.**
@@ -133,7 +134,7 @@ const raw = res.output_text; // SDK 편의 getter
 **모든 로컬 실행 명령 앞에 이 접두어를 붙여라:**
 
 ```bash
-OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run dev
+OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run dev
 OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npm run eval:japanese
 OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npm run eval:toeic
 OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npx tsx scripts/....ts

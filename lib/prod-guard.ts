@@ -54,7 +54,7 @@ export class ProdGuardError extends Error {
   constructor(op: DestructiveOp) {
     super(
       `[prod-guard] 개발 환경에서 프로덕션 Firestore의 ${op}를 막았어요.\n` +
-        `  지금 스토어 백엔드가 firestore인데 NODE_ENV가 production이 아닙니다 — ` +
+        `  지금 스토어 백엔드가 firestore인데 Cloud Run(K_SERVICE)에서 돌고 있지 않습니다 — ` +
         `로컬 실행이 실제 가족 데이터를 지우려는 상황입니다.\n` +
         `  로컬 테스트라면 STORE_BACKEND=file 로 돌리세요(.env에서 이미 기본값입니다).\n` +
         `  의도한 작업이라면 그 명령에만 ALLOW_PROD_DESTRUCTIVE=1 을 붙이세요.`,
@@ -67,11 +67,20 @@ export class ProdGuardError extends Error {
  * 파괴적 작업 직전에 호출한다. 막아야 하면 던지고, 아니면 조용히 통과한다.
  *
  * 통과 조건:
- * - `NODE_ENV === "production"` — Cloud Run의 실서버. 여기서 막으면 기능이 죽는다.
+ * - `K_SERVICE`가 있다 — Cloud Run이 컨테이너에 주입하는 서비스 이름. 실서버에서 막으면 기능이 죽는다.
  * - `ALLOW_PROD_DESTRUCTIVE === "1"` — 사람이 의도를 명시한 경우.
+ *
+ * 2026-11-25 이전에는 `NODE_ENV === "production"`이면 통과였다. 그런데 로컬의
+ * `next start`(=`npm start`)·`next build` 뒤 실행도 NODE_ENV=production이라, 로컬 프로덕션
+ * 빌드가 Firestore를 잡은 채 삭제하면 가드가 열렸다. 그래서 "실제로 Cloud Run 위인가"를 본다.
+ * 같은 기준을 `isCloudRunRuntime()`으로 내보내 `getStore()` 경고가 함께 쓴다.
  */
+export function isCloudRunRuntime(): boolean {
+  return Boolean(process.env.K_SERVICE);
+}
+
 export function assertDestructiveAllowed(op: DestructiveOp): void {
-  if (process.env.NODE_ENV === "production") return;
+  if (isCloudRunRuntime()) return;
   if (process.env.ALLOW_PROD_DESTRUCTIVE === "1") return;
   throw new ProdGuardError(op);
 }

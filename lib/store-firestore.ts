@@ -55,6 +55,7 @@ import {
   type NewJaVocabBook,
   type LegacyOrNewVocabEntry,
   type AppendVocabEntryResult,
+  type VocabEnrichSaveResult,
   type VocabLinkInput,
   type VocabLinkOp,
   type VocabLinkResult,
@@ -198,7 +199,9 @@ import { decodeToeicGuideFromFirestore, encodeToeicGuideForFirestore } from "./t
 // 아빠의 운동(§19-4) — 판정·정규화는 파일 백엔드(store.ts)와 **같은 순수 함수**라 두 백엔드가 안 갈린다(런타임 의존성 ./kst뿐).
 import { decideLog, decideStart, decideUndo, normalizeWorkoutCycle, type WorkoutCycleRecord } from "./workout";
 // 단어장 보강(V3) 저장이 받는 완성형 entry 타입 — store는 VocabEntry를 재수출하지 않는다.
-import type { VocabEntry } from "./ai/english/vocabbook-schemas";
+import type { VocabEnrichItem, VocabEntry } from "./ai/english/vocabbook-schemas";
+// 보강 결과를 트랜잭션 안의 현재 entries에 얹는 순수 함수 — file 백엔드와 같은 함수(2026-11-25 경합 정리).
+import { planVocabEnrichmentSave } from "./vocabbook-enrich-save";
 // enriched 재계산의 단일 정의처(V8) — file 백엔드(store.ts)와 같은 함수로 두 백엔드가 안 갈린다.
 import { isVocabBookEnriched } from "./ai/english/vocabbook-enrich";
 // "모은 단어" 수집 단어장 마커(dayLabel)·초기 이름(M2) — file 백엔드와 같은 상수로 두 백엔드가 안 갈린다.
@@ -1086,39 +1089,49 @@ export class FirestoreStore implements StudyStore {
     return snap.docs.map((d) => toVocabBook(d.id, d.data()));
   }
 
+  // ⚠️ 단어장 entries 변경 4개(보강 저장·단어 담기·연결/해제·일본어 단어 담기)는 runTransaction이다(2026-11-25).
+  // 예전 `get → 메모리 계산 → update(entries 전체)`는 두 요청이 같은 entries를 읽으면 뒤 쓰기가 앞 쓰기를 덮었다 —
+  // 특히 보강은 AI 호출(수 초~수십 초) 동안 담기·연결이 끼어들 창이 크다. 트랜잭션은 경합 시 콜백을 다시 도는데,
+  // 판정이 순수 함수(planVocabEnrichmentSave·applyVocabLink·중복 검사)라 재시도해도 같은 답이다.
+  // 규칙(운동 트랜잭션과 같다): 콜백 안에서 읽기를 끝낸 뒤 쓰고, 갱신 레코드는 다시 읽지 않고 계산값으로 돌려준다.
+
   async updateVocabBookEnrichment(
     id: string,
-    entries: VocabEntry[],
-    enriched: boolean,
-  ): Promise<VocabBookRecord | null> {
+    items: readonly VocabEnrichItem[],
+  ): Promise<VocabEnrichSaveResult | null> {
     // **삭제가 아니라 수정**이라 assertDestructiveAllowed를 걸지 않는다(updateBookEvidence와 같은 규약).
     const ref = this.vocabBooks().doc(id);
-    const snap = await ref.get();
-    if (!snap.exists) return null;
-    // Firestore는 undefined를 거부한다 — normalizeVocabEntry로 조인 뒤 entries·enriched만 갈아끼운다.
-    // 정의 불변은 호출측 mergeEnrichment가 이미 지켰다(여기선 받은 값을 그대로 굳힌다).
-    await ref.update({ entries: entries.map(normalizeVocabEntry), enriched });
-    const updated = await ref.get();
-    return toVocabBook(updated.id, updated.data()!);
+    return getDb().runTransaction(async (tx): Promise<VocabEnrichSaveResult | null> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      // 저장 시점의 현재 entries에 합친다 — AI 도는 사이 담기·연결된 단어 보존(정의 불변은 mergeEnrichment).
+      const current = toVocabBook(snap.id, snap.data()!);
+      const plan = planVocabEnrichmentSave(current.entries, items);
+      // Firestore는 undefined를 거부한다 — normalizeVocabEntry로 조인 뒤 entries·enriched만 갈아끼운다.
+      const entries = plan.entries.map(normalizeVocabEntry);
+      tx.update(ref, { entries, enriched: plan.enriched });
+      return { record: { ...current, entries, enriched: plan.enriched }, plan };
+    });
   }
 
   async appendVocabEntry(id: string, entry: VocabEntry): Promise<AppendVocabEntryResult> {
     // **삭제가 아니라 수정**이라 assertDestructiveAllowed를 걸지 않는다(updateVocabBookEnrichment와 같은 규약).
     const ref = this.vocabBooks().doc(id);
-    const snap = await ref.get();
-    if (!snap.exists) return { record: null, appended: false };
-    // 읽기 정규화(toVocabBook)로 옛 문서도 안전하게 다룬다 — 이 위에서 중복 검사·append를 한다.
-    const current = toVocabBook(snap.id, snap.data()!);
-    const key = entry.word.trim().toLowerCase();
-    if (current.entries.some((e) => e.word.trim().toLowerCase() === key)) {
-      return { record: current, appended: false };
-    }
-    // undefined는 Firestore가 거부한다 — 붙이는 단어까지 normalizeVocabEntry로 마지막에 조인다.
-    const nextEntries = [...current.entries, entry].map(normalizeVocabEntry);
-    const enriched = isVocabBookEnriched(nextEntries);
-    await ref.update({ entries: nextEntries, enriched });
-    const updated = await ref.get();
-    return { record: toVocabBook(updated.id, updated.data()!), appended: true };
+    return getDb().runTransaction(async (tx): Promise<AppendVocabEntryResult> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return { record: null, appended: false };
+      // 읽기 정규화(toVocabBook)로 옛 문서도 안전하게 다룬다 — 이 위에서 중복 검사·append를 한다.
+      const current = toVocabBook(snap.id, snap.data()!);
+      const key = entry.word.trim().toLowerCase();
+      if (current.entries.some((e) => e.word.trim().toLowerCase() === key)) {
+        return { record: current, appended: false };
+      }
+      // undefined는 Firestore가 거부한다 — 붙이는 단어까지 normalizeVocabEntry로 마지막에 조인다.
+      const nextEntries = [...current.entries, entry].map(normalizeVocabEntry);
+      const enriched = isVocabBookEnriched(nextEntries);
+      tx.update(ref, { entries: nextEntries, enriched });
+      return { record: { ...current, entries: nextEntries, enriched }, appended: true };
+    });
   }
 
   async linkVocabRelated(id: string, input: VocabLinkInput): Promise<VocabLinkResult> {
@@ -1136,15 +1149,17 @@ export class FirestoreStore implements StudyStore {
    */
   private async applyLink(id: string, input: VocabLinkInput, op: VocabLinkOp): Promise<VocabLinkResult> {
     const ref = this.vocabBooks().doc(id);
-    const snap = await ref.get();
-    if (!snap.exists) return { status: "not_found" };
-    const current = toVocabBook(snap.id, snap.data()!);
-    const result = applyVocabLink(current.entries, input, op);
-    if (result.status === "invalid") return { status: "invalid" };
-    const nextEntries = result.entries.map(normalizeVocabEntry);
-    await ref.update({ entries: nextEntries });
-    const updated = await ref.get();
-    return { status: "ok", record: toVocabBook(updated.id, updated.data()!) };
+    // 트랜잭션 — 읽기·applyVocabLink·쓰기를 한 원자 단위로(위 "단어장 entries 변경 4개" 주석).
+    return getDb().runTransaction(async (tx): Promise<VocabLinkResult> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return { status: "not_found" };
+      const current = toVocabBook(snap.id, snap.data()!);
+      const result = applyVocabLink(current.entries, input, op);
+      if (result.status === "invalid") return { status: "invalid" };
+      const nextEntries = result.entries.map(normalizeVocabEntry);
+      tx.update(ref, { entries: nextEntries });
+      return { status: "ok", record: { ...current, entries: nextEntries } };
+    });
   }
 
   async updateVocabBookTitle(id: string, titleKo: string): Promise<VocabBookRecord | null> {
@@ -1410,17 +1425,20 @@ export class FirestoreStore implements StudyStore {
 
   async appendJaVocabEntry(id: string, entry: JaVocabEntry): Promise<AppendJaVocabResult> {
     const ref = this.jaVocabBooks().doc(id);
-    const snap = await ref.get();
-    if (!snap.exists) return { record: null, appended: false };
-    const current = toJaVocabBook(snap.id, snap.data()!);
-    const key = entry.kana.trim();
-    if (key !== "" && current.entries.some((e) => e.kana.trim() === key)) {
-      return { record: current, appended: false };
-    }
-    const nextEntries = [...current.entries, entry].map(normalizeJaVocabEntry);
-    await ref.update({ entries: nextEntries });
-    const updated = await ref.get();
-    return { record: toJaVocabBook(updated.id, updated.data()!), appended: true };
+    // 트랜잭션(2026-11-25) — 연달아 담은 두 단어가 같은 entries를 읽어 하나가 사라지는 경합을 막는다(영어 단어 담기와 같은 규약).
+    return getDb().runTransaction(async (tx): Promise<AppendJaVocabResult> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return { record: null, appended: false };
+      const current = toJaVocabBook(snap.id, snap.data()!);
+      const key = entry.kana.trim();
+      if (key !== "" && current.entries.some((e) => e.kana.trim() === key)) {
+        return { record: current, appended: false };
+      }
+      const nextEntries = [...current.entries, entry].map(normalizeJaVocabEntry);
+      tx.update(ref, { entries: nextEntries });
+      // 다시 읽지 않고 같은 읽기 변환에 갱신 entries를 태워 돌려준다(예전 update 뒤 재조회와 같은 모양).
+      return { record: toJaVocabBook(snap.id, { ...snap.data()!, entries: nextEntries }), appended: true };
+    });
   }
 
   // ---- workoutCycles — 아빠의 운동 (§19-4) ----

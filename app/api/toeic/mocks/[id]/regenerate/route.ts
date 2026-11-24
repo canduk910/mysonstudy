@@ -22,6 +22,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { generateMockPart } from "@/lib/ai/toeic/calls";
 import type { ToeicMockPartRecordMap } from "@/lib/ai/toeic/schemas";
 import { getStore } from "@/lib/store";
@@ -61,7 +62,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return json({ ok: false, error: "part_exists", messageKo: EXISTS_KO }, 409);
   }
 
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return json(
       { ok: false, error: "no_api_key", messageKo: "OpenAI API 키가 아직 설정되지 않아 파트를 만들 수 없어요. 이미 있는 파트는 그대로 볼 수 있어요." },
       501,

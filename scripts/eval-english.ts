@@ -163,6 +163,7 @@ import {
   isVocabBookEnriched,
   mergeEnrichment,
 } from "../lib/ai/english/vocabbook-enrich";
+import { planVocabEnrichmentSave } from "../lib/vocabbook-enrich-save";
 // 자유대화(§12) — 관문 R 지시문·세션 설정, 실시간 스크립트 리듀서, 호출 I 프롬프트·스키마·zod, 설명 낭독 대본, 스트릭 입력
 import type { RealtimeServerEvent } from "openai/resources/realtime/realtime";
 import {
@@ -1635,6 +1636,102 @@ function runVocabbookChecks(): CheckResult[] {
       m.entries[0].definitionEn === "To make something work again." &&
         m.entries[0].definitionKo === "무언가를 다시 작동하게 만들어요.",
       `def=${JSON.stringify(m.entries[0].definitionEn)} ko=${JSON.stringify(m.entries[0].definitionKo)}`,
+    );
+  }
+
+  // --- 보강 저장 경합(2026-11-25): AI가 도는 사이 담기·연결된 단어를 저장이 지우지 않는다 ---
+  // 저장 계층이 원자 단위 안에서 **현재 entries**를 다시 읽어 planVocabEnrichmentSave로 얹는다.
+  // 반례: 옛 읽기(stale)로 병합해 통째로 덮어쓰면 새로 담긴 "kite"와 apple의 사용자 연결이 사라진다.
+  {
+    const stale: VocabEntry[] = [
+      ventry({ no: "0001", word: "apple", definitionEn: null, definitionKo: null, imageEmoji: null }),
+      ventry({ no: "0002", word: "brave", definitionEn: null, definitionKo: null, imageEmoji: null }),
+    ];
+    const items: VocabEnrichItem[] = [
+      { no: "0001", word: "apple", definitionEn: "A round sweet fruit.", definitionKo: "둥글고 단 과일이에요.", imageEmoji: "🍎" },
+      { no: "0002", word: "brave", definitionEn: "Not afraid.", definitionKo: "두려워하지 않아요.", imageEmoji: "🦁" },
+    ];
+    // 그사이: apple에 사용자 연결(related) + brave 정의를 사람이 "고치기"로 채움 + 새 단어 kite 담기(no:null)
+    const linked: VocabEntry["meanings"][number]["related"][number] = {
+      kind: "synonym",
+      word: "fruit",
+      glossKo: "과일",
+      source: "user",
+      linkedNo: "0009",
+      linkedMeaningIndex: 0,
+    };
+    const current: VocabEntry[] = [
+      ventry({ no: "0001", word: "apple", meanings: [{ no: null, ko: "사과", related: [linked] }] }),
+      ventry({ no: "0002", word: "brave", definitionEn: "Brave by hand.", definitionKo: null }),
+      ventry({ no: null, word: "kite", definitionEn: null, definitionKo: "연", imageEmoji: null, meanings: [{ no: null, ko: "연", related: [] }] }),
+    ];
+    const plan = planVocabEnrichmentSave(current, items);
+    const [apple, brave, kite] = plan.entries;
+    const staleOverwrite = mergeEnrichment(stale, items).entries; // 예전 방식 — 반례가 실제로 데이터를 잃는지
+    const ok =
+      plan.entries.length === 3 &&
+      apple.definitionEn === "A round sweet fruit." &&
+      apple.meanings[0].related.length === 1 && // 연결 보존
+      brave.definitionEn === "Brave by hand." && // 사람이 채운 EN 불변
+      brave.definitionKo === "두려워하지 않아요." && // null 자리 KO만 채움
+      kite.word === "kite" && kite.definitionKo === "연" && kite.definitionEn === null && // 그사이 담긴 단어 보존(결과와 안 맞물림)
+      plan.enriched === false; // kite EN이 비어 미완
+    const countsOk =
+      plan.filledDefinitions === 1 && // apple만(brave는 사람이 이미 채움)
+      plan.filledKoGlosses === 2 && // apple·brave
+      plan.filledEmojis === 2 &&
+      plan.remainingDefinitions === 1 && // kite
+      plan.remainingGlosses === 0;
+    add(
+      "호출 D §8. 보강 저장 경합: 현재 entries 기준 병합 — 담긴 단어·연결·사람이 채운 정의 보존",
+      ok,
+      `len=${plan.entries.length} apple.related=${apple.meanings[0].related.length} brave.en=${JSON.stringify(brave.definitionEn)} kite=${JSON.stringify(kite.definitionEn)}/${JSON.stringify(kite.definitionKo)} enriched=${plan.enriched}`,
+    );
+    add(
+      "호출 D §8. 보강 저장 경합: 집계(filled·remaining)는 저장 시점 현재 entries 기준",
+      countsOk,
+      `filled=${plan.filledDefinitions}/${plan.filledKoGlosses}/${plan.filledEmojis} remaining=${plan.remainingDefinitions}/${plan.remainingGlosses}`,
+    );
+    add(
+      "호출 D §8. 보강 저장 경합 반례: 옛 읽기 병합을 통째로 쓰면 담긴 단어가 사라진다(그래서 저장 계층이 다시 읽는다)",
+      staleOverwrite.length === 2 && !staleOverwrite.some((e) => e.word === "kite"),
+      `stale 결과 단어=[${staleOverwrite.map((e) => e.word).join(",")}]`,
+    );
+  }
+
+  // --- 보강 저장 배선: 라우트는 병합하지 않고 items를 넘긴다 · 두 백엔드가 같은 순수 함수 · Firestore는 트랜잭션 ---
+  {
+    const read = (rel: string) => readFileSync(new URL(`../${rel}`, import.meta.url), "utf-8").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    const route = read("app/api/english/vocab/[id]/enrich/route.ts");
+    const fsStore = read("lib/store-firestore.ts");
+    const fileStore = read("lib/store.ts");
+    const methodBody = (src: string, head: string) => {
+      const i = src.indexOf(head);
+      if (i < 0) return "";
+      const next = src.indexOf("\n  async ", i + head.length);
+      const nextPriv = src.indexOf("\n  private ", i + head.length);
+      const ends = [next, nextPriv].filter((n) => n > 0);
+      return src.slice(i, ends.length ? Math.min(...ends) : undefined);
+    };
+    add(
+      "보강 저장 배선: 라우트는 mergeEnrichment를 직접 부르지 않고 store.updateVocabBookEnrichment(id, items)에 넘긴다",
+      !/mergeEnrichment\(/.test(route) && /updateVocabBookEnrichment\(id, items\)/.test(route),
+      "",
+    );
+    const fsTx = ["async updateVocabBookEnrichment(", "async appendVocabEntry(", "private async applyLink(", "async appendJaVocabEntry("].map((h) => {
+      const b = methodBody(fsStore, h);
+      return { h, ok: b.length > 0 && /runTransaction\(/.test(b) && /tx\.get\(ref\)/.test(b) && /tx\.update\(ref,/.test(b) && !/await ref\.(get|update)\(/.test(b) };
+    });
+    add(
+      "보강 저장 배선: Firestore 단어장 entries 변경 4개(보강·담기·연결·일본어 담기)가 runTransaction 안에서 읽고 쓴다",
+      fsTx.every((x) => x.ok),
+      fsTx.filter((x) => !x.ok).map((x) => x.h).join(" · "),
+    );
+    add(
+      "보강 저장 배선: 두 백엔드가 같은 planVocabEnrichmentSave를 원자 단위(mutate·트랜잭션) 안에서 부른다",
+      /planVocabEnrichmentSave\(current\.entries, items\)/.test(methodBody(fsStore, "async updateVocabBookEnrichment(")) &&
+        /this\.mutate\([\s\S]*planVocabEnrichmentSave\(current, items\)/.test(methodBody(fileStore, "async updateVocabBookEnrichment(")),
+      "",
     );
   }
 

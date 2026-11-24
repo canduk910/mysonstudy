@@ -2,8 +2,10 @@
 #
 # 인증: Workload Identity Federation (키 파일·GitHub Secret 없음).
 #   canduk910/mysonstudy 저장소의 워크플로만 github-deployer SA로 인증된다.
-# eval(npm run eval:english)은 CI에 넣지 않는다 — 실제 OpenAI 호출이 발생하는
-#   수동 전용 회귀 테스트다 (docs/harness/english.md §5). 프롬프트 수정 시 로컬에서 돌리고 커밋할 것.
+# eval의 **실호출 구간**은 CI에 넣지 않는다 — 실제 OpenAI 호출이 발생하는 수동 전용 회귀 테스트다
+#   (docs/harness/english.md §5). 프롬프트 수정 시 로컬에서 돌리고 커밋할 것.
+#   대신 **오프라인 구간**(EVAL_OFFLINE_ONLY=1 — spec-sync·순수 함수·배선 점검, 실호출 0·네트워크 차단)은
+#   배포 전 단계로 돈다(2026-11-25). 키·GCP 신호·PIN을 전부 빈 값으로 고정해 실호출·Firestore가 구조적으로 불가능하다.
 # 서비스의 env·secret(OPENAI_MODEL, OPENAI_API_KEY 등)은 최초 배포 때 설정된 값이
 #   재배포에도 유지되므로 여기서 다시 지정하지 않는다.
 
@@ -29,6 +31,30 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx tsc --noEmit
+      # 오프라인 eval — 실호출 0회. 빈 값 env는 "있지만 비어 있음"이라 스크립트의 .env 자동 로드도 덮지 않는다
+      # (CI에는 .env 자체가 없다). STORE_BACKEND=file로 Firestore 자동 감지를 끈다(CLAUDE.md 2026-08-17 사고).
+      - name: Offline evals (no API calls)
+        env:
+          STORE_BACKEND: file
+          OPENAI_API_KEY: ""
+          ANTHROPIC_API_KEY: ""
+          GOOGLE_APPLICATION_CREDENTIALS: ""
+          GOOGLE_CLOUD_PROJECT: ""
+          APP_PIN: ""
+          EVAL_OFFLINE_ONLY: "1"
+        run: |
+          npm run eval:workout
+          npm run eval:streak
+          npm run eval:review
+          npm run eval:speech
+          npm run eval:ja-daily
+          npm run eval:japanese
+          npm run eval:english
+          npm run eval:math
+          npm run eval:toeic
+          npm run eval:mom
+          npm run eval:phrase
+          npm run eval:provider
       - run: npm run build
 
   deploy:

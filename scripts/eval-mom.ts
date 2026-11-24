@@ -232,7 +232,7 @@ export function fakeBlock(id: string, week: number, stage: 0 | 1 | 2 | 3 | 4, n 
   const order = [
     sum.indexOf('"not_found"'),
     sum.search(/if\s*\(\s*test\.summaryKo\s*\)/),
-    sum.indexOf("process.env.OPENAI_API_KEY"),
+    sum.indexOf("hasLlmKey()"), // 2026-11-25 공급자 층 — LLM 키 판정(docs/HARNESS.md §5)
     sum.indexOf("summarizeMomTest("),
     sum.indexOf("setMomTestSummary("),
   ];

@@ -495,6 +495,7 @@ function runFileStoreChildChecks(): GuideCheckResult[] {
         GOOGLE_CLOUD_PROJECT: "",
         K_SERVICE: "",
         OPENAI_API_KEY: "",
+        ANTHROPIC_API_KEY: "", // 공급자 층(2026-11-25) — Claude 키도 비워 실호출을 구조적으로 막는다
         EVAL_STORE_URL: pathToFileURL(path.join(ROOT, "lib", "store.ts")).href,
       },
     });
@@ -528,7 +529,7 @@ function runS3SourceChecks(): GuideCheckResult[] {
   const drillRoute = codeOnly(read("app/api/toeic/guides/[part]/drills/route.ts"));
   add(
     "연습 라우트: 키 검사가 맨 먼저 → 유형 404 part_not_found → 본문 → 호출 C",
-    before(drillRoute, "if (!process.env.OPENAI_API_KEY)", "isToeicGuidePart(part)") &&
+    before(drillRoute, "if (!hasLlmKey())", "isToeicGuidePart(part)") &&
       before(drillRoute, "isToeicGuidePart(part)", "await req.json()") &&
       before(drillRoute, "await req.json()", "generateMockPart(") &&
       /error: "part_not_found"/.test(drillRoute) &&
@@ -572,7 +573,7 @@ function runS3SourceChecks(): GuideCheckResult[] {
   add(
     "파트 다시 만들기: 연습이면 409 is_drill — 키 검사·호출 C보다 먼저, 계약 유니온에 is_drill",
     /if \(isToeicDrill\(mock\)\) \{\s*return json\(\{ ok: false, error: "is_drill"/.test(regen) &&
-      before(regen, "isToeicDrill(mock)", "process.env.OPENAI_API_KEY") &&
+      before(regen, "isToeicDrill(mock)", "hasLlmKey()") &&
       before(regen, "isToeicDrill(mock)", "generateMockPart(") &&
       /"part_exists" \| "is_drill"/.test(read("lib/toeic-mock-contract.ts")),
   );

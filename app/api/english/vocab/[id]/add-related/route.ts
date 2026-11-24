@@ -25,6 +25,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { enrichVocab } from "@/lib/ai/client";
 import { mergeEnrichment } from "@/lib/ai/english/vocabbook-enrich";
@@ -156,7 +157,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   let entry = newRelatedEntry(chosen.word.trim(), chosen.glossKo.trim());
   let enrichSkipped: "enrich_failed" | "no_api_key" | null = null;
 
-  if (process.env.OPENAI_API_KEY) {
+  if (hasLlmKey()) {
     try {
       const items = await enrichVocab([entry]);
       entry = mergeEnrichment([entry], items).entries[0] ?? entry;

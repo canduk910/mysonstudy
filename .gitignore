@@ -32,3 +32,30 @@ design/mom_english/
 
 # 아빠의 일본어 교재 음원·PDF(다이나믹일본어·JLPT 한끝 N5, 저작물 — PUBLIC 저장소에 넣지 않는다)
 design/japanesse/
+
+# 에이전트 작업 산출물·브라우저 자동화 기록(2026-11-25) — 리포트에 교재 인용·로컬 경로·스크린샷이 섞일 수 있다
+_workspace/
+_workspace_*/
+.playwright-mcp/
+
+# design/ 아래 사진·음원·PDF는 기본 무시(2026-11-25) — 교재 사진이 자동 스테이징된 일이 두 번 있었다.
+# 이미 추적 중인 파일(html·otf)은 영향 없다(.gitignore는 추적되지 않은 파일에만 걸린다).
+# 정말 올려야 하는 그림이면 `git add -f`로 사람이 의도를 밝힌다.
+design/**/*.png
+design/**/*.PNG
+design/**/*.jpg
+design/**/*.JPG
+design/**/*.jpeg
+design/**/*.JPEG
+design/**/*.heic
+design/**/*.HEIC
+design/**/*.webp
+design/**/*.gif
+design/**/*.mp3
+design/**/*.m4a
+design/**/*.wav
+design/**/*.aac
+design/**/*.ogg
+design/**/*.mp4
+design/**/*.mov
+design/**/*.pdf

@@ -865,6 +865,7 @@ function runFileStoreRoundTrip(): GuideCheckResult[] {
         GOOGLE_CLOUD_PROJECT: "",
         K_SERVICE: "",
         OPENAI_API_KEY: "",
+        ANTHROPIC_API_KEY: "", // 공급자 층(2026-11-25) — Claude 키도 비워 실호출을 구조적으로 막는다
         EVAL_FILE: filePath,
         EVAL_STORE_URL: pathToFileURL(path.join(ROOT, "lib", "store.ts")).href,
         EVAL_SCHEMAS_URL: pathToFileURL(path.join(ROOT, "lib", "ai", "toeic", "schemas.ts")).href,
@@ -1201,7 +1202,7 @@ function runRouteSourceChecks(): GuideCheckResult[] {
     "연습 라우트: 새 pickExpressionsForDrill(틀 칸 없음, guide.exclude = guideExpressionKeysInFlow) · 키 검사가 호출 C보다 앞",
     /pickExpressionsForDrill\(\{\s*guide: \{ set: guideOk \? guideSet : null, sessions: guideSessions, exclude: bankDoc \? guideExpressionKeysInFlow\(bankDoc, part\) : new Set<string>\(\) \},/.test(drill) &&
       !/templates: \{ part, flows/.test(drill) &&
-      drill.indexOf("process.env.OPENAI_API_KEY") >= 0 && drill.indexOf("process.env.OPENAI_API_KEY") < drill.indexOf("generateMockPart("),
+      drill.indexOf("hasLlmKey()") >= 0 && drill.indexOf("hasLlmKey()") < drill.indexOf("generateMockPart("),
     "",
   );
   add("연습 라우트 로그: 개수만(흐름 단계·틀 수) — 틀 글자를 싣지 않는다", !/console\.[a-z]+\([^;]*expression[^s]/.test(drill) && /흐름 단계 \$\{answerFlow\?\.steps\.length \?\? 0\}/.test(drill), "");
@@ -1209,7 +1210,7 @@ function runRouteSourceChecks(): GuideCheckResult[] {
   add(
     "다시 만들기 라우트: 문서의 그 파트 흐름을 넘기고 틀 은행을 읽지 않는다(실패 파트·고르지 않은 파트 같은 갈래) · 키 검사가 호출 C보다 앞",
     /answerFlow: mock\.answerFlows\.find\(\(f\) => f\.part === part\) \?\? null,/.test(regen) && !/TOEIC_TEMPLATE_BANK_ID|listToeicSets\(|getToeicSet\(/.test(regen) &&
-      regen.indexOf("process.env.OPENAI_API_KEY") < regen.indexOf("generateMockPart("),
+      regen.indexOf("hasLlmKey()") >= 0 && regen.indexOf("hasLlmKey()") < regen.indexOf("generateMockPart("),
     "",
   );
   return results;
@@ -1249,7 +1250,7 @@ function runAppSourceChecks(): GuideCheckResult[] {
       /generateMockPart\(part, \{ targetGrade, topicHints, expressions, answerFlow: flowOf\(part\) \}\)/.test(mocks) &&
       /drillPart: null,\s*answerFlows,/.test(mocks) &&
       !/answerFlow: null/.test(mocks) &&
-      mocks.indexOf("process.env.OPENAI_API_KEY") >= 0 && mocks.indexOf("process.env.OPENAI_API_KEY") < mocks.indexOf("generateMockPart("),
+      mocks.indexOf("hasLlmKey()") >= 0 && mocks.indexOf("hasLlmKey()") < mocks.indexOf("generateMockPart("),
     "",
   );
   add(

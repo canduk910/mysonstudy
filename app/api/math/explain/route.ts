@@ -54,6 +54,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { resolveModel } from "@/lib/ai/client";
 import { type ExplainProblemInput, explainProblem } from "@/lib/ai/math/pipeline";
@@ -167,7 +168,7 @@ function invalidInput(error: z.ZodError) {
 
 export async function POST(req: Request) {
   // 키가 없으면 아무 일도 하지 않고 명시적으로 알린다 (로컬 데모 배려 — 영어 라우트와 같은 규약)
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return NextResponse.json(
       {
         ok: false,

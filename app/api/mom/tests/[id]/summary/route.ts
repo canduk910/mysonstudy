@@ -6,6 +6,7 @@
  * 입력은 문항별 (한국어 뜻, 목표 문장, 받아쓰기, 판정)만 — 녹음은 없다. 실패해도 테스트 기록은 그대로다(총평 없이).
  */
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { summarizeMomTest } from "@/lib/ai/mom/calls";
 import { getStore } from "@/lib/store";
 
@@ -24,7 +25,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // 이미 받은 총평은 다시 만들지 않는다(재전송 = 호출 0회)
   if (test.summaryKo) return NextResponse.json({ ok: true, summaryKo: test.summaryKo, reused: true });
 
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return NextResponse.json({ ok: false, error: "no_api_key", messageKo: "AI 총평은 아직 쓸 수 없어요. 결과는 그대로 볼 수 있어요." }, { status: 501 });
   }
 

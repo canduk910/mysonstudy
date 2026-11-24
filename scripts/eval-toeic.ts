@@ -1968,7 +1968,7 @@ async function runAttemptChecks(): Promise<CheckResult[]> {
     createCall.replace(/\s+/g, " ").slice(0, 160),
   );
   const routeSrc = readFileSync(new URL("../app/api/toeic/attempts/[id]/score/route.ts", import.meta.url), "utf-8");
-  const keyAt = routeSrc.indexOf("if (!process.env.OPENAI_API_KEY)");
+  const keyAt = routeSrc.indexOf("if (!hasLlmKey())"); // 2026-11-25 공급자 층 — AI 앞 LLM 키 판정(전사 키는 관문 T의 no_api_key → 501)
   add(
     "채점 라우트: 키 검사(501)가 전사·호출 D보다 먼저, 전사에 req.signal 전달",
     keyAt > 0 &&

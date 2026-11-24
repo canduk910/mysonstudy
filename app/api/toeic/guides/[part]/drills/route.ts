@@ -30,6 +30,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { resolveToeicModel } from "@/lib/ai/toeic/model";
 import { generateMockPart } from "@/lib/ai/toeic/calls";
@@ -75,7 +76,7 @@ function errName(err: unknown): string {
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ part: string }> }) {
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return json(
       {
         ok: false,

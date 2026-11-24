@@ -967,7 +967,7 @@ async function runAppChecks(): Promise<CheckResult[]> {
 
   // ── 라우트 — 물어보기 ──
   const route = read("app/api/phrase-helper/route.ts");
-  const keyAt = route.indexOf("if (!process.env.OPENAI_API_KEY)");
+  const keyAt = route.indexOf("if (!hasLlmKey())"); // 2026-11-25 공급자 층 — LLM 키 판정(docs/HARNESS.md §5)
   add(
     "라우트: 키 검사(501)가 본문 읽기·explainPhrase보다 먼저, req.signal 전달, 본문 바이트 상한(413)",
     keyAt > 0 &&

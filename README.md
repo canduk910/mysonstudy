@@ -54,6 +54,7 @@ npm run dev    # http://localhost:3100 (다른 로컬 프로젝트와의 포트 
 | `GOOGLE_APPLICATION_CREDENTIALS` | 선택 | 로컬에서 Firestore를 쓸 때 서비스 계정 키 파일 경로. Cloud Run에서는 불필요(서비스 계정 ADC) |
 | `STORE_BACKEND` | 선택 | `firestore` \| `file`. 미설정 시 자동 감지 — GCP 신호(`GOOGLE_APPLICATION_CREDENTIALS`/`K_SERVICE`/`GOOGLE_CLOUD_PROJECT`)가 있으면 firestore, 없으면 file |
 | `APP_PIN` | **배포 시 필수** | 접속 잠금 PIN(숫자 **6~8자리 권장**, 최소 4자리 — 4자리는 경우의 수가 1만뿐이라 짧습니다). 서버 전용. 도메인이 공개돼도 가족 외 접속과 AI 비용 유출을 막습니다. **프로덕션에서 미설정이면 전 요청을 503으로 차단**(fail-closed), 로컬 개발에서 미설정이면 잠금 없이 통과 |
+| `SESSION_SECRET` | 선택(권장) | PIN 쿠키 서명 키(긴 임의 문자열, 서버 전용 — Secret Manager). 있으면 `HMAC(SESSION_SECRET, "unlock:<exp>:<PIN>")`, 없으면 예전처럼 `APP_PIN`이 키. **처음 등록하거나 바꾸면 기존 쿠키가 전부 무효**라 가족 기기마다 PIN을 한 번 다시 넣어야 합니다 |
 
 > 선택 변수(`OPENAI_MODEL`·`OPENAI_MODEL_VERIFY`·`OPENAI_TOEIC_MODEL`·`OPENAI_TTS_MODEL`·`OPENAI_TTS_VOICE`·`OPENAI_IMAGE_MODEL`·`OPENAI_IMAGE_QUALITY`·`OPENAI_TRANSCRIBE_MODEL`·`OPENAI_REALTIME_MODEL`·`OPENAI_REALTIME_VOICE`·`OPENAI_REALTIME_TRANSCRIBE_MODEL`·`OPENAI_TALK_CARDS_MODEL`)는 **비워 두거나(`X=`) 빼면 기본값**이 쓰입니다 — 빈 값·공백도 미설정으로 봅니다(`lib/ai/client.ts` `resolveModel`·`resolveVerifyModel`·`resolveTalkCardsModel`, `lib/ai/toeic/model.ts` `resolveToeicModel`, `lib/tts.ts`, `lib/image-gen.ts`(사진 공용 코어), `lib/toeic-image.ts`, `lib/toeic-transcribe.ts`, `lib/talk-session-config.ts`). 사진·전사·실시간 음성도 키는 `OPENAI_API_KEY` 하나이고, 없으면 해당 라우트가 네트워크 호출 없이 501입니다. 2026-09-24 전에는 `??` 폴백이라 `.env.example`을 그대로 복사하면 빈 문자열이 모델 ID로 새어 호출이 실패하거나 발음이 조용히 기기 음성으로만 났습니다.
 
@@ -266,7 +267,7 @@ gcloud run services update eunwoo-bookcard --region asia-northeast3 --project eu
 | 상한 숫자의 단일 정의처 | 표지 3장은 `lib/upload-limits.ts`(라우트·UI 공용, 순수 모듈), 본문 40장·배치 6장은 `lib/ai/client.ts`가 정의하고 서버 컴포넌트가 props로 내려준다 — `lib/ai/client.ts`는 `openai`와 키를 건드려 클라이언트에서 import할 수 없다 |
 | `/api/pages` 요청 총량 24MB | 이미지당 상한(8MB)만 두면 40장 × 8MB = 320MB 본문이 가능하다. Cloud Run 요청 상한이 32MiB이고 1500px JPEG 40장이 대략 12~20MB라 24MB면 정상 사용은 넉넉히 통과하고 사고성 대용량만 막힌다 |
 | PIN 미설정 시 프로덕션은 fail-closed | `APP_PIN`이 없으면 프로덕션에서는 전 요청을 503으로 막는다(로컬 개발은 통과) — 설정 실수로 **열린 채 방치**되어 외부인이 AI 비용을 쓰는 사고가, 잠긴 채 막혀 바로 알아채는 것보다 훨씬 나쁘다 |
-| 잠금은 쿠키 서명(HMAC) 1겹, 세션 저장소 없음 | 쿠키 값 `<exp>.<HMAC-SHA256(APP_PIN, "unlock:<exp>")>` — PIN이 곧 서명 키라 PIN을 바꾸면 기존 쿠키가 자동 무효화된다. 사용자·세션 테이블을 두지 않아 로그인 없는 가족용 규모에 맞다 |
+| 잠금은 쿠키 서명(HMAC) 1겹, 세션 저장소 없음 | 쿠키 값 `<exp>.<HMAC-SHA256(APP_PIN, "unlock:<exp>")>` — PIN이 곧 서명 키라 PIN을 바꾸면 기존 쿠키가 자동 무효화된다. (2026-11-25) `SESSION_SECRET`이 있으면 그것이 키이고 PIN은 메시지에 들어간다(`unlock:<exp>:<PIN>`) — 짧은 PIN을 쿠키 하나로 오프라인 대입하는 길을 막으면서 PIN 교체 시 무효화는 유지된다. 사용자·세션 테이블을 두지 않아 로그인 없는 가족용 규모에 맞다 |
 | 시도 제한은 전역 백스톱 + IP 잠금 2겹 | IP 키의 원천인 `x-forwarded-for`는 **첫 값이 클라이언트 위조 가능**이라(GCP 프런트엔드는 받은 값을 버리지 않고 뒤에 덧붙인다) 마지막 항목으로 키잉하고, 그래도 인덱스 판단이 틀릴 수 있어 헤더를 보지 않는 전역 카운터(10분 30회)를 함께 둔다. 로그인 없는 앱에서 PIN 무차별 대입을 막는 유일한 방어라 우회 불가능한 겹이 하나는 있어야 한다 |
 | 게이트 파일은 `proxy.ts` | Next.js 16에서 `middleware.ts`는 deprecated이고 `proxy.ts`(export `proxy`)로 이름이 바뀌었다 — 새 규약을 따랐다(`node_modules/next/dist/docs/.../proxy.md`) |
 | 목록 순서변경은 `sortIndex` 하나 + 새 항목은 맨 위 | 서재·단어장·수학이 관리 모드 드래그+↑↓로 재배치(SPEC §15-1). 각 레코드 `sortIndex: number\|null`(필수 nullable), 재배치 시 목록 전체를 0..n 재색인. 정렬은 null 먼저(`createdAt` 역순=새 항목 위) → 오름차순이라 수동 정렬 뒤에도 새로 만든 게 눈에 띈다. 공유 프리미티브 `use-reorder`(포인터 드래그+자동스크롤+키보드) 하나로 세 목록. 수학은 필터가 '전체'가 아니면 재배치 비활성(부분 재색인 인덱스 충돌 회피) |

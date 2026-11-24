@@ -29,6 +29,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { chapterizeTranscript, isChapterizeError } from "@/lib/ai/client";
 import { prepareChapterTitles, type PreparedChapterTitles } from "@/lib/ai/english/schemas";
@@ -96,7 +97,7 @@ function collectChapterTitles(book: BookRecord):
 
 export async function POST(req: Request) {
   // 키가 없으면 어떤 작업도 하지 않고 명시적으로 알린다 (/api/card·/api/pages와 동일 정책)
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return NextResponse.json(
       {
         ok: false,

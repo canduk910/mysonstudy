@@ -42,6 +42,9 @@ export function hasTtsApiKey(): boolean {
   return Boolean(process.env.OPENAI_API_KEY);
 }
 
+/** 합성 한 번의 상한(ms). 한 조각은 짧은 문장이라 보통 수 초 안에 끝난다. */
+export const TTS_TIMEOUT_MS = 30_000;
+
 let cachedClient: OpenAI | null = null;
 
 /** TTS 전용 OpenAI 클라이언트(캐시). 키 없으면 throw → 라우트가 501로 잡는다. */
@@ -49,7 +52,10 @@ function getTtsClient(): OpenAI {
   if (!cachedClient) {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error("OPENAI_API_KEY가 설정되지 않았습니다 (TTS, 서버 전용 env).");
-    cachedClient = new OpenAI({ apiKey });
+    // 시간 상한 — 전사 관문(lib/toeic-transcribe.ts)과 같은 관례: 재시도 1회 + 요청당 타임아웃.
+    // SDK 기본값(10분·재시도 2회)이면 매달린 합성이 서버 인스턴스를 오래 붙잡는다. 화면은 어차피
+    // 대기 상한(speech.ts queueTiming.fetchMs)을 넘기면 기기 음성으로 넘어가므로 길게 기다릴 이유가 없다.
+    cachedClient = new OpenAI({ apiKey, maxRetries: 1, timeout: TTS_TIMEOUT_MS });
   }
   return cachedClient;
 }

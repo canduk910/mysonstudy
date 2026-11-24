@@ -21,6 +21,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { resolveModel } from "@/lib/ai/client";
 import { extractToeicPage } from "@/lib/ai/toeic/calls";
@@ -56,7 +57,7 @@ function json(body: ToeicExtractResponse, status = 200) {
 
 export async function POST(req: Request) {
   // 키가 없으면 어떤 작업도 하지 않는다 — 키를 비운 로컬에서 vision 실호출이 구조적으로 불가능해진다.
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return json(
       {
         ok: false,

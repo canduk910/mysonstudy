@@ -22,6 +22,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { extractBook } from "@/lib/ai/client";
 import { COVER_MAX_IMAGES, MAX_IMAGE_DATA_URL_CHARS } from "@/lib/upload-limits";
@@ -48,7 +49,7 @@ const bodySchema = z.object({
 
 export async function POST(req: Request) {
   // 키가 없으면 어떤 작업도 하지 않고 명시적으로 알린다 (/api/card와 동일 정책)
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return NextResponse.json(
       {
         ok: false,

@@ -189,6 +189,7 @@ export async function callAnswerCheck(input: VerifyUserMessageInput): Promise<An
     temperature: VERIFY_CALL_OPTIONS.temperature,
     maxOutputTokens: VERIFY_CALL_OPTIONS.maxOutputTokens,
     model: resolveVerifyModel(),
+    effort: "high", // Claude 경로만(docs/HARNESS.md §5) — 독립 검산은 깊이를 산다(OpenAI 경로에는 싣지 않는다)
   });
 }
 

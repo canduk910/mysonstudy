@@ -19,6 +19,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { generateJaSpeakingFeedback } from "@/lib/ai/client";
 import { buildJaSpeakingFeedbackInput } from "@/lib/ai/japanese/speaking";
 import { jaSpeakingQuestionFormat, JA_SPEAKING_QUESTION_COUNT } from "@/lib/ja-speaking";
@@ -95,7 +96,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   // ── 3. 키(AI 앞) ──
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return json({ ok: false, error: "no_api_key", messageKo: "OpenAI API 키가 아직 설정되지 않아 AI 채점을 할 수 없어요. 녹음은 이 기기에 그대로 있어요." }, 501);
   }
   const nowIso = new Date().toISOString();

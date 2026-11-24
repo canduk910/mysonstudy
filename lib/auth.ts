@@ -10,6 +10,13 @@
  *   PIN이 곧 서명 키이므로 **PIN을 바꾸면 기존 쿠키는 서명 불일치로 자동 무효화**된다
  *   (별도의 폐기 절차·저장소가 필요 없다 — 가족용 규모에 맞는 단순함).
  * - 검증은 만료 확인 + 서명 재계산 후 상수시간 비교.
+ * - **서명 키 (2026-11-25)**: 서버 전용 env `SESSION_SECRET`이 있으면 그것을 HMAC 키로 쓰고
+ *   메시지에 PIN을 덧붙인다 — sig = HMAC-SHA256(key=SESSION_SECRET, msg=`unlock:<exp>:<PIN>`).
+ *   4~8자리 PIN은 쿠키 하나만 손에 넣으면 오프라인 대입으로 금방 풀리므로, 긴 임의 비밀을 키로 둔다.
+ *   PIN을 메시지에 넣었으니 "PIN을 바꾸면 기존 쿠키 무효"는 그대로 유지된다.
+ *   `SESSION_SECRET`이 없으면 위의 옛 방식(key=APP_PIN) 그대로다 — 하위 호환(배포에 비밀이 아직 없어도 깨지지 않는다).
+ *   ⚠️ `SESSION_SECRET`을 처음 등록하거나 바꾸면 **기존 쿠키가 전부 서명 불일치로 무효**가 된다
+ *   → 가족 기기마다 PIN을 한 번 다시 넣어야 한다(데이터는 영향 없음).
  *
  * 런타임 제약: 이 모듈은 proxy(구 middleware)에서도 import된다. Next 16의 proxy는
  * Node.js 런타임이 기본이지만, Edge로 옮겨도 그대로 동작하도록 **node:crypto를 쓰지
@@ -98,10 +105,25 @@ export function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+/** `SESSION_SECRET` (미설정·빈 문자열이면 null) — 있으면 쿠키 서명 키 */
+export function getSessionSecret(): string | null {
+  const raw = process.env.SESSION_SECRET?.trim();
+  return raw ? raw : null;
+}
+
+/**
+ * 서명 — `SESSION_SECRET`이 있으면 key=비밀·msg에 PIN 포함, 없으면 옛 방식 key=PIN(하위 호환).
+ * 비밀을 새로 넣거나 바꾸면 기존 쿠키는 전부 무효가 된다(파일 머리 주석).
+ */
+async function signUnlock(pin: string, expPart: string): Promise<string> {
+  const secret = getSessionSecret();
+  return secret ? hmacHex(secret, `unlock:${expPart}:${pin}`) : hmacHex(pin, `unlock:${expPart}`);
+}
+
 /** 쿠키 값 생성: `<exp>.<sig>` */
 export async function createUnlockToken(pin: string, now: number = Date.now()): Promise<string> {
   const exp = now + UNLOCK_MAX_AGE_SEC * 1000;
-  return `${exp}.${await hmacHex(pin, `unlock:${exp}`)}`;
+  return `${exp}.${await signUnlock(pin, String(exp))}`;
 }
 
 /** 쿠키 값 검증: 만료 확인 + 서명 재계산 + 상수시간 비교 */
@@ -123,7 +145,7 @@ export async function verifyUnlockToken(
   if (!Number.isFinite(exp) || exp <= now) return false;
 
   // 서명 대상은 쿠키에 실린 문자열 그대로 — 파싱 결과가 아니라 원문에 서명한다
-  return timingSafeEqual(sig, await hmacHex(pin, `unlock:${expPart}`));
+  return timingSafeEqual(sig, await signUnlock(pin, expPart));
 }
 
 /** 쿠키 속성 (NextResponse.cookies.set / ResponseCookies 공용) */

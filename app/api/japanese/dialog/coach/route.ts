@@ -10,6 +10,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { coachJaDialog } from "@/lib/ai/client";
 import type { JaDialogTurn } from "@/lib/ai/japanese/schemas";
@@ -48,7 +49,7 @@ export async function POST(req: Request) {
     return json({ ok: false, error: "invalid_input", messageKo: "해설 요청을 확인해 주세요." }, 400);
   }
 
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return json({ ok: false, error: "no_api_key", messageKo: "해설을 만들려면 OpenAI API 키가 필요해요." }, 501);
   }
 

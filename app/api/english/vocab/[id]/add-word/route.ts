@@ -29,6 +29,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { enrichVocab } from "@/lib/ai/client";
 import { mergeEnrichment } from "@/lib/ai/english/vocabbook-enrich";
@@ -133,7 +134,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const base = newVocabEntry(word);
 
   // ── 키 없음 (501) — 단어는 뜻 null로 저장한다(단어 유실 금지). enrich는 아예 시도하지 않는다. ──
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     const appended = await store.appendVocabEntry(id, base);
     if (!appended.record) {
       return json(

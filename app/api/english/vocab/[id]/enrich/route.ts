@@ -10,8 +10,10 @@
  * 스스로 구현하지 않고 **`lib/ai/english/vocabbook-enrich.ts`의 순수 함수에 전적으로 위임**한다:
  * - `entriesToEnrich(record.entries)` — 입력에서 이미 채워진 정의를 뺀다(1차 방어).
  * - `enrichVocab(...)` — 그 대상만 모델에 보낸다(client.ts, 대상 0이면 호출 자체를 안 한다).
- * - `mergeEnrichment(record.entries, items)` — **저장 값의 단일 정의처.** null 자리에만 채운다(2차 방어).
- * 이 파일에서 정의를 손대는 곳은 없다 — merge 결과를 그대로 저장할 뿐이다(우회 금지).
+ * - `mergeEnrichment(현재 entries, items)` — **저장 값의 단일 정의처.** null 자리에만 채운다(2차 방어).
+ *   2026-11-25부터 이 병합은 라우트가 아니라 `store.updateVocabBookEnrichment(id, items)`가 원자 단위
+ *   (Firestore 트랜잭션·파일 mutate) 안에서 **저장 시점의 현재 entries**에 대고 한다(`planVocabEnrichmentSave`).
+ * 이 파일에서 정의를 손대는 곳은 없다(우회 금지).
  *
  * ── 실패는 치명적이지 않다 (계획 §V3 "생성 실패는 치명적 아님") ──────────────
  * - **부분 실패**(모델이 일부 단어를 정의 못 함)는 오류가 아니다 — mergeEnrichment가 그 자리를 null로
@@ -28,12 +30,10 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { enrichVocab } from "@/lib/ai/client";
-import {
-  entriesToEnrich,
-  isVocabBookEnriched,
-  mergeEnrichment,
-} from "@/lib/ai/english/vocabbook-enrich";
+import { entriesToEnrich, isVocabBookEnriched } from "@/lib/ai/english/vocabbook-enrich";
+import type { VocabEnrichSavePlan } from "@/lib/vocabbook-enrich-save";
 import { isRenderableVocabBook } from "@/lib/vocabbook-record";
 import type { VocabEnrichResponse } from "@/lib/vocab-enrich-contract";
 import { getStore } from "@/lib/store";
@@ -74,7 +74,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   }
 
   // 여기서부터 실호출이 필요하다 — 키가 없으면 아무것도 하지 않고 명시적으로 알린다(/extract와 같은 정책).
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return json(
       {
         ok: false,
@@ -87,11 +87,9 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   }
 
   // 호출 D — 대상만 보낸다. client.ts가 callWithSchema(재요청·검증·로깅)를 감싼다(라우트가 우회하지 않는다).
-  let merged: ReturnType<typeof mergeEnrichment>;
+  let items: Awaited<ReturnType<typeof enrichVocab>>;
   try {
-    const items = await enrichVocab(toEnrich);
-    // 저장 값은 반드시 mergeEnrichment 경유 — null 자리에만 채운다(정의 불변 2차 방어).
-    merged = mergeEnrichment(record.entries, items);
+    items = await enrichVocab(toEnrich);
   } catch (err) {
     console.error(`[/api/english/vocab/${id}/enrich] 보강 실패:`, err);
     return json(
@@ -105,31 +103,21 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     );
   }
 
-  // 무엇이 새로 채워졌는지 개수만 센다(mergeEnrichment가 순서를 보존하므로 인덱스로 원본과 대조).
-  // EN·KO·이모지 각각 독립으로 집계한다(병합 규칙과 같은 독립성 — 백필은 KO만 오를 수 있다).
-  let filledDefinitions = 0;
-  let filledKoGlosses = 0;
-  let filledEmojis = 0;
-  record.entries.forEach((orig, i) => {
-    const next = merged.entries[i];
-    if (orig.definitionEn === null && next.definitionEn !== null) filledDefinitions += 1;
-    if (orig.definitionKo === null && next.definitionKo !== null) filledKoGlosses += 1;
-    if (orig.imageEmoji === null && next.imageEmoji !== null) filledEmojis += 1;
-  });
-  // 남은 수는 EN·KO를 분리해 센다(entriesToEnrich는 둘의 합집합이라 UI 문구가 뭉개진다 — P2-1).
-  const remainingDefinitions = merged.entries.filter((e) => e.definitionEn === null).length;
-  const remainingGlosses = merged.entries.filter((e) => e.definitionKo === null).length;
-
-  // 병합 결과 저장 — 수정이라 prod-guard가 걸리지 않는다(생성·수정은 그대로 통한다).
+  // 병합·저장은 저장 계층의 원자 단위 안에서 — **저장 시점의 현재 entries**를 다시 읽어 mergeEnrichment로
+  // null 자리에만 얹는다(lib/vocabbook-enrich-save.ts). AI가 도는 사이 담기·연결된 단어가 옛 읽기의
+  // 통째 덮어쓰기로 사라지던 경합(2026-11-25)을 막는다. 집계(filled*·remaining*)도 그 현재 기준이다.
+  // 수정이라 prod-guard가 걸리지 않는다(생성·수정은 그대로 통한다).
+  let plan: VocabEnrichSavePlan;
   try {
-    const updated = await store.updateVocabBookEnrichment(id, merged.entries, merged.enriched);
-    if (!updated) {
+    const saved = await store.updateVocabBookEnrichment(id, items);
+    if (!saved) {
       // get과 update 사이에 지워진 드문 경합 — 404로 정직하게 알린다.
       return json(
         { ok: false, error: "vocabbook_not_found", messageKo: "없거나 열 수 없는 단어장이에요." },
         404,
       );
     }
+    plan = saved.plan;
   } catch (err) {
     console.error(`[/api/english/vocab/${id}/enrich] 저장 실패:`, err);
     return json(
@@ -142,6 +130,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
       500,
     );
   }
+  const { filledDefinitions, filledKoGlosses, filledEmojis, remainingDefinitions, remainingGlosses } = plan;
 
   return json({
     ok: true,
@@ -151,6 +140,6 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     filledEmojis,
     remainingDefinitions,
     remainingGlosses,
-    enriched: merged.enriched,
+    enriched: plan.enriched,
   });
 }

@@ -7,6 +7,13 @@ const nextConfig: NextConfig = {
   allowedDevOrigins: ["192.168.10.126"],
 
   /**
+   * 이미지 최적화 엔드포인트(`/_next/image`)를 끈다(2026-11-25 보안 정리).
+   * 이 앱은 `next/image`를 쓰지 않는다 — 썸네일·미리보기는 전부 `<img>`다(각 자리의 eslint 주석).
+   * 쓰지 않는 최적화 경로는 공격면(이미지 최적화 계열 취약점·서버 CPU 소모)일 뿐이라 닫아 둔다.
+   */
+  images: { unoptimized: true },
+
+  /**
    * 부모 문서 CSP — 되감기 플레이어 iframe이 **스스로 외부 주소로 이동하는 것**을 막는다.
    * (docs/harness/math.md §3-4 격리 · QA 리포트 `_workspace/qa_report_math-m25_1.md` P1)
    *

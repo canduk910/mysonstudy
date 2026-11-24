@@ -131,6 +131,7 @@ docs/harness/phrase-helper.md # 표현 도우미 스펙(과목 공통)
   때는 정의된 모든 위치를 함께 맞춘다.
 - **프롬프트 수정 → 해당 과목 eval 실행 → 통과 확인 → 커밋.** 이 순서를 지킨다.
   **영어·수학 eval의 실호출 경로**는 실제 OpenAI 호출이 발생하므로 CI가 아니라 수동 실행이고, 비용 승인 없이 반복하지 않는다.
+  반대로 **오프라인 구간**(`EVAL_OFFLINE_ONLY=1`)은 CI(`.github/workflows/deploy.yml`의 ci 잡, 배포 전)가 키·GCP 신호·PIN을 빈 값으로, `STORE_BACKEND=file`로 고정하고 11개 eval(`workout`·`streak`·`review`·`speech`·`ja-daily`·`japanese`·`english`·`math`·`toeic`·`mom`·`phrase`)을 돌린다(2026-11-25). 새 eval을 만들면 키 없이·`data/private` 없이 통과하는지 확인하고 그 목록에 더한다.
   오프라인 항목(`EVAL_OFFLINE_ONLY=1`)·일본어 eval(현재 오프라인 전용 — 실호출 게이트 `EVAL_JAPANESE`는 자리만)·
   `eval:speech`·`eval:workout`·`eval:streak`는 실호출이 없어 언제든 돌려도 된다.
   **표현 도우미 eval(`eval:phrase`)도 기본이 오프라인**(무비용 — 입력 정리·로컬 판정·모드별 zod 반례·spec-sync 원문 4·JSON Schema 2 의미 동치)이고, 실호출은 `EVAL_PHRASE=1`일 때만 모드마다 지어낸 입력 1개(3회, `EVAL_PHRASE_MODE`로 하나만)다 — 동의 후 오케스트레이터가 실행한다.
@@ -144,3 +145,25 @@ docs/harness/phrase-helper.md # 표현 도우미 스펙(과목 공통)
   (2026-09-27부터) 합성 이벤트 전송 위의 실시간 컨트롤러를 잠그고, 실제 연결(WebRTC·음성)은 eval 밖이다(개발 빌드 전용 가짜 전송 e2e + 사용자 동의 후 실기기).
   호출 I는 영어 게이트 `EVAL_TALK=1`(2회). 호출 J는 게이트가 없다 — 진입 함수 배선은 오프라인 정적 점검이 소스로 잠근다. 교재 가져오기 파일 검증(표현집 파일과 유형별 공략 파일 `data/private/toeic-strategy/toeic-guides.json` 둘)은 `data/private/`에 파일이 있을 때만 돌고
   없으면 SKIP이다(공개 저장소·CI 기준). 게이트 실호출도 비용이 드는 검증이라 **사용자 동의 후 오케스트레이터가** 실행한다.
+
+## 5. 공급자 층 — Anthropic(Claude) 메인 + OpenAI 백업 (2026-11-25)
+
+`callWithSchema()`(§2)를 지나는 텍스트·이미지 판독 호출은 공급자를 **env 하나로** 바꿀 수 있습니다. 1단계 기본값은 지금과 같은 **OpenAI**라 배포만으로는 동작이 바뀌지 않습니다(프로덕션에 `ANTHROPIC_API_KEY`가 없다 — 백업 길도 열리지 않는다). 비LLM OpenAI 기능(TTS `lib/tts.ts`·전사 관문 넷·자유대화 Realtime `lib/talk-gateway.ts`·사진 `lib/image-gen.ts`)은 Anthropic 대체가 없어 이 층 밖이고 그대로 OpenAI 전용입니다.
+
+| env | 값 | 뜻 |
+|---|---|---|
+| `AI_PROVIDER` | `openai`(빈 값·모르는 값 포함) · `anthropic` | 메인 공급자 |
+| `AI_FALLBACK` | `on`(기본) · `off`(`0`·`false`·`no`도 끔) | 메인이 가용성 실패면 다른 공급자로 같은 흐름 한 번 더 — **백업 키가 있을 때만** |
+| `ANTHROPIC_API_KEY` | 서버 전용 비밀 | Claude 키(빈 값 = 없음) |
+| `ANTHROPIC_MODEL` | 빈 값이면 `claude-opus-5-5` | Claude 모델(호출별 OpenAI 모델 env는 Claude 경로에 쓰지 않는다) |
+
+- **코드 자리.** 공급자 선택·키 판정은 순수 함수 `lib/ai/provider.ts`(`resolveProviderPlan`·`hasLlmKey`, import 0), Claude 요청·응답 변환은 순수 함수 `lib/ai/provider-anthropic.ts`(SDK는 `import type`만), 백업 판정은 `lib/ai/provider-errors.ts`(`decideFallback` — 두 SDK의 typed 오류 클래스로만, 문자열 매칭 없음), 네트워크는 `lib/ai/client.ts`(`getAnthropicClient` — 지연 생성). 래퍼는 여전히 라벨(`call`)로 분기하지 않는다.
+- **같은 계약, 다른 전송.** Claude 경로도 §1·§2 그대로 — Structured Outputs(`output_config.format: json_schema`) → JSON.parse → zod → 1회 재요청 → 재실패 throw → 로깅. 차이: ① 보낼 스키마 **사본**에서 Claude가 받지 않는 키(`minLength`·`maxLength`·`minimum`·`maximum`·`multipleOf`·`maxItems`·2 이상 `minItems`·`pattern`·모르는 `format` 등)를 떼고 모든 객체에 `additionalProperties: false`를 강제한다(스펙 원문 상수는 그대로 — 뗀 제약은 zod가 본다. 현재 스펙 스키마 39개는 뗄 것이 0개). ② `temperature`·`thinking`을 싣지 않는다(`claude-opus-5-5`는 temperature를 400으로 거부하고 thinking을 끌 수 없다 — 이 문서와 과목 스펙의 temperature 다이얼은 Claude에 적용되지 않는다). 깊이는 `output_config.effort`. ③ `max_tokens = maxOutputTokens`. ④ 이미지 data URL은 base64 image 블록(jpeg·png·gif·webp, 이미지가 텍스트보다 먼저인 순서 유지). ⑤ 서버 측 거절 폴백(beta `server-side-fallback-2026-07-01` + `fallbacks: "default"`)을 기본으로 싣는다. ⑥ `stop_reason: "refusal"`은 재요청 없이 곧바로 백업 경로, `max_tokens`는 OpenAI `incomplete`와 같은 zod 재요청 경로.
+- **effort.** 호출부가 `CallWithSchemaArgs.effort`로 넘기고(라벨로 고르지 않는다), 생략하면 `medium`. 판독·전사류(영어 표지 A·본문 A′·단어장 사진, 수학 판독 A, 일본어 대화 전사 B, 토익 판독 A)는 `low`, 채점·검산(수학 검산 C, 토익 피드백 D, 일본어 말하기 피드백 F)은 `high`. **OpenAI 경로에는 싣지 않는다**(기존 요청 모양 불변). 과목 스펙의 호출 옵션 상수·문장(temperature·maxOutputTokens·call 라벨)은 바꾸지 않았다(spec-sync 대상).
+- **백업 흐름.** 메인으로 "1회 + zod 재요청 1회". 메인이 **가용성 실패** — 529 overloaded·5xx·429(SDK 재시도 소진 후)·408·연결 오류·타임아웃·거절·재요청까지 검증 실패·Claude가 받지 않는 입력 — 이고 `AI_FALLBACK`이 켜져 있고 백업 키가 있으면 백업 공급자로 같은 흐름을 한 번. 400·401·403·404·422 같은 요청/설정 오류와 그 밖의 예외는 숨기지 않고 던진다. **사용자 취소(`signal` abort)는 어떤 경우에도 백업으로 넘기지 않는다.** 메인 키가 없고 백업 키만 있으면 처음부터 백업을 부른다(로그 `fallback.reason = "primary_no_key"`). 백업 OpenAI는 호출부가 넘긴 `model`(또는 `OPENAI_MODEL`)을 그대로 쓴다.
+- **호출부 고정.** `CallWithSchemaArgs.provider`를 넘기면 그 공급자 하나만, 백업 없음. 영어 자유대화 호출 J(화면 카드, 6초 상한)가 `"openai"`로 고정한다(Claude 지연 위험) — 그래서 그 라우트의 키 검사도 OpenAI 키(`hasTalkApiKey`) 그대로다.
+- **클라이언트 상한.** 두 SDK 클라이언트 모두 `timeout` 120초·자동 재시도 1회(`LLM_CLIENT_TIMEOUT_MS`·`LLM_CLIENT_MAX_RETRIES` — 전에는 OpenAI SDK 기본 10분·2회라 화면이 접은 뒤에도 서버가 기다리며 과금됐다). 호출별 `signal`·`maxRetries`(호출 J 6초·0회)는 요청 옵션으로 그대로 덮는다.
+- **로그.** `{ call, model, inputTokens, outputTokens, ms, provider, fallback }` — `model`·`provider`는 실제로 답한 쪽(Claude 서버 측 폴백이 돌면 응답의 대체 모델 이름), `fallback`은 `null` 또는 `{ from, reason }`. 토큰은 메인·백업·재요청을 모두 합산한다(Claude 입력은 캐시 쓰기·읽기 포함).
+- **라우트 키 검사.** LLM만 부르는 라우트 28개는 `hasLlmKey()`(실제로 부를 공급자의 키가 있는지 — 메인 키, 또는 백업이 켜져 있으면 백업 키)로 501 `no_api_key`를 낸다. OpenAI 전용 기능(TTS·사진) 라우트는 `OPENAI_API_KEY` 그대로, 채점 라우트 둘(토익·일본어 말하기 — 전사 + 피드백)은 AI 앞 `hasLlmKey()` + 전사 관문이 자기 키 검사의 `no_api_key`를 501로. 토익 섬 해석(호출 G, 후처리 서버 모듈)도 `hasLlmKey()`. 목록은 `scripts/eval-provider.ts`의 `LLM_KEY_ROUTES`·`OPENAI_ONLY_KEY_ROUTES`가 단일 정의처이고 `app/api` 전수 점검이 미분류 라우트를 실패로 잡는다 — 새 AI 라우트를 만들면 여기에 한 줄.
+- **회귀 가드.** 오프라인 `npm run eval:provider`(실호출 0) — 스키마 정리·파트 변환·요청 조립·응답 해석·공급자 선택 표·백업 판정 표(실제 SDK 오류 클래스)·**루프백 스텁 위의 실제 흐름**(529 → 백업, 400 → 던짐, 거절 → 백업, 취소 → 백업 0, 기본은 OpenAI만, 고정, zod 재요청 — 전역 fetch를 감싸 127.0.0.1 밖 요청은 던진다)·정적 점검·라우트 키 분류. 안전 접두어에 `ANTHROPIC_API_KEY=`를 더한다.
+- **Claude 켜는 절차(사람 몫).** ① Secret Manager에 `ANTHROPIC_API_KEY` 비밀을 만들고 Cloud Run 서비스에 env로 연결 ② (선택) `ANTHROPIC_MODEL` ③ `AI_PROVIDER=anthropic` — 이때부터 OpenAI는 백업(`AI_FALLBACK` 기본 on, OpenAI 키는 TTS·전사·실시간 음성·사진 때문에 어차피 필요). 되돌리기는 `AI_PROVIDER`를 비우는 것 하나. 키만 넣고 `AI_PROVIDER`를 비워 두면 OpenAI 메인 + Claude 백업이다.

@@ -22,6 +22,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { judgeFrameDrill } from "@/lib/ai/toeic/calls";
 import { resolveToeicModel } from "@/lib/ai/toeic/model";
 import { getStore } from "@/lib/store";
@@ -55,7 +56,7 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
   let judged: FrameDrillJudged | null = null;
   if (decision === "call") {
     // 키 검사 — AI 호출 직전(already·no_ai는 키 없이도 결과가 보여야 한다)
-    if (!process.env.OPENAI_API_KEY) {
+    if (!hasLlmKey()) {
       return json({ ok: false, error: "no_api_key", messageKo: "OpenAI API 키가 아직 설정되지 않아 판정·총평을 만들 수 없어요." }, 501);
     }
     const targets = frameDrillJudgeTargets(session.items);

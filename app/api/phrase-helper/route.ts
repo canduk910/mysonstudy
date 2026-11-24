@@ -24,6 +24,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { explainPhrase, isPhraseHelperInputError } from "@/lib/ai/phrase-helper/calls";
 import { PHRASE_HELPER_MODES } from "@/lib/phrase-helper";
@@ -48,7 +49,7 @@ const TOO_LARGE_KO = "보낸 글이 너무 커요.";
 
 export async function POST(req: Request) {
   // ── 1. 키 — 맨 먼저 ──
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return json({ ok: false, error: "no_api_key", messageKo: "OpenAI API 키가 아직 설정되지 않아 표현 도우미를 쓸 수 없어요." }, 501);
   }
 

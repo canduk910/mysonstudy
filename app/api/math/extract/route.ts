@@ -29,6 +29,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { callWorksheetExtract } from "@/lib/ai/math/extract";
 import { MATH_IMAGE_DATA_URL_PATTERN } from "@/lib/ai/math/prompts";
@@ -63,7 +64,7 @@ export async function POST(req: Request) {
   // 키가 없으면 어떤 작업도 하지 않고 명시적으로 알린다 (영어 `/api/extract`와 같은 정책).
   // 호출 A는 vision이라 이미지 토큰이 붙는다 — 키가 빈 로컬에서 실호출이 나가지 않는 것이
   // 이 순서의 요점이다.
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return NextResponse.json(
       {
         ok: false,

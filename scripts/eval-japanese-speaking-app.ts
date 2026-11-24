@@ -136,13 +136,13 @@ export function runJaSpeakingAppChecks(): JaSpeakingCheckResult[] {
   {
     const book = "앱 라우트";
     const create = code("app/api/japanese/speaking/mocks/route.ts");
-    push(book, "만들기: 키 검사(501)가 맨 먼저(본문 읽기 앞) · 파트 병렬 allSettled · 전부 실패만 500(저장 안 함)", create.indexOf("OPENAI_API_KEY") < create.indexOf("req.json()") && /Promise\.allSettled\(chosen\.map\(\(part\) => generateJaSpeakingPart\(part/.test(create) && create.indexOf("createdParts.length === 0") < create.indexOf("createJaSpeakingMock("));
+    push(book, "만들기: 키 검사(501)가 맨 먼저(본문 읽기 앞) · 파트 병렬 allSettled · 전부 실패만 500(저장 안 함)", create.indexOf("hasLlmKey()") >= 0 && create.indexOf("hasLlmKey()") < create.indexOf("req.json()") && /Promise\.allSettled\(chosen\.map\(\(part\) => generateJaSpeakingPart\(part/.test(create) && create.indexOf("createdParts.length === 0") < create.indexOf("createJaSpeakingMock("));
     push(book, "만들기: 주제는 normalizeJaSpeakingTopicHints 결과를 저장(보낸 것 = 저장)", /const topicHints = normalizeJaSpeakingTopicHints\(/.test(create) && /generateJaSpeakingPart\(part, \{ level, topicHints \}\)/.test(create) && /topicHints,\n\s*parts,/.test(create));
     push(book, "만들기: 모델은 메인 resolveModel(토익 출제 모델 아님)", /model: resolveModel\(\)/.test(create) && !/resolveToeicModel|OPENAI_TOEIC_MODEL/.test(create));
     const regen = code("app/api/japanese/speaking/mocks/[id]/regenerate/route.ts");
-    push(book, "다시 만들기: part_exists(409) → 키(501) → 호출 E → 원자 단위 채우기(exists면 409)", regen.indexOf("part_exists") < regen.indexOf("OPENAI_API_KEY") && regen.indexOf("OPENAI_API_KEY") < regen.indexOf("generateJaSpeakingPart(") && /fillJaSpeakingMockPart\(id, part, value\)/.test(regen) && /level: mock\.level, topicHints: mock\.topicHints/.test(regen));
+    push(book, "다시 만들기: part_exists(409) → 키(501) → 호출 E → 원자 단위 채우기(exists면 409)", regen.indexOf("part_exists") < regen.indexOf("hasLlmKey()") && regen.indexOf("hasLlmKey()") < regen.indexOf("generateJaSpeakingPart(") && /fillJaSpeakingMockPart\(id, part, value\)/.test(regen) && /level: mock\.level, topicHints: mock\.topicHints/.test(regen));
     const score = code("app/api/japanese/speaking/attempts/[id]/score/route.ts");
-    const order = ['"question_not_found"', '"not_finished"', '"not_recorded"', 'reused: true', "OPENAI_API_KEY", "transcribeJaSpeakingAnswer("].map((x) => score.indexOf(x));
+    const order = ['"question_not_found"', '"not_finished"', '"not_recorded"', 'reused: true', "hasLlmKey()", "transcribeJaSpeakingAnswer("].map((x) => score.indexOf(x));
     push(book, "채점 검사 순서: 404 → 409 not_finished·not_recorded → 200 reused(키 불필요) → 501 → 전사", order.every((x, i) => x > 0 && (i === 0 || order[i - 1] < x)), order.join(","));
     push(book, "채점: 전사에 req.signal · 저장된 전사문이 있으면 전사 건너뜀(stored) · Q3–11 전사문 선저장 → 호출 F", /transcribeJaSpeakingAnswer\([^;]*req\.signal\)/.test(score) && /transcriptSource = "stored"/.test(score) && score.indexOf("feedback: null, noResponse: false, score: null, scoredAt: null") < score.indexOf("generateJaSpeakingFeedback("));
     push(book, "채점: Q1–2는 AI 없이 alignJaReadAloud + jaReadProxyScore(무응답은 표시만) · Q3–11 무응답은 F 없이 0점·feedback null", /alignJaReadAloud\(passageTokens!, transcript\)/.test(score) && /noResponse, score: jaReadProxyScore\(readDiff\.accuracy\)/.test(score) && /feedback: null, noResponse: true, score: 0/.test(score));

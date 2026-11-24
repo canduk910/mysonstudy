@@ -28,6 +28,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { resolveToeicModel } from "@/lib/ai/toeic/model";
 import { generateMockPart } from "@/lib/ai/toeic/calls";
@@ -122,7 +123,7 @@ function mockAnswerFlowsFrom(sets: readonly ToeicSetRecord[]): ToeicAnswerFlow[]
 }
 
 export async function POST(req: Request) {
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return json(
       {
         ok: false,

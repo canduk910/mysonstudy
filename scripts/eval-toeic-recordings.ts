@@ -403,6 +403,7 @@ function runFileBackendChildChecks(): GuideCheckResult[] {
         GOOGLE_CLOUD_PROJECT: "",
         K_SERVICE: "",
         OPENAI_API_KEY: "",
+        ANTHROPIC_API_KEY: "", // 공급자 층(2026-11-25) — Claude 키도 비워 실호출을 구조적으로 막는다
         ALLOW_PROD_DESTRUCTIVE: "",
         TOEIC_REC_DIR: recDir,
         TOEIC_REC_BUCKET: "",

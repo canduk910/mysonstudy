@@ -15,6 +15,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { lookupWordMeaning } from "@/lib/ai/client";
 import { VOCAB_WORD_MAX } from "@/lib/ai/english/vocabbook-schemas";
@@ -56,7 +57,7 @@ export async function POST(req: Request) {
   }
 
   // ── 키 없음 (501) — 실호출 전에 구조적으로 거절(add-word 라우트와 같은 관문). ──
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return json(
       {
         ok: false,

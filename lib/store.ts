@@ -28,6 +28,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { resolveStoreBackend, type StoreBackend } from "./store-backend";
+import { isCloudRunRuntime } from "./prod-guard";
 import type { Card, Chapter, SceneDigestItem, SceneSourceKind } from "./ai/english/schemas";
 // 수학 설명 기록(M4)이 통째로 안는 타입들 — **전부 `import type`이다.**
 // `lib/ai/math/pipeline.ts`는 openai 클라이언트를 값으로 끌고 오므로 값 import를
@@ -36,7 +37,8 @@ import type { ExplainVerifyReport } from "./ai/math/pipeline";
 import type { Explanation } from "./ai/math/schemas";
 // 단어장 정복(V1) 완성형 항목 — **`import type`이다.** `vocabbook-schemas.ts`는 zod를
 // 값으로 끌고 오지만, 타입만 가져오면 빌드에서 지워져 저장 계층이 AI 모듈에 묶이지 않는다.
-import type { VocabEntry, VocabMeaning, VocabRelated } from "./ai/english/vocabbook-schemas";
+import type { VocabEnrichItem, VocabEntry, VocabMeaning, VocabRelated } from "./ai/english/vocabbook-schemas";
+import { planVocabEnrichmentSave, type VocabEnrichSavePlan } from "./vocabbook-enrich-save";
 import { normalizeRelated } from "./ai/english/vocabbook-schemas";
 // 아빠의 일본어 J1/J2/J3 — 완성형 단어 항목·레벨·대화 타입(**타입만** import). 값 정규화는 ai-engineer의 단일 정의처를 쓴다.
 import type {
@@ -569,6 +571,12 @@ export interface JaDialogRecord {
   createdAt: string; // ISO 8601
   /** 목록 수동 정렬 인덱스 — 미정렬은 null(맨 위). 생성부는 null로 시작. */
   sortIndex: number | null;
+}
+
+/** 단어장 보강 저장 결과 — 저장된 레코드 + 현재 entries 기준 집계(lib/vocabbook-enrich-save.ts) */
+export interface VocabEnrichSaveResult {
+  record: VocabBookRecord;
+  plan: VocabEnrichSavePlan;
 }
 
 /** 대화에서 모은 단어 담기 결과 (J5, §7-5). appendVocabEntry와 같은 규약. */
@@ -1180,20 +1188,20 @@ export interface StudyStore {
    */
   getOrCreateCollectedVocabBook(): Promise<VocabBookRecord>;
   /**
-   * 보강(호출 D, V3) 결과를 저장한다 — 기존 레코드의 `entries`·`enriched`만 갈아끼운다.
+   * 보강(호출 D, V3) 결과를 저장한다 — 레코드의 `entries`·`enriched`만 바꾼다.
    * **삭제가 아니라 수정**이라 prod-guard를 걸지 않는다(updateBookEvidence와 같은 규약).
    *
-   * 정의 불변은 이 메서드가 지키는 게 아니라 **호출측이 `mergeEnrichment`로 만든 값**을 넘겨야
-   * 지켜진다(그 순수 함수가 null 자리만 채운다). 스토어는 받은 entries를 그대로 굳힐 뿐이다 —
+   * 2026-11-25부터 **호출 D 결과(items)를 받는다.** 원자 단위(파일 `mutate`·Firestore `runTransaction`) 안에서
+   * **현재 entries를 다시 읽어** `planVocabEnrichmentSave`(= `mergeEnrichment`, null 자리에만 채움)로 얹는다 —
+   * AI가 도는 사이 담기·연결된 단어가 옛 읽기의 덮어쓰기로 사라지지 않게 한다(lib/vocabbook-enrich-save.ts).
    * 저장 계층답게 `normalizeVocabEntry`로 undefined만 마지막으로 조인다(Firestore 거부 방어).
    *
-   * 갱신된 레코드를 돌려준다. 없는 id면 null — 404 판단은 호출측 라우트의 몫.
+   * 갱신된 레코드와 현재 기준 집계(plan)를 돌려준다. 없는 id면 null — 404 판단은 호출측 라우트의 몫.
    */
   updateVocabBookEnrichment(
     id: string,
-    entries: VocabEntry[],
-    enriched: boolean,
-  ): Promise<VocabBookRecord | null>;
+    items: readonly VocabEnrichItem[],
+  ): Promise<VocabEnrichSaveResult | null>;
   /**
    * 단어 1개를 기존 DAY에 덧붙인다 (V8 더블탭 담기). **삭제가 아니라 수정**이라 prod-guard를 걸지
    * 않는다(updateVocabBookEnrichment와 같은 규약). **대소문자 무시 word 비교로 중복이면 붙이지
@@ -2455,17 +2463,18 @@ class JsonFileStore implements BookCardStore {
 
   async updateVocabBookEnrichment(
     id: string,
-    entries: VocabEntry[],
-    enriched: boolean,
-  ): Promise<VocabBookRecord | null> {
-    // 쓰기 정규화 — createVocabBook과 같은 관문(undefined를 조인다). 정의 불변은 호출측 mergeEnrichment의 몫.
-    const normalized = entries.map(normalizeVocabEntry);
+    items: readonly VocabEnrichItem[],
+  ): Promise<VocabEnrichSaveResult | null> {
+    // mutate 안에서 현재 entries를 다시 읽어 합친다(Firestore runTransaction과 동치 — lib/vocabbook-enrich-save.ts).
     return this.mutate((db) => {
       const book = db.vocabBooks.find((v) => v.id === id);
       if (!book) return null;
-      book.entries = normalized;
-      book.enriched = enriched;
-      return { ...book };
+      const current = (book.entries ?? []).map(normalizeVocabEntry);
+      const plan = planVocabEnrichmentSave(current, items);
+      // 쓰기 정규화 — createVocabBook과 같은 관문(undefined를 조인다).
+      book.entries = plan.entries.map(normalizeVocabEntry);
+      book.enriched = plan.enriched;
+      return { record: { ...book }, plan };
     });
   }
 
@@ -3912,10 +3921,11 @@ export function getStore(): StudyStore {
     console.log(
       `[store] backend=${backend} (${process.env.STORE_BACKEND ? "STORE_BACKEND 명시" : "자동 감지"})`,
     );
-    // 개발 환경인데 Firestore를 잡았다 = 로컬 실행이 **프로덕션 실데이터**를 향한다.
+    // Cloud Run(K_SERVICE)이 아닌데 Firestore를 잡았다 = 로컬 실행(dev든 로컬 `next start`든)이 **프로덕션 실데이터**를 향한다.
+    // 기준은 prod-guard와 같은 isCloudRunRuntime() 한 곳(NODE_ENV는 로컬 next start에서도 production이라 기준이 못 된다).
     // 2026-08-17에 이 상태로 삭제 기능을 테스트하다 가족 데이터가 전부 지워졌다.
     // 삭제는 lib/prod-guard.ts가 막지만, 읽기·쓰기는 그대로 통하므로 눈에 띄게 알린다.
-    if (backend === "firestore" && process.env.NODE_ENV !== "production") {
+    if (backend === "firestore" && !isCloudRunRuntime()) {
       console.warn(
         "[store] ⚠️  개발 환경인데 **프로덕션 Firestore**에 연결했어요.\n" +
           "         여기서 만든 카드·읽음 기록은 실제 가족 데이터에 그대로 남습니다.\n" +

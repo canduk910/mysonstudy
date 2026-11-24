@@ -104,10 +104,6 @@ function recordGlobalFail(now: number) {
   }
 }
 
-// 배포 후 1회만: 실제 프런트엔드가 붙이는 x-forwarded-for 형태를 확인하기 위한 로그.
-// (어느 인덱스가 신뢰 가능한지 실측으로 확정하려는 목적 — 확인 후 지워도 된다.)
-let xffLogged = false;
-
 function clientIp(req: Request): string {
   const xff = req.headers.get("x-forwarded-for");
   const parts = (xff ?? "")
@@ -118,15 +114,9 @@ function clientIp(req: Request): string {
   // 앞쪽 값은 클라이언트가 통째로 위조할 수 있어(GCP 프런트엔드는 받은 XFF를 버리지 않고
   // 뒤에 덧붙인다) 키로 쓰면 시도 제한이 무효가 된다 — QA pin-1 F1 실측.
   // 앞단 구성상 마지막 값이 상수(LB 주소)로 나오면 이 카운터는 사실상 전체 공용이 되는데,
-  // 그래도 "느슨해지는" 쪽이 아니라 "빡빡해지는" 쪽이라 안전하다. 실제 형태는 아래 1회 로그로 확인.
+  // 그래도 "느슨해지는" 쪽이 아니라 "빡빡해지는" 쪽이라 안전하다.
   const trusted = parts.length > 0 ? parts[parts.length - 1] : null;
   const key = trusted || req.headers.get("x-real-ip")?.trim() || "unknown";
-  if (!xffLogged) {
-    xffLogged = true;
-    console.info(
-      `[unlock] x-forwarded-for="${xff ?? ""}" (항목 ${parts.length}개) → 시도 제한 키="${key}"`,
-    );
-  }
   return key;
 }
 

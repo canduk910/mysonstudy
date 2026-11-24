@@ -25,6 +25,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { supplyFrameDrillItems } from "@/lib/ai/toeic/calls";
 import { getStore } from "@/lib/store";
 import { planFrameDrillSupply } from "@/lib/toeic-frame-drill";
@@ -70,7 +71,7 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
 
   const nowIso = () => new Date().toISOString();
   // 키 검사 — AI 호출 직전. 잡아 둔 표시는 failed로 되돌린다(다음에 다시 잡게)
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     await store.finishToeicFrameDrillSupply(id, null, "no_api_key", nowIso()).catch(() => null);
     return json({ ok: false, error: "no_api_key", messageKo: "OpenAI API 키가 아직 설정되지 않아 새 문제를 만들 수 없어요." }, 501);
   }

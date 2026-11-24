@@ -24,6 +24,7 @@
  */
 
 import { after } from "next/server";
+import { hasLlmKey } from "./ai/provider";
 import { translateIslandSentences } from "./ai/toeic/calls";
 import { parseReviewItemKey } from "./review-schedule";
 import { getStore, type StudyStore } from "./store";
@@ -101,7 +102,8 @@ export interface IslandFillResult {
 }
 
 function hasKey(): boolean {
-  return Boolean(process.env.OPENAI_API_KEY);
+  // 호출 G는 callWithSchema(LLM) — 공급자 설정(AI_PROVIDER·AI_FALLBACK)의 키 판정을 따른다(docs/HARNESS.md §5)
+  return hasLlmKey();
 }
 
 /** 묶음 하나를 호출 G 한 번으로 해석해 저장한다 — 호출이 실패하면 던진다(translateAndSave가 갈래를 보고 나눈다) */

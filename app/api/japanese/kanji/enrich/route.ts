@@ -13,6 +13,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { generateKanjiInfo, resolveModel } from "@/lib/ai/client";
 import { JA_KANJI_BATCH_SIZE } from "@/lib/ai/japanese/schemas";
 import {
@@ -34,7 +35,7 @@ export async function POST() {
   const store = getStore();
 
   // ── 키 없음 (501) — 생성은 AI 필수. 검사를 호출 앞에 둬 실호출을 구조적으로 막는다. ──
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return json({ ok: false, error: "no_api_key", messageKo: "한자 정보를 만들려면 OpenAI API 키가 필요해요." }, 501);
   }
 

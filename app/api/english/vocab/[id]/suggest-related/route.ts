@@ -22,6 +22,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
 import { suggestRelatedWords } from "@/lib/ai/client";
 import { VOCAB_MEANING_KO_MAX } from "@/lib/ai/english/vocabbook-schemas";
@@ -74,7 +75,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   // ── 키 없음 (501) — 추천은 AI 필수. 키 검사를 호출 앞에 두어 실호출을 구조적으로 막는다. ──
-  if (!process.env.OPENAI_API_KEY) {
+  if (!hasLlmKey()) {
     return json(
       {
         ok: false,

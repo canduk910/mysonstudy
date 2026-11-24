@@ -450,6 +450,7 @@ function runFileStoreChildChecks(): GuideCheckResult[] {
         GOOGLE_CLOUD_PROJECT: "",
         K_SERVICE: "",
         OPENAI_API_KEY: "",
+        ANTHROPIC_API_KEY: "", // 공급자 층(2026-11-25) — Claude 키도 비워 실호출을 구조적으로 막는다
         EVAL_STORE_URL: pathToFileURL(path.join(ROOT, "lib", "store.ts")).href,
       },
     });
@@ -661,7 +662,7 @@ function runS2SourceChecks(): GuideCheckResult[] {
     const src = codeOnly(read(f));
     const iGuide = src.indexOf("isToeicGuideSet(");
     const iRender = src.indexOf("isRenderableToeicSet(");
-    const iKey2 = src.indexOf("OPENAI_API_KEY");
+    const iKey2 = src.indexOf("hasLlmKey()"); // 2026-11-25 공급자 층 — LLM 키 판정
     const iPlan = src.indexOf("planPointsChunks(");
     add(
       `${f}: 공략 계열 → 409 is_guide(렌더 판정·키 검사·AI 앞)`,
