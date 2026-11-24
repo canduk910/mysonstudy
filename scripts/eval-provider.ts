@@ -289,6 +289,13 @@ function runSelectionChecks(): void {
       "answeredModel: 답한 모델을 순서대로 중복 없이 + 로 잇고, 답이 없으면 설정상 모델",
       answeredModel([], "gpt-a") === "gpt-a" && answeredModel([m("anthropic", "claude-x"), m("anthropic", "claude-x")], "gpt-a") === "claude-x" && answeredModel([m("anthropic", "claude-x"), m("openai", "gpt-a")], "gpt-z") === "claude-x+gpt-a",
     );
+    {
+      const main = (model: string): LlmCallMeta => ({ call: "x", provider: "anthropic", model, fallback: false });
+      const fb = (model: string): LlmCallMeta => ({ call: "x", provider: "openai", model, fallback: true });
+      const a = answeredModel([fb("gpt-b"), main("claude-z"), fb("gpt-a"), main("claude-y")], "x");
+      const b = answeredModel([main("claude-y"), fb("gpt-a"), main("claude-z"), fb("gpt-b")], "x");
+      add(B, "answeredModel 결정적 순서: 완료 순서와 무관하게 메인이 답한 모델 먼저(이름순) → 백업 모델(이름순)", a === b && a === "claude-y+claude-z+gpt-a+gpt-b", `${a} / ${b}`);
+    }
     add(
       B,
       "plannedModel: 계획의 메인이 Claude면 Claude 모델(호출별 → ANTHROPIC_MODEL → 기본), 아니면 OpenAI 모델",
@@ -529,6 +536,40 @@ async function runFlowChecks(): Promise<void> {
       add(B, "실패한 호출은 메타를 남기지 않는다(onMeta 미호출 · captureLlmMeta 0건)", cap3.value === null && cap3.calls.length === 0 && metas.length === 0);
       const outside = await callWithSchema({ ...base, call: "t-meta-out" }).catch(() => null);
       void outside;
+
+      // onMeta가 던져도 이미 받은 답을 돌려준다(콜백 실패가 성공을 실패로 바꾸지 않게 — QA 3차 P3-A, 변이 P5)
+      script = { openai: [], anthropic: [claudeMsg('{"a":"keep"}')] };
+      let thrownOut: unknown = null;
+      let thrownErr: unknown = null;
+      try {
+        thrownOut = await callWithSchema({
+          ...base,
+          call: "t-meta-throw",
+          onMeta: () => {
+            throw new Error("onMeta 실패");
+          },
+        });
+      } catch (e) {
+        thrownErr = e;
+      }
+      add(B, "onMeta가 던져도 결과를 그대로 돌려준다(예외를 삼킨다 — 성공이 실패로 바뀌지 않음)", thrownErr === null && (thrownOut as any)?.a === "keep", thrownErr instanceof Error ? thrownErr.message : "ok");
+
+      // 동시 두 캡처가 섞이지 않는다 — 각 캡처는 자기 fn 안의 호출만 모은다(AsyncLocalStorage 격리)
+      Object.assign(process.env, { AI_PROVIDER: "", ANTHROPIC_API_KEY: "" });
+      script = { openai: [openaiOk('{"a":"1"}'), openaiOk('{"a":"2"}'), openaiOk('{"a":"3"}'), openaiOk('{"a":"4"}'), openaiOk('{"a":"5"}')], anthropic: [] };
+      const [capA, capB] = await Promise.all([
+        captureLlmMeta(() => Promise.all([callWithSchema({ ...base, call: "iso-a1", model: "gpt-iso-a" }), callWithSchema({ ...base, call: "iso-a2", model: "gpt-iso-a" }), callWithSchema({ ...base, call: "iso-a3", model: "gpt-iso-a" })])),
+        captureLlmMeta(() => Promise.all([callWithSchema({ ...base, call: "iso-b1", model: "gpt-iso-b" }), callWithSchema({ ...base, call: "iso-b2", model: "gpt-iso-b" })])),
+      ]);
+      const callsA = capA.calls.map((c) => c.call).sort().join(",");
+      const callsB = capB.calls.map((c) => c.call).sort().join(",");
+      add(
+        B,
+        "동시 두 captureLlmMeta는 섞이지 않는다(A는 자기 호출 3건·B는 2건만, 모델도 각자)",
+        callsA === "iso-a1,iso-a2,iso-a3" && callsB === "iso-b1,iso-b2" && answeredModel(capA.calls, "x") === "gpt-iso-a" && answeredModel(capB.calls, "x") === "gpt-iso-b",
+        `A=${callsA} · B=${callsB}`,
+      );
+      Object.assign(process.env, { ANTHROPIC_API_KEY: "sk-stub" });
     }
 
     // (b2) 호출별 Claude 모델(anthropicModel) — OpenAI 쪽 model은 그대로 무시. 짧은 한도도 Claude 요청에선 하한으로 올라간다

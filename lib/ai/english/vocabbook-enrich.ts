@@ -80,11 +80,15 @@ function wordKeyOf(item: { word: string }): string {
  *   정의 불변이라 한 번 잘못 붙은 정의는 자동으로 고쳐지지 않으므로, 틀리게 붙이느니 비워 두는 쪽이 낫다
  *   (비면 "남은 N개 다시 만들기"로 다시 채운다).
  * - 번호로 못 찾으면 표제어로 잇는다 — 모델이 번호를 빠뜨렸어도 단어로 회수한다(부분 실패에 강하게).
+ *   단, **같은 표제어가 이 DAY에 두 번 이상이면 단어 회수를 하지 않는다**(2026-11-25 보안 QA P3) — 4번·9번이 같은 단어이고
+ *   모델이 4번 결과만 주면, 9번이 단어로 회수돼 4번 의미의 정의를 받았다. 같은 단어는 번호로만 가르고, 못 가르면 비워 둔다
+ *   (정의 불변이라 틀리게 붙은 정의는 자동으로 못 고친다 — 비면 "남은 N개 다시 만들기"로 채운다).
  */
 function findResultFor(
   entry: VocabEntry,
   byNo: Map<string, VocabEnrichItem>,
   byWord: Map<string, VocabEnrichItem>,
+  duplicatedWords: ReadonlySet<string>,
 ): VocabEnrichItem | undefined {
   const wk = wordKeyOf(entry);
   const nk = noKeyOf(entry);
@@ -92,6 +96,7 @@ function findResultFor(
     const hit = byNo.get(nk);
     if (hit && wordKeyOf(hit) === wk) return hit;
   }
+  if (duplicatedWords.has(wk)) return undefined;
   return byWord.get(wk);
 }
 
@@ -121,8 +126,17 @@ export function mergeEnrichment(
     if (!byWord.has(wk)) byWord.set(wk, item);
   }
 
+  // 이 DAY에 두 번 이상 실린 표제어 — 단어 회수 금지(번호로만 가른다)
+  const seenWords = new Set<string>();
+  const duplicatedWords = new Set<string>();
+  for (const entry of entries) {
+    const wk = wordKeyOf(entry);
+    if (seenWords.has(wk)) duplicatedWords.add(wk);
+    seenWords.add(wk);
+  }
+
   const nextEntries = entries.map((entry) => {
-    const item = findResultFor(entry, byNo, byWord);
+    const item = findResultFor(entry, byNo, byWord, duplicatedWords);
     // 정의: null 자리에만, 결과 정의가 non-null일 때만. 이미 있으면 그대로(덮어쓰지 않음 — EN 불변).
     const definitionEn =
       entry.definitionEn === null && item && item.definitionEn !== null

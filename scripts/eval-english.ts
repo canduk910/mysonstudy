@@ -1660,6 +1660,22 @@ function runVocabbookChecks(): CheckResult[] {
       `0002=${JSON.stringify(m.entries[0].definitionEn)} 0005=${JSON.stringify(m.entries[1].definitionEn)}`,
     );
   }
+  // 같은 표제어 두 번(0004·0009)인데 모델이 0004 결과만 줬다 — 0009는 단어로 회수하지 않고 비워 둔다(2026-11-25 보안 QA P3).
+  // 회수하면 0009가 0004 의미의 정의를 받는다(정의 불변이라 영영 못 고친다). 번호 없는 결과도 같은 단어가 여럿이면 붙이지 않는다.
+  {
+    const entries: VocabEntry[] = [ventry({ no: "0004", word: "bank" }), ventry({ no: "0009", word: "Bank" }), ventry({ no: "0011", word: "river" })];
+    const result: VocabEnrichItem[] = [
+      { no: "0004", word: "bank", definitionEn: "A place that keeps money.", definitionKo: "돈을 맡기는 곳이에요.", imageEmoji: "🏦" },
+      { no: null, word: "bank", definitionEn: "Unnumbered bank.", definitionKo: "번호 없음.", imageEmoji: null },
+      { no: null, word: "river", definitionEn: "A long flow of water.", definitionKo: "길게 흐르는 물이에요.", imageEmoji: "🏞️" },
+    ];
+    const m = mergeEnrichment(entries, result);
+    add(
+      "호출 D §8. mergeEnrichment: 같은 표제어가 여러 번이면 단어 회수 금지 — 결과가 빠진 번호(0009)는 비워 둔다 · 유일한 단어(river)는 단어로 회수",
+      m.entries[0].definitionEn === "A place that keeps money." && m.entries[1].definitionEn === null && m.entries[1].imageEmoji === null && m.entries[2].definitionEn === "A long flow of water." && m.enriched === false,
+      `0004=${JSON.stringify(m.entries[0].definitionEn)} 0009=${JSON.stringify(m.entries[1].definitionEn)} river=${JSON.stringify(m.entries[2].definitionEn)}`,
+    );
+  }
 
   // --- mergeEnrichment C: 번호 없는 단어는 word(대소문자 무시)로 매칭 (EN·KO 함께 채움) ---
   {

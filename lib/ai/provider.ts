@@ -108,12 +108,20 @@ export interface LlmCallMeta {
 }
 
 /**
- * 레코드에 남길 모델 이름 — 순수 함수. 이 요청에서 답한 호출들의 모델을 순서대로 중복 없이 `+`로 잇는다(여러 파트를 병렬로 만들다
+ * 레코드에 남길 모델 이름 — 순수 함수. 이 요청에서 답한 호출들의 모델을 중복 없이 `+`로 잇는다(메인이 답한 모델 먼저, 그다음 백업 — 각각 이름순. 여러 파트를 병렬로 만들다
  * 일부만 백업이 답하면 `claude-opus-5-5+gpt-6-luna`처럼 둘 다 남는다). 답한 호출이 없으면 `fallbackModel`(설정상 모델) 그대로.
  * 저장 스키마에 provider 칸을 더하지 않는다 — 모델 이름이 공급자를 스스로 드러내고(claude-·gpt-), 레코드 정규화 함수 여러 곳을 넓히지 않는다.
  */
 export function answeredModel(calls: readonly LlmCallMeta[], fallbackModel: string): string {
-  const models = [...new Set(calls.map((c) => c.model).filter((m) => m.trim() !== ""))];
+  // 결정적 순서(QA 3차 P3-B): 병렬 호출은 완료 순서로 쌓이므로 그대로 이으면 같은 조합이 `a+b`·`b+a`로 갈린다.
+  // 메인이 답한 모델(fallback false)을 먼저, 그다음 백업이 답한 모델 — 각 무리 안은 이름순. 한 모델이 양쪽에 있으면 메인 쪽으로 친다.
+  const rank = new Map<string, number>();
+  for (const c of calls) {
+    if (c.model.trim() === "") continue;
+    const r = c.fallback ? 1 : 0;
+    rank.set(c.model, Math.min(rank.get(c.model) ?? r, r));
+  }
+  const models = [...rank.keys()].sort((a, b) => rank.get(a)! - rank.get(b)! || (a < b ? -1 : a > b ? 1 : 0));
   return models.length > 0 ? models.join("+") : fallbackModel;
 }
 
