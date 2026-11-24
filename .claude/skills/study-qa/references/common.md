@@ -18,9 +18,9 @@
 `eval-speech`는 가짜 타이머와 약속을 기다리며 도는 비동기 eval이라 한 가지를 더 본다. **끝까지 가지 못한 실행도 FAIL(exit 1)이다.** 풀리지 않는 대기에 걸려 이벤트 루프가 비면 `beforeExit`가 끝낸다. 핸들이 루프를 붙잡고 있으면 워치독(기본 120초, env `EVAL_SPEECH_WATCHDOG_MS`)이 끝낸다. 둘 다 지금까지의 표와 마지막으로 기록된 항목을 찍고 끝난다. 이 가드가 없을 때는 옛 Blob 읽기 상한을 지운 변이가 표도 PASS 줄도 없이 **exit 0**으로 끝나, 통과로 세어졌다. 그래서 판정은 exit code 하나로 하지 않는다. 마지막 줄 `PASS — … N개 항목`까지 확인하고, N이 직전 실행보다 적으면 회귀를 의심한다. `eval-streak`·`eval-workout`은 최상위가 동기 코드라 이런 식으로 매달릴 자리가 없다.
 
 ```bash
-OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run eval:speech
-OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run eval:streak
-OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run eval:workout
+OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run eval:speech
+OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run eval:streak
+OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run eval:workout
 ```
 
 | 스크립트 | 대상 | import 경계 | 출력 영역 (괄호 수는 참고값 — 항목 수는 실행 출력이 기준) |
@@ -277,7 +277,7 @@ eval을 통과한 엔진에서 규칙 위반을 더 찾거나, eval이 무엇을
 
 최종 검증 기기는 폰이다. 데스크톱 폭에서 멀쩡하던 것이 폰에서 깨진 전례가 있다. 💪 운동 트랙이 첫 화면 밖으로 밀렸던 일이다(§17-7 폰 표시 규칙이 그 결과다).
 
-- 실행: `OPENAI_API_KEY= STORE_BACKEND=file APP_PIN= GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npx next dev -p <포트>`. 데이터를 쓰기 전에 로그에서 `[store] backend=file (STORE_BACKEND 명시)`를 확인한다. db.json은 shasum과 함께 백업하고, 끝나면 복원한 뒤 shasum이 같은지 확인한다.
+- 실행: `OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file APP_PIN= GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npx next dev -p <포트>`. 데이터를 쓰기 전에 로그에서 `[store] backend=file (STORE_BACKEND 명시)`를 확인한다. db.json은 shasum과 함께 백업하고, 끝나면 복원한 뒤 shasum이 같은지 확인한다.
 - Playwright 모바일 에뮬레이션(390×844, isMobile·hasTouch)을 쓰고 360px에서도 본다. 판정은 스크린샷을 눈으로 보는 것이 아니라 **DOM 실측**(`getBoundingClientRect`·`scrollWidth`·computed style)으로 한다.
 
 | 항목 | 기대 |

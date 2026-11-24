@@ -51,7 +51,7 @@ model: opus
 화면을 띄워 확인할 때도 `.env`의 실키가 살아 있으면 비용이 난다. 단어장·카드·챕터 리더 같은 영어 화면은 열자마자 `prefetchSpeech()`가 `/api/tts` 합성을 최대 `PREFETCH_MAX_ITEMS`(90)개까지 미리 보낸다(영어의 기본 엔진이 클라우드라서다 — `lib/speech.ts` `DEFAULT_ENGINE`). 토익 화면도 같다 — 표현 카드·시험·모의고사 학습 보기·응시 결과가 en-US를 프리페치하고, 응시 시작 탭이 지시문·질문 약 20~25조각을 미리 받으며, **모의고사 학습 보기는 열리자마자 pending 사진 두 장을 자동 생성 요청**한다(관문 P — 이미지 생성이라 발음보다 비싸다). AI가 없는 운동도 예외가 아니다. 세션 음성 안내가 `ko-KR`(기본 클라우드)로 `/api/tts`를 거쳐, `▶ 운동 시작` 탭 한 번에 그날의 안내 조각 전부(목록은 순수 모듈 `lib/workout-voice.ts` `workoutVoicePrefetch`)를 프리페치하고(`components/workout-view.tsx` `openSession`) 세트 시작마다·휴식 카운트다운·완료 요약을 `speakQueue`로 읽는다(`components/workout-session.tsx`). 그래서 운동 UI 확인도 포함해 dev 서버는 항상 키를 비우고 띄운다:
 
 ```bash
-OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run dev
+OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run dev
 ```
 
 키를 비우면 AI 라우트와 `/api/tts`·토익 사진·전사 관문이 501로 거절하고 발음은 기기 음성으로 떨어진다. AI 응답이 필요한 토익 e2e는 키를 비우는 대신 `OPENAI_API_KEY=sk-stub OPENAI_BASE_URL=http://127.0.0.1:<포트>/v1`로 루프백 스텁에 묶는다(스텁 엔드포인트 4종 — `study-qa/references/toeic.md` 9절). 실호출은 구조적으로 불가능해진다. `STORE_BACKEND=file`이면 프로덕션 Firestore를 잡지 않는다 — `prod-guard`는 삭제만 막고 생성·수정은 통과시킨다.

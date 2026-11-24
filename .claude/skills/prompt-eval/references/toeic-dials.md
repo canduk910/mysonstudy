@@ -118,7 +118,7 @@ zod 오류 문구는 재요청 프롬프트로 쓰인다(`callWithSchema`가 "�
 ## eval 실행 — 오프라인 + 게이트
 
 ```bash
-OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npm run eval:toeic
+OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npm run eval:toeic
 ```
 
 항목 수는 실행 출력이 기준이다. 영역은 표현집·모의고사, 유형별 공략(`docs/harness/toeic.md` §12-10), 템플릿 중심 재정렬(§12-13-5 — 대부분 순수 층·화면 소스 대조라 튜닝 범위 밖, 튜닝과 물린 것은 "템플릿 중심 — 호출 C·D 흐름"의 사용자 메시지 스냅숏·채우지 않은 자리 zod·허용 목록)이다. 두 가져오기 파일(`data/private/toeic-preset-hackers-core.json`·`data/private/toeic-strategy/toeic-guides.json`)이 있는 로컬 기준이고, 없으면 각 묶음이 SKIP 1건이다. 유형별 공략 영역(틀 은행 zod·틀 비교·따라 말하기 대본·연습 단위 등)은 전부 튜닝 범위 밖이다. 튜닝과 직접 물린 영역은 상수 정합(JSON Schema enum·호출 옵션 ↔ 스펙 문장), 호출 A·B·C·D zod, 판독·포인트 병합, 모의고사 후처리, 프롬프트 ↔ 스펙(28행 = 문자열 15 + 원문 수 단언 1 + 시스템 프롬프트 조립 2(흐름 없음·있음) + 관문 P 조립 1 + JSON Schema 8 + 블록 수 1)이다. 시험·형식표·대조·응시 영역은 튜닝 범위 밖이다 — 그 파일을 건드렸다면 되돌린다.

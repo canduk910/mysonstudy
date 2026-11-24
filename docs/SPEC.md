@@ -272,7 +272,7 @@ interface SceneDigestItem {
 ## 11. 환경 변수
 
 ```
-OPENAI_API_KEY=      # 필수. 서버 전용
+OPENAI_API_KEY= ANTHROPIC_API_KEY=      # 필수. 서버 전용
 OPENAI_MODEL=        # 텍스트 AI 호출 공통(토익 출제·채점 제외), 기본 gpt-6-luna — 2026-10-02 사용자 결정(이전 gpt-5.5)
 GOOGLE_BOOKS_API_KEY= # 선택. 없으면 무키 호출(저볼륨 가능)
 GOOGLE_APPLICATION_CREDENTIALS= # 로컬 개발용. Cloud Run에서는 서비스 계정 ADC 사용

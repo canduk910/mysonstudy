@@ -43,8 +43,8 @@ model: opus
 OpenAI 실호출은 하지 않는다. `.env`에 실키가 있어 "실호출 금지"라는 지시만으로는 안 막히고, 화면을 렌더만 해도 `prefetchSpeech()`가 `/api/tts` 합성을 보낸다(엔진이 클라우드인 언어에서 — 기본값은 영어·한국어가 클라우드, 일본어가 기기 음성). AI가 없는 운동도 세션 음성 안내가 `ko-KR`로 이 경로를 탄다. 모든 명령을 이렇게 쓴다:
 
 ```bash
-OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npx tsx scripts/eval-english.ts
-OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run dev
+OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npx tsx scripts/eval-english.ts
+OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= npm run dev
 ```
 
 검증에 쓴 임시 데이터는 원상 복구하고 개수로 대조한다(쓰기 전 `data/db.json`을 shasum과 함께 백업하고 끝나면 복원·대조). `prod-guard`는 삭제만 막고 생성·수정은 통과시킨다.

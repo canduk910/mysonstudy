@@ -165,7 +165,7 @@
 
 ## 3. 스펙 준수 체크리스트
 
-- [ ] 오프라인 eval이 전부 PASS — `OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npx tsx scripts/eval-english.ts`. 자유대화 묶음(스펙 대조·지시문·세션설정·리듀서·문장·호출I·낭독·스트릭·카드·도움·저장 본문·장면·호출J·출처·정적·카드 요청·컨트롤러)과 spec-sync가 들어 있다. 항목 수는 실행 출력이 기준이다. 오프라인 출력 끝에 `NOTE — 보류(app-builder 단계)`가 다시 나오면 컨트롤러에 도구 경로가 되살아났거나 `TALK_CONTROLLER_TOOL_PATH_REMOVED`가 false로 돌아간 것이다. 항목이 줄었으면 그것도 보고한다(점검이 조용히 빠진 것일 수 있다).
+- [ ] 오프라인 eval이 전부 PASS — `OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npx tsx scripts/eval-english.ts`. 자유대화 묶음(스펙 대조·지시문·세션설정·리듀서·문장·호출I·낭독·스트릭·카드·도움·저장 본문·장면·호출J·출처·정적·카드 요청·컨트롤러)과 spec-sync가 들어 있다. 항목 수는 실행 출력이 기준이다. 오프라인 출력 끝에 `NOTE — 보류(app-builder 단계)`가 다시 나오면 컨트롤러에 도구 경로가 되살아났거나 `TALK_CONTROLLER_TOOL_PATH_REMOVED`가 false로 돌아간 것이다. 항목이 줄었으면 그것도 보고한다(점검이 조용히 빠진 것일 수 있다).
 - [ ] spec-sync 24개가 PASS — 북카드·단어장 11개(block 8 + inline 3)와 자유대화 원문 13개(`block-exact` — §12-7 차례 규칙·호출 J 프롬프트·템플릿 포함, §12-6 카드 덧붙임 `TALK_CARDS_INSTRUCTIONS`는 대체돼 빠졌다). `lib/ai/english/`의 모든 `*_SYSTEM_PROMPT`·`*_USER_TEXT`와 `talk-prompts.ts`의 원문 상수(`TALK_*` 지시문·안내·템플릿·사진 프롬프트)가 `scripts/eval-english.ts`의 `SPEC_SYNC_TARGETS`에 등록돼 있는지도 대조한다. 등록되지 않은 상수는 대조에서 조용히 빠진다. 자유대화 원문이 `block-exact`인지(`block`이면 두 블록을 이어 붙인 상수가 통과한다)도 본다.
 - [ ] JSON Schema 8개를 스펙 §2-3·§2A-3·§3-3·§7-3·§8-3·§9-3·§10-3·§11-3과 **손으로** diff한다(spec-sync 대상이 아니다). 자유대화의 `talk_sentence_explanation`(§12-3)과 호출 J `talk_screen_cards`(§12-7)는 예외로 eval이 의미 동치로 대조한다("자유대화 ↔ 스펙" — §12-6 도구 정의 `TALK_TOOLS`는 세션에서 빠지며 지웠다). 전 필드 required, 모든 객체 `additionalProperties:false`, 개수·길이 키 부재. `grep -n "minItems\|maxItems\|minLength\|maxLength" lib/ai/english/*.ts`의 결과가 전부 주석이어야 한다(두 파일의 머리주석과 schemas.ts `storyOutlineKo` 옆 주석).
 - [ ] 호출 옵션이 스펙과 같다. 스펙 §1 표가 10개 호출(A·A′·B·C·D·F·G·H·I·J) 전부의 temperature·출력 한도·옵션 상수를 싣는다(관문 R은 Structured Outputs 밖이라 표에 없다). D·F·G·H는 §1 표와 각 절(§8-6·§9-6·§10-5·§11-6) 둘 다와 대조한다.
@@ -261,7 +261,7 @@ AI를 부르지 않는다고 가볍게 보지 마라. 2026-08-17 사고(CLAUDE.m
 
 ## 5. 정확성 장치 반례 확인법
 
-전부 순수 함수와 zod라 무비용이다. 먼저 오프라인 eval을 돌리고, 아래 항목의 이름으로 결과를 찾는다. eval에 반례가 없는 칸은 QA가 직접 넣는다. 스크래치 파일에서 해당 함수를 import해 `npx tsx`로 돌린다. 접두어는 `OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT=`처럼 키와 GCP 신호를 비운 것을 쓴다. 예외는 "재요청·throw·로그" 행 하나이며, 그 행에 따로 적었다.
+전부 순수 함수와 zod라 무비용이다. 먼저 오프라인 eval을 돌리고, 아래 항목의 이름으로 결과를 찾는다. eval에 반례가 없는 칸은 QA가 직접 넣는다. 스크래치 파일에서 해당 함수를 import해 `npx tsx`로 돌린다. 접두어는 `OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT=`처럼 키와 GCP 신호를 비운 것을 쓴다. 예외는 "재요청·throw·로그" 행 하나이며, 그 행에 따로 적었다.
 
 | 장치 | eval이 이미 넣는 반례 | QA가 직접 넣을 반례 · 실측값 |
 |---|---|---|

@@ -42,7 +42,7 @@ description: "프로젝트 문서(CLAUDE.md·docs/·스킬 references·에이전
 - 확신 없는 사실은 **코드를 열어 확인 후** 쓴다.
 
 ### 4. 검증 (무비용)
-- **spec-sync 안 깨졌는지**: `OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npm run eval:english` (실호출 0). 프롬프트↔스펙 바이트 일치 항목이 통과해야 한다 — 실수로 프롬프트 블록을 건드렸으면 여기서 잡힌다. 건드린 과목에 따라 `eval:math`·`eval:japanese`·`eval:toeic`도 같은 접두어로(일본어·토익은 JSON Schema 블록까지, 토익은 호출 옵션 문장까지 대조한다).
+- **spec-sync 안 깨졌는지**: `OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npm run eval:english` (실호출 0). 프롬프트↔스펙 바이트 일치 항목이 통과해야 한다 — 실수로 프롬프트 블록을 건드렸으면 여기서 잡힌다. 건드린 과목에 따라 `eval:math`·`eval:japanese`·`eval:toeic`도 같은 접두어로(일본어·토익은 JSON Schema 블록까지, 토익은 호출 옵션 문장까지 대조한다).
 - `git diff` 를 다시 읽어 **지어낸 사실·모순·낡은 파일명**이 없는지 자기 점검(brainstorming 스펙 자기검토 요령).
 - 코드는 안 건드렸으니 tsc/build는 불필요(단, 실수로 .ts를 만졌으면 원복).
 
@@ -56,7 +56,7 @@ description: "프로젝트 문서(CLAUDE.md·docs/·스킬 references·에이전
 - **코드(.ts/.tsx/.css/스크립트) 변경 금지.** 문서-코드 불일치에서 **코드가 틀린** 경우는 고치지 말고 사용자에게 보고한다(이 스킬은 문서만 맞춘다).
 - 프롬프트 블록·§번호·next.js 자동블록 불가침(위 함정).
 - 확인 안 된 사실을 문서에 쓰지 마라 — 없는 기능을 있다고 적는 것이 낡은 문서보다 나쁘다.
-- 이 저장소는 로컬 실행이 프로덕션 DB를 향할 수 있다(CLAUDE.md 서문) — eval 검증은 반드시 `OPENAI_API_KEY= STORE_BACKEND=file`로.
+- 이 저장소는 로컬 실행이 프로덕션 DB를 향할 수 있다(CLAUDE.md 서문) — eval 검증은 반드시 `OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file`로.
 
 ## 마무리
 - 갱신한 문서 목록 + 각 변경 요지 + spec-sync 결과를 보고.

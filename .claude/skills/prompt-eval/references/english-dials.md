@@ -144,7 +144,7 @@
 
 ```bash
 # 무비용 — 튜닝 중 몇 번이든
-OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npx tsx scripts/eval-english.ts
+OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npx tsx scripts/eval-english.ts
 # 실호출 — 사용자 비용 승인 뒤 오케스트레이터가 필요한 것 하나만
 STORE_BACKEND=file npm run eval:english                      # 카드 3건
 STORE_BACKEND=file EVAL_SKIP_PAGES=1 npm run eval:english    # 카드 2건

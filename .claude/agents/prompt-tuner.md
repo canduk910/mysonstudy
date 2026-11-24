@@ -71,7 +71,7 @@ model: opus
 모든 로컬 명령은 키와 GCP 신호를 비우고 쓴다:
 
 ```bash
-OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npx tsx scripts/eval-japanese.ts
+OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npx tsx scripts/eval-japanese.ts
 ```
 
 같은 eval 항목이 2회 연속 실패하면 프롬프트를 더 조이는 대신, 실패 사례를 리포트에 담아 **다이얼 자체가 현실적인지** 사용자 논의로 올린다. 근거보다 많은 것을 요구하는 다이얼은 모델이 아니라 다이얼이 틀린 것이다.

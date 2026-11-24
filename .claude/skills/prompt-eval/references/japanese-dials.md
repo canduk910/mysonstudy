@@ -116,7 +116,7 @@ zod 오류 문구는 재요청 프롬프트로 쓰인다. `callWithSchema`는 �
 ## eval 실행 — 무비용, 오프라인
 
 ```bash
-OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npx tsx scripts/eval-japanese.ts
+OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npx tsx scripts/eval-japanese.ts
 ```
 
 `npm run eval:japanese`와 같은 스크립트다. 항목 하나라도 실패하면 exit 1이다. 항목 수는 실행 출력이 기준이다.

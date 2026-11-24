@@ -199,7 +199,7 @@
 
 ## 13. 로컬 검증 안전 규칙
 
-- **모든 로컬 실행에 접두어를 붙인다:** `OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT=` (e2e라면 `APP_PIN=`도). `STORE_BACKEND=file`은 자동 감지에 기대지 않으려고 명시한다. 키를 비우면 AI 라우트와 `/api/tts`가 501로 거절해서 실호출이 0이 된다. GCP 변수까지 비우면 쉘에 남은 자격증명 신호도 끊긴다.
+- **모든 로컬 실행에 접두어를 붙인다:** `OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT=` (e2e라면 `APP_PIN=`도). `STORE_BACKEND=file`은 자동 감지에 기대지 않으려고 명시한다. 키를 비우면 AI 라우트와 `/api/tts`가 501로 거절해서 실호출이 0이 된다. GCP 변수까지 비우면 쉘에 남은 자격증명 신호도 끊긴다.
 - 서버를 띄웠으면 **데이터를 쓰기 전에** 로그에 `[store] backend=file (STORE_BACKEND 명시)`가 찍혔는지 확인한다.
 - **db.json 백업과 복원:** 쓰기가 있는 검증을 하기 전에 `data/db.json`을 scratchpad로 복사하고 `shasum`을 기록한다. 끝나면 되돌린 뒤 shasum이 같은지, `data/db.json.tmp`가 남지 않았는지 확인한다. `data/`는 gitignore 대상이다.
 - `npm run seed`는 파일 전용이다. `mergeDbForSeed`가 `readDb`·`writeDb`를 직접 쓰므로 Firestore는 건드리지 않는다. 다만 db.json에 시드 레코드를 upsert한다.

@@ -50,7 +50,7 @@ AI를 부르지 않는 기능(클라우드 발음 `lib/tts.ts`·`lib/speech.ts`,
 `.env`에 실제 `OPENAI_API_KEY`가 있고, 스토어는 GCP 신호만 있어도 프로덕션 Firestore를 잡는다(CLAUDE.md 서문). "실호출 금지"라는 지시만으로는 안 막힌다. 모든 로컬 명령을 이렇게 쓴다:
 
 ```bash
-OPENAI_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npx tsx scripts/eval-japanese.ts
+OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file GOOGLE_APPLICATION_CREDENTIALS= GOOGLE_CLOUD_PROJECT= EVAL_OFFLINE_ONLY=1 npx tsx scripts/eval-japanese.ts
 ```
 
 eval의 실호출 구간(영어 기본 3회·게이트별 1회 — `EVAL_TALK=1`만 호출 I 2회, 수학 8~16회 + 2단 픽스처 `rect-count`의 호출 E 1~2회, 일본어 0회 — `EVAL_JAPANESE=1`은 자리만 있다, 토익 `EVAL_TOEIC=1` B·C·D 각 1회 + 사진을 주면 A 1회)은 **오케스트레이터가 사용자 동의를 받아 실행한다.** 에이전트는 오프라인 구간까지만 돌린다.

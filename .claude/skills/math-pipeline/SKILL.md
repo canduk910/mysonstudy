@@ -91,9 +91,9 @@ if (b.confidence === 'low') status = 'held' # AI 스스로 자신 없으면 보�
 **모든 로컬 실행 명령 앞에 키를 비워라:**
 
 ```bash
-OPENAI_API_KEY= STORE_BACKEND=file npm run dev
-OPENAI_API_KEY= STORE_BACKEND=file npx tsx scripts/....ts
-OPENAI_API_KEY= STORE_BACKEND=file npm start
+OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file npm run dev
+OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file npx tsx scripts/....ts
+OPENAI_API_KEY= ANTHROPIC_API_KEY= STORE_BACKEND=file npm start
 ```
 
 키가 비면 라우트가 501로 명시적으로 거절하므로 **실호출이 구조적으로 불가능**해진다.
