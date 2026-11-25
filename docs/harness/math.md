@@ -523,6 +523,7 @@ return { content: b, sceneHtml, sceneTier, verify: { status, answerMatch, sceneC
 
 ## 8. 운영 메모
 
+- **모델 배치(2026-11-25 사용자 결정).** B(설명·채점)는 `OPENAI_MATH_EXPLAIN_MODEL`(프로덕션 `gpt-6.1-sol`, 비면 `OPENAI_MODEL`), C(검산)는 `OPENAI_MODEL_VERIFY`(프로덕션 미설정 = `OPENAI_MODEL` `gpt-6-luna`). 일을 다 하는 B에 강한 모델을, 답만 내는 C에 가벼운 모델을 둔다. B와 C가 **다른 모델**이라 같은 실수를 함께 하는 일이 줄어 독립 검산의 뜻도 산다. 둘 다 `provider: "openai"` 고정이다(설명 스키마는 Claude 구조화 출력이 문법 크기 초과 400으로 거부 — `docs/HARNESS.md` §5).
 - 문제 1개 = B + C (재시도 시 ×2) ≈ 호출 2~4회. Math Master는 **페이지당 문제가 12개**라 전부 만들면 최대 48회다.
   판독 확인 화면에서 **설명 만들 문제를 고르게** 한 것이 비용 안전장치다. `gradedMark`가 있는 문제를 기본
   선택으로 올려(개정 2) 사용자가 매번 고르는 수고도 줄인다. **페이지 전체를 자동 처리하는 경로를 만들지 마라.**

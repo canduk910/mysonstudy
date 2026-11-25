@@ -707,7 +707,7 @@ function runStage2StaticChecks(): void {
     ["app/api/japanese/dialog/extract/route.ts", /model: answeredModel\(llmCalls, resolveModel\(\)\)/],
     ["app/api/japanese/kanji/enrich/route.ts", /answeredModel\(llmCalls, resolveModel\(\)\)/],
     ["app/api/japanese/speaking/mocks/route.ts", /model: answeredModel\(llmCalls, resolveModel\(\)\)/],
-    ["app/api/math/explain/route.ts", /answeredModel\(llmCalls\.filter\(\(c\) => c\.call === EXPLAIN_CALL_OPTIONS\.call\), resolveModel\(\)\)/],
+    ["app/api/math/explain/route.ts", /answeredModel\(llmCalls\.filter\(\(c\) => c\.call === EXPLAIN_CALL_OPTIONS\.call\), resolveMathExplainModel\(\)\)/],
   ];
   const recBad = recordRoutes.filter(([f, re]) => {
     const src = stripComments(read(f));
@@ -773,7 +773,7 @@ function runStaticChecks(): void {
     const pipe = stripComments(read("lib/ai/math/pipeline.ts"));
     const explainBody = pipe.slice(pipe.indexOf("export async function callExplain"), pipe.indexOf("export async function callExplain") + 1500);
     const verifyBody = pipe.slice(pipe.indexOf("export async function callAnswerCheck"), pipe.indexOf("export async function callAnswerCheck") + 1500);
-    add(B, "수학 설명(B)·검산(C)은 OpenAI 고정(설명 스키마는 Claude 문법 한도 초과 400)", /provider: "openai"/.test(explainBody.split("});")[0]) && /provider: "openai"/.test(verifyBody.split("});")[0]) && /model: resolveVerifyModel\(\)/.test(verifyBody));
+    add(B, "수학 설명(B)·검산(C)은 OpenAI 고정(설명 스키마는 Claude 문법 한도 초과 400) · B 모델 = resolveMathExplainModel()", /provider: "openai"/.test(explainBody.split("});")[0]) && /provider: "openai"/.test(verifyBody.split("});")[0]) && /model: resolveVerifyModel\(\)/.test(verifyBody) && /model: resolveMathExplainModel\(\)/.test(explainBody.split("});")[0]));
   }
   add(B, "Claude 호출별 모델 배선: 토익 C·D(+틀 판정·보충) 4곳 anthropicModel: resolveAnthropicToeicModel() (검산은 2026-11-25부터 OpenAI 고정)", (stripComments(read("lib/ai/toeic/calls.ts")).match(/anthropicModel: resolveAnthropicToeicModel\(\)/g) ?? []).length === 4);
   const talk = client.slice(client.indexOf("export async function generateTalkCards("));

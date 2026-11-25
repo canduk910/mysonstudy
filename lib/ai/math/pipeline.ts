@@ -15,7 +15,7 @@
  */
 
 import { z } from "zod";
-import { callWithSchema, resolveVerifyModel, textPart, type UserContentPart } from "../client";
+import { callWithSchema, resolveMathExplainModel, resolveVerifyModel, textPart, type UserContentPart } from "../client";
 import type { AnswerItem, SceneTier } from "../../scene/types";
 import { compare, formatAnswer, verifyScene } from "../../scene/verify";
 import {
@@ -213,6 +213,7 @@ export async function callExplain(input: ExplainUserMessageInput): Promise<Expla
     jsonSchema: EXPLANATION_JSON_SCHEMA,
     temperature: EXPLAIN_CALL_OPTIONS.temperature,
     maxOutputTokens: EXPLAIN_CALL_OPTIONS.maxOutputTokens,
+    model: resolveMathExplainModel(), // env OPENAI_MATH_EXPLAIN_MODEL, 비면 OPENAI_MODEL
     // 공급자 고정(2026-11-25) — 설명 스키마는 Claude 구조화 출력이 "compiled grammar is too large"(400)로 거부한다(스모크).
     // 400은 백업으로 넘기지 않으므로 Anthropic 메인에서 통째로 깨진다 — OpenAI 하나만 부른다.
     provider: "openai",

@@ -207,6 +207,15 @@ export function resolveVerifyModel(): string {
 }
 
 /**
+ * 수학 설명(호출 B) 전용 모델 — env `OPENAI_MATH_EXPLAIN_MODEL`(앞뒤 공백 무시), 비면 `OPENAI_MODEL`(`resolveModel()`).
+ * 2026-11-25 사용자 결정: 답·3막 설명·은우 답 채점을 다 하는 B에 강한 모델(프로덕션 gpt-6.1-sol)을, 답만 내는 검산 C는
+ * `OPENAI_MODEL_VERIFY` 미설정(= OPENAI_MODEL)으로 둔다 — B와 C가 다른 모델이라 독립 검산의 의미도 산다. 미설정이면 기존과 같다.
+ */
+export function resolveMathExplainModel(): string {
+  return process.env.OPENAI_MATH_EXPLAIN_MODEL?.trim() || resolveModel();
+}
+
+/**
  * 영어 자유대화 호출 J(화면 카드, english.md §12-7)의 기본 모델 — **gpt-6-luna**(메인과 같은 값, 사용자 결정 2026-10-02).
  * env는 여전히 `OPENAI_TALK_CARDS_MODEL`로 **따로** 둔다 — 메인(`OPENAI_MODEL`)을 바꿔도 카드 모델은 움직이지 않고,
  * 카드만 빠른 모델로 되돌릴 수 있게(예: `OPENAI_TALK_CARDS_MODEL=gpt-4.1-mini`).

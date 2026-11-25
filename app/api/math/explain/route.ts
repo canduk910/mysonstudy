@@ -56,7 +56,7 @@
 import { NextResponse } from "next/server";
 import { hasLlmKey } from "@/lib/ai/provider";
 import { z } from "zod";
-import { captureLlmMeta, resolveModel } from "@/lib/ai/client";
+import { captureLlmMeta, resolveMathExplainModel } from "@/lib/ai/client";
 import { EXPLAIN_CALL_OPTIONS } from "@/lib/ai/math/prompts";
 import { answeredModel } from "@/lib/ai/provider";
 import { type ExplainProblemInput, explainProblem } from "@/lib/ai/math/pipeline";
@@ -249,7 +249,7 @@ export async function POST(req: Request) {
         // 기록에 남길 모델은 **호출 B(설명)를 만든 모델**이다. 검산(호출 C)은
         // `OPENAI_MODEL_VERIFY`로 따로 갈 수 있지만, 저장하는 `content`를 지은 것은 B다.
         // 공급자 층 2단계: 실제 답한 모델 — 호출 B(설명, 라벨 EXPLAIN_CALL_OPTIONS.call)의 메타만 본다(라우트 쪽 필터 — 래퍼는 라벨로 분기하지 않는다)
-        model: answeredModel(llmCalls.filter((c) => c.call === EXPLAIN_CALL_OPTIONS.call), resolveModel()),
+        model: answeredModel(llmCalls.filter((c) => c.call === EXPLAIN_CALL_OPTIONS.call), resolveMathExplainModel()),
       });
       id = saved.id;
     } catch (err) {
