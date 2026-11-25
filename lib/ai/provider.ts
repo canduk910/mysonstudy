@@ -46,7 +46,8 @@ export function resolveAnthropicModel(env: Env = process.env): string {
 
 /**
  * 수학 검산(호출 C) 전용 Claude 모델 — env `ANTHROPIC_MODEL_VERIFY`, 비면 resolveAnthropicModel().
- * OpenAI 쪽 `OPENAI_MODEL_VERIFY`(심판만 더 강한 모델로 올릴 여지)와 짝이다. 호출부(검산)가 `anthropicModel`로 넘긴다 — 래퍼는 라벨로 고르지 않는다.
+ * OpenAI 쪽 `OPENAI_MODEL_VERIFY`(심판만 더 강한 모델로 올릴 여지)와 짝이다. 래퍼는 라벨로 고르지 않는다.
+ * 2026-11-25부터 검산이 `provider: "openai"` 고정이라 호출부가 넘기지 않는다 — 지금은 쓰이지 않는다(검산을 Claude로 되돌릴 때를 위해 남김).
  */
 export function resolveAnthropicVerifyModel(env: Env = process.env): string {
   return envValue(env, "ANTHROPIC_MODEL_VERIFY") || resolveAnthropicModel(env);

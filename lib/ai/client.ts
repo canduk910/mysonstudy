@@ -368,8 +368,9 @@ export interface CallWithSchemaArgs<T> {
   effort?: AiEffort;
   /**
    * 이 호출에만 쓸 **Claude** 모델(`model`의 짝 — `model`은 OpenAI 모델 ID라 Claude 경로에서 쓰지 않는다). 생략·빈 값이면 `ANTHROPIC_MODEL`.
-   * 수학 검산이 `resolveAnthropicVerifyModel()`(env ANTHROPIC_MODEL_VERIFY), 토익 출제·채점이 `resolveAnthropicToeicModel()`(env
-   * ANTHROPIC_TOEIC_MODEL)을 넘긴다 — OpenAI 쪽 호출별 모델 env와 짝. 과목 분기가 아니라 일반 파라미터다.
+   * 토익 출제·채점이 `resolveAnthropicToeicModel()`(env ANTHROPIC_TOEIC_MODEL)을 넘긴다 — OpenAI 쪽 호출별 모델 env와 짝.
+   * 과목 분기가 아니라 일반 파라미터다. (수학 검산·설명은 2026-11-25부터 `provider: "openai"` 고정이라 넘기지 않는다 —
+   * `resolveAnthropicVerifyModel()`은 남아 있지만 지금은 쓰이지 않는다.)
    */
   anthropicModel?: string;
   /**
