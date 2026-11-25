@@ -8,6 +8,9 @@
 #   배포 전 단계로 돈다(2026-11-25). 키·GCP 신호·PIN을 전부 빈 값으로 고정해 실호출·Firestore가 구조적으로 불가능하다.
 # 서비스의 env·secret(OPENAI_MODEL, OPENAI_API_KEY 등)은 최초 배포 때 설정된 값이
 #   재배포에도 유지되므로 여기서 다시 지정하지 않는다.
+# 액션 버전 고정(2026-11-26): `uses:`는 태그(@v4) 대신 커밋 SHA로 고정한다 — 태그는 옮겨질 수 있어
+#   액션 저장소가 뚫리면 배포 자격증명(WIF)이 바로 넘어간다. 고정 당시 각 SHA는 쓰던 메이저 태그(v4·v2)와
+#   같은 커밋이었다(동작 불변). 올릴 때는 사람이 새 릴리스의 SHA와 `# vX.Y.Z` 주석을 함께 바꾼다.
 
 name: CI/CD
 
@@ -24,8 +27,8 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           # Cloud Run Buildpacks와 같은 메이저 — package.json engines.node(24.x)가 둘을 함께 고정한다(2026-11-25).
           # 그 전에는 engines가 없어 빌드팩이 "최신 런타임"(빌드 로그 실측 v24.22.2)을, CI는 22를 써 서로 달랐다.
@@ -65,12 +68,12 @@ jobs:
     runs-on: ubuntu-latest
     concurrency: deploy-cloud-run # 연속 푸시 시 배포가 겹치지 않게
     steps:
-      - uses: actions/checkout@v4
-      - uses: google-github-actions/auth@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
         with:
           workload_identity_provider: projects/273068330044/locations/global/workloadIdentityPools/github-pool/providers/github-provider
           service_account: github-deployer@eunwoo-bookcard.iam.gserviceaccount.com
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2.2.1
       - name: Deploy to Cloud Run (source)
         run: |
           gcloud run deploy eunwoo-bookcard \
