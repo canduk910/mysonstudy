@@ -33,7 +33,7 @@ AI 호출은 해당 과목 스펙(`docs/harness/english.md` · `math.md` · `jap
 - 레퍼런스·리포트에 스펙의 프롬프트 원문을 복사하지 않는다. 원문은 스펙 한 곳에만 살고, 다른 곳에는 §번호 포인터만 둔다.
 - 배열 개수 제약을 JSON Schema에 넣지 않는다(`minItems`/`maxItems` 금지) — 프롬프트 + zod가 담당한다. strict 모드의 지원 여부가 모델·버전마다 달라 조용히 무시되거나 호출이 거부된다(`docs/HARNESS.md` §1).
 - strict 모드 필수 조건: 모든 필드 `required` + 모든 객체에 `additionalProperties: false`. "선택" 필드는 빼지 말고 null 유니온(`["string", "null"]`)으로 표현한다. 저장 레코드도 같은 이유로 선택 키(`?`)를 두지 않고 필수 nullable로 둔다(Firestore가 `undefined`를 거부한다).
-- 모델은 `resolveModel()`(수학 검산은 `resolveVerifyModel()`)로만 고른다 — env `OPENAI_MODEL`을 읽고 비면 `DEFAULT_OPENAI_MODEL`로 떨어진다. 호출부에 모델 문자열을 적지 않는다. 키는 `process.env.OPENAI_API_KEY`.
+- 모델은 `resolveModel()`(수학 검산은 `resolveVerifyModel()`, 수학 설명은 `resolveMathExplainModel()`)로만 고른다 — env `OPENAI_MODEL`을 읽고 비면 `DEFAULT_OPENAI_MODEL`로 떨어진다. 호출부에 모델 문자열을 적지 않는다. 키는 `process.env.OPENAI_API_KEY`.
 - 호출 코드는 서버 전용이다. 클라이언트 번들에 들어갈 파일에서 `lib/ai/client.ts`를 import하지 않는다. 화면이 타입을 필요로 하면 `lib/*-contract.ts`가 `export type`으로 재수출한다(아래 "라우트 연결 공통 규약").
 
 ## Responses API 호출 형태

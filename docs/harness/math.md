@@ -45,6 +45,7 @@
 공통 규칙은 `docs/HARNESS.md`를 따른다(서버 전용 호출 · Structured Outputs + zod 이중 검증 · 1회 재요청 · 호출 로깅 · 모델 ID는 env). 수학 고유 규칙만 여기 적는다:
 
 - C는 `OPENAI_MODEL_VERIFY`(없으면 `OPENAI_MODEL`). **심판만 더 강한 모델로 올릴 여지**를 남긴 것이다.
+- B는 `OPENAI_MATH_EXPLAIN_MODEL`(없으면 `OPENAI_MODEL`, `resolveMathExplainModel`) — 2026-11-25에 더했다. 지금 배치는 거꾸로 B가 강하고(`gpt-6.1-sol`) C가 가볍다(`gpt-6-luna`) — 이유는 §8 "모델 배치". B·C 둘 다 `provider: "openai"` 고정이라 `AI_PROVIDER=anthropic`이어도 Claude로 가지 않는다(`docs/HARNESS.md` §5).
 - 배열 개수·범위 제약은 JSON Schema가 아니라 프롬프트 + zod에서 강제한다(strict 모드 제약).
 
 파일 배치:

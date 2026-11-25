@@ -37,7 +37,8 @@ npm run dev    # http://localhost:3100 (다른 로컬 프로젝트와의 포트 
 |---|---|---|
 | `OPENAI_API_KEY` | AI 생성 시 필수 | 서버 전용. 표지 판독(vision)·카드 생성에 사용. 없으면 시드 데모만 가능 |
 | `OPENAI_MODEL` | 선택 | 텍스트 AI 호출 공통 모델(토익 출제·채점 제외). 기본값 `gpt-6-luna` — 2026-10-02 사용자 결정("텍스트 모델은 토익 출제·채점만 `gpt-6.1-sol`, 나머지는 모두 `gpt-6-luna`"). 이전 기본값은 `gpt-5.5` |
-| `OPENAI_MODEL_VERIFY` | 선택 | 수학 검산(호출 C) 전용 모델. 비어 있거나 없으면 `OPENAI_MODEL` — 답을 독립적으로 다시 푸는 심판만 더 강한 모델로 올릴 여지(`docs/harness/math.md` §1) |
+| `OPENAI_MODEL_VERIFY` | 선택 | 수학 검산(호출 C) 전용 모델. 비어 있거나 없으면 `OPENAI_MODEL` — 답을 독립적으로 다시 푸는 심판만 따로 바꿀 여지(`docs/harness/math.md` §1). 2026-11-25부터 프로덕션은 미설정(= `gpt-6-luna`) |
+| `OPENAI_MATH_EXPLAIN_MODEL` | 선택 | 수학 설명(호출 B — 3막 설명·장면·은우 답 채점) 전용 모델(`lib/ai/client.ts` `resolveMathExplainModel`). 비어 있거나 없으면 `OPENAI_MODEL`. 2026-11-25 사용자 결정으로 프로덕션 `gpt-6.1-sol` — 일을 다 하는 B에 강한 모델, 답만 내는 C에 가벼운 모델(`docs/harness/math.md` §8). 수학 B·C는 `AI_PROVIDER`와 무관하게 OpenAI 고정 |
 | `OPENAI_TOEIC_MODEL` | 선택 | 아빠의 영어(토익스피킹) **출제·채점** 모델 — 모의고사 문항 생성(호출 C — 실전·파트 다시 만들기·한 문제 연습)과 답변 피드백(호출 D), `lib/ai/toeic/model.ts` `resolveToeicModel`. 기본값 `gpt-6.1-sol`. `OPENAI_MODEL`로 폴백하지 않는다(표현집 판독·발화 포인트는 `OPENAI_MODEL`) |
 | `OPENAI_TTS_MODEL` | 선택 | 클라우드 발음(§16)용 TTS 모델. 기본값 `gpt-4o-mini-tts` — 기기 음성보다 자연스러운 최신 TTS. 스냅샷 고정은 `gpt-4o-mini-tts-2025-12-15`. 미설정이어도 기본값으로 동작(별도 설정 불필요) |
 | `OPENAI_TTS_VOICE` | 선택 | 발음 음성. 기본값 `alloy`(en-US·ja-JP·ko-KR 한 음성 공용 — ko-KR은 일본어 해설 듣기(§18)와 운동 세션 음성 안내(§19-6)용). 더 따뜻한 톤은 `nova`·`coral`·`sage` 등으로 교체. `OPENAI_API_KEY`가 없으면 자동으로 기기 음성으로 폴백 |
@@ -56,7 +57,7 @@ npm run dev    # http://localhost:3100 (다른 로컬 프로젝트와의 포트 
 | `APP_PIN` | **배포 시 필수** | 접속 잠금 PIN(숫자 **6~8자리 권장**, 최소 4자리 — 4자리는 경우의 수가 1만뿐이라 짧습니다). 서버 전용. 도메인이 공개돼도 가족 외 접속과 AI 비용 유출을 막습니다. **프로덕션에서 미설정이면 전 요청을 503으로 차단**(fail-closed), 로컬 개발에서 미설정이면 잠금 없이 통과 |
 | `SESSION_SECRET` | 선택(권장) | PIN 쿠키 서명 키(긴 임의 문자열, 서버 전용 — Secret Manager). 있으면 `HMAC(SESSION_SECRET, "unlock:<exp>:<PIN>")`, 없으면 예전처럼 `APP_PIN`이 키. **처음 등록하거나 바꾸면 기존 쿠키가 전부 무효**라 가족 기기마다 PIN을 한 번 다시 넣어야 합니다 |
 
-> 선택 변수(`OPENAI_MODEL`·`OPENAI_MODEL_VERIFY`·`OPENAI_TOEIC_MODEL`·`OPENAI_TTS_MODEL`·`OPENAI_TTS_VOICE`·`OPENAI_IMAGE_MODEL`·`OPENAI_IMAGE_QUALITY`·`OPENAI_TRANSCRIBE_MODEL`·`OPENAI_REALTIME_MODEL`·`OPENAI_REALTIME_VOICE`·`OPENAI_REALTIME_TRANSCRIBE_MODEL`·`OPENAI_TALK_CARDS_MODEL`)는 **비워 두거나(`X=`) 빼면 기본값**이 쓰입니다 — 빈 값·공백도 미설정으로 봅니다(`lib/ai/client.ts` `resolveModel`·`resolveVerifyModel`·`resolveTalkCardsModel`, `lib/ai/toeic/model.ts` `resolveToeicModel`, `lib/tts.ts`, `lib/image-gen.ts`(사진 공용 코어), `lib/toeic-image.ts`, `lib/toeic-transcribe.ts`, `lib/talk-session-config.ts`). 사진·전사·실시간 음성도 키는 `OPENAI_API_KEY` 하나이고, 없으면 해당 라우트가 네트워크 호출 없이 501입니다. 2026-09-24 전에는 `??` 폴백이라 `.env.example`을 그대로 복사하면 빈 문자열이 모델 ID로 새어 호출이 실패하거나 발음이 조용히 기기 음성으로만 났습니다.
+> 선택 변수(`OPENAI_MODEL`·`OPENAI_MODEL_VERIFY`·`OPENAI_MATH_EXPLAIN_MODEL`·`OPENAI_TOEIC_MODEL`·`OPENAI_TTS_MODEL`·`OPENAI_TTS_VOICE`·`OPENAI_IMAGE_MODEL`·`OPENAI_IMAGE_QUALITY`·`OPENAI_TRANSCRIBE_MODEL`·`OPENAI_REALTIME_MODEL`·`OPENAI_REALTIME_VOICE`·`OPENAI_REALTIME_TRANSCRIBE_MODEL`·`OPENAI_TALK_CARDS_MODEL`)는 **비워 두거나(`X=`) 빼면 기본값**이 쓰입니다 — 빈 값·공백도 미설정으로 봅니다(`lib/ai/client.ts` `resolveModel`·`resolveVerifyModel`·`resolveMathExplainModel`·`resolveTalkCardsModel`, `lib/ai/toeic/model.ts` `resolveToeicModel`, `lib/tts.ts`, `lib/image-gen.ts`(사진 공용 코어), `lib/toeic-image.ts`, `lib/toeic-transcribe.ts`, `lib/talk-session-config.ts`). 사진·전사·실시간 음성도 키는 `OPENAI_API_KEY` 하나이고, 없으면 해당 라우트가 네트워크 호출 없이 501입니다. 2026-09-24 전에는 `??` 폴백이라 `.env.example`을 그대로 복사하면 빈 문자열이 모델 ID로 새어 호출이 실패하거나 발음이 조용히 기기 음성으로만 났습니다.
 
 ## 3. Cloud Run 배포 (서울, 소스 배포)
 

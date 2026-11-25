@@ -20,7 +20,7 @@ C의 사용자 메시지는 문제 문장과 그림 설명뿐이다. **B의 답�
 
 이유가 전부다: 심판이 선수 답안지를 먼저 보면 그 답에 끌려간다(anchoring). 두 번째 의견이 첫 번째의 복사본이 되면 심판이 둘이 아니라 하나다. 코드에서 C의 입력을 조립하는 지점에 이 이유를 주석으로 남겨라 — 나중에 "컨텍스트를 더 주면 정확해지지 않나?"라는 선의의 수정이 들어온다.
 
-C는 `temperature: 0`, 출력 한도 ~800, 모델은 `OPENAI_MODEL_VERIFY`(없으면 `OPENAI_MODEL`). 별도 env를 둔 이유는 **심판만 더 강한 모델로 올릴 여지**를 남기기 위해서다.
+C는 `temperature: 0`, 출력 한도 ~800, 모델은 `OPENAI_MODEL_VERIFY`(없으면 `OPENAI_MODEL`). 별도 env를 둔 이유는 **심판만 더 강한 모델로 올릴 여지**를 남기기 위해서다. 설명 B도 2026-11-25부터 전용 env `OPENAI_MATH_EXPLAIN_MODEL`(`resolveMathExplainModel`)을 쓰고, 프로덕션은 B=`gpt-6.1-sol`·C=`gpt-6-luna`로 서로 다른 모델이다. B·C 둘 다 `provider: "openai"` 고정(설명 스키마가 Claude에서 "compiled grammar is too large" 400) — 고정을 풀지 마라(`docs/harness/math.md` §8).
 
 ## 답 비교 — 정규화 규칙
 

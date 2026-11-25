@@ -281,6 +281,7 @@ YOUTUBE_API_KEY=     # 선택(낭독 영상 자동 검색 시). 서버 전용. Y
 OPENAI_TTS_MODEL=    # 선택. 클라우드 발음 모델, 기본 gpt-4o-mini-tts — §16 (키가 없으면 기기 음성 폴백)
 OPENAI_TTS_VOICE=    # 선택. 발음 음성, 기본 alloy(en-US·ja-JP·ko-KR 한 음성 공용) — §16·§18-3
 OPENAI_MODEL_VERIFY= # 선택. 수학 검산(호출 C) 전용 모델, 없으면 OPENAI_MODEL — docs/harness/math.md §1
+OPENAI_MATH_EXPLAIN_MODEL= # 선택. 수학 설명(호출 B — 3막 설명·장면·채점) 전용 모델, 없으면 OPENAI_MODEL(프로덕션 gpt-6.1-sol) — docs/harness/math.md §1·§8
 OPENAI_TOEIC_MODEL=  # 선택. 아빠의 영어 출제·채점(모의고사 문항 생성 호출 C·답변 피드백 호출 D), 기본 gpt-6.1-sol(OPENAI_MODEL로 폴백하지 않는다 — 판독 A·발화 포인트 B는 OPENAI_MODEL) — §20·docs/harness/toeic.md §1
 OPENAI_IMAGE_MODEL=  # 선택. 사진 생성 모델, 기본 gpt-image-2 — 아빠의 영어 모의고사 Q3–4 사진(관문 P, §20·docs/harness/toeic.md §4-10)과 은우 자유대화 주제 일러스트(§21-7)가 공유
 OPENAI_IMAGE_QUALITY= # 선택. 토익 사진 품질 low|medium|high|auto, 기본 medium(모르는 값도 medium) — §20. 자유대화 일러스트는 medium 고정(이 env를 보지 않는다)
@@ -294,7 +295,7 @@ AI_PROVIDER=         # 선택. 텍스트·이미지 판독 LLM 호출(callWithSc
 AI_FALLBACK=         # 선택. on(기본)|off — 메인이 가용성 실패(과부하·5xx·429·연결·타임아웃·거절·재요청까지 검증 실패)면 다른 공급자로 한 번 더(그 키가 있을 때만) — docs/HARNESS.md §5
 ANTHROPIC_API_KEY=   # 선택. 서버 전용. Claude 키 — AI_PROVIDER=anthropic의 메인, 또는 OpenAI 메인일 때의 백업 — docs/HARNESS.md §5
 ANTHROPIC_MODEL=     # 선택. Claude 모델, 기본 claude-opus-5-5 — docs/HARNESS.md §5
-ANTHROPIC_MODEL_VERIFY= # 선택. Claude 경로의 수학 검산(호출 C) 모델, 비면 ANTHROPIC_MODEL(OPENAI_MODEL_VERIFY의 짝) — docs/HARNESS.md §5
+ANTHROPIC_MODEL_VERIFY= # 선택. Claude 경로의 수학 검산(호출 C) 모델, 비면 ANTHROPIC_MODEL(OPENAI_MODEL_VERIFY의 짝) — 2026-11-25부터 검산이 OpenAI 고정이라 지금은 읽히지 않는다 — docs/HARNESS.md §5
 ANTHROPIC_TOEIC_MODEL= # 선택. Claude 경로의 토익 출제·채점(호출 C·D·틀 판정·보충) 모델, 비면 ANTHROPIC_MODEL(OPENAI_TOEIC_MODEL의 짝) — docs/HARNESS.md §5
 TOEIC_REC_BUCKET=    # 선택. 아빠의 영어 내 녹음 보관 GCS 버킷 이름, 기본 eunwoo-bookcard-toeic-rec(스토어가 firestore일 때만 쓴다) — §20-11·docs/harness/toeic.md §13-1
 TOEIC_REC_DIR=       # 선택. 파일 백엔드(STORE_BACKEND=file)의 녹음 디렉터리, 기본 data/recordings(git·배포 업로드 밖) — §20-11
@@ -302,7 +303,7 @@ WORKOUT_REST_TASKS_QUEUE= # 선택. 운동 휴식 알림을 예약할 Cloud Task
 PUBLIC_BASE_URL=     # 선택. 태스크가 부를 서비스 기본 URL(https://호스트, 경로 없음) — 비면 휴식 알림 501 — §19-9
 ```
 
-> 선택 변수(모델·검산 모델·토익 출제·채점 모델·TTS 모델·음성·사진 모델·사진 품질·전사 모델·실시간 음성 모델·선생님 음성·대화 전사 모델·화면 카드 모델·표현 도우미 모델)는 **비워 두거나 빼면 기본값**이다 — 빈 값·공백도 미설정으로 본다(`lib/ai/client.ts` `resolveModel`·`resolveVerifyModel`·`resolveTalkCardsModel`, `lib/ai/toeic/model.ts` `resolveToeicModel`, `lib/ai/phrase-helper/model.ts` `resolvePhraseHelperModel`, `lib/tts.ts` `resolveTtsModel`·`resolveTtsVoice`, 사진 공용 코어 `lib/image-gen.ts` `resolveImageModel`·`normalizeImageQuality`(토익 `lib/toeic-image.ts` `resolveToeicImageModel`·`resolveToeicImageQuality`와 자유대화 `lib/talk-image.ts` `resolveTalkImageModel`이 이 코어를 부른다), `lib/toeic-transcribe.ts` `resolveToeicTranscribeModel`, 자유대화 관문 R `lib/talk-session-config.ts` `resolveTalkRealtimeModel`·`resolveTalkRealtimeVoice`·`resolveTalkTranscribeModel`이 `?.trim() ||`로 폴백). 2026-09-24 전에는 `??`라 위 템플릿처럼 `KEY=`를 빈 값으로 남기면 빈 문자열이 그대로 쓰였다(모델 ID `""`로 호출 실패, 발음은 조용히 기기 음성만). 사진 품질은 한 걸음 더 — 모르는 값도 `medium`으로 되돌린다(그대로 보내면 400이라 사진이 조용히 사라진다). 사진·전사·실시간 음성도 키는 `OPENAI_API_KEY` 하나이고, 없으면 네트워크 호출 없이 라우트가 501을 낸다(자유대화는 연결·일러스트·hangup·화면 카드 라우트 — 대화 저장과 저장된 설명 다시 보기는 키 없이도 된다, §21-3).
+> 선택 변수(모델·검산 모델·수학 설명 모델·토익 출제·채점 모델·TTS 모델·음성·사진 모델·사진 품질·전사 모델·실시간 음성 모델·선생님 음성·대화 전사 모델·화면 카드 모델·표현 도우미 모델)는 **비워 두거나 빼면 기본값**이다 — 빈 값·공백도 미설정으로 본다(`lib/ai/client.ts` `resolveModel`·`resolveVerifyModel`·`resolveMathExplainModel`·`resolveTalkCardsModel`, `lib/ai/toeic/model.ts` `resolveToeicModel`, `lib/ai/phrase-helper/model.ts` `resolvePhraseHelperModel`, `lib/tts.ts` `resolveTtsModel`·`resolveTtsVoice`, 사진 공용 코어 `lib/image-gen.ts` `resolveImageModel`·`normalizeImageQuality`(토익 `lib/toeic-image.ts` `resolveToeicImageModel`·`resolveToeicImageQuality`와 자유대화 `lib/talk-image.ts` `resolveTalkImageModel`이 이 코어를 부른다), `lib/toeic-transcribe.ts` `resolveToeicTranscribeModel`, 자유대화 관문 R `lib/talk-session-config.ts` `resolveTalkRealtimeModel`·`resolveTalkRealtimeVoice`·`resolveTalkTranscribeModel`이 `?.trim() ||`로 폴백). 2026-09-24 전에는 `??`라 위 템플릿처럼 `KEY=`를 빈 값으로 남기면 빈 문자열이 그대로 쓰였다(모델 ID `""`로 호출 실패, 발음은 조용히 기기 음성만). 사진 품질은 한 걸음 더 — 모르는 값도 `medium`으로 되돌린다(그대로 보내면 400이라 사진이 조용히 사라진다). 사진·전사·실시간 음성도 키는 `OPENAI_API_KEY` 하나이고, 없으면 네트워크 호출 없이 라우트가 501을 낸다(자유대화는 연결·일러스트·hangup·화면 카드 라우트 — 대화 저장과 저장된 설명 다시 보기는 키 없이도 된다, §21-3).
 
 ## 12. 테스트 픽스처 (실물 검증 데이터)
 

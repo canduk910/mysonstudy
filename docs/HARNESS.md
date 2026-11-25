@@ -83,7 +83,7 @@
 
 - `call` 식별자는 과목별 문서가 정의한다 (영어: `extract`·`pages`·`card`).
 - 출력 한도 도달(`status === "incomplete"`)은 JSON 파싱 실패와 같은 재요청 경로로 보낸다.
-- 선택 인자 셋 — `model`(이 호출에만 쓸 모델 — 생략하면 `OPENAI_MODEL`, 예: 수학 검산 `resolveVerifyModel()`·자유대화 호출 J `resolveTalkCardsModel()`·토익 출제·채점 C·D `resolveToeicModel()`), `signal`(요청 취소·시간 상한), `maxRetries`(이 호출의 SDK 자동 재시도 횟수). `signal`·`maxRetries`는 2026-09-27 영어 자유대화 호출 J(서버 6초 상한·재시도 0 — `docs/harness/english.md` §12-7)가 쓰려고 더했다. 둘 다 과목 분기가 아닌 일반 인자이고, 넘기지 않으면 요청 옵션 없이 기존 모양 그대로 나간다(`buildCallRequestOptions` — `!== undefined`로 판정해 `maxRetries: 0`도 빠지지 않는다). SDK는 429·503의 `retry-after`를 끊는 신호 없이 기다리므로, 시간 상한이 있는 호출은 `maxRetries: 0`을 넘겨야 상한이 지켜진다.
+- 선택 인자 셋 — `model`(이 호출에만 쓸 모델 — 생략하면 `OPENAI_MODEL`, 예: 수학 검산 `resolveVerifyModel()`·수학 설명 `resolveMathExplainModel()`·자유대화 호출 J `resolveTalkCardsModel()`·토익 출제·채점 C·D `resolveToeicModel()`), `signal`(요청 취소·시간 상한), `maxRetries`(이 호출의 SDK 자동 재시도 횟수). `signal`·`maxRetries`는 2026-09-27 영어 자유대화 호출 J(서버 6초 상한·재시도 0 — `docs/harness/english.md` §12-7)가 쓰려고 더했다. 둘 다 과목 분기가 아닌 일반 인자이고, 넘기지 않으면 요청 옵션 없이 기존 모양 그대로 나간다(`buildCallRequestOptions` — `!== undefined`로 판정해 `maxRetries: 0`도 빠지지 않는다). SDK는 429·503의 `retry-after`를 끊는 신호 없이 기다리므로, 시간 상한이 있는 호출은 `maxRetries: 0`을 넘겨야 상한이 지켜진다.
 - **과목별 분기를 이 파일에 넣지 않는다.** 분기가 필요하면 호출부에 둔다 —
   client를 고치면 모든 과목이 함께 영향받는다.
 
@@ -216,5 +216,5 @@ docs/harness/phrase-helper.md # 표현 도우미 스펙(과목 공통)
    | 6 | 수학 | `npm run eval:math` | B·C 픽스처 8~16회 + 호출 E 1~2 |
 
    `AI_PROVIDER`는 **전역 스위치**다. 과목별 단계 적용은 위 순서로 로컬 검증을 쌓은 뒤 프로덕션을 한 번에 바꾸는 방식이다. 프로덕션에서 과목별로 따로 켜려면 호출부(과목 진입 함수)가 과목 env를 읽어 `provider`를 넘기는 배선이 필요한데, 아직 없다.
-5. **전환**: `gcloud run services update eunwoo-bookcard --region asia-northeast3 --project eunwoo-bookcard --update-env-vars AI_PROVIDER=anthropic`(선택: `ANTHROPIC_MODEL`·`ANTHROPIC_MODEL_VERIFY`·`ANTHROPIC_TOEIC_MODEL`). 이때부터 OpenAI는 백업이다. 로그에서 `"provider":"anthropic"`, `fallback`의 빈도, `ms`(Opus 지연)를 지켜본다.
+5. **전환**: `gcloud run services update eunwoo-bookcard --region asia-northeast3 --project eunwoo-bookcard --update-env-vars AI_PROVIDER=anthropic`(선택: `ANTHROPIC_MODEL`·`ANTHROPIC_TOEIC_MODEL` — `ANTHROPIC_MODEL_VERIFY`는 검산이 OpenAI 고정이 된 뒤로 쓰이지 않는다). 이때부터 OpenAI는 백업이다. 로그에서 `"provider":"anthropic"`, `fallback`의 빈도, `ms`(Opus 지연)를 지켜본다.
 6. **되돌리기**: `--update-env-vars AI_PROVIDER=` 하나로 OpenAI 메인이 된다(키는 남겨 두면 Claude 백업). Claude를 완전히 끄려면 `--remove-secrets ANTHROPIC_API_KEY`.
